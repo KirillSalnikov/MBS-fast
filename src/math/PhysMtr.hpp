@@ -179,7 +179,15 @@ public:
 	@return none
 	*/
 	void insert(unsigned int, unsigned int, const matrixC &);
-	
+
+	/// Fast insert for 2x2: adds 4 complex values directly (no matrixC allocation)
+	inline void insert_2x2(unsigned int _N, unsigned int _M,
+	                        complex a00, complex a01, complex a10, complex a11)
+	{
+		complex* pt = ptr[_N][_M];
+		pt[0] += a00; pt[1] += a01; pt[2] += a10; pt[3] += a11;
+	}
+
 	/**
 	@brief The function replaces existing matrix, located in the array by address (_N,_M), by the matrix mt
 	@param _N,_M: number of a cell in the array

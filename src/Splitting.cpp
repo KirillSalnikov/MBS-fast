@@ -119,6 +119,7 @@ void Splitting::ComputeRegularJonesParams(const Point3f &normal, const Beam &inc
     complex Th0 = tmp0 + cosG;
 
     complex tmp = 2.0 * tmp0;
+
     outBeam.MultiplyJonesMatrix(tmp/Tv0, tmp/Th0);
 
     complex Tv = cosA - tmp1;

@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 #include <assert.h>
 #include <float.h>
 #include <string>
@@ -52,6 +53,8 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("fixed", 2, true); // fixed orientarion (beta, gamma)
     parser.AddRule("random", 2, true); // random orientarion (beta number, gamma number)
     parser.AddRule("montecarlo", 1, true); // random orientarion (beta number, gamma number)
+    parser.AddRule("orientfile", 1, true); // orientations from file
+    parser.AddRule("karczewski", 0, true); // use Karczewski polarization matrix
     parser.AddRule("go", 0, true); // geometrical optics method
     parser.AddRule("po", 0, true); // phisical optics method
     parser.AddRule("w", 1, true); // wavelength
@@ -70,21 +73,26 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("filter", 1, true); // scattering angle filter
     parser.AddRule("shadow", zero, true);
     parser.AddRule("incoh", zero, true);
+    parser.AddRule("jones", zero, true);
     parser.AddRule("shadow_off", zero, true);
     parser.AddRule("forced_nonconvex", zero, true);
     parser.AddRule("forced_convex", zero, true);
     parser.AddRule("r", 1, true); // restriction ratio for small beams when intersection (100 by default)
     parser.AddRule("log", 1, true); // time of writing progress (in seconds)
+    parser.AddRule("sizefile", 1, true); // multi-size: file with size parameters (one per line)
+    parser.AddRule("tgrid", 1, true); // non-uniform theta grid file
 }
 
 ScatteringRange SetConus(ArgPP &parser)
 {
+    ScatteringRange range(0, M_PI, 1, 1); // placeholder
+
     if (parser.GetArgNumber("grid") == 3)
     {
         double radius = parser.GetDoubleValue("grid", 0);
         int nAz = parser.GetDoubleValue("grid", 1);
         int nZen = parser.GetDoubleValue("grid", 2);
-        return ScatteringRange(M_PI - DegToRad(radius), M_PI, nAz, nZen);
+        range = ScatteringRange(M_PI - DegToRad(radius), M_PI, nAz, nZen);
     }
     else if (parser.GetArgNumber("grid") == 4)
     {
@@ -95,7 +103,7 @@ ScatteringRange SetConus(ArgPP &parser)
         {
             int nAz = parser.GetDoubleValue("grid", 2);
             int nZen = parser.GetDoubleValue("grid", 3);
-            return ScatteringRange(DegToRad(zenStart), DegToRad(zenEnd), nAz, nZen);
+            range = ScatteringRange(DegToRad(zenStart), DegToRad(zenEnd), nAz, nZen);
         }
         else
         {
@@ -108,6 +116,22 @@ ScatteringRange SetConus(ArgPP &parser)
         std::cerr << "ERROR!!!!!!! Wrong \"grid\" argument number";
         exit(1);
     }
+
+    // Apply non-uniform theta grid if --tgrid is specified
+    if (parser.IsCatched("tgrid"))
+    {
+        std::string tgridFile = parser.GetStringValue("tgrid", 0);
+        if (!range.LoadThetaGrid(tgridFile))
+        {
+            std::cerr << "ERROR: Cannot load theta grid from file: " << tgridFile << std::endl;
+            exit(1);
+        }
+        std::cout << "Non-uniform theta grid: " << (range.nZenith + 1)
+                  << " points from " << RadToDeg(range.zenithStart)
+                  << " to " << RadToDeg(range.zenithEnd) << " deg" << std::endl;
+    }
+
+    return range;
 }
 
 AngleRange GetRange(const ArgPP &parser, const std::string &key,
@@ -385,6 +409,8 @@ int main(int argc, const char* argv[])
             }
 
             handler->isCoh = !args.IsCatched("incoh");
+            handler->useKarczewski = args.IsCatched("karczewski");
+            handler->outputJones = args.IsCatched("jones");
             handler->SetScatteringSphere(bsCone);
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
@@ -487,6 +513,7 @@ int main(int argc, const char* argv[])
                 tracer->m_summary = additionalSummary;
 
                 handler->isCoh = !args.IsCatched("incoh");
+                handler->useKarczewski = args.IsCatched("karczewski");
                 handler->SetScatteringSphere(conus);
                 handler->SetTracks(&trackGroups);
                 handler->SetAbsorptionAccounting(isAbs);
@@ -536,6 +563,62 @@ int main(int argc, const char* argv[])
 
             int nOr = args.GetIntValue("montecarlo", 0);
             tracer->TraceMonteCarlo(beta, gamma, nOr);
+        }
+        else if (args.IsCatched("orientfile"))
+        {
+            additionalSummary += ", orientations from file\n\n";
+
+            TracerPOTotal *tracer;
+            ScatteringRange conus = SetConus(args);
+
+            tracer = new TracerPOTotal(particle, reflNum, dirName);
+            tracer->m_scattering->m_wave = wave;
+            tracer->shadowOff = args.IsCatched("shadow_off");
+            trackGroups.push_back(TrackGroup());
+            HandlerPOTotal *handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
+                                         nTheta, wave);
+
+            cout << additionalSummary;
+            tracer->m_summary = additionalSummary;
+
+            handler->isCoh = !args.IsCatched("incoh");
+            handler->useKarczewski = args.IsCatched("karczewski");
+            handler->SetScatteringSphere(conus);
+            handler->SetTracks(&trackGroups);
+            handler->SetAbsorptionAccounting(isAbs);
+
+            tracer->SetIsOutputGroups(isOutputGroups);
+            tracer->SetHandler(handler);
+
+            std::string orientFileName = args.GetStringValue("orientfile", 0);
+
+            if (args.IsCatched("sizefile"))
+            {
+                std::string sizeFileName = args.GetStringValue("sizefile", 0);
+                std::vector<double> x_sizes;
+                std::ifstream sizeFile(sizeFileName);
+                double xval;
+                while (sizeFile >> xval) x_sizes.push_back(xval);
+                sizeFile.close();
+
+                // x_ref is determined from current particle size and wavelength
+                // x = pi * D / lambda
+                double D_current = particle->MaximalDimention();
+                double x_ref = M_PI * D_current / wave;
+
+                cout << "Multi-size mode: x_ref=" << x_ref
+                     << ", computing " << x_sizes.size() << " sizes:";
+                for (double xs : x_sizes) cout << " " << xs;
+                cout << endl;
+
+                tracer->TraceFromFileMultiSize(orientFileName, x_sizes, x_ref);
+            }
+            else
+            {
+                tracer->TraceFromFile(orientFileName);
+            }
+
+            delete handler;
         }
         else
         {

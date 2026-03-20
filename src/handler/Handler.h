@@ -6,14 +6,101 @@
 #include "MullerMatrix.h"
 #include "Tracks.h"
 
+#include <vector>
+#include <fstream>
+#include <sstream>
+#include <algorithm>
+
 class ScatteringRange
 {
 public:
     ScatteringRange(double zenStart, double zenEnd, int nAz, int nZen)
-        : zenithStart(zenStart), zenithEnd(zenEnd), nAzimuth(nAz), nZenith(nZen)
+        : zenithStart(zenStart), zenithEnd(zenEnd), nAzimuth(nAz), nZenith(nZen),
+          isNonUniform(false)
     {
         azinuthStep = M_2PI/nAz;
         zenithStep = (zenEnd - zenStart)/nZen;
+    }
+
+    /// Load non-uniform theta grid from file (theta values in degrees, one per line).
+    /// Keeps nAzimuth from the --grid option. Overrides nZenith, zenithStart, zenithEnd, zenithStep.
+    bool LoadThetaGrid(const std::string &filename)
+    {
+        std::ifstream f(filename);
+        if (!f.is_open()) return false;
+
+        thetaValues.clear();
+        double val;
+        std::string line;
+        while (std::getline(f, line))
+        {
+            // skip empty lines and comments
+            if (line.empty() || line[0] == '#') continue;
+            std::istringstream iss(line);
+            if (iss >> val)
+                thetaValues.push_back(DegToRad(val));
+        }
+        f.close();
+
+        if (thetaValues.size() < 2) return false;
+
+        // Sort just in case
+        std::sort(thetaValues.begin(), thetaValues.end());
+
+        isNonUniform = true;
+        nZenith = (int)thetaValues.size() - 1;
+        zenithStart = thetaValues.front();
+        zenithEnd = thetaValues.back();
+        // zenithStep is meaningless for non-uniform, but set to average for safety
+        zenithStep = (zenithEnd - zenithStart) / nZenith;
+
+        return true;
+    }
+
+    /// Get zenith angle for bin j (works for both uniform and non-uniform grids)
+    double GetZenith(int j) const
+    {
+        if (isNonUniform)
+            return thetaValues[j];
+        else
+            return zenithStart + j * zenithStep;
+    }
+
+    /// Compute 2pi*dcos for bin j (works for both uniform and non-uniform grids)
+    double Compute2PiDcos(int j) const
+    {
+        double radZen = GetZenith(j);
+
+        if (!isNonUniform)
+        {
+            // Original uniform code
+            double _2Pi_dcos = (radZen > M_PI-__FLT_EPSILON__ || radZen < __FLT_EPSILON__) ?
+                        1.0-cos(0.5*zenithStep) :
+                        cos((j-0.5)*zenithStep)-cos((j+0.5)*zenithStep);
+            return _2Pi_dcos * M_2PI;
+        }
+
+        // Non-uniform grid: compute bin boundaries at midpoints between neighbors
+        double theta_lo, theta_hi;
+
+        if (j == 0)
+        {
+            theta_lo = thetaValues[0];
+            theta_hi = 0.5 * (thetaValues[0] + thetaValues[1]);
+        }
+        else if (j == nZenith)
+        {
+            theta_lo = 0.5 * (thetaValues[nZenith - 1] + thetaValues[nZenith]);
+            theta_hi = thetaValues[nZenith];
+        }
+        else
+        {
+            theta_lo = 0.5 * (thetaValues[j - 1] + thetaValues[j]);
+            theta_hi = 0.5 * (thetaValues[j] + thetaValues[j + 1]);
+        }
+
+        double _2Pi_dcos = cos(theta_lo) - cos(theta_hi);
+        return _2Pi_dcos * M_2PI;
     }
 
     void ComputeSphereDirections(const Light &incidentLight)
@@ -34,7 +121,7 @@ public:
 
             for (int j = 0; j <= nZenith; ++j)
             {
-                double zen = zenithStart + (j * zenithStep);
+                double zen = GetZenith(j);
                 sincos(zen, &sinZen, &cosZen);
 #ifdef _DEBUG // DEB
 //                if (i == 1 && j == )
@@ -66,6 +153,9 @@ public:
     int nZenith;
     double azinuthStep;
     double zenithStep;
+
+    bool isNonUniform;
+    std::vector<double> thetaValues;  ///< Non-uniform theta grid (radians), sorted
 
     std::vector<std::vector<Point3d>> vf;
     std::vector<std::vector<Point3d>> directions;
@@ -240,6 +330,34 @@ struct BeamInfo
     Point3d lenIndices;
 };
 
+/// Precomputed polarization data for fast RotateJones (computed once per beam)
+struct BeamPolData
+{
+    Point3d NTd;    // normal × beamBasis
+    Point3d NPd;    // normal × polarizationBasis
+    Point3d nxDT;   // normal × (beamDir × beamBasis)
+    Point3d nxDP;   // normal × (beamDir × polarizationBasis)
+};
+
+/// Precomputed edge data for fast diffraction integral (computed once per beam)
+struct BeamEdgeData
+{
+    static const int MAX_EDGES = 32;
+    double x[MAX_EDGES];       ///< vertex x in aperture 2D
+    double y[MAX_EDGES];       ///< vertex y in aperture 2D
+    // Precomputed per-edge data (GOAD-style EdgeData)
+    double dx[MAX_EDGES];      ///< x[next] - x[i]
+    double dy[MAX_EDGES];      ///< y[next] - y[i]
+    double slope_yx[MAX_EDGES]; ///< (y[i]-y[next])/(x[i]-x[next]) = -dy/dx
+    double slope_xy[MAX_EDGES]; ///< (x[i]-x[next])/(y[i]-y[next]) = -dx/dy
+    double intercept_y[MAX_EDGES]; ///< y[i] - slope_yx[i]*x[i]
+    double intercept_x[MAX_EDGES]; ///< x[i] - slope_xy[i]*y[i]
+    bool edge_valid_x[MAX_EDGES];  ///< |dx| > eps (usable for absB>absA branch)
+    bool edge_valid_y[MAX_EDGES];  ///< |dy| > eps (usable for absA>=absB branch)
+    int nVertices;
+    bool valid;
+};
+
 class Handler
 {
 public:
@@ -288,6 +406,11 @@ protected:
      */
     complex DiffractIncline(const BeamInfo &info, const Beam &beam,
                             const Point3d &direction) const;
+
+    void PrecomputeEdgeData(const BeamInfo &info, const Beam &beam,
+                            BeamEdgeData &edgeData) const;
+    complex DiffractInclineFast(const BeamInfo &info, const BeamEdgeData &edgeData,
+                                const Point3d &beamDir, const Point3d &direction) const;
 
     complex DiffractInclineAbs(const BeamInfo &info, const Beam &beam,
                                const Point3d &direction) const;

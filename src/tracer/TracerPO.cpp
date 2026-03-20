@@ -1,4 +1,5 @@
 #include "TracerPO.h"
+#include "HandlerPO.h"
 
 using namespace std;
 
@@ -53,10 +54,18 @@ void TracerPO::TraceFixed(const double &beta, const double &gamma)
 
 	double b = DegToRad(beta);
 	double g = DegToRad(gamma);
+	m_particle->Rotate(b, g, 0);
 	m_scattering->ScatterLight(b, g, outBeams);
 
     m_handler->HandleBeams(outBeams, 1);
 	outBeams.clear();
     m_handler->WriteMatricesToFile(m_resultDirName, 1000);
+
+    HandlerPO *poHandler = dynamic_cast<HandlerPO*>(m_handler);
+    if (poHandler && poHandler->outputJones)
+    {
+        poHandler->WriteJonesToFile(m_resultDirName);
+    }
+
 	outFile.close();
 }

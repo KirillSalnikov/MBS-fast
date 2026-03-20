@@ -7,7 +7,7 @@
 // SinCos is 2x faster than calling Sin and Cos separately for the same angle
 void  SinCos(long double x, long double &sn, long double &cs)
 {
-	sn = sin(x); cs = cos(x);
+	sincosl(x, &sn, &cs);
 }
 //------------------------------------------------------------------------------
 
@@ -28,7 +28,9 @@ complex  sqrt(const complex &z)
 //------------------------------------------------------------------------------
 
 complex  exp_im(double x)
-{ 
-	return complex(cos(x), sin(x)); 
+{
+	double s, c;
+	sincos(x, &s, &c);
+	return complex(c, s);
 };
 //------------------------------------------------------------------------------

@@ -39,7 +39,7 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
 //    for (int iZen = nZen; iZen >= 0; --iZen)
     {
         Msum.Fill(0.0);
-        double radZen = m_sphere.zenithStart + iZen*dZen;
+        double radZen = m_sphere.GetZenith(iZen);
 //        double tt = RadToDeg(m_sphere.zenithEnd) - RadToDeg((t*dT));
 
         for (int iAz = 0; iAz <= nAz; ++iAz)
@@ -70,12 +70,9 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
             }
         }
 
-        double _2Pi_dcos = (radZen > M_PI-__FLT_EPSILON__ || radZen < __FLT_EPSILON__) ?
-                    1.0-cos(0.5*dZen) :
-                    cos((iZen-0.5)*dZen)-cos((iZen+0.5)*dZen);
+        double _2Pi_dcos = m_sphere.Compute2PiDcos(iZen);
 
         Msum /= m_sphere.nAzimuth;
-        _2Pi_dcos *= M_2PI;
         outFile << std::endl << RadToDeg(radZen) << ' ' << _2Pi_dcos << ' ' /*<< nrg << ' '*/;
         outFile << Msum;
     }

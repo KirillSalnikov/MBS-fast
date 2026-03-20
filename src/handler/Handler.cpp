@@ -532,3 +532,140 @@ complex Handler::DiffractIncline(const BeamInfo &info, const Beam &beam,
 
     return m_complWave * s;
 }
+
+void Handler::PrecomputeEdgeData(const BeamInfo &info, const Beam &beam,
+                                  BeamEdgeData &edgeData) const
+{
+    edgeData.nVertices = beam.nVertices;
+    edgeData.valid = (beam.nVertices >= 3 && beam.nVertices < BeamEdgeData::MAX_EDGES);
+    if (!edgeData.valid) return;
+
+    int nv = beam.nVertices;
+
+    // Project all vertices into aperture 2D system ONCE
+    int begin = nv - 1;
+    for (int i = 0; i < nv; ++i)
+    {
+        int idx = (i == 0) ? begin : (i - 1);
+        Point3f v = beam.arr[idx];
+        Point3d p(v.cx, v.cy, v.cz);
+        Point3d p_pr = p - info.normald * DotProductD(info.normald, p);
+        edgeData.x[i] = DotProductD(p_pr, info.horAxis) - info.projectedCenter.x;
+        edgeData.y[i] = DotProductD(p_pr, info.verAxis) - info.projectedCenter.y;
+    }
+
+    // Precompute per-edge data (slopes, intercepts)
+    for (int i = 0; i < nv; ++i)
+    {
+        int inext = (i + 1) % nv;
+        double dxi = edgeData.x[inext] - edgeData.x[i];
+        double dyi = edgeData.y[inext] - edgeData.y[i];
+        edgeData.dx[i] = dxi;
+        edgeData.dy[i] = dyi;
+
+        // For absB > absA branch: ai = (p1y-p2y)/(p1x-p2x) where p1=v[i], p2=v[next]
+        // ai = (y[i]-y[next])/(x[i]-x[next]) = -dy/(-dx) = dy/dx
+        edgeData.edge_valid_x[i] = (fabs(dxi) >= m_eps1);
+        if (edgeData.edge_valid_x[i])
+        {
+            edgeData.slope_yx[i] = dyi / dxi;  // NOT negated: (y[next]-y[i])/(x[next]-x[i])
+            // but old code uses (p1y-p2y)/(p1x-p2x) = (-dy)/(-dx) = dy/dx. Same!
+            edgeData.intercept_y[i] = edgeData.y[i] - edgeData.slope_yx[i] * edgeData.x[i];
+        }
+
+        // For absA >= absB branch: ci = (p1x-p2x)/(p1y-p2y) = dx/dy
+        edgeData.edge_valid_y[i] = (fabs(dyi) >= m_eps1);
+        if (edgeData.edge_valid_y[i])
+        {
+            edgeData.slope_xy[i] = dxi / dyi;
+            edgeData.intercept_x[i] = edgeData.x[i] - edgeData.slope_xy[i] * edgeData.y[i];
+        }
+    }
+}
+
+complex Handler::DiffractInclineFast(const BeamInfo &info, const BeamEdgeData &ed,
+                                      const Point3d &beamDir,
+                                      const Point3d &direction) const
+{
+    // Compute A, B directly via dot products (no ChangeCoordinateSystem)
+    Point3d k_k0(-direction.x + beamDir.x,
+                 -direction.y + beamDir.y,
+                 -direction.z + beamDir.z);
+    const double A = DotProductD(k_k0, info.horAxis)
+                   - DotProductD(info.normald, k_k0) * DotProductD(info.normald, info.horAxis);
+    const double B = DotProductD(k_k0, info.verAxis)
+                   - DotProductD(info.normald, k_k0) * DotProductD(info.normald, info.verAxis);
+
+    double absA = fabs(A);
+    double absB = fabs(B);
+
+    if (absA < m_eps2 && absB < m_eps2)
+        return m_invComplWave * info.area;
+
+    complex s(0, 0);
+    const int nv = ed.nVertices;
+
+    // Use precomputed 2D vertices - no ChangeCoordinateSystem calls
+    if (absB > absA)
+    {
+        double p1x = ed.x[0], p1y = ed.y[0];
+        for (int i = 1; i <= nv; ++i)
+        {
+            double p2x = ed.x[i % nv], p2y = ed.y[i % nv];
+
+            double dx = p1x - p2x;
+            if (fabs(dx) < m_eps1) { p1x = p2x; p1y = p2y; continue; }
+
+            double ai = (p1y - p2y) / dx;
+            double Ci = A + ai * B;
+
+            complex tmp;
+            if (fabs(Ci) < m_eps1)
+                tmp = complex(-m_wi2*Ci*(p2x*p2x - p1x*p1x)*0.5,
+                              m_waveIndex*(p2x - p1x));
+            else
+            {
+                double kCi = m_waveIndex * Ci;
+                tmp = (exp_im(kCi*p2x) - exp_im(kCi*p1x)) / Ci;
+            }
+
+            double bi = p1y - ai * p1x;
+            s += exp_im(m_waveIndex * B * bi) * tmp;
+
+            p1x = p2x; p1y = p2y;
+        }
+        s /= B;
+    }
+    else
+    {
+        double p1x = ed.x[0], p1y = ed.y[0];
+        for (int i = 1; i <= nv; ++i)
+        {
+            double p2x = ed.x[i % nv], p2y = ed.y[i % nv];
+
+            double dy = p1y - p2y;
+            if (fabs(dy) < m_eps1) { p1x = p2x; p1y = p2y; continue; }
+
+            double ci = (p1x - p2x) / dy;
+            double Ei = A * ci + B;
+
+            complex tmp;
+            if (fabs(Ei) < m_eps1)
+                tmp = complex(-m_wi2*Ei*(p2y*p2y - p1y*p1y)*0.5,
+                              m_waveIndex*(p2y - p1y));
+            else
+            {
+                double kEi = m_waveIndex * Ei;
+                tmp = (exp_im(kEi*p2y) - exp_im(kEi*p1y)) / Ei;
+            }
+
+            double di = p1x - ci * p1y;
+            s += exp_im(m_waveIndex * A * di) * tmp;
+
+            p1x = p2x; p1y = p2y;
+        }
+        s /= -A;
+    }
+
+    return m_complWave * s;
+}

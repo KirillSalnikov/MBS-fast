@@ -1,7 +1,16 @@
 #include "TracerPOTotal.h"
 #include "HandlerPOTotal.h"
+#include "HandlerPO.h"
+#include "BeamCache.h"
 
 #include <iostream>
+#include <fstream>
+#include <sstream>
+#include <vector>
+#include <utility>
+#include <chrono>
+#include <iomanip>
+#include <cmath>
 
 using namespace std;
 
@@ -217,4 +226,290 @@ void TracerPOTotal::TraceMonteCarlo(const AngleRange &betaRange,
     m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
     OutputStatisticsPO(timer, nOrientations, dir);
     outFile.close();
+}
+
+void TracerPOTotal::TraceFromFile(const std::string &orientFile)
+{
+    // Read orientations from file: each line is "beta_rad gamma_rad"
+    std::ifstream inFile(orientFile);
+    if (!inFile.is_open())
+    {
+        std::cerr << "Error! Cannot open orientation file: " << orientFile << std::endl;
+        throw std::exception();
+    }
+
+    std::vector<std::pair<double,double>> orientations;
+    std::string line;
+    while (std::getline(inFile, line))
+    {
+        if (line.empty() || line[0] == '#')
+            continue;
+        std::istringstream iss(line);
+        double b, g;
+        if (iss >> b >> g)
+            orientations.push_back({b, g});
+    }
+    inFile.close();
+
+    int nOrientations = orientations.size();
+    if (nOrientations == 0)
+    {
+        std::cerr << "Error! No orientations in file: " << orientFile << std::endl;
+        throw std::exception();
+    }
+
+    CalcTimer timer;
+    long long count = 0;
+
+    std::vector<Beam> outBeams;
+    timer.Start();
+    OutputStartTime(timer);
+
+    // Equal weights: orientations are assumed uniform on sphere
+    // (e.g., via arccos mapping for Sobol), so no sin(beta) weighting needed
+    double weight = 1.0 / nOrientations;
+    m_handler->SetNormIndex(1);
+
+    std::string dir = CreateFolder(m_resultDirName);
+#ifdef _WIN32
+    m_resultDirName += '\\' + m_resultDirName;
+#else
+    m_resultDirName = dir + m_resultDirName;
+#endif
+
+    for (int i = 0; i < nOrientations; ++i)
+    {
+        double beta  = orientations[i].first;
+        double gamma = orientations[i].second;
+
+        m_particle->Rotate(beta, gamma, 0);
+
+        if (!shadowOff)
+        {
+            m_scattering->FormShadowBeam(outBeams);
+        }
+
+        bool ok = m_scattering->ScatterLight(0, 0, outBeams);
+
+        if (ok)
+        {
+            m_handler->HandleBeams(outBeams, weight);
+        }
+        else
+        {
+            std::cout << std::endl << "Orientation " << i
+                      << " (beta=" << beta << ", gamma=" << gamma
+                      << ") has been skipped!!!" << std::endl;
+        }
+
+        m_incomingEnergy += m_scattering->GetIncedentEnergy()*weight;
+
+        OutputProgress(nOrientations, count, i, 0, timer, outBeams.size());
+        outBeams.clear();
+        ++count;
+    }
+
+    EraseConsoleLine(60);
+    std::cout << "100%" << std::endl;
+
+    m_handler->WriteTotalMatricesToFile(m_resultDirName);
+    m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
+    OutputStatisticsPO(timer, nOrientations, m_resultDirName);
+}
+
+void TracerPOTotal::TraceFromFileMultiSize(const std::string &orientFile,
+                                            const std::vector<double> &x_sizes,
+                                            double x_ref)
+{
+    // Phase 1: Read orientations
+    std::ifstream inFile(orientFile);
+    if (!inFile.is_open())
+    {
+        std::cerr << "Error! Cannot open orientation file: " << orientFile << std::endl;
+        throw std::exception();
+    }
+
+    std::vector<std::pair<double,double>> orientations;
+    std::string line;
+    while (std::getline(inFile, line))
+    {
+        if (line.empty() || line[0] == '#')
+            continue;
+        std::istringstream iss(line);
+        double b, g;
+        if (iss >> b >> g)
+            orientations.push_back({b, g});
+    }
+    inFile.close();
+
+    int nOrientations = orientations.size();
+    if (nOrientations == 0)
+    {
+        std::cerr << "Error! No orientations in file: " << orientFile << std::endl;
+        throw std::exception();
+    }
+
+    HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
+    if (!handlerPO)
+    {
+        std::cerr << "Error! Handler is not HandlerPO in TraceFromFileMultiSize" << std::endl;
+        throw std::exception();
+    }
+
+    // D_ref = maximal dimension of the particle as traced.
+    // The particle is already set to x_ref size by the caller.
+    double D_ref = m_particle->MaximalDimention();
+
+    CalcTimer timer;
+    long long count = 0;
+    std::vector<Beam> outBeams;
+    timer.Start();
+    OutputStartTime(timer);
+
+    double weight = 1.0 / nOrientations;
+
+    // Phase 1: Trace and cache
+    BeamCache cache;
+    cache.D_ref = D_ref;
+    cache.orientations.resize(nOrientations);
+
+    auto t_cache_start = std::chrono::high_resolution_clock::now();
+
+    for (int i = 0; i < nOrientations; ++i)
+    {
+        double beta  = orientations[i].first;
+        double gamma = orientations[i].second;
+
+        m_particle->Rotate(beta, gamma, 0);
+
+        if (!shadowOff)
+        {
+            m_scattering->FormShadowBeam(outBeams);
+        }
+
+        bool ok = m_scattering->ScatterLight(0, 0, outBeams);
+
+        double incomingE = m_scattering->GetIncedentEnergy() * weight;
+
+        if (ok)
+        {
+            handlerPO->CacheBeams(outBeams, weight, D_ref, incomingE,
+                                   cache.orientations[i]);
+        }
+        else
+        {
+            cache.orientations[i].weight = weight;
+            cache.orientations[i].incomingEnergy = incomingE;
+            std::cout << std::endl << "Orientation " << i
+                      << " (beta=" << beta << ", gamma=" << gamma
+                      << ") has been skipped!!!" << std::endl;
+        }
+
+        OutputProgress(nOrientations, count, i, 0, timer, outBeams.size());
+        outBeams.clear();
+        ++count;
+    }
+
+    auto t_cache_end = std::chrono::high_resolution_clock::now();
+    double cache_sec = std::chrono::duration<double>(t_cache_end - t_cache_start).count();
+
+    EraseConsoleLine(60);
+    std::cout << "Phase 1 (tracing): 100%" << std::endl;
+    std::cout << "Cached " << cache.totalBeams() << " beams from "
+              << nOrientations << " orientations in " << cache_sec << " s" << std::endl;
+
+    // Phase 2: Compute diffraction for all sizes
+    auto t_diff_start = std::chrono::high_resolution_clock::now();
+
+    std::vector<Arr2D> results_M;
+    std::vector<double> results_energy;
+    handlerPO->ComputeFromCache(cache, x_sizes, results_M, results_energy);
+
+    auto t_diff_end = std::chrono::high_resolution_clock::now();
+    double diff_sec = std::chrono::duration<double>(t_diff_end - t_diff_start).count();
+
+    std::cout << "Phase 2 (diffraction for " << x_sizes.size() << " sizes): "
+              << diff_sec << " s" << std::endl;
+    std::cout << "Total: " << cache_sec + diff_sec << " s" << std::endl;
+
+    // Write results for each size
+    std::string dir = CreateFolder(m_resultDirName);
+#ifdef _WIN32
+    std::string baseName = m_resultDirName + '\\' + m_resultDirName;
+#else
+    std::string baseName = dir + m_resultDirName;
+#endif
+
+    // Save original M, write each size's result
+    Arr2D &origM = handlerPO->M;
+
+    for (size_t s = 0; s < x_sizes.size(); ++s)
+    {
+        // Swap in this size's Mueller matrix
+        Arr2D savedM = origM;
+        origM = results_M[s];
+        m_incomingEnergy = results_energy[s];
+
+        // Write with size suffix
+        std::string sizeName = baseName + "_x" + std::to_string((int)x_sizes[s]);
+        handlerPO->WriteMatricesToFile(sizeName, m_incomingEnergy);
+
+        // Also write in HandlerPOTotal format
+        // Write the azimuth-averaged format
+        {
+            std::ofstream outFile(sizeName + ".dat", std::ios::out);
+            outFile << std::setprecision(10);
+            outFile << "ScAngle 2pi*dcos "
+                    "M11 M12 M13 M14 "
+                    "M21 M22 M23 M24 "
+                    "M31 M32 M33 M34 "
+                    "M41 M42 M43 M44";
+
+            auto &sphere = handlerPO->m_sphere;
+            matrix *Lp = handlerPO->m_Lp;
+            int nZen = sphere.nZenith;
+            int nAz = sphere.nAzimuth;
+
+            for (int iZen = 0; iZen <= nZen; ++iZen)
+            {
+                matrix Msum(4, 4);
+                Msum.Fill(0.0);
+                double radZen = sphere.GetZenith(iZen);
+
+                for (int iAz = 0; iAz <= nAz; ++iAz)
+                {
+                    double radAz = -iAz * sphere.azinuthStep;
+                    matrix m = results_M[s](iAz, iZen);
+
+                    (*Lp)[1][1] = cos(2*radAz);
+                    (*Lp)[1][2] = sin(2*radAz);
+                    (*Lp)[2][1] = -(*Lp)[1][2];
+                    (*Lp)[2][2] = (*Lp)[1][1];
+
+                    matrix Ln = *Lp;
+                    Ln[1][2] *= -1;
+                    Ln[2][1] *= -1;
+
+                    if (radZen > M_PI - __FLT_EPSILON__)
+                        Msum += (*Lp) * m * (*Lp);
+                    else if (radZen < __FLT_EPSILON__)
+                        Msum += Ln * m * (*Lp);
+                    else
+                        Msum += m * (*Lp);
+                }
+
+                double _2Pi_dcos = sphere.Compute2PiDcos(iZen);
+
+                Msum /= nAz;
+                outFile << std::endl << RadToDeg(radZen) << ' ' << _2Pi_dcos << ' ';
+                outFile << Msum;
+            }
+            outFile.close();
+        }
+
+        // Restore
+        origM = savedM;
+    }
+
+    std::cout << "Results written to " << baseName << "_x*.dat" << std::endl;
 }
