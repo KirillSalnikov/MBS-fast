@@ -741,40 +741,43 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym)
     }
 
     double cosBetaSym = cos(betaSym);
-    int nOrient = 256;
+    int nZen = hp->m_sphere.nZenith;
+    int nAz = hp->m_sphere.nAzimuth;
+
+    // Restart-from-scratch adaptive: each iteration runs full TraceFromSobol.
+    // Sobol property ensures first 2^m points are optimal → no wasted work
+    // since each larger run includes all smaller runs' physics (same orientations).
+    // Total overhead: sum of geometric series = 2×final cost (worst case 2× vs optimal).
+
+    int nOrient = 256; // start
+    int maxOrient = 8192;
     double prevM11_180 = 0;
     double prevCsca = 0;
-    int nZen = hp->m_sphere.nZenith;
 
-    for (int iter = 0; iter < 12; ++iter) // max 12 doublings = 256 * 2^11 = 524288
+    for (int iter = 0; iter < 8; ++iter)
     {
-        // Clear Mueller before each trial
+        // Full clean + compute
         hp->M.ClearArr();
         hp->CleanJ();
         m_incomingEnergy = 0;
         hp->m_outputEnergy = 0;
 
-        // Run full Sobol computation
         TraceFromSobol(nOrient, betaSym, gammaSym);
 
-        // Extract M11(180°) from the last theta bin
-        double M11_180 = hp->M(0, nZen)[0][0]; // phi=0, theta=last
-        // Phi-average: sum over phi bins, divide by nAzimuth
+        // Extract M11(180°) and C_sca
         double M11_180_avg = 0;
-        for (int p = 0; p <= hp->m_sphere.nAzimuth; ++p)
+        for (int p = 0; p <= nAz; ++p)
             M11_180_avg += hp->M(p, nZen)[0][0];
-        M11_180_avg /= (hp->m_sphere.nAzimuth + 1);
+        M11_180_avg /= (nAz + 1);
 
-        // Also compute C_sca from Mueller
         double Csca = 0;
         for (int j = 0; j <= nZen; ++j)
         {
             double Msum_00 = 0;
-            for (int p = 0; p <= hp->m_sphere.nAzimuth; ++p)
+            for (int p = 0; p <= nAz; ++p)
                 Msum_00 += hp->M(p, j)[0][0];
-            Msum_00 /= hp->m_sphere.nAzimuth;
-            double dcos = hp->m_sphere.Compute2PiDcos(j);
-            Csca += Msum_00 * dcos;
+            Msum_00 /= nAz;
+            Csca += Msum_00 * hp->m_sphere.Compute2PiDcos(j);
         }
 
         double relChange_m11 = (prevM11_180 != 0) ?
@@ -783,24 +786,34 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym)
             fabs(Csca - prevCsca) / prevCsca : 1.0;
 
         std::cout << "  N=" << nOrient
-                  << ", M11(180)=" << M11_180_avg
-                  << ", rel_change_M11=" << relChange_m11
+                  << " (+" << nOrient - nProcessed + (nOrient - nProcessed == 0 ? nOrient : nOrient/2)
+                  << " new), M11(180)=" << M11_180_avg
+                  << ", dM11=" << relChange_m11*100 << "%"
                   << ", Csca=" << Csca
-                  << ", rel_change_Csca=" << relChange_csca
+                  << ", dCsca=" << relChange_csca*100 << "%"
                   << std::endl;
 
-        if (relChange_m11 < eps && relChange_csca < eps && iter > 0)
+        // Convergence: C_sca must converge. M11(180°) is bonus.
+        bool csca_ok = (relChange_csca < eps && iter > 0);
+        bool m11_ok = (relChange_m11 < eps && iter > 0);
+
+        if (csca_ok && m11_ok)
         {
+            std::cout << "Converged at N=" << nOrient << " (both C_sca and M11)" << std::endl;
+            return;
+        }
+        if (csca_ok && iter >= 3)
+        {
+            // C_sca converged but M11 hasn't. After 3 iterations, accept C_sca convergence.
             std::cout << "Converged at N=" << nOrient
-                      << " (M11 change=" << relChange_m11*100 << "%"
-                      << ", Csca change=" << relChange_csca*100 << "%)" << std::endl;
-            // Result is already in hp->M from the last TraceFromSobol call
+                      << " (C_sca converged, M11 still " << relChange_m11*100 << "%)" << std::endl;
             return;
         }
 
         prevM11_180 = M11_180_avg;
         prevCsca = Csca;
         nOrient *= 2;
+        if (nOrient > maxOrient) break;
     }
 
     std::cout << "Max iterations reached, using N=" << nOrient/2 << std::endl;
