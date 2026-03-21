@@ -1615,6 +1615,18 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
     double cwr = real(m_complWave), cwi = imag(m_complWave);
     double icwr = real(m_invComplWave), icwi = imag(m_invComplWave);
 
+    // Precompute sin/cos theta and phi ONCE for all beams
+    double sin_theta_cache[1024], cos_theta_cache[1024];
+    for (int j = 0; j <= nZen; ++j) {
+        double theta_rad = m_sphere.GetZenith(j);
+        fast_sincos(theta_rad, sin_theta_cache[j], cos_theta_cache[j]);
+    }
+    double cos_phi_cache[256], sin_phi_cache[256];
+    for (int i = 0; i <= nAz; ++i) {
+        double phi_rad = i * m_sphere.azinuthStep;
+        fast_sincos(phi_rad, sin_phi_cache[i], cos_phi_cache[i]);
+    }
+
     // Process all orientations and beams
     for (const auto &orient : cache.orientations)
     {
@@ -1625,7 +1637,6 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
             if (!cb.edgeDataValid)
                 continue;
 
-            // PolData scalars (direction-independent)
             double pNTx = cb.polData.NTd.x, pNTy = cb.polData.NTd.y, pNTz = cb.polData.NTd.z;
             double pNPx = cb.polData.NPd.x, pNPy = cb.polData.NPd.y, pNPz = cb.polData.NPd.z;
             double pnxDTx = cb.polData.nxDT.x, pnxDTy = cb.polData.nxDT.y, pnxDTz = cb.polData.nxDT.z;
@@ -1675,21 +1686,40 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
             // Loop: direction → size (size loop is innermost)
             for (int i = 0; i <= nAz; ++i)
             {
+                double cp = cos_phi_cache[i], sp = sin_phi_cache[i];
+
+                // Theta-coefficients: precompute A,B decomposition per phi
+                double neg_cp = -cp, neg_sp = -sp;
+                double a_sin = neg_cp*horAx + neg_sp*horAy;
+                double a_cos = +horAz;
+                double a0 = bdx*horAx + bdy*horAy + bdz*horAz;
+                double b_sin = neg_cp*verAx + neg_sp*verAy;
+                double b_cos = +verAz;
+                double b0 = bdx*verAx + bdy*verAy + bdz*verAz;
+
+                // Per-vertex base_phase coefficients (size-independent)
+                double bp_sin[32], bp_cos[32], bp_0[32];
+                for (int v = 0; v < nv; ++v) {
+                    bp_sin[v] = a_sin*cb.vx_norm[v] + b_sin*cb.vy_norm[v];
+                    bp_cos[v] = a_cos*cb.vx_norm[v] + b_cos*cb.vy_norm[v];
+                    bp_0[v]   = a0   *cb.vx_norm[v] + b0   *cb.vy_norm[v];
+                }
+
+                // dirPhase geometric part
+                double dp_sin_coeff = cp*cb.cenx_norm + sp*cb.ceny_norm;
+                double dp_cos_coeff = -cb.cenz_norm;
+
                 for (int j = 0; j <= nZen; ++j)
                 {
-                    Point3d &dir = m_sphere.directions[i][j];
+                    double sin_t = sin_theta_cache[j], cos_t = cos_theta_cache[j];
                     Point3d &vf = m_sphere.vf[i][j];
 
-                    double dx = dir.x, dy = dir.y, dz = dir.z;
+                    double dx = sin_t*cp, dy = sin_t*sp, dz = -cos_t;
                     double vfx = vf.x, vfy = vf.y, vfz = vf.z;
 
-                    // Compute A, B (direction-dependent, size-independent)
-                    double kkx = -dx + bdx;
-                    double kky = -dy + bdy;
-                    double kkz = -dz + bdz;
-
-                    double A = kkx*horAx + kky*horAy + kkz*horAz;
-                    double B = kkx*verAx + kky*verAy + kkz*verAz;
+                    // A, B from theta-coefficients (2 FMA each)
+                    double A = sin_t*a_sin + cos_t*a_cos + a0;
+                    double B = sin_t*b_sin + cos_t*b_cos + b0;
 
                     double absA = fabs(A);
                     double absB = fabs(B);
@@ -1702,8 +1732,8 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
                         vfx, vfy, vfz, dx, dy, dz,
                         r00, r01, r10, r11);
 
-                    // dirPhase dot product (size-independent geometric part)
-                    double dir_dot_cen = dx*cb.cenx_norm + dy*cb.ceny_norm + dz*cb.cenz_norm;
+                    // dirPhase from theta-coefficients
+                    double dir_dot_cen = sin_t*dp_sin_coeff + cos_t*dp_cos_coeff;
 
                     // Precompute inv_Ci for each edge (size-independent)
                     double inv_Ci_arr[32];
@@ -1730,11 +1760,10 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
                         }
                     }
 
-                    // Precompute base_phase[v] = A*vx_norm[v] + B*vy_norm[v]
-                    // For each size: phase[v] = kD[s] * base_phase[v]
+                    // base_phase from theta-coefficients (2 FMA per vertex instead of full A*vx+B*vy)
                     double base_phase[32];
                     for (int v = 0; v < nv; ++v)
-                        base_phase[v] = A * cb.vx_norm[v] + B * cb.vy_norm[v];
+                        base_phase[v] = sin_t*bp_sin[v] + cos_t*bp_cos[v] + bp_0[v];
 
                     // Precompute edge next-vertex indices (size-independent)
                     int enext_arr[32];
