@@ -81,6 +81,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("log", 1, true); // time of writing progress (in seconds)
     parser.AddRule("sizefile", 1, true); // multi-size: file with size parameters (one per line)
     parser.AddRule("tgrid", 1, true); // non-uniform theta grid file
+    parser.AddRule("beam_cutoff", 1, true); // beam importance cutoff (relative to C_geo)
 }
 
 ScatteringRange SetConus(ArgPP &parser)
@@ -586,6 +587,17 @@ int main(int argc, const char* argv[])
             handler->SetScatteringSphere(conus);
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
+
+            // Beam importance cutoff
+            if (args.IsCatched("beam_cutoff"))
+            {
+                double eps = args.GetDoubleValue("beam_cutoff", 0);
+                double D_particle = particle->MaximalDimention();
+                double C_geo = M_PI * D_particle * D_particle / 4.0;
+                handler->SetBeamCutoffRelative(eps, C_geo);
+                cout << "Beam cutoff: eps=" << eps << ", C_geo=" << C_geo
+                     << ", threshold=" << handler->m_beamCutoff << endl;
+            }
 
             tracer->SetIsOutputGroups(isOutputGroups);
             tracer->SetHandler(handler);

@@ -851,6 +851,18 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
             m_outputEnergy += BeamCrossSection(beam)*m_[0][0]*m_sinZenith;
         }
 
+        // Skip diffraction for negligible beams (importance cutoff)
+        // Physical criterion: beam contributes < ε of geometric cross-section
+        // contribution = |J|² × area (proportional to beam's scattering power)
+        // threshold = C_geo × ε_rel  (where C_geo = incoming energy ≈ projected area)
+        if (beam.lastFacetId != __INT_MAX__)
+        {
+            double contribution = beam.J.Norm() * info.area;
+            double threshold = m_beamCutoff;  // set via SetBeamCutoff()
+            if (contribution < threshold)
+                continue;
+        }
+
         // Precompute ONCE per beam
         BeamEdgeData edgeData;
         PrecomputeEdgeData(info, beam, edgeData);

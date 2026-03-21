@@ -452,6 +452,14 @@ protected:
     double m_eps2;
     double m_eps3;
 
+public:
+    /// Beam importance cutoff: skip diffraction if |J|²×area < this threshold.
+    /// Set via --beam_cutoff CLI or SetBeamCutoffRelative(eps, C_geo).
+    double m_beamCutoff = 1e-12;
+    void SetBeamCutoff(double val) { m_beamCutoff = val; }
+    /// Set cutoff relative to geometric cross-section: threshold = eps × C_geo
+    void SetBeamCutoffRelative(double eps, double C_geo) { m_beamCutoff = eps * C_geo; }
+
 private:
     void ExtropolateOpticalLenght(Beam &beam, const std::vector<int> &tr);
 };
