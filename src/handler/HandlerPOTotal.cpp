@@ -35,6 +35,9 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
     double &dZen = m_sphere.zenithStep;
     int &nAz = m_sphere.nAzimuth;
 
+    // Accumulate C_sca = integral of M11 * 2pi*dcos over zenith bins
+    double C_sca = 0.0;
+
     for (int iZen = 0; iZen <= nZen; ++iZen)
 //    for (int iZen = nZen; iZen >= 0; --iZen)
     {
@@ -73,11 +76,34 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
         double _2Pi_dcos = m_sphere.Compute2PiDcos(iZen);
 
         Msum /= m_sphere.nAzimuth;
+
+        // Accumulate C_sca from azimuth-averaged M11
+        C_sca += Msum[0][0] * _2Pi_dcos;
+
         outFile << std::endl << RadToDeg(radZen) << ' ' << _2Pi_dcos << ' ' /*<< nrg << ' '*/;
         outFile << Msum;
     }
 
     outFile.close();
+
+    // Compute Q_sca = C_sca / A_proj (where nrg = total incoming energy = A_proj averaged over orientations)
+    if (nrg > 0)
+    {
+        double Q_sca = C_sca / nrg;
+        std::cerr << std::fixed << std::setprecision(4);
+        std::cerr << "\n===== SCATTERING EFFICIENCY =====\n";
+        std::cerr << "C_sca = " << C_sca << "\n";
+        std::cerr << "A_proj (incoming energy) = " << nrg << "\n";
+        std::cerr << "Q_sca = C_sca / A_proj = " << Q_sca << "\n";
+        if (Q_sca > 2.5)
+        {
+            std::cerr << "WARNING: Q_sca = " << Q_sca
+                      << " > 2. PO overestimates scattering at this size parameter.\n"
+                      << "  Physical limit (extinction paradox): Q_ext -> 2 for large x.\n"
+                      << "  This is a known PO limitation.\n";
+        }
+        std::cerr << "=================================\n";
+    }
 }
 
 void HandlerPOTotal::AddToMueller()

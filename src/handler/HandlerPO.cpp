@@ -640,7 +640,7 @@ matrixC HandlerPO::ComputeFnJones(const Matrix2x2c &matrix, const BeamInfo &info
 {
     double dp = DotProductD(direction, info.center);
     double arg = m_waveIndex*(info.projLenght - dp);
-    return matrix*exp_im(arg);
+    return matrix*fast_exp_im(arg);
 }
 
 void HandlerPO::AddToMueller()
@@ -861,8 +861,8 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
 
         bool isExternal = (beam.lastFacetId == __INT_MAX__);
         matrixC J_phased = isExternal
-            ? beam.J * exp_im(m_waveIndex * beam.opticalPath)
-            : beam.J * exp_im(m_waveIndex * info.projLenght);
+            ? beam.J * fast_exp_im(m_waveIndex * beam.opticalPath)
+            : beam.J * fast_exp_im(m_waveIndex * info.projLenght);
 
         // Extract scalars for inlined computation
         double horAx = info.horAxis.x, horAy = info.horAxis.y, horAz = info.horAxis.z;
@@ -1104,6 +1104,314 @@ void HandlerPO::SetTracks(Tracks *tracks)
     {
         Arr2D tmp = Arr2D(m_sphere.nAzimuth+1, m_sphere.nZenith+1, 4, 4);
         m_groupMatrices.push_back(tmp);
+    }
+}
+
+// =============================================================================
+// PrepareBeams: sequential preprocessing of beams from one orientation.
+// Extracts all scalar data needed for the direction loop.
+// =============================================================================
+void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
+                              PreparedOrientation &out)
+{
+    out.beams.clear();
+    out.sinZenith = sinZenith;
+
+    for (Beam &beam : beams)
+    {
+        if (isBackScatteringConusEnabled && beam.direction.cz < backScatteringConus)
+            continue;
+
+        beam.polarizationBasis = beam.RotateSpherical(
+                    -m_incidentLight->direction,
+                    m_incidentLight->polarizationBasis);
+
+        m_isBadBeam = false;
+        BeamInfo info = ComputeBeamInfo(beam);
+
+        if (m_isBadBeam)
+            continue;
+
+        if (m_hasAbsorption && beam.lastFacetId != __INT_MAX__ && beam.lastFacetId != -1)
+            ApplyAbsorption(beam);
+
+        if (beam.lastFacetId != __INT_MAX__)
+        {
+            matrix m_ = Mueller(beam.J);
+            m_outputEnergy += BeamCrossSection(beam)*m_[0][0]*sinZenith;
+        }
+
+        PreparedBeam pb;
+        pb.info = info;
+
+        // Precompute edge and pol data
+        PrecomputeEdgeData(info, beam, pb.edgeData);
+        PrecomputePolData(beam, info, pb.polData);
+
+        pb.isExternal = (beam.lastFacetId == __INT_MAX__);
+        matrixC J_phased = pb.isExternal
+            ? beam.J * exp_im(m_waveIndex * beam.opticalPath)
+            : beam.J * exp_im(m_waveIndex * info.projLenght);
+
+        // Extract scalars
+        pb.horAx = info.horAxis.x; pb.horAy = info.horAxis.y; pb.horAz = info.horAxis.z;
+        pb.verAx = info.verAxis.x; pb.verAy = info.verAxis.y; pb.verAz = info.verAxis.z;
+        pb.normx = info.normald.x; pb.normy = info.normald.y; pb.normz = info.normald.z;
+        Point3d beamDirD(beam.direction.cx, beam.direction.cy, beam.direction.cz);
+        pb.bdx = beamDirD.x; pb.bdy = beamDirD.y; pb.bdz = beamDirD.z;
+        pb.cenx = info.center.x; pb.ceny = info.center.y; pb.cenz = info.center.z;
+        pb.beam_area = info.area;
+        pb.pNTx = pb.polData.NTd.x; pb.pNTy = pb.polData.NTd.y; pb.pNTz = pb.polData.NTd.z;
+        pb.pNPx = pb.polData.NPd.x; pb.pNPy = pb.polData.NPd.y; pb.pNPz = pb.polData.NPd.z;
+        pb.pnxDTx = pb.polData.nxDT.x; pb.pnxDTy = pb.polData.nxDT.y; pb.pnxDTz = pb.polData.nxDT.z;
+        pb.pnxDPx = pb.polData.nxDP.x; pb.pnxDPy = pb.polData.nxDP.y; pb.pnxDPz = pb.polData.nxDP.z;
+
+        complex jp00 = J_phased[0][0], jp01 = J_phased[0][1];
+        complex jp10 = J_phased[1][0], jp11 = J_phased[1][1];
+        pb.jp00r = real(jp00); pb.jp00i = imag(jp00);
+        pb.jp01r = real(jp01); pb.jp01i = imag(jp01);
+        pb.jp10r = real(jp10); pb.jp10i = imag(jp10);
+        pb.jp11r = real(jp11); pb.jp11i = imag(jp11);
+
+        // Store original beam for fallback path
+        pb.origBeam = beam;
+
+        out.beams.push_back(pb);
+    }
+}
+
+// =============================================================================
+// HandleBeamsToLocal: Process prepared beams into a LOCAL Mueller accumulator.
+// Thread-safe: only reads immutable handler data (m_sphere, wave constants)
+// and writes to the provided localM / localJ arrays.
+// =============================================================================
+void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
+                                    Arr2D &localM,
+                                    std::vector<Arr2DC> &localJ)
+{
+    double sinZenith = prepared.sinZenith;
+    int nAz_global = m_sphere.nAzimuth;
+    int nZen_global = m_sphere.nZenith;
+
+    // Precompute sin/cos for theta and phi (same as HandleBeams)
+    double sin_theta_arr[1024], cos_theta_arr[1024];
+    for (int j = 0; j <= nZen_global; ++j) {
+        double theta_rad = m_sphere.GetZenith(j);
+        fast_sincos(theta_rad, sin_theta_arr[j], cos_theta_arr[j]);
+    }
+    double sin_phi_arr[256], cos_phi_arr[256];
+    for (int i = 0; i <= nAz_global; ++i) {
+        double phi_rad = i * m_sphere.azinuthStep;
+        fast_sincos(phi_rad, sin_phi_arr[i], cos_phi_arr[i]);
+    }
+
+    for (const PreparedBeam &pb : prepared.beams)
+    {
+        const BeamEdgeData &edgeData = pb.edgeData;
+        double bdx = pb.bdx, bdy = pb.bdy, bdz = pb.bdz;
+        double horAx = pb.horAx, horAy = pb.horAy, horAz = pb.horAz;
+        double verAx = pb.verAx, verAy = pb.verAy, verAz = pb.verAz;
+        double cenx = pb.cenx, ceny = pb.ceny, cenz = pb.cenz;
+        double beam_area = pb.beam_area;
+        double pNTx = pb.pNTx, pNTy = pb.pNTy, pNTz = pb.pNTz;
+        double pNPx = pb.pNPx, pNPy = pb.pNPy, pNPz = pb.pNPz;
+        double pnxDTx = pb.pnxDTx, pnxDTy = pb.pnxDTy, pnxDTz = pb.pnxDTz;
+        double pnxDPx = pb.pnxDPx, pnxDPy = pb.pnxDPy, pnxDPz = pb.pnxDPz;
+        double jp00r = pb.jp00r, jp00i = pb.jp00i;
+        double jp01r = pb.jp01r, jp01i = pb.jp01i;
+        double jp10r = pb.jp10r, jp10i = pb.jp10i;
+        double jp11r = pb.jp11r, jp11i = pb.jp11i;
+        bool isExternal = pb.isExternal;
+
+        for (int i = 0; i <= nAz_global; ++i)
+        {
+            int nZen = nZen_global;
+            double cp = cos_phi_arr[i], sp = sin_phi_arr[i];
+
+            ThetaCoeffs tc;
+            if (edgeData.valid) {
+                precompute_theta_coeffs(
+                    edgeData.x, edgeData.y, edgeData.nVertices,
+                    horAx, horAy, horAz, verAx, verAy, verAz,
+                    bdx, bdy, bdz, cenx, ceny, cenz,
+                    cp, sp, m_waveIndex,
+                    pNTx, pNTy, pNTz, pNPx, pNPy, pNPz,
+                    pnxDTx, pnxDTy, pnxDTz, pnxDPx, pnxDPy, pnxDPz,
+                    tc);
+            }
+
+            for (int j = 0; j <= nZen; ++j)
+            {
+                complex d00(0,0), d01(0,0), d10(0,0), d11(0,0);
+
+                if (edgeData.valid)
+                {
+                    double sin_t = sin_theta_arr[j];
+                    double cos_t = cos_theta_arr[j];
+
+                    double dx = sin_t * cp;
+                    double dy = sin_t * sp;
+                    double dz = -cos_t;
+
+                    Point3d &vf = m_sphere.vf[i][j];
+                    double vfx = vf.x, vfy = vf.y, vfz = vf.z;
+
+                    double A = sin_t * tc.a_sin + cos_t * tc.a_cos + tc.a0;
+                    double B = sin_t * tc.b_sin + cos_t * tc.b_cos + tc.b0;
+
+                    double absA = fabs(A);
+                    double absB = fabs(B);
+
+                    complex fresnel;
+                    if (absA < m_eps2 && absB < m_eps2)
+                    {
+                        fresnel = m_invComplWave * beam_area;
+                    }
+                    else
+                    {
+                        int nv = tc.nv;
+                        double vc[32], vs[32];
+                        double phases[32];
+                        for (int v = 0; v < nv; ++v)
+                            phases[v] = sin_t * tc.psin[v] + cos_t * tc.pcos[v] + tc.p0[v];
+
+                        int vv = 0;
+                        for (; vv + 7 < nv; vv += 8)
+                            fast_sincos_8x(&phases[vv], &vs[vv], &vc[vv]);
+                        for (; vv + 3 < nv; vv += 4)
+                            fast_sincos_4x(&phases[vv], &vs[vv], &vc[vv]);
+                        for (; vv < nv; ++vv)
+                            fast_sincos(phases[vv], vs[vv], vc[vv]);
+
+                        double sr = 0, si = 0;
+                        if (absB > absA)
+                        {
+                            for (int e = 0; e < nv; ++e)
+                            {
+                                if (!edgeData.edge_valid_x[e]) continue;
+                                int enext = (e + 1 < nv) ? e + 1 : 0;
+                                double Ci = A + edgeData.slope_yx[e] * B;
+                                double absCi = fabs(Ci);
+                                double inv_Ci = (absCi > m_eps1) ? (1.0 / Ci) : 0.0;
+                                sr += (vc[enext] - vc[e]) * inv_Ci;
+                                si += (vs[enext] - vs[e]) * inv_Ci;
+                                if (__builtin_expect(absCi <= m_eps1, 0)) {
+                                    double p1x = edgeData.x[e], p2x = edgeData.x[enext];
+                                    double tr = -m_wi2*Ci*(p2x*p2x-p1x*p1x)*0.5;
+                                    double ti = m_waveIndex*(p2x-p1x);
+                                    sr += vc[e]*tr - vs[e]*ti;
+                                    si += vc[e]*ti + vs[e]*tr;
+                                }
+                            }
+                            double inv_B = 1.0 / B;
+                            sr *= inv_B; si *= inv_B;
+                        }
+                        else
+                        {
+                            for (int e = 0; e < nv; ++e)
+                            {
+                                if (!edgeData.edge_valid_y[e]) continue;
+                                int enext = (e + 1 < nv) ? e + 1 : 0;
+                                double Ei = A * edgeData.slope_xy[e] + B;
+                                double absEi = fabs(Ei);
+                                double inv_Ei = (absEi > m_eps1) ? (1.0 / Ei) : 0.0;
+                                sr += (vc[enext] - vc[e]) * inv_Ei;
+                                si += (vs[enext] - vs[e]) * inv_Ei;
+                                if (__builtin_expect(absEi <= m_eps1, 0)) {
+                                    double p1y = edgeData.y[e], p2y = edgeData.y[enext];
+                                    double tr = -m_wi2*Ei*(p2y*p2y-p1y*p1y)*0.5;
+                                    double ti = m_waveIndex*(p2y-p1y);
+                                    sr += vc[e]*tr - vs[e]*ti;
+                                    si += vc[e]*ti + vs[e]*tr;
+                                }
+                            }
+                            double inv_nA = -1.0 / A;
+                            sr *= inv_nA; si *= inv_nA;
+                        }
+
+                        fresnel = m_complWave * complex(sr, si);
+                    }
+
+                    if (!isnan(real(fresnel)))
+                    {
+                        double dpr,dpi;
+                        if (!isExternal) {
+                            double dpArg = -m_waveIndex*(sin_t*tc.dp_sin + cos_t*tc.dp_cos);
+                            fast_sincos(dpArg,dpi,dpr);
+                        } else { dpr=1.0; dpi=0.0; }
+
+                        double r00, r01, r10, r11;
+                        rotate_jones_inline(
+                            pNTx, pNTy, pNTz, pNPx, pNPy, pNPz,
+                            pnxDTx, pnxDTy, pnxDTz, pnxDPx, pnxDPy, pnxDPz,
+                            vfx, vfy, vfz, dx, dy, dz,
+                            r00, r01, r10, r11);
+
+                        double fr = real(fresnel), fi = imag(fresnel);
+                        double cpr = fr*dpr - fi*dpi;
+                        double cpi = fr*dpi + fi*dpr;
+                        double sr00r = cpr*r00, sr00i = cpi*r00;
+                        double sr01r = cpr*r01, sr01i = cpi*r01;
+                        double sr10r = cpr*r10, sr10i = cpi*r10;
+                        double sr11r = cpr*r11, sr11i = cpi*r11;
+                        d00=complex(sr00r*jp00r-sr00i*jp00i+sr01r*jp10r-sr01i*jp10i,
+                                    sr00r*jp00i+sr00i*jp00r+sr01r*jp10i+sr01i*jp10r);
+                        d01=complex(sr00r*jp01r-sr00i*jp01i+sr01r*jp11r-sr01i*jp11i,
+                                    sr00r*jp01i+sr00i*jp01r+sr01r*jp11i+sr01i*jp11r);
+                        d10=complex(sr10r*jp00r-sr10i*jp00i+sr11r*jp10r-sr11i*jp10i,
+                                    sr10r*jp00i+sr10i*jp00r+sr11r*jp10i+sr11i*jp10r);
+                        d11=complex(sr10r*jp01r-sr10i*jp01i+sr11r*jp11r-sr11i*jp11i,
+                                    sr10r*jp01i+sr10i*jp01r+sr11r*jp11i+sr11i*jp11r);
+                    }
+                }
+                else
+                {
+                    // Fallback path for beams without valid edge data
+                    Point3d &dir = m_sphere.directions[i][j];
+                    Point3d &vf = m_sphere.vf[i][j];
+                    matrixC tmp = ApplyDiffraction(pb.origBeam, pb.info, dir, vf);
+                    d00 = tmp[0][0]; d01 = tmp[0][1];
+                    d10 = tmp[1][0]; d11 = tmp[1][1];
+                }
+
+                if (!isCoh)
+                {
+                    matrixC diffractedMatrix(2, 2);
+                    diffractedMatrix[0][0] = d00; diffractedMatrix[0][1] = d01;
+                    diffractedMatrix[1][0] = d10; diffractedMatrix[1][1] = d11;
+                    matrix m = Mueller(diffractedMatrix);
+                    m *= sinZenith;
+                    localM.insert(i, j, m);
+                }
+                else
+                {
+                    // For coherent mode, accumulate into localJ[0]
+                    // (simplified: no group tracking in parallel mode)
+                    localJ[0].insert_2x2(i, j, d00, d01, d10, d11);
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
+// AddToMuellerLocal: Convert Jones to Mueller for local arrays (static, thread-safe)
+// =============================================================================
+void HandlerPO::AddToMuellerLocal(const std::vector<Arr2DC> &localJ,
+                                   double normIndex, Arr2D &localM,
+                                   int nAz, int nZen)
+{
+    for (size_t q = 0; q < localJ.size(); ++q)
+    {
+        for (int t = 0; t <= nZen; ++t)
+        {
+            for (int p = 0; p <= nAz; ++p)
+            {
+                matrix m = Mueller(localJ[q](p, t));
+                m *= normIndex;
+                localM.insert(p, t, m);
+            }
+        }
     }
 }
 

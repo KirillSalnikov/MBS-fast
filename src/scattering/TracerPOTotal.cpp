@@ -11,6 +11,9 @@
 #include <chrono>
 #include <iomanip>
 #include <cmath>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 using namespace std;
 
@@ -230,7 +233,7 @@ void TracerPOTotal::TraceMonteCarlo(const AngleRange &betaRange,
 
 void TracerPOTotal::TraceFromFile(const std::string &orientFile)
 {
-    // Read orientations from file: each line is "beta_rad gamma_rad"
+    // Read orientations from file
     std::ifstream inFile(orientFile);
     if (!inFile.is_open())
     {
@@ -259,14 +262,9 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
     }
 
     CalcTimer timer;
-    long long count = 0;
-
-    std::vector<Beam> outBeams;
     timer.Start();
     OutputStartTime(timer);
 
-    // Equal weights: orientations are assumed uniform on sphere
-    // (e.g., via arccos mapping for Sobol), so no sin(beta) weighting needed
     double weight = 1.0 / nOrientations;
     m_handler->SetNormIndex(1);
 
@@ -277,40 +275,114 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
     m_resultDirName = dir + m_resultDirName;
 #endif
 
+    HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
+    if (!handlerPO)
+    {
+        std::cerr << "Error! Handler is not HandlerPO in TraceFromFile" << std::endl;
+        throw std::exception();
+    }
+
+    // =========================================================================
+    // Phase 1 (sequential): Trace beams for all orientations, preprocess them
+    // =========================================================================
+    auto t_phase1_start = std::chrono::high_resolution_clock::now();
+
+    std::vector<PreparedOrientation> allPrepared(nOrientations);
+    std::vector<Beam> outBeams;
+    long long count = 0;
+
     for (int i = 0; i < nOrientations; ++i)
     {
-        double beta  = orientations[i].first;
-        double gamma = orientations[i].second;
-
-        m_particle->Rotate(beta, gamma, 0);
+        m_particle->Rotate(orientations[i].first, orientations[i].second, 0);
 
         if (!shadowOff)
-        {
             m_scattering->FormShadowBeam(outBeams);
-        }
 
         bool ok = m_scattering->ScatterLight(0, 0, outBeams);
 
         if (ok)
-        {
-            m_handler->HandleBeams(outBeams, weight);
-        }
+            handlerPO->PrepareBeams(outBeams, weight, allPrepared[i]);
         else
-        {
-            std::cout << std::endl << "Orientation " << i
-                      << " (beta=" << beta << ", gamma=" << gamma
-                      << ") has been skipped!!!" << std::endl;
-        }
+            allPrepared[i].sinZenith = weight;
 
-        m_incomingEnergy += m_scattering->GetIncedentEnergy()*weight;
-
+        m_incomingEnergy += m_scattering->GetIncedentEnergy() * weight;
         OutputProgress(nOrientations, count, i, 0, timer, outBeams.size());
         outBeams.clear();
         ++count;
     }
 
+    auto t_phase1_end = std::chrono::high_resolution_clock::now();
+    double phase1_sec = std::chrono::duration<double>(t_phase1_end - t_phase1_start).count();
+
     EraseConsoleLine(60);
-    std::cout << "100%" << std::endl;
+    std::cout << "Phase 1 (tracing + preprocessing): " << std::fixed
+              << std::setprecision(2) << phase1_sec << " s" << std::endl;
+
+    // =========================================================================
+    // Phase 2 (parallel): Process beams into Mueller matrices using OpenMP
+    // Each thread accumulates into its own private Mueller array, then reduce.
+    // =========================================================================
+    auto t_phase2_start = std::chrono::high_resolution_clock::now();
+
+    int nAz = handlerPO->m_sphere.nAzimuth;
+    int nZen = handlerPO->m_sphere.nZenith;
+
+    #pragma omp parallel
+    {
+        // Each thread gets its own zero-initialized Mueller accumulator
+        Arr2D localM(nAz + 1, nZen + 1, 4, 4);
+        localM.ClearArr();
+
+        // For coherent mode, each thread also needs local Jones matrices
+        std::vector<Arr2DC> localJ;
+        if (handlerPO->isCoh)
+        {
+            Arr2DC tmp(nAz + 1, nZen + 1, 2, 2);
+            tmp.ClearArr();
+            localJ.push_back(tmp);
+        }
+
+        #pragma omp for schedule(dynamic, 1)
+        for (int i = 0; i < nOrientations; ++i)
+        {
+            if (!allPrepared[i].beams.empty())
+            {
+                handlerPO->HandleBeamsToLocal(allPrepared[i], localM, localJ);
+            }
+
+            // For coherent mode: convert Jones->Mueller after each orientation's beams
+            if (handlerPO->isCoh && !localJ.empty())
+            {
+                HandlerPO::AddToMuellerLocal(localJ, 1.0, localM, nAz, nZen);
+                // Clear Jones for next orientation
+                localJ[0].ClearArr();
+            }
+        }
+
+        // Reduce: merge thread-local M into handler's global M
+        #pragma omp critical
+        {
+            for (int p = 0; p <= nAz; ++p)
+            {
+                for (int t = 0; t <= nZen; ++t)
+                {
+                    matrix m = localM(p, t);
+                    handlerPO->M.insert(p, t, m);
+                }
+            }
+        }
+    } // end omp parallel
+
+    auto t_phase2_end = std::chrono::high_resolution_clock::now();
+    double phase2_sec = std::chrono::duration<double>(t_phase2_end - t_phase2_start).count();
+
+    std::cout << "Phase 2 (diffraction, OpenMP): " << std::fixed
+              << std::setprecision(2) << phase2_sec << " s" << std::endl;
+    std::cout << "Total: " << phase1_sec + phase2_sec << " s" << std::endl;
+
+    // Free prepared beam memory before writing results
+    allPrepared.clear();
+    allPrepared.shrink_to_fit();
 
     m_handler->WriteTotalMatricesToFile(m_resultDirName);
     m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);

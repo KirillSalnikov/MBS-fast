@@ -1,4 +1,5 @@
 #include "Handler.h"
+#include "HandlerPO_fast.h"
 
 #include "Mueller.hpp"
 #include <iostream>
@@ -240,11 +241,14 @@ complex Handler::DiffractInclineAbs(const BeamInfo &info, const Beam &beam,
     const Point3f &dir = beam.direction;
     Point3d k_k0 = -direction + Point3d(dir.cx, dir.cy, dir.cz);
 
-    Point3d	pt_proj = ChangeCoordinateSystem(info.horAxis, info.verAxis,
-                                             info.normald, k_k0);
+    // Project k_k0 onto aperture plane via dot products (avoid ChangeCoordinateSystem)
+    double pt_x = DotProductD(k_k0, info.horAxis)
+                - DotProductD(info.normald, k_k0) * DotProductD(info.normald, info.horAxis);
+    double pt_y = DotProductD(k_k0, info.verAxis)
+                - DotProductD(info.normald, k_k0) * DotProductD(info.normald, info.verAxis);
 
-    const complex A(pt_proj.x, info.lenIndices.x*m_riIm);
-    const complex B(pt_proj.y, info.lenIndices.y*m_riIm);
+    const complex A(pt_x, info.lenIndices.x*m_riIm);
+    const complex B(pt_y, info.lenIndices.y*m_riIm);
 
     if (abs(A) < m_eps2 && abs(B) < m_eps2)
     {
@@ -268,22 +272,34 @@ complex Handler::DiffractInclineAbs(const BeamInfo &info, const Beam &beam,
         endIndex = beam.nVertices;
     }
 
-    Point3d p1 = ChangeCoordinateSystem(info.horAxis, info.verAxis,
-                                        info.normald, beam.arr[begin]) - info.projectedCenter;
-    Point3d p2;
+    // Project first vertex once
+    Point3f v0 = beam.arr[begin];
+    Point3d pv0(v0.cx, v0.cy, v0.cz);
+    Point3d pv0_pr = pv0 - info.normald * DotProductD(info.normald, pv0);
+    double p1x = DotProductD(pv0_pr, info.horAxis) - info.projectedCenter.x;
+    double p1y = DotProductD(pv0_pr, info.verAxis) - info.projectedCenter.y;
 
     if (abs(B) > abs(A))
     {
-        for (int i = startIndex; i != endIndex; i = /*info.order ? i-1 :*/ i+1)
-        {
-            p2 = ChangeCoordinateSystem(info.horAxis, info.verAxis,
-                                        info.normald, beam.arr[i]) - info.projectedCenter;
+        double reB = real(B), imB = imag(B);
 
-            const double ai = (p1.y - p2.y)/(p1.x - p2.x);
+        for (int i = startIndex; i != endIndex; i = i+1)
+        {
+            // Project vertex inline (avoid ChangeCoordinateSystem overhead)
+            Point3f vi = beam.arr[i];
+            Point3d pvi(vi.cx, vi.cy, vi.cz);
+            Point3d pvi_pr = pvi - info.normald * DotProductD(info.normald, pvi);
+            double p2x = DotProductD(pvi_pr, info.horAxis) - info.projectedCenter.x;
+            double p2y = DotProductD(pvi_pr, info.verAxis) - info.projectedCenter.y;
+
+            double dx = p1x - p2x;
+            if (fabs(dx) < m_eps1) { p1x = p2x; p1y = p2y; continue; }
+
+            const double ai = (p1y - p2y)/dx;
 
             if (fabs(ai) > m_eps3)
             {
-                p1 = p2;
+                p1x = p2x; p1y = p2y;
                 continue;
             }
 
@@ -294,53 +310,71 @@ complex Handler::DiffractInclineAbs(const BeamInfo &info, const Beam &beam,
 
             if (absCi < m_eps1)
             {
-                double mul = p2.x*p2.x - p1.x*p1.x;
+                double mul = p2x*p2x - p1x*p1x;
                 tmp = complex(-m_wi2*real(Ci)*mul/2.0,
-                              m_waveIndex*(p2.x - p1.x) + m_wi2*imag(Ci)*mul/2.0);
+                              m_waveIndex*(p2x - p1x) + m_wi2*imag(Ci)*mul/2.0);
             }
             else if (absCi > m_eps3)
             {
+                p1x = p2x; p1y = p2y;
                 continue;
             }
             else
             {
                 double kReCi = m_waveIndex*real(Ci);
                 double kImCi = -m_waveIndex*imag(Ci);
-                tmp = (exp_im(kReCi*p2.x)*exp(kImCi*p2.x) -
-                       exp_im(kReCi*p1.x)*exp(kImCi*p1.x))/Ci;
+                // Fused exp_im(kRe*p)*exp(kIm*p) = exp(kIm*p)*(cos(kRe*p) + i*sin(kRe*p))
+                double s2, c2, s1, c1;
+                fast_sincos(kReCi*p2x, s2, c2);
+                fast_sincos(kReCi*p1x, s1, c1);
+                double e2 = exp(kImCi*p2x);
+                double e1 = exp(kImCi*p1x);
+                tmp = complex(e2*c2 - e1*c1, e2*s2 - e1*s1)/Ci;
             }
 
-            const double bi = p1.y - ai*p1.x;
+            const double bi = p1y - ai*p1x;
             double kBi = m_waveIndex*bi;
-            complex tmp2 = exp_im(kBi*real(B)) * tmp * exp(-kBi*imag(B));
-#ifdef _DEBUG // DEB
-//            complex fasdfsd = exp_im(kBi*real(B));
-//            double fasdfsd1 = exp(-kBi*imag(B));
-#endif
+            // Fused: exp_im(kBi*reB) * exp(-kBi*imB)
+            double sb, cb;
+            fast_sincos(kBi*reB, sb, cb);
+            double eb = exp(-kBi*imB);
+            complex phase_b(eb*cb, eb*sb);
+            complex tmp2 = phase_b * tmp;
+
             if (isnan(real(tmp2)))
             {
+                p1x = p2x; p1y = p2y;
                 continue;
             }
 
             s += tmp2;
 
-            p1 = p2;
+            p1x = p2x; p1y = p2y;
         }
 
         s /= B;
     }
     else
     {
-        for (int i = startIndex; i != endIndex; i = /*info.order ? i-1 :*/ i+1)
-        {
-            p2 = ChangeCoordinateSystem(info.horAxis, info.verAxis, info.normald,
-                                        beam.arr[i]) - info.projectedCenter;
+        double reA = real(A), imA = imag(A);
 
-            const double ci = (p1.x - p2.x)/(p1.y - p2.y);
+        for (int i = startIndex; i != endIndex; i = i+1)
+        {
+            // Project vertex inline
+            Point3f vi = beam.arr[i];
+            Point3d pvi(vi.cx, vi.cy, vi.cz);
+            Point3d pvi_pr = pvi - info.normald * DotProductD(info.normald, pvi);
+            double p2x = DotProductD(pvi_pr, info.horAxis) - info.projectedCenter.x;
+            double p2y = DotProductD(pvi_pr, info.verAxis) - info.projectedCenter.y;
+
+            double dy = p1y - p2y;
+            if (fabs(dy) < m_eps1) { p1x = p2x; p1y = p2y; continue; }
+
+            const double ci = (p1x - p2x)/dy;
 
             if (fabs(ci) > m_eps3)
             {
-                p1 = p2;
+                p1x = p2x; p1y = p2y;
                 continue;
             }
 
@@ -349,49 +383,54 @@ complex Handler::DiffractInclineAbs(const BeamInfo &info, const Beam &beam,
             complex tmp;
             double absEi = abs(Ei);
 
-            if (abs(Ei) < m_eps1)
+            if (absEi < m_eps1)
             {
-                double mul = p2.y*p2.y - p1.y*p1.y;
+                double mul = p2y*p2y - p1y*p1y;
                 tmp = complex(-m_wi2*real(Ei)*mul/2.0,
-                              m_waveIndex*(p2.y - p1.y) + m_wi2*imag(Ei)*mul/2.0);
+                              m_waveIndex*(p2y - p1y) + m_wi2*imag(Ei)*mul/2.0);
             }
             else if (absEi > m_eps3)
             {
+                p1x = p2x; p1y = p2y;
                 continue;
             }
             else
             {
                 double kReEi = m_waveIndex*real(Ei);
                 double kImEi = -m_waveIndex*imag(Ei);
-#ifdef _DEBUG // DEB
-//                complex aa = exp_im(kReEi*p2.y);
-//                double bb = exp(kImEi*p2.y);
-#endif
-                tmp = (exp_im(kReEi*p2.y)*exp(kImEi*p2.y) -
-                       exp_im(kReEi*p1.y)*exp(kImEi*p1.y))/Ei;
+                // Fused exp_im(kRe*p)*exp(kIm*p)
+                double s2, c2, s1, c1;
+                fast_sincos(kReEi*p2y, s2, c2);
+                fast_sincos(kReEi*p1y, s1, c1);
+                double e2 = exp(kImEi*p2y);
+                double e1 = exp(kImEi*p1y);
+                tmp = complex(e2*c2 - e1*c1, e2*s2 - e1*s1)/Ei;
             }
 
-            const double di = p1.x - ci*p1.y;
+            const double di = p1x - ci*p1y;
             double kDi = m_waveIndex*di;
-            complex tmp2 = exp_im(kDi*real(A)) * exp(-kDi*imag(A)) * tmp;
-#ifdef _DEBUG // DEB
-//            complex fasdfsd = exp_im(kDi*real(A));
-//            double fasdfsd1 = exp(-kDi*imag(A));
-#endif
+            // Fused: exp_im(kDi*reA) * exp(-kDi*imA)
+            double sd, cd;
+            fast_sincos(kDi*reA, sd, cd);
+            double ed = exp(-kDi*imA);
+            complex phase_d(ed*cd, ed*sd);
+            complex tmp2 = phase_d * tmp;
+
             if (isnan(real(tmp2)))
             {
+                p1x = p2x; p1y = p2y;
                 continue;
             }
 
             s += tmp2;
-            p1 = p2;
+            p1x = p2x; p1y = p2y;
         }
 
         s /= -A;
     }
 
-    double abs = exp(m_absMag*info.lenIndices.z);
-    return m_complWave * s * abs;
+    double absorp = exp(m_absMag*info.lenIndices.z);
+    return m_complWave * s * absorp;
 }
 
 double Handler::BeamCrossSection(const Beam &beam) const

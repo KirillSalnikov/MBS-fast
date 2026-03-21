@@ -2,6 +2,47 @@
 
 #include "Handler.h"
 #include "BeamCache.h"
+#include <vector>
+
+/// Preprocessed beam data for parallel direction-loop processing.
+/// Contains all scalar data extracted from a beam after sequential preprocessing
+/// (RotateSpherical, ComputeBeamInfo, PrecomputeEdgeData, etc.).
+/// The direction loop can run on this without touching any Handler member state.
+struct PreparedBeam
+{
+    BeamEdgeData edgeData;
+    BeamPolData  polData;
+    BeamInfo     info;
+
+    // Beam direction (double precision copy)
+    double bdx, bdy, bdz;
+    // Aperture axes
+    double horAx, horAy, horAz;
+    double verAx, verAy, verAz;
+    double normx, normy, normz;
+    // Center
+    double cenx, ceny, cenz;
+    double beam_area;
+    // PolData scalars (redundant with polData, but pre-extracted for hot loop)
+    double pNTx, pNTy, pNTz;
+    double pNPx, pNPy, pNPz;
+    double pnxDTx, pnxDTy, pnxDTz;
+    double pnxDPx, pnxDPy, pnxDPz;
+    // J_phased elements
+    double jp00r, jp00i, jp01r, jp01i;
+    double jp10r, jp10i, jp11r, jp11i;
+    bool isExternal;
+
+    // Original beam data needed for fallback path (non-valid edgeData)
+    Beam   origBeam;
+};
+
+/// All preprocessed beams from one orientation, ready for parallel processing.
+struct PreparedOrientation
+{
+    std::vector<PreparedBeam> beams;
+    double sinZenith;  // weight for this orientation
+};
 
 class HandlerPO : public Handler
 {
@@ -25,6 +66,23 @@ public:
                           const std::vector<double> &x_sizes,
                           std::vector<Arr2D> &results_M,
                           std::vector<double> &results_energy);
+    /// Preprocess beams from one orientation into PreparedOrientation.
+    /// Must be called sequentially (uses m_isBadBeam, modifies beams).
+    void PrepareBeams(std::vector<Beam> &beams, double sinZenith,
+                      PreparedOrientation &out);
+
+    /// Process prepared beams into a LOCAL Mueller accumulator.
+    /// Thread-safe: reads only from handler's immutable data (sphere, wave constants)
+    /// and writes only to the provided localM.
+    void HandleBeamsToLocal(const PreparedOrientation &prepared,
+                            Arr2D &localM,
+                            std::vector<Arr2DC> &localJ);
+
+    /// Convert coherent Jones (localJ) to Mueller and add to localM.
+    static void AddToMuellerLocal(const std::vector<Arr2DC> &localJ,
+                                  double normIndex, Arr2D &localM,
+                                  int nAz, int nZen);
+
     void WriteMatricesToFile(std::string &destName, double nrg) override;
     void WriteTotalMatricesToFile(const std::string &destName) override;
     void WriteJonesToFile(const std::string &destName);
