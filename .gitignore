@@ -4,3 +4,4 @@ bin/
 *.txt
 *.orig
 *.sh
+*.dat

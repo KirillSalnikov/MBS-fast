@@ -19,4 +19,10 @@ public:
     void TraceFromFileMultiSize(const std::string &orientFile,
                                 const std::vector<double> &x_sizes,
                                 double x_ref);
+
+    /// Sobol quasi-random orientation averaging with particle symmetry
+    void TraceFromSobol(int nOrient, double betaSym, double gammaSym);
+
+    /// Adaptive convergence mode
+    void TraceAdaptive(double eps, double betaSym, double gammaSym);
 };

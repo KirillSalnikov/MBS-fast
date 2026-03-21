@@ -82,6 +82,9 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("sizefile", 1, true); // multi-size: file with size parameters (one per line)
     parser.AddRule("tgrid", 1, true); // non-uniform theta grid file
     parser.AddRule("beam_cutoff", 1, true); // beam importance cutoff (relative to C_geo)
+    parser.AddRule("sobol", 1, true); // Sobol quasi-random orientations (number, power of 2)
+    parser.AddRule("auto_tgrid", 0, true); // auto-generate theta grid based on size parameter
+    parser.AddRule("adaptive", 1, true); // adaptive convergence (target relative accuracy)
 }
 
 ScatteringRange SetConus(ArgPP &parser)
@@ -133,6 +136,70 @@ ScatteringRange SetConus(ArgPP &parser)
     }
 
     return range;
+}
+
+/// Generate auto theta grid based on size parameter x = pi * D / lambda
+void ApplyAutoThetaGrid(ScatteringRange &range, double D, double wave)
+{
+    if (wave <= 0 || D <= 0) return;
+
+    double x = M_PI * D / wave;
+    double peak_width_deg = 180.0 / x; // diffraction peak half-width in degrees
+
+    std::vector<double> thetas; // in degrees
+
+    // Zone 1: Fine grid near forward direction
+    double fine_end = 5.0 * peak_width_deg;
+    if (fine_end > 10.0) fine_end = 10.0;
+    double fine_step = 0.1 * peak_width_deg;
+    if (fine_step < 0.01) fine_step = 0.01;
+    if (fine_step > 0.5) fine_step = 0.5;
+
+    for (double t = 0; t <= fine_end + 1e-9; t += fine_step)
+        thetas.push_back(t);
+
+    // Zone 2: Transition (log spacing from fine_end to 10 degrees)
+    if (fine_end < 10.0)
+    {
+        int nTrans = 15;
+        double logStart = log(fine_end);
+        double logEnd = log(10.0);
+        for (int i = 1; i <= nTrans; ++i)
+        {
+            double t = exp(logStart + (logEnd - logStart) * i / nTrans);
+            thetas.push_back(t);
+        }
+    }
+
+    // Zone 3: Coarse grid from 10 to 180 degrees
+    double coarse_step = 2.0;
+    double coarse_start = 10.0 + coarse_step;
+    for (double t = coarse_start; t <= 180.0 + 1e-9; t += coarse_step)
+        thetas.push_back(t);
+
+    // Remove duplicates and sort
+    std::sort(thetas.begin(), thetas.end());
+    std::vector<double> unique_thetas;
+    unique_thetas.push_back(thetas[0]);
+    for (size_t i = 1; i < thetas.size(); ++i)
+    {
+        if (thetas[i] - unique_thetas.back() > 0.001)
+            unique_thetas.push_back(thetas[i]);
+    }
+
+    // Convert to radians and load into range
+    range.thetaValues.clear();
+    for (double t : unique_thetas)
+        range.thetaValues.push_back(DegToRad(t));
+
+    range.isNonUniform = true;
+    range.nZenith = (int)range.thetaValues.size() - 1;
+    range.zenithStart = range.thetaValues.front();
+    range.zenithEnd = range.thetaValues.back();
+    range.zenithStep = (range.zenithEnd - range.zenithStart) / range.nZenith;
+
+    std::cout << "Auto theta grid: x=" << x << ", peak_width=" << peak_width_deg
+              << " deg, " << range.thetaValues.size() << " points" << std::endl;
 }
 
 AngleRange GetRange(const ArgPP &parser, const std::string &key,
@@ -628,6 +695,68 @@ int main(int argc, const char* argv[])
             else
             {
                 tracer->TraceFromFile(orientFileName);
+            }
+
+            delete handler;
+        }
+        else if (args.IsCatched("sobol") || args.IsCatched("adaptive"))
+        {
+            bool isAdaptive = args.IsCatched("adaptive");
+            if (isAdaptive)
+                additionalSummary += ", adaptive Sobol\n\n";
+            else
+                additionalSummary += ", Sobol quasi-random\n\n";
+
+            TracerPOTotal *tracer;
+            ScatteringRange conus = SetConus(args);
+
+            tracer = new TracerPOTotal(particle, reflNum, dirName);
+            tracer->m_scattering->m_wave = wave;
+            tracer->shadowOff = args.IsCatched("shadow_off");
+            trackGroups.push_back(TrackGroup());
+            HandlerPOTotal *handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
+                                         nTheta, wave);
+
+            // Apply auto_tgrid if requested
+            if (args.IsCatched("auto_tgrid"))
+            {
+                double D = particle->MaximalDimention();
+                ApplyAutoThetaGrid(conus, D, wave);
+            }
+
+            cout << additionalSummary;
+            tracer->m_summary = additionalSummary;
+
+            handler->isCoh = !args.IsCatched("incoh");
+            handler->useKarczewski = args.IsCatched("karczewski");
+            handler->SetScatteringSphere(conus);
+            handler->SetTracks(&trackGroups);
+            handler->SetAbsorptionAccounting(isAbs);
+
+            // Beam importance cutoff
+            if (args.IsCatched("beam_cutoff"))
+            {
+                double eps_bc = args.GetDoubleValue("beam_cutoff", 0);
+                double D_particle = particle->MaximalDimention();
+                double C_geo = M_PI * D_particle * D_particle / 4.0;
+                handler->SetBeamCutoffRelative(eps_bc, C_geo);
+            }
+
+            tracer->SetIsOutputGroups(isOutputGroups);
+            tracer->SetHandler(handler);
+
+            double betaSym = particle->GetSymmetry().beta;
+            double gammaSym = particle->GetSymmetry().gamma;
+
+            if (isAdaptive)
+            {
+                double epsAdapt = args.GetDoubleValue("adaptive", 0);
+                tracer->TraceAdaptive(epsAdapt, betaSym, gammaSym);
+            }
+            else
+            {
+                int nSobol = args.GetIntValue("sobol", 0);
+                tracer->TraceFromSobol(nSobol, betaSym, gammaSym);
             }
 
             delete handler;

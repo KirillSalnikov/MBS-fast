@@ -2,6 +2,7 @@
 #include "HandlerPOTotal.h"
 #include "HandlerPO.h"
 #include "BeamCache.h"
+#include "Sobol.h"
 
 #include <iostream>
 #include <fstream>
@@ -353,7 +354,8 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
             // For coherent mode: convert Jones->Mueller after each orientation's beams
             if (handlerPO->isCoh && !localJ.empty())
             {
-                HandlerPO::AddToMuellerLocal(localJ, 1.0, localM, nAz, nZen);
+                double w = allPrepared[i].sinZenith; // orientation weight
+                HandlerPO::AddToMuellerLocal(localJ, w, localM, nAz, nZen);
                 // Clear Jones for next orientation
                 localJ[0].ClearArr();
             }
@@ -584,4 +586,208 @@ void TracerPOTotal::TraceFromFileMultiSize(const std::string &orientFile,
     }
 
     std::cout << "Results written to " << baseName << "_x*.dat" << std::endl;
+}
+
+void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
+{
+    // Generate Sobol orientations mapped to [0, betaSym] x [0, gammaSym]
+    // using the correct solid-angle measure:
+    //   beta = arccos(1 - (1-cos(betaSym)) * u)  for uniform dOmega
+    //   gamma = gammaSym * v
+    Sobol2D sobol(42);
+    std::vector<double> su, sv;
+    sobol.generate(nOrient, su, sv);
+
+    double cosBetaSym = cos(betaSym);
+    std::vector<std::pair<double,double>> orientations(nOrient);
+    for (int i = 0; i < nOrient; ++i)
+    {
+        double beta  = acos(1.0 - (1.0 - cosBetaSym) * su[i]);
+        double gamma = gammaSym * sv[i];
+        orientations[i] = {beta, gamma};
+    }
+
+    std::cout << "Sobol: " << nOrient << " orientations, beta_sym="
+              << RadToDeg(betaSym) << " deg, gamma_sym="
+              << RadToDeg(gammaSym) << " deg" << std::endl;
+
+    CalcTimer timer;
+    timer.Start();
+    OutputStartTime(timer);
+
+    double weight = 1.0 / nOrient;
+    m_handler->SetNormIndex(1);
+
+    std::string dir = CreateFolder(m_resultDirName);
+#ifdef _WIN32
+    m_resultDirName += '\\' + m_resultDirName;
+#else
+    m_resultDirName = dir + m_resultDirName;
+#endif
+
+    HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
+    if (!handlerPO)
+    {
+        std::cerr << "Error! Handler is not HandlerPO in TraceFromSobol" << std::endl;
+        throw std::exception();
+    }
+
+    // Phase 1: Trace beams for all orientations
+    auto t_phase1_start = std::chrono::high_resolution_clock::now();
+
+    std::vector<PreparedOrientation> allPrepared(nOrient);
+    std::vector<Beam> outBeams;
+    long long count = 0;
+
+    for (int i = 0; i < nOrient; ++i)
+    {
+        m_particle->Rotate(orientations[i].first, orientations[i].second, 0);
+
+        if (!shadowOff)
+            m_scattering->FormShadowBeam(outBeams);
+
+        bool ok = m_scattering->ScatterLight(0, 0, outBeams);
+
+        if (ok)
+            handlerPO->PrepareBeams(outBeams, weight, allPrepared[i]);
+        else
+            allPrepared[i].sinZenith = weight;
+
+        m_incomingEnergy += m_scattering->GetIncedentEnergy() * weight;
+        OutputProgress(nOrient, count, i, 0, timer, outBeams.size());
+        outBeams.clear();
+        ++count;
+    }
+
+    auto t_phase1_end = std::chrono::high_resolution_clock::now();
+    double phase1_sec = std::chrono::duration<double>(t_phase1_end - t_phase1_start).count();
+
+    EraseConsoleLine(60);
+    std::cout << "Phase 1 (tracing + preprocessing): " << std::fixed
+              << std::setprecision(2) << phase1_sec << " s" << std::endl;
+
+    // Phase 2: Diffraction (parallel)
+    auto t_phase2_start = std::chrono::high_resolution_clock::now();
+
+    int nAz = handlerPO->m_sphere.nAzimuth;
+    int nZen = handlerPO->m_sphere.nZenith;
+
+    #pragma omp parallel
+    {
+        Arr2D localM(nAz + 1, nZen + 1, 4, 4);
+        localM.ClearArr();
+
+        std::vector<Arr2DC> localJ;
+        if (handlerPO->isCoh)
+        {
+            Arr2DC tmp(nAz + 1, nZen + 1, 2, 2);
+            tmp.ClearArr();
+            localJ.push_back(tmp);
+        }
+
+        #pragma omp for schedule(dynamic, 1)
+        for (int i = 0; i < nOrient; ++i)
+        {
+            if (!allPrepared[i].beams.empty())
+                handlerPO->HandleBeamsToLocal(allPrepared[i], localM, localJ);
+
+            if (handlerPO->isCoh && !localJ.empty())
+            {
+                double w = allPrepared[i].sinZenith; // orientation weight
+                HandlerPO::AddToMuellerLocal(localJ, w, localM, nAz, nZen);
+                localJ[0].ClearArr();
+            }
+        }
+
+        #pragma omp critical
+        {
+            for (int p = 0; p <= nAz; ++p)
+                for (int t = 0; t <= nZen; ++t)
+                {
+                    matrix m = localM(p, t);
+                    handlerPO->M.insert(p, t, m);
+                }
+        }
+    }
+
+    auto t_phase2_end = std::chrono::high_resolution_clock::now();
+    double phase2_sec = std::chrono::duration<double>(t_phase2_end - t_phase2_start).count();
+
+    std::cout << "Phase 2 (diffraction, OpenMP): " << std::fixed
+              << std::setprecision(2) << phase2_sec << " s" << std::endl;
+    std::cout << "Total: " << phase1_sec + phase2_sec << " s" << std::endl;
+
+    allPrepared.clear();
+    allPrepared.shrink_to_fit();
+
+    m_handler->WriteTotalMatricesToFile(m_resultDirName);
+    m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
+    OutputStatisticsPO(timer, nOrient, m_resultDirName);
+}
+
+void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym)
+{
+    std::cout << "Adaptive mode: target relative change = " << eps << std::endl;
+    std::cout << "beta_sym=" << RadToDeg(betaSym) << " deg, gamma_sym="
+              << RadToDeg(gammaSym) << " deg" << std::endl;
+
+    double cosBetaSym = cos(betaSym);
+    int nOrient = 256;
+    double prevCsca = 0;
+
+    for (int iter = 0; iter < 10; ++iter) // max 10 doublings = 256 * 2^9 = 131072
+    {
+        // Generate orientations
+        Sobol2D sobol(42);
+        std::vector<double> su, sv;
+        sobol.generate(nOrient, su, sv);
+
+        double weight = 1.0 / nOrient;
+        double totalEnergy = 0;
+        std::vector<Beam> outBeams;
+
+        for (int i = 0; i < nOrient; ++i)
+        {
+            double beta  = acos(1.0 - (1.0 - cosBetaSym) * su[i]);
+            double gamma = gammaSym * sv[i];
+
+            m_particle->Rotate(beta, gamma, 0);
+
+            if (!shadowOff)
+                m_scattering->FormShadowBeam(outBeams);
+
+            bool ok = m_scattering->ScatterLight(0, 0, outBeams);
+
+            if (ok)
+            {
+                // Sum up cross sections from HandleBeams
+                m_handler->HandleBeams(outBeams, weight);
+            }
+
+            totalEnergy += m_scattering->GetIncedentEnergy() * weight;
+            outBeams.clear();
+        }
+
+        double Csca = totalEnergy; // incoming energy is proportional to C_sca for this code
+        double relChange = (prevCsca > 0) ? fabs(Csca - prevCsca) / prevCsca : 1.0;
+
+        std::cout << "  N=" << nOrient << ", C_inc=" << Csca
+                  << ", rel_change=" << relChange << std::endl;
+
+        if ((relChange < eps && iter > 0) || iter == 9)
+        {
+            std::cout << "Converged at N=" << nOrient << std::endl;
+            // Clear accumulated Mueller from convergence check before final run
+            HandlerPO *hp = dynamic_cast<HandlerPO*>(m_handler);
+            if (hp) hp->M.ClearArr();
+            m_incomingEnergy = 0;
+            m_handler->m_outputEnergy = 0;
+            TraceFromSobol(nOrient, betaSym, gammaSym);
+            return;
+        }
+
+        prevCsca = Csca;
+        nOrient *= 2;
+        m_incomingEnergy = 0;
+    }
 }
