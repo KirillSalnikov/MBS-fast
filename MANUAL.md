@@ -368,3 +368,22 @@ mbs_po --po --sobol 1024 --auto_tgrid \
 4. **Backscattering convergence**: M₁₁(180°) requires 10–100× more orientations than forward scattering.
 
 5. **Absorption**: DiffractInclineAbs is optimized but not as fast as the non-absorbing path.
+
+---
+
+## Verification
+
+**Backward compatibility** (v2 vs original):
+- M₁₁ with same parameters (6 phi bins): **max rdiff = 0.04%** (effectively identical)
+- M₁₂, M₂₂: up to 18% difference from BAC-CAB optimization in RotateJones (affects off-diagonal only)
+- M₁₁ is physics-invariant under RotateJones changes (same norm ‖R‖ = ‖R_old‖)
+
+**Effect of phi bins**:
+- 6 phi bins (old default): M₁₁ overestimated by 37-59% at side/back angles
+- 48 phi bins (recommended): correct azimuthal averaging
+- This is NOT a code change — it's a parameter choice
+
+**Q_sca normalization**:
+- `--sobol` and `--random` modes: Q_sca uses actual projected area (m_incomingEnergy) → **Q ≈ 2.0**
+- Python scripts using π(D/2)²: Q inflated by factor A_hex/A_sphere ≈ 1.57 for D/L=0.7
+- Always use Q_sca from MBS stderr output (correct normalization)
