@@ -693,7 +693,16 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
 
             if (handlerPO->isCoh && !localJ.empty())
             {
-                double w = allPrepared[i].sinZenith; // orientation weight
+                // normIndex=1 for coherent: weight already in Jones amplitude,
+                // Mueller = |Jones|² has weight² built in via sinZenith in J_phased.
+                // Actually Jones are accumulated WITHOUT weight (insert_2x2 raw).
+                // We need to apply weight ONCE here via sinZenith.
+                // Original non-parallel code: AddToMueller uses m_normIndex=1,
+                // and m_sinZenith is applied per-beam in HandleBeams line 1071.
+                // But HandleBeamsToLocal doesn't multiply Jones by sinZenith.
+                // So Mueller = |Jones|² is unweighted.
+                // Need weight = sinZenith here.
+                double w = allPrepared[i].sinZenith;
                 HandlerPO::AddToMuellerLocal(localJ, w, localM, nAz, nZen);
                 localJ[0].ClearArr();
             }
@@ -756,29 +765,38 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym)
 
     for (int iter = 0; iter < 8; ++iter)
     {
-        // Full clean + compute
+        // Full clean + compute (sequential, no OpenMP — avoids parallel bugs)
         hp->M.ClearArr();
         hp->CleanJ();
         m_incomingEnergy = 0;
         hp->m_outputEnergy = 0;
 
-        TraceFromSobol(nOrient, betaSym, gammaSym);
+        Sobol2D sobol_gen(42);
+        std::vector<double> su, sv;
+        sobol_gen.generate(nOrient, su, sv);
 
-        // Extract M11(180°) and C_sca
+        double weight = 1.0 / nOrient;
+        std::vector<Beam> outBeams;
+
+        for (int i = 0; i < nOrient; ++i)
+        {
+            double beta = acos(1.0 - (1.0 - cosBetaSym) * su[i]);
+            double gamma = gammaSym * sv[i];
+            m_particle->Rotate(beta, gamma, 0);
+            if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
+            bool ok = m_scattering->ScatterLight(0, 0, outBeams);
+            if (ok) m_handler->HandleBeams(outBeams, weight);
+            m_incomingEnergy += m_scattering->GetIncedentEnergy() * weight;
+            outBeams.clear();
+        }
+
+        // Extract M11(180°) from raw Mueller (phi-averaged)
         double M11_180_avg = 0;
         for (int p = 0; p <= nAz; ++p)
             M11_180_avg += hp->M(p, nZen)[0][0];
         M11_180_avg /= (nAz + 1);
 
-        double Csca = 0;
-        for (int j = 0; j <= nZen; ++j)
-        {
-            double Msum_00 = 0;
-            for (int p = 0; p <= nAz; ++p)
-                Msum_00 += hp->M(p, j)[0][0];
-            Msum_00 /= nAz;
-            Csca += Msum_00 * hp->m_sphere.Compute2PiDcos(j);
-        }
+        double Csca = m_incomingEnergy;
 
         double relChange_m11 = (prevM11_180 != 0) ?
             fabs(M11_180_avg - prevM11_180) / fabs(prevM11_180) : 1.0;
@@ -786,7 +804,7 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym)
             fabs(Csca - prevCsca) / prevCsca : 1.0;
 
         std::cout << "  N=" << nOrient
-                  << " (+" << nOrient - nProcessed + (nOrient - nProcessed == 0 ? nOrient : nOrient/2)
+                  << " (+" << nOrient
                   << " new), M11(180)=" << M11_180_avg
                   << ", dM11=" << relChange_m11*100 << "%"
                   << ", Csca=" << Csca
