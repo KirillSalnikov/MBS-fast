@@ -148,33 +148,50 @@ void ApplyAutoThetaGrid(ScatteringRange &range, double D, double wave)
 
     std::vector<double> thetas; // in degrees
 
-    // Zone 1: Fine grid near forward direction
-    double fine_end = 5.0 * peak_width_deg;
-    if (fine_end > 10.0) fine_end = 10.0;
-    double fine_step = 0.1 * peak_width_deg;
-    if (fine_step < 0.01) fine_step = 0.01;
-    if (fine_step > 0.5) fine_step = 0.5;
+    // Adaptive grid with 4 zones:
+    // 1. Fine: resolve forward diffraction peak (Δθ = peak_width/10)
+    // 2. Transition: gradual coarsening (geometric spacing)
+    // 3. Medium: side scattering (Δθ = 1°)
+    // 4. Coarse: backscattering where Mueller oscillates slowly (Δθ = 2°)
+
+    // Zone 1: Forward peak [0, 5×peak_width]
+    double fine_step = std::max(0.01, std::min(peak_width_deg / 10.0, 1.0));
+    double fine_end = std::min(5.0 * peak_width_deg, 15.0);
+    // For small x (<30): peak is wide, fine zone covers more
+    if (x < 30) fine_end = std::min(10.0 * peak_width_deg, 30.0);
 
     for (double t = 0; t <= fine_end + 1e-9; t += fine_step)
         thetas.push_back(t);
 
-    // Zone 2: Transition (log spacing from fine_end to 10 degrees)
-    if (fine_end < 10.0)
+    // Zone 2: Transition [fine_end, transition_end] — geometric spacing
+    double transition_end = std::max(fine_end + 1.0, 20.0);
+    if (x < 30) transition_end = std::max(fine_end + 1.0, 40.0);
+
+    if (fine_end < transition_end)
     {
-        int nTrans = 15;
-        double logStart = log(fine_end);
-        double logEnd = log(10.0);
-        for (int i = 1; i <= nTrans; ++i)
+        // Geometric spacing with max step ≤ 1°
+        double t = fine_end;
+        double step = fine_step;
+        while (t < transition_end - 1e-9)
         {
-            double t = exp(logStart + (logEnd - logStart) * i / nTrans);
+            step = std::min(step * 1.3, 1.0); // grow by 30% per step, max 1°
+            t += step;
+            if (t > transition_end) t = transition_end;
             thetas.push_back(t);
         }
     }
 
-    // Zone 3: Coarse grid from 10 to 180 degrees
-    double coarse_step = 2.0;
-    double coarse_start = 10.0 + coarse_step;
-    for (double t = coarse_start; t <= 180.0 + 1e-9; t += coarse_step)
+    // Zone 3: Medium [transition_end, 120°] — 1° step
+    double medium_step = 1.0;
+    for (double t = transition_end + medium_step; t <= 120.0 + 1e-9; t += medium_step)
+        thetas.push_back(t);
+
+    // Zone 4: Coarse [120°, 175°] — 1° step (backscattering still important)
+    for (double t = 121.0; t <= 175.0 + 1e-9; t += 1.0)
+        thetas.push_back(t);
+
+    // Zone 5: Near-backscattering [175°, 180°] — 0.5° step (LDR, depolarization)
+    for (double t = 175.5; t <= 180.0 + 1e-9; t += 0.5)
         thetas.push_back(t);
 
     // Remove duplicates and sort
