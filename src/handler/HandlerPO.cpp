@@ -487,7 +487,7 @@ matrixC HandlerPO::ApplyDiffractionFast(const Beam &beam, const BeamInfo &info,
     auto t0 = std::chrono::high_resolution_clock::now();
     matrixC fnJones = (beam.lastFacetId != __INT_MAX__) ?
                 ComputeFnJones(beam.J, info, direction) :
-                beam.J * exp_im(m_waveIndex*beam.opticalPath);
+                beam.J * fast_exp_im(m_waveIndex*beam.opticalPath);
     auto t1 = std::chrono::high_resolution_clock::now();
 
     matrixC jones_rot(2, 2);
@@ -520,15 +520,15 @@ matrixC HandlerPO::ApplyDiffractionFast2(const Beam &beam, const BeamInfo &info,
                                          const Vector3d &vf)
 {
     auto t0 = std::chrono::high_resolution_clock::now();
-    // J_phased already contains beam.J * exp_im(k * projLength) [internal]
-    // or beam.J * exp_im(k * opticalPath) [external].
+    // J_phased already contains beam.J * fast_exp_im(k * projLength) [internal]
+    // or beam.J * fast_exp_im(k * opticalPath) [external].
     // For internal beams, we only need the direction-dependent phase:
     //   exp_im(-k * dot(direction, center))
     // For external beams, J_phased is already complete (no direction dependence).
     complex dirPhase;
     if (!isExternal) {
         double dp = DotProductD(direction, info.center);
-        dirPhase = exp_im(-m_waveIndex * dp);
+        dirPhase = fast_exp_im(-m_waveIndex * dp);
     } else {
         dirPhase = complex(1.0, 0.0);
     }
@@ -561,7 +561,7 @@ matrixC HandlerPO::ApplyDiffractionFast3(const BeamPolData &polData,
 {
     // Direction-dependent phase
     complex dirPhase = isExternal ? complex(1.0, 0.0)
-                                  : exp_im(-m_waveIndex * DotProductD(direction, info.center));
+                                  : fast_exp_im(-m_waveIndex * DotProductD(direction, info.center));
 
     // Polarization rotation (uses precomputed beam-independent data)
     matrixC jones_rot(2, 2);
@@ -585,7 +585,7 @@ matrixC HandlerPO::ApplyDiffraction(const Beam &beam, const BeamInfo &info,
     auto t0 = std::chrono::high_resolution_clock::now();
     matrixC fnJones = (beam.lastFacetId != __INT_MAX__) ?
                 ComputeFnJones(beam.J, info, direction) :
-                beam.J * exp_im(m_waveIndex*beam.opticalPath);
+                beam.J * fast_exp_im(m_waveIndex*beam.opticalPath);
     auto t1 = std::chrono::high_resolution_clock::now();
 
     matrixC jones_rot(2, 2);
@@ -1162,8 +1162,8 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
 
         pb.isExternal = (beam.lastFacetId == __INT_MAX__);
         matrixC J_phased = pb.isExternal
-            ? beam.J * exp_im(m_waveIndex * beam.opticalPath)
-            : beam.J * exp_im(m_waveIndex * info.projLenght);
+            ? beam.J * fast_exp_im(m_waveIndex * beam.opticalPath)
+            : beam.J * fast_exp_im(m_waveIndex * info.projLenght);
 
         // Extract scalars
         pb.horAx = info.horAxis.x; pb.horAy = info.horAxis.y; pb.horAz = info.horAxis.z;

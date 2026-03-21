@@ -1,5 +1,6 @@
 CXX = g++
-CXXFLAGS = -O3 -march=native -std=gnu++11 -funroll-loops -flto -mavx512f -mavx512dq
+CXXFLAGS = -O3 -march=native -std=gnu++11 -funroll-loops -flto -mavx512f -mavx512dq -fopenmp
+LDFLAGS = -lm -lgomp
 
 SRC_DIR = src
 INCLUDES = -I$(SRC_DIR) -I$(SRC_DIR)/math -I$(SRC_DIR)/handler \
@@ -20,7 +21,7 @@ all: $(TARGET)
 
 $(TARGET): $(OBJECTS)
 	@mkdir -p bin
-	$(CXX) $(CXXFLAGS) -o $@ $^ -lm
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
