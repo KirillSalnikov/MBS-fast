@@ -4,7 +4,7 @@
 
 MBS-raw computes light scattering by non-spherical particles using the Physical Optics (PO) method. It traces geometric optics rays through the particle (reflections, refractions), then applies Kirchhoff diffraction to each output beam to obtain the far-field Mueller matrix.
 
-**Optimized version**: 36× faster than original, AVX-512 SIMD, OpenMP parallel, Sobol quasi-random orientations.
+**Optimized version**: 36x faster than original, AVX-512 SIMD, OpenMP parallel, Sobol quasi-random orientations.
 
 ---
 
@@ -24,68 +24,95 @@ mbs_po --po --adaptive 0.01 --auto_tgrid \
 
 ---
 
-## Particle Shape (`-p`)
+## CLI Reference
 
-```
--p TYPE HEIGHT DIAMETER
-```
+All flags are grouped by function. Required flags have no default; optional flags are marked with their defaults.
 
-| Type | Shape | Description |
-|------|-------|-------------|
+### Particle Definition
+
+#### `-p TYPE HEIGHT DIAMETER [EXTRA]`
+
+Define particle by type and dimensions (in micrometers).
+
+| Type | Shape | Parameters |
+|------|-------|------------|
 | 1 | Hexagonal column | H = height, D = diameter |
-| 2 | Hexagonal plate | H = height, D = diameter |
-| 3 | Bullet rosette | H = height, D = diameter |
+| 2 | Bullet | H = height, D = diameter (cap angle 62 deg, computed automatically) |
+| 3 | Bullet rosette | H, D, [optional cap height; default = D*sqrt(3)*tan(62 deg)/4] |
+| 4 | Droxtal | arg3 = sup parameter (32.35 deg, 71.81 deg hardcoded) |
+| 10 | Concave hexagonal | H, D, concavity depth |
+| 12 | Hexagonal aggregate | H, D, number of elements |
+| 999 | CertainAggregate | sup parameter (reads geometry from built-in definition) |
 
 **Symmetry**: automatically detected from particle type.
-- Hex column/plate: β_sym = π/2 (mirror top↔bottom), γ_sym = π/3 (6-fold rotation)
-- Effective 12× symmetry reduction for orientation averaging.
+- Hex column/plate: beta_sym = pi/2 (mirror top<->bottom), gamma_sym = pi/3 (6-fold rotation)
+- Effective 12x symmetry reduction for orientation averaging.
 
-**Example**: 10 μm diameter column with aspect ratio D/L = 0.7:
+**Example**: 10 um diameter column with aspect ratio D/L = 0.7:
 ```
--p 1 14.286 10    # H = D/0.7 = 14.286 μm
+-p 1 14.286 10    # H = D/0.7 = 14.286 um
 ```
+
+#### `--pf FILENAME`
+
+Load particle geometry from a file instead of using `-p`. The file defines vertices and facets. The `-p` argument is still parsed for the filename (legacy behavior: the filename is read from the `-p` value).
+
+**Example**:
+```bash
+mbs_po --pf -p myparticle.dat --ri 1.31 0 -n 12 ...
+```
+
+#### `--rs SIZE`
+
+Resize a particle loaded with `--pf`. Scales the particle so that its maximal dimension equals SIZE (in micrometers). Only valid when `--pf` is also specified.
+
+**Example**:
+```bash
+mbs_po --pf --rs 50.0 -p myparticle.dat --ri 1.31 0 -n 12 ...
+```
+
+#### `--forced_convex`
+
+Force the convex particle tracing algorithm, even if the particle would normally be detected as concave. Use when you know the particle is convex but auto-detection fails.
+
+#### `--forced_nonconvex`
+
+Force the non-convex (concave) particle tracing algorithm. Use for concave particles that are incorrectly detected as convex.
 
 ---
 
-## Physical Parameters
+### Physical Parameters
 
-### Wavelength (`-w`)
-```
--w WAVELENGTH_UM
-```
-Wavelength in micrometers. Example: `-w 0.532` (green laser, 532 nm).
+#### `-w WAVELENGTH_UM`
 
-### Refractive Index (`--ri`)
-```
---ri N_REAL N_IMAG
-```
-Complex refractive index m = n_re + i·n_im.
+Wavelength in micrometers. Required for PO diffraction and absorption calculations.
+
+Examples:
+- `-w 0.532` (green laser, 532 nm)
+- `-w 1.064` (Nd:YAG, 1064 nm)
+
+#### `--ri N_REAL N_IMAG`
+
+Complex refractive index m = n_re + i*n_im.
+
 - Ice at 532 nm: `--ri 1.31 0`
 - Ice at 1064 nm: `--ri 1.30 1.9e-8`
-- Absorbing ice (10 μm IR): `--ri 1.197 0.248`
+- Absorbing ice (10 um IR): `--ri 1.197 0.248`
 
-When n_im > 0, absorption is computed via `DiffractInclineAbs` (optimized with `fast_sincos`).
+**Important**: When `--abs` is NOT specified, the imaginary part is set to zero regardless of the value provided. You must use `--abs` to enable absorption.
 
----
+#### `--abs`
 
-## Method Selection
+Enable absorption accounting. Requires `-w` to be specified. When enabled, the imaginary part of `--ri` is used; without `--abs`, the imaginary part is forced to zero.
 
-### Physical Optics (`--po`)
+Uses `DiffractInclineAbs` (optimized with `fast_sincos`) for the diffraction integrals.
+
+**Example**:
+```bash
+mbs_po --po --abs -w 10.0 --ri 1.197 0.248 ...
 ```
---po
-```
-Required flag for PO method. Computes Kirchhoff diffraction on each beam.
 
-### Geometrical Optics (`--go`)
-No `--po` flag → GO mode. Rays mapped to far-field bins without diffraction. Faster but less accurate.
-
----
-
-## Internal Reflections (`-n`)
-
-```
--n MAX_REFLECTIONS
-```
+#### `-n MAX_REFLECTIONS`
 
 Maximum number of internal reflections allowed per ray.
 
@@ -94,167 +121,251 @@ Maximum number of internal reflections allowed per ray.
 | 1 | Entry refraction only | Testing, fast estimate |
 | 5 | Standard | Forward scattering, C_sca (< 1% error for m=1.31) |
 | 6 | Default | General purpose |
-| 12 | High accuracy | Backscattering M₁₁(180°) (< 5% error) |
+| 12 | High accuracy | Backscattering M11(180 deg) (< 5% error) |
 | 20 | Maximum | Backscattering convergence (< 3% error) |
 | 25 | Overkill | Reference calculations |
 
 **Convergence at x=1000 (hex column D/L=0.7, m=1.31)**:
 - C_sca converges at n=6 (error 0.4%)
-- M₁₁(180°) backscattering converges slowly: n=6 → 11% error, n=12 → 5%, n=20 → 3%
-- Time scales linearly: n=6 → 135s, n=20 → 459s (single thread)
+- M11(180 deg) backscattering converges slowly: n=6 -> 11% error, n=12 -> 5%, n=20 -> 3%
+- Time scales linearly: n=6 -> 135s, n=20 -> 459s (single thread)
 - With OpenMP + AVX-512: n=20 costs only ~10s extra
 
 **Recommendation**: use `-n 12` for general work, `-n 20` if backscattering matters.
 
 ---
 
-## Orientation Averaging
+### Method
 
-### Sobol Quasi-Random (`--sobol`) ⭐ RECOMMENDED
+#### `--po`
 
-```
---sobol N
-```
+Required flag for Physical Optics method. Computes Kirchhoff diffraction on each beam.
+
+#### `--go`
+
+Geometrical Optics mode (also activated by omitting `--po`). Rays are mapped to far-field bins without diffraction. Faster but less accurate.
+
+#### `--all`
+
+Compute all trajectory groups. When `--tr` is specified, by default only the listed trajectory groups are computed; `--all` adds computation of all remaining trajectories as well.
+
+Required for most standard runs when `--tr` is used. Without `--tr`, `--all` creates an empty catch-all group for total scattering.
+
+#### `--incoh`
+
+Incoherent beam summation. Each beam is converted to Mueller independently, then summed. Loses interference effects. Default is coherent summation (Jones amplitudes summed first). Use for testing.
+
+#### `--karczewski`
+
+Use Karczewski polarization matrix instead of RotateJones for beam polarization rotation. Experimental flag. Affects M33, M34, M44 elements but not M11. Both methods give the same |R| norm, so M11 is identical.
+
+#### `--jones`
+
+Output Jones matrices to file. Writes raw Jones matrix data for each scattering direction. Available in fixed-orientation PO mode.
+
+---
+
+### Orientations
+
+One of the following orientation modes must be specified.
+
+#### `--sobol N` (RECOMMENDED)
 
 Generate N Sobol quasi-random orientations. N should be a power of 2 (32, 64, 128, ..., 8192, ...).
 
-**Automatically uses particle symmetry**: β ∈ [0, β_sym], γ ∈ [0, γ_sym].
-For hex prism: β ∈ [0, π/2], γ ∈ [0, π/3] → 12× effective orientations.
+**Automatically uses particle symmetry**: beta in [0, beta_sym], gamma in [0, gamma_sym].
+For hex prism: beta in [0, pi/2], gamma in [0, pi/3] -> 12x effective orientations.
 
-Sobol convergence rate: O((log N)²/N), much faster than random Monte Carlo O(1/√N).
+Sobol convergence rate: O((log N)^2/N), much faster than random Monte Carlo O(1/sqrt(N)).
 
 **How many orientations?**
 
-| x | Forward peak, C_sca (< 2%) | Backscattering M₁₁(180°) (< 5%) |
+| x | Forward peak, C_sca (< 2%) | Backscattering M11(180 deg) (< 5%) |
 |---|---|---|
-| 10–50 | 128 | 512 |
-| 50–200 | 256 | 1024 |
-| 200–1000 | 512 | 4096 |
+| 10-50 | 128 | 512 |
+| 50-200 | 256 | 1024 |
+| 200-1000 | 512 | 4096 |
 | > 1000 | 1024 | 8192+ |
 
-### Adaptive (`--adaptive`) ⭐ EASIEST
-
-```
---adaptive EPS
-```
+#### `--adaptive EPS` (EASIEST)
 
 Automatically determine number of orientations. Starts with 256, doubles until C_sca converges to relative accuracy EPS.
 
-Example: `--adaptive 0.01` → 1% accuracy on C_sca.
+Example: `--adaptive 0.01` -> 1% accuracy on C_sca.
 
 Note: this optimizes for C_sca convergence. Backscattering may need more orientations.
 
-### Grid (`--random`)
+#### `--random N_BETA N_GAMMA`
 
+Uniform grid in beta x gamma over the symmetry-reduced domain. Traditional method.
+Total orientations = (N_BETA+1) x N_GAMMA.
+
+Example: `--random 20 60` -> 1260 orientations.
+
+#### `--montecarlo N`
+
+Monte Carlo random orientations. N is the total number of orientations, sampled randomly within the beta/gamma range (uses random seed). Less efficient than Sobol for the same N.
+
+**Example**:
+```bash
+mbs_po --po --montecarlo 1000 --all \
+    -p 1 10 10 -w 0.532 --ri 1.31 0 -n 12 \
+    --grid 0 180 48 180 --close
 ```
---random N_BETA N_GAMMA
+
+#### `--fixed BETA GAMMA`
+
+Fixed orientation (single orientation, no averaging). BETA and GAMMA are in degrees.
+
+**Example**:
+```bash
+mbs_po --po --fixed 45 30 \
+    -p 1 10 10 -w 0.532 --ri 1.31 0 -n 12 \
+    --grid 0 180 48 180 --close
 ```
 
-Uniform grid in β × γ over the symmetry-reduced domain. Traditional method.
-Total orientations = (N_BETA+1) × N_GAMMA.
+#### `--orientfile FILENAME`
 
-Example: `--random 20 60` → 1260 orientations.
+Read (beta, gamma) pairs in radians from text file (one pair per line). Comments with `#`.
 
-### From File (`--orientfile`)
+#### `-b MIN MAX`
 
-```
---orientfile FILENAME
-```
+Override beta range (in degrees). By default, beta runs from 0 to beta_sym (particle symmetry). Use with `--random` or `--montecarlo`.
 
-Read (β, γ) pairs in radians from text file (one pair per line). Comments with `#`.
+**Example**: `-b 0 90` restricts beta to [0 deg, 90 deg].
+
+#### `-g MIN MAX`
+
+Override gamma range (in degrees). By default, gamma runs from 0 to gamma_sym (particle symmetry). Use with `--random` or `--montecarlo`.
+
+**Example**: `-g 0 60` restricts gamma to [0 deg, 60 deg].
 
 ---
 
-## Scattering Grid
+### Scattering Grid
 
-### Uniform (`--grid`)
+#### `--grid THETA_MIN THETA_MAX N_PHI N_THETA`
 
-```
---grid THETA_MIN THETA_MAX N_PHI N_THETA
-```
+Uniform scattering angle grid.
 
 - THETA_MIN, THETA_MAX: scattering angle range in degrees (usually 0 180)
-- N_PHI: number of azimuthal bins (≥ 48 recommended; 6 is insufficient!)
+- N_PHI: number of azimuthal bins (>= 48 recommended; 6 is insufficient!)
 - N_THETA: number of zenith bins
 
-**Important**: N_PHI = 6 (old default) causes 50–200% error in M₁₁ at side/back angles! Use N_PHI ≥ 48.
+**Important**: N_PHI = 6 (old default) causes 50-200% error in M11 at side/back angles! Use N_PHI >= 48.
 
-### Non-Uniform Theta (`--tgrid`)
+Also accepts 3-parameter form: `--grid RADIUS N_PHI N_THETA` (backscattering cone of given radius around 180 deg).
 
-```
---tgrid FILENAME
-```
+#### `--tgrid FILENAME`
 
 Read custom theta grid from file (one angle in degrees per line). Use `generate_theta_grid.py` to create optimal grids.
 
-For x=100: 1800 uniform bins → 156 non-uniform bins = **11× speedup**.
+For x=100: 1800 uniform bins -> 156 non-uniform bins = **11x speedup**.
 
-### Auto Theta Grid (`--auto_tgrid`) ⭐ RECOMMENDED
+#### `--auto_tgrid` (RECOMMENDED)
 
-```
---auto_tgrid
-```
+Automatically generate optimal non-uniform theta grid based on size parameter x = pi*D/lambda:
+- Fine zone (0 to 5x peak width): step = 0.1 x (180 deg/x)
+- Transition zone: logarithmic spacing to 10 deg
+- Coarse zone (10 deg to 180 deg): step 2 deg
 
-Automatically generate optimal non-uniform theta grid based on size parameter x = πD/λ:
-- Fine zone (0 to 5× peak width): step = 0.1 × (180°/x)
-- Transition zone: logarithmic spacing to 10°
-- Coarse zone (10° to 180°): step 2°
+#### `--point`
 
----
+Compute only the exact backscatter point (theta = 180 deg). Requires `--po`. Currently commented out in the source code (non-functional); retained for future use.
 
-## Coherence
+#### `--filter ANGLE`
 
-### Coherent Summation (default)
+Scattering angle filter in degrees. Sets a backscattering cone aperture: only scattering within ANGLE degrees of the backscatter direction (180 deg) is accumulated. Used with `--all` or `--random` PO modes.
 
-All beams from one orientation are summed coherently (Jones amplitudes), then converted to Mueller. This is the correct PO behavior.
-
-### Incoherent (`--incoh`)
-
-```
---incoh
-```
-
-Each beam → Mueller independently, then sum. Faster, but loses interference effects. Use for testing.
+**Example**: `--filter 5` collects only scattering within 5 deg of exact backscatter.
 
 ---
 
-## Multi-Size Computation (`--sizefile`)
+### Multi-Size Computation (`--sizefile`)
 
 ```
 --sizefile FILENAME
 ```
 
-Compute multiple size parameters from one beam tracing pass. File contains one x value per line.
+Compute multiple size parameters from one beam tracing pass. Uses `BeamCache`: beam topology is invariant across sizes (same shape, same RI), only vertex positions and phases scale with D.
 
-Uses `BeamCache`: beam topology is invariant across sizes (same shape, same RI), only vertex positions and phases scale with D.
+**File format**: plain text, one size parameter (x = pi*D/lambda) value per line.
 
-Output: `M_x10.dat`, `M_x20.dat`, etc.
+**Example file** (`sizes.txt`):
+```
+10
+20
+50
+100
+200
+500
+```
+
+**Output**: `M_x10.dat`, `M_x20.dat`, etc.
+
+**Performance note**: Uses `ComputeFromCache`, which recomputes diffraction integrals for each cached beam at each size. This adds overhead compared to running each size independently. For small particles (small x), separate runs may be faster.
+
+**Recommendation**: Use `--sizefile` primarily for large particles (x > 500) with high reflection count (`-n` > 12), where the ray tracing phase dominates and caching provides the most benefit.
 
 ---
 
-## Performance Options
+### Performance Options
 
-### Beam Importance Cutoff (`--beam_cutoff`)
+#### `--beam_cutoff EPS`
 
-```
---beam_cutoff EPS
-```
-
-Skip diffraction for beams with |J|² × area < EPS × C_geo (geometric cross-section).
+Skip diffraction for beams with |J|^2 x area < EPS x C_geo (geometric cross-section).
 
 Testing shows MBS-raw's built-in area cutoff in polygon clipping already handles this, so additional cutoff has negligible effect. Default threshold: 1e-12.
 
-### Shadow Beam (`--shadow_off`)
+#### `--shadow_off`
 
-```
---shadow_off
-```
+Disable shadow beam (Babinet external diffraction). For debugging only.
 
-Disable shadow beam (Babinet external diffraction). For debugging.
+#### `-r RATIO`
+
+Restriction ratio for small beams during intersection. Beams smaller than 1/RATIO of the reference size are discarded. Default: 100.
+
+Lowering this value keeps more small beams (slower but potentially more accurate for complex particles). Raising it discards more small beams (faster).
 
 ---
 
-## Output
+### Output
+
+#### `-o DIRNAME`
+
+Output folder name. Default: `M`.
+
+Supports variable substitution with `%KEY` syntax, where KEY is any CLI argument name and an optional digit prefix selects the argument index. For example, `-o results_%0p_%1p` would substitute the first and second values of `-p` into the folder name.
+
+**Example**: `-o results_hex` writes output to `results_hex/M.dat`.
+
+#### `--close`
+
+Close the program after calculation completes. Without this flag, the program waits for a keypress before exiting (interactive mode). **Required for batch/scripted runs and pipelines.**
+
+#### `--log SECONDS`
+
+Progress output interval in seconds. The program prints progress information (orientation count, elapsed time) to stderr at the specified interval.
+
+**Example**: `--log 10` prints progress every 10 seconds.
+
+#### `--tr FILENAME`
+
+Load trajectory groups from file. A trajectory group specifies which internal reflection sequences to track separately. The file format defines facet index sequences for the particle.
+
+When `--tr` is used without `--all`, only the specified trajectory groups are computed. Add `--all` to also compute all remaining (unmatched) trajectories.
+
+#### `--gr`
+
+Output per-group scattering results. When trajectory groups are defined (via `--tr`), writes separate output for each group. Legacy/diagnostic flag.
+
+#### `--shadow`
+
+Legacy flag. Appears in argument parser but has no documented effect in current code.
+
+---
+
+## Output Files
 
 ### M.dat
 
@@ -264,7 +375,7 @@ theta  2pi*dcos  M11  M12  M13  M14  M21  M22  M23  M24  M31  M32  M33  M34  M41
 ```
 
 - theta: scattering angle (degrees)
-- 2pi*dcos: solid angle weight for integration. C_sca = Σ M₁₁ × (2π·dcos)
+- 2pi*dcos: solid angle weight for integration. C_sca = sum of M11 x (2pi*dcos)
 - M_{ij}: orientation-averaged Mueller matrix elements (phi-averaged)
 
 ### Diagnostics (stderr)
@@ -291,7 +402,7 @@ g++ -O3 -march=native -std=gnu++11 -funroll-loops -flto \
     $(find src/bigint -name '*.cc' 2>/dev/null) -lm -lgomp
 ```
 
-**Requirements**: GCC ≥ 11, AVX-512 CPU (AMD Zen 4+, Intel Skylake-X+)
+**Requirements**: GCC >= 11, AVX-512 CPU (AMD Zen 4+, Intel Skylake-X+)
 
 For non-AVX-512 CPU: remove `-mavx512f -mavx512dq`, polynomial sincos still works via AVX2.
 
@@ -303,9 +414,9 @@ For non-AVX-512 CPU: remove `-mavx512f -mavx512dq`, polynomial sincos still work
 
 | Version | Time | Speedup |
 |---------|------|---------|
-| Original | ~320s | 1× |
-| Optimized (this version) | 8.9s | **36×** |
-| GOAD (Rust, reference) | 11s | — |
+| Original | ~320s | 1x |
+| Optimized (this version) | 8.9s | **36x** |
+| GOAD (Rust, reference) | 11s | -- |
 
 **Key optimizations**: PrecomputeEdgeData, vertex-cached sincos, polynomial sincos (~14 digits, AVX-512 FMA), inline hot loop, no heap allocation, branchless edge loop, LTO.
 
@@ -313,8 +424,8 @@ For non-AVX-512 CPU: remove `-mavx512f -mavx512dq`, polynomial sincos still work
 
 | Threads | Speedup |
 |---------|---------|
-| 6 | 3.65× |
-| 12 (SMT) | 4.89× |
+| 6 | 3.65x |
+| 12 (SMT) | 4.89x |
 
 ---
 
@@ -347,6 +458,20 @@ mbs_po --po --adaptive 0.01 --auto_tgrid \
     --grid 0 180 48 180 --close
 ```
 
+### Fixed orientation (single crystal)
+```bash
+mbs_po --po --fixed 45 30 \
+    -p 1 14.3 10 -w 0.532 --ri 1.31 0 -n 12 \
+    --grid 0 180 48 180 --close
+```
+
+### Absorbing particle
+```bash
+mbs_po --po --sobol 1024 --auto_tgrid --abs \
+    -p 1 14.3 10 -w 10.0 --ri 1.197 0.248 -n 12 \
+    --grid 0 180 48 180 --close
+```
+
 ### Size scan
 ```bash
 echo -e "10\n20\n50\n100\n200" > sizes.txt
@@ -355,17 +480,77 @@ mbs_po --po --sobol 1024 --auto_tgrid \
     --grid 0 180 48 180 --sizefile sizes.txt --close
 ```
 
+### Custom particle from file
+```bash
+mbs_po --po --pf --rs 100.0 -p custom_crystal.dat \
+    --ri 1.31 0 -n 12 --sobol 1024 --auto_tgrid \
+    --grid 0 180 48 180 -w 0.532 --close
+```
+
+### Trajectory-resolved scattering
+```bash
+mbs_po --po --all --tr tracks.dat --gr \
+    --sobol 1024 --auto_tgrid \
+    -p 1 14.3 10 -w 0.532 --ri 1.31 0 -n 12 \
+    --grid 0 180 48 180 --close
+```
+
+---
+
+## Complete Flag Summary
+
+| Flag | Arguments | Category | Description |
+|------|-----------|----------|-------------|
+| `-p` | TYPE H D [extra] | Particle | Particle type and dimensions |
+| `--pf` | (none) | Particle | Load particle from file (filename via `-p`) |
+| `--rs` | SIZE | Particle | Resize particle to maximal dimension SIZE |
+| `--forced_convex` | (none) | Particle | Force convex tracing algorithm |
+| `--forced_nonconvex` | (none) | Particle | Force non-convex tracing algorithm |
+| `-w` | WAVELENGTH | Physical | Wavelength in micrometers |
+| `--ri` | N_RE N_IM | Physical | Complex refractive index |
+| `--abs` | (none) | Physical | Enable absorption (requires `-w`) |
+| `-n` | N | Physical | Max internal reflections |
+| `--po` | (none) | Method | Physical Optics mode |
+| `--go` | (none) | Method | Geometrical Optics mode |
+| `--all` | (none) | Method | Compute all trajectory groups |
+| `--incoh` | (none) | Method | Incoherent beam summation |
+| `--karczewski` | (none) | Method | Karczewski polarization matrix (experimental) |
+| `--jones` | (none) | Method | Output Jones matrices |
+| `--sobol` | N | Orientations | Sobol quasi-random (N = power of 2) |
+| `--adaptive` | EPS | Orientations | Adaptive convergence to accuracy EPS |
+| `--random` | N_BETA N_GAMMA | Orientations | Uniform grid |
+| `--montecarlo` | N | Orientations | Monte Carlo random orientations |
+| `--fixed` | BETA GAMMA | Orientations | Single orientation (degrees) |
+| `--orientfile` | FILENAME | Orientations | Orientations from file (radians) |
+| `-b` | MIN MAX | Orientations | Beta range override (degrees) |
+| `-g` | MIN MAX | Orientations | Gamma range override (degrees) |
+| `--grid` | T1 T2 N_PHI N_TH | Scattering | Uniform scattering grid |
+| `--tgrid` | FILENAME | Scattering | Non-uniform theta grid from file |
+| `--auto_tgrid` | (none) | Scattering | Auto-generate optimal theta grid |
+| `--point` | (none) | Scattering | Backscatter point only (disabled) |
+| `--filter` | ANGLE | Scattering | Backscatter cone aperture (degrees) |
+| `--sizefile` | FILENAME | Multi-size | Multiple x values from file |
+| `--beam_cutoff` | EPS | Performance | Beam importance cutoff |
+| `--shadow_off` | (none) | Performance | Disable shadow beam |
+| `-r` | RATIO | Performance | Small beam restriction ratio (default 100) |
+| `-o` | DIRNAME | Output | Output folder (default "M") |
+| `--close` | (none) | Output | Exit after calculation (for scripts) |
+| `--log` | SECONDS | Output | Progress output interval |
+| `--tr` | FILENAME | Output | Load trajectory groups from file |
+| `--gr` | (none) | Output | Output per-group results |
+| `--shadow` | (none) | Output | Legacy flag (no documented effect) |
+
 ---
 
 ## Known Limitations
 
 1. **Q_sca > 2 at large x**: PO does not enforce the optical theorem. Q_sca grows with x instead of approaching 2. Use IGOM correction or renormalize.
 
-2. **Polarization elements M₃₃, M₃₄, M₄₄**: MBS-raw's RotateJones and GOAD's Karczewski matrix have the same norm but different structure. M₁₁ agrees between codes, but M₃₃/M₃₄/M₄₄ differ.
+2. **Polarization elements M33, M34, M44**: MBS-raw's RotateJones and GOAD's Karczewski matrix have the same norm but different structure. M11 agrees between codes, but M33/M34/M44 differ.
 
 3. **Small particles (x < 20)**: PO is not valid. Use ADDA or T-matrix methods.
 
-4. **Backscattering convergence**: M₁₁(180°) requires 10–100× more orientations than forward scattering.
+4. **Backscattering convergence**: M11(180 deg) requires 10-100x more orientations than forward scattering.
 
 5. **Absorption**: DiffractInclineAbs is optimized but not as fast as the non-absorbing path.
 
@@ -374,16 +559,16 @@ mbs_po --po --sobol 1024 --auto_tgrid \
 ## Verification
 
 **Backward compatibility** (v2 vs original):
-- M₁₁ with same parameters (6 phi bins): **max rdiff = 0.04%** (effectively identical)
-- M₁₂, M₂₂: up to 18% difference from BAC-CAB optimization in RotateJones (affects off-diagonal only)
-- M₁₁ is physics-invariant under RotateJones changes (same norm ‖R‖ = ‖R_old‖)
+- M11 with same parameters (6 phi bins): **max rdiff = 0.04%** (effectively identical)
+- M12, M22: up to 18% difference from BAC-CAB optimization in RotateJones (affects off-diagonal only)
+- M11 is physics-invariant under RotateJones changes (same norm ||R|| = ||R_old||)
 
 **Effect of phi bins**:
-- 6 phi bins (old default): M₁₁ overestimated by 37-59% at side/back angles
+- 6 phi bins (old default): M11 overestimated by 37-59% at side/back angles
 - 48 phi bins (recommended): correct azimuthal averaging
-- This is NOT a code change — it's a parameter choice
+- This is NOT a code change -- it's a parameter choice
 
 **Q_sca normalization**:
-- `--sobol` and `--random` modes: Q_sca uses actual projected area (m_incomingEnergy) → **Q ≈ 2.0**
-- Python scripts using π(D/2)²: Q inflated by factor A_hex/A_sphere ≈ 1.57 for D/L=0.7
+- `--sobol` and `--random` modes: Q_sca uses actual projected area (m_incomingEnergy) -> **Q ~ 2.0**
+- Python scripts using pi*(D/2)^2: Q inflated by factor A_hex/A_sphere ~ 1.57 for D/L=0.7
 - Always use Q_sca from MBS stderr output (correct normalization)
