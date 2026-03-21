@@ -728,66 +728,80 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
 void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym)
 {
     std::cout << "Adaptive mode: target relative change = " << eps << std::endl;
-    std::cout << "beta_sym=" << RadToDeg(betaSym) << " deg, gamma_sym="
+    std::cout << "  Convergence criterion: M11(180°) backscattering" << std::endl;
+    std::cout << "  beta_sym=" << RadToDeg(betaSym) << " deg, gamma_sym="
               << RadToDeg(gammaSym) << " deg" << std::endl;
+
+    HandlerPO *hp = dynamic_cast<HandlerPO*>(m_handler);
+    if (!hp)
+    {
+        std::cerr << "Error: handler is not HandlerPO" << std::endl;
+        TraceFromSobol(1024, betaSym, gammaSym);
+        return;
+    }
 
     double cosBetaSym = cos(betaSym);
     int nOrient = 256;
+    double prevM11_180 = 0;
     double prevCsca = 0;
+    int nZen = hp->m_sphere.nZenith;
 
-    for (int iter = 0; iter < 10; ++iter) // max 10 doublings = 256 * 2^9 = 131072
+    for (int iter = 0; iter < 12; ++iter) // max 12 doublings = 256 * 2^11 = 524288
     {
-        // Generate orientations
-        Sobol2D sobol(42);
-        std::vector<double> su, sv;
-        sobol.generate(nOrient, su, sv);
+        // Clear Mueller before each trial
+        hp->M.ClearArr();
+        hp->CleanJ();
+        m_incomingEnergy = 0;
+        hp->m_outputEnergy = 0;
 
-        double weight = 1.0 / nOrient;
-        double totalEnergy = 0;
-        std::vector<Beam> outBeams;
+        // Run full Sobol computation
+        TraceFromSobol(nOrient, betaSym, gammaSym);
 
-        for (int i = 0; i < nOrient; ++i)
+        // Extract M11(180°) from the last theta bin
+        double M11_180 = hp->M(0, nZen)[0][0]; // phi=0, theta=last
+        // Phi-average: sum over phi bins, divide by nAzimuth
+        double M11_180_avg = 0;
+        for (int p = 0; p <= hp->m_sphere.nAzimuth; ++p)
+            M11_180_avg += hp->M(p, nZen)[0][0];
+        M11_180_avg /= (hp->m_sphere.nAzimuth + 1);
+
+        // Also compute C_sca from Mueller
+        double Csca = 0;
+        for (int j = 0; j <= nZen; ++j)
         {
-            double beta  = acos(1.0 - (1.0 - cosBetaSym) * su[i]);
-            double gamma = gammaSym * sv[i];
-
-            m_particle->Rotate(beta, gamma, 0);
-
-            if (!shadowOff)
-                m_scattering->FormShadowBeam(outBeams);
-
-            bool ok = m_scattering->ScatterLight(0, 0, outBeams);
-
-            if (ok)
-            {
-                // Sum up cross sections from HandleBeams
-                m_handler->HandleBeams(outBeams, weight);
-            }
-
-            totalEnergy += m_scattering->GetIncedentEnergy() * weight;
-            outBeams.clear();
+            double Msum_00 = 0;
+            for (int p = 0; p <= hp->m_sphere.nAzimuth; ++p)
+                Msum_00 += hp->M(p, j)[0][0];
+            Msum_00 /= hp->m_sphere.nAzimuth;
+            double dcos = hp->m_sphere.Compute2PiDcos(j);
+            Csca += Msum_00 * dcos;
         }
 
-        double Csca = totalEnergy; // incoming energy is proportional to C_sca for this code
-        double relChange = (prevCsca > 0) ? fabs(Csca - prevCsca) / prevCsca : 1.0;
+        double relChange_m11 = (prevM11_180 != 0) ?
+            fabs(M11_180_avg - prevM11_180) / fabs(prevM11_180) : 1.0;
+        double relChange_csca = (prevCsca > 0) ?
+            fabs(Csca - prevCsca) / prevCsca : 1.0;
 
-        std::cout << "  N=" << nOrient << ", C_inc=" << Csca
-                  << ", rel_change=" << relChange << std::endl;
+        std::cout << "  N=" << nOrient
+                  << ", M11(180)=" << M11_180_avg
+                  << ", rel_change_M11=" << relChange_m11
+                  << ", Csca=" << Csca
+                  << ", rel_change_Csca=" << relChange_csca
+                  << std::endl;
 
-        if ((relChange < eps && iter > 0) || iter == 9)
+        if (relChange_m11 < eps && relChange_csca < eps && iter > 0)
         {
-            std::cout << "Converged at N=" << nOrient << std::endl;
-            // Clear accumulated Mueller from convergence check before final run
-            HandlerPO *hp = dynamic_cast<HandlerPO*>(m_handler);
-            if (hp) hp->M.ClearArr();
-            m_incomingEnergy = 0;
-            m_handler->m_outputEnergy = 0;
-            TraceFromSobol(nOrient, betaSym, gammaSym);
+            std::cout << "Converged at N=" << nOrient
+                      << " (M11 change=" << relChange_m11*100 << "%"
+                      << ", Csca change=" << relChange_csca*100 << "%)" << std::endl;
+            // Result is already in hp->M from the last TraceFromSobol call
             return;
         }
 
+        prevM11_180 = M11_180_avg;
         prevCsca = Csca;
         nOrient *= 2;
-        m_incomingEnergy = 0;
     }
+
+    std::cout << "Max iterations reached, using N=" << nOrient/2 << std::endl;
 }

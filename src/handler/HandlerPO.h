@@ -109,7 +109,9 @@ protected:
     static void RotateJonesFast(const BeamPolData &polData,
                                 const Vector3d &vf, const Vector3d &direction,
                                 matrixC &matrix);
+public:
     void CleanJ();
+protected:
     matrixC ComputeFnJones(const Matrix2x2c &matrix, const BeamInfo &info,
                            const Vector3d &direction);
 
