@@ -896,36 +896,124 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
         {
             int nZen = m_sphere.nZenith;
 
+            // --- Theta-coefficients: precompute per-phi ---
+            double cp = cos_phi_arr[i], sp = sin_phi_arr[i];
+
+            ThetaCoeffs tc;
+            if (edgeData.valid) {
+                precompute_theta_coeffs(
+                    edgeData.x, edgeData.y, edgeData.nVertices,
+                    horAx, horAy, horAz, verAx, verAy, verAz,
+                    bdx, bdy, bdz, cenx, ceny, cenz,
+                    cp, sp, m_waveIndex,
+                    pNTx, pNTy, pNTz, pNPx, pNPy, pNPz,
+                    pnxDTx, pnxDTy, pnxDTz, pnxDPx, pnxDPy, pnxDPz,
+                    tc);
+            }
+
             for (int j = 0; j <= nZen; ++j)
             {
 #endif
-                Point3d &dir = m_sphere.directions[i][j];
-                Point3d &vf = m_sphere.vf[i][j];
-
                 complex d00(0,0), d01(0,0), d10(0,0), d11(0,0);
 
                 if (edgeData.valid)
                 {
-                    double dx = dir.x, dy = dir.y, dz = dir.z;
+                    double sin_t = sin_theta_arr[j];
+                    double cos_t = cos_theta_arr[j];
+
+                    // Construct direction from angles (MBS convention: z = -cos(theta))
+                    double dx = sin_t * cp;
+                    double dy = sin_t * sp;
+                    double dz = -cos_t;
+
+                    // vf from sphere (direction-dependent)
+                    Point3d &vf = m_sphere.vf[i][j];
                     double vfx = vf.x, vfy = vf.y, vfz = vf.z;
 
-                    complex fresnel = diffract_inline(
-                        edgeData.x, edgeData.y, edgeData.nVertices,
-                        edgeData.slope_yx, edgeData.intercept_y,
-                        edgeData.edge_valid_x,
-                        edgeData.slope_xy, edgeData.intercept_x,
-                        edgeData.edge_valid_y,
-                        horAx, horAy, horAz, verAx, verAy, verAz,
-                        bdx, bdy, bdz,
-                        dx, dy, dz, beam_area,
-                        m_waveIndex, m_wi2, m_eps1, m_eps2,
-                        m_complWave, m_invComplWave);
+                    // A, B from theta-coefficients
+                    double A = sin_t * tc.a_sin + cos_t * tc.a_cos + tc.a0;
+                    double B = sin_t * tc.b_sin + cos_t * tc.b_cos + tc.b0;
+
+                    double absA = fabs(A);
+                    double absB = fabs(B);
+
+                    complex fresnel;
+                    if (absA < m_eps2 && absB < m_eps2)
+                    {
+                        fresnel = m_invComplWave * beam_area;
+                    }
+                    else
+                    {
+                        // Vertex phases from theta-coefficients
+                        int nv = tc.nv;
+                        double vc[32], vs[32];
+                        double phases[32];
+                        for (int v = 0; v < nv; ++v)
+                            phases[v] = sin_t * tc.psin[v] + cos_t * tc.pcos[v] + tc.p0[v];
+
+                        // AVX-512 / AVX2 / scalar sincos
+                        int vv = 0;
+                        for (; vv + 7 < nv; vv += 8)
+                            fast_sincos_8x(&phases[vv], &vs[vv], &vc[vv]);
+                        for (; vv + 3 < nv; vv += 4)
+                            fast_sincos_4x(&phases[vv], &vs[vv], &vc[vv]);
+                        for (; vv < nv; ++vv)
+                            fast_sincos(phases[vv], vs[vv], vc[vv]);
+
+                        double sr = 0, si = 0;
+                        if (absB > absA)
+                        {
+                            for (int e = 0; e < nv; ++e)
+                            {
+                                if (!edgeData.edge_valid_x[e]) continue;
+                                int enext = (e + 1 < nv) ? e + 1 : 0;
+                                double Ci = A + edgeData.slope_yx[e] * B;
+                                double absCi = fabs(Ci);
+                                double inv_Ci = (absCi > m_eps1) ? (1.0 / Ci) : 0.0;
+                                sr += (vc[enext] - vc[e]) * inv_Ci;
+                                si += (vs[enext] - vs[e]) * inv_Ci;
+                                if (__builtin_expect(absCi <= m_eps1, 0)) {
+                                    double p1x = edgeData.x[e], p2x = edgeData.x[enext];
+                                    double tr = -m_wi2*Ci*(p2x*p2x-p1x*p1x)*0.5;
+                                    double ti = m_waveIndex*(p2x-p1x);
+                                    sr += vc[e]*tr - vs[e]*ti;
+                                    si += vc[e]*ti + vs[e]*tr;
+                                }
+                            }
+                            double inv_B = 1.0 / B;
+                            sr *= inv_B; si *= inv_B;
+                        }
+                        else
+                        {
+                            for (int e = 0; e < nv; ++e)
+                            {
+                                if (!edgeData.edge_valid_y[e]) continue;
+                                int enext = (e + 1 < nv) ? e + 1 : 0;
+                                double Ei = A * edgeData.slope_xy[e] + B;
+                                double absEi = fabs(Ei);
+                                double inv_Ei = (absEi > m_eps1) ? (1.0 / Ei) : 0.0;
+                                sr += (vc[enext] - vc[e]) * inv_Ei;
+                                si += (vs[enext] - vs[e]) * inv_Ei;
+                                if (__builtin_expect(absEi <= m_eps1, 0)) {
+                                    double p1y = edgeData.y[e], p2y = edgeData.y[enext];
+                                    double tr = -m_wi2*Ei*(p2y*p2y-p1y*p1y)*0.5;
+                                    double ti = m_waveIndex*(p2y-p1y);
+                                    sr += vc[e]*tr - vs[e]*ti;
+                                    si += vc[e]*ti + vs[e]*tr;
+                                }
+                            }
+                            double inv_nA = -1.0 / A;
+                            sr *= inv_nA; si *= inv_nA;
+                        }
+
+                        fresnel = m_complWave * complex(sr, si);
+                    }
 
                     if (!isnan(real(fresnel)))
                     {
                         double dpr,dpi;
                         if (!isExternal) {
-                            double dpArg=-m_waveIndex*(dx*cenx+dy*ceny+dz*cenz);
+                            double dpArg = -m_waveIndex*(sin_t*tc.dp_sin + cos_t*tc.dp_cos);
                             fast_sincos(dpArg,dpi,dpr);
                         } else { dpr=1.0; dpi=0.0; }
 
@@ -943,7 +1031,6 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                         double sr01r = cpr*r01, sr01i = cpi*r01;
                         double sr10r = cpr*r10, sr10i = cpi*r10;
                         double sr11r = cpr*r11, sr11i = cpi*r11;
-                        // result = scaled_rot × J_phased (complex 2x2)
                         d00=complex(sr00r*jp00r-sr00i*jp00i+sr01r*jp10r-sr01i*jp10i,
                                     sr00r*jp00i+sr00i*jp00r+sr01r*jp10i+sr01i*jp10r);
                         d01=complex(sr00r*jp01r-sr00i*jp01i+sr01r*jp11r-sr01i*jp11i,
@@ -956,6 +1043,8 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                 }
                 else
                 {
+                    Point3d &dir = m_sphere.directions[i][j];
+                    Point3d &vf = m_sphere.vf[i][j];
                     matrixC tmp = ApplyDiffraction(beam, info, dir, vf);
                     d00 = tmp[0][0]; d01 = tmp[0][1];
                     d10 = tmp[1][0]; d11 = tmp[1][1];
@@ -963,7 +1052,6 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
 
                 if (!isCoh)
                 {
-                    // Build matrixC from stack values, then compute Mueller
                     matrixC diffractedMatrix(2, 2);
                     diffractedMatrix[0][0] = d00; diffractedMatrix[0][1] = d01;
                     diffractedMatrix[1][0] = d10; diffractedMatrix[1][1] = d11;
@@ -973,7 +1061,6 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                 }
                 else
                 {
-                    // Coherent: accumulate Jones directly (no matrixC allocation)
                     m_diffractedMatrices[groupId].insert_2x2(i, j, d00, d01, d10, d11);
                 }
             }
@@ -1204,6 +1291,10 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
     for (int s = 0; s < nSizes; ++s)
         kD[s] = m_waveIndex * D_vals[s]; // = 2*x
 
+    // Hoist wave constants outside all loops (they never change)
+    double cwr = real(m_complWave), cwi = imag(m_complWave);
+    double icwr = real(m_invComplWave), icwi = imag(m_invComplWave);
+
     // Process all orientations and beams
     for (const auto &orient : cache.orientations)
     {
@@ -1228,35 +1319,37 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
             // Precompute J_phased for each size
             // For internal: J * exp(i * kD * projLength_norm)
             // For external: J * exp(i * kD * opticalPath_norm)
-            // J_phased elements
+            // J_phased elements — stack array, no heap allocation
             struct JPhased {
                 double jp00r, jp00i, jp01r, jp01i;
                 double jp10r, jp10i, jp11r, jp11i;
             };
-            std::vector<JPhased> jp_vec(nSizes);
+            JPhased jp_vec[32]; // max 32 sizes on stack
+
+            // Hoist J component extraction out of size loop
+            double j11r = real(cb.J.m11), j11i = imag(cb.J.m11);
+            double j12r = real(cb.J.m12), j12i = imag(cb.J.m12);
+            double j21r = real(cb.J.m21), j21i = imag(cb.J.m21);
+            double j22r = real(cb.J.m22), j22i = imag(cb.J.m22);
+
+            // Phase base: same for all sizes, differs only by kD[s] scale
+            double phase_base = cb.isExternal ? cb.opticalPath_norm : cb.projLength_norm;
 
             for (int s = 0; s < nSizes; ++s)
             {
-                double phase_arg = cb.isExternal
-                    ? kD[s] * cb.opticalPath_norm
-                    : kD[s] * cb.projLength_norm;
-                complex phase_exp = fast_exp_im(phase_arg);
+                double phase_arg = kD[s] * phase_base;
+                double pe_r, pe_i;
+                fast_sincos(phase_arg, pe_i, pe_r);
 
-                // J_phased = J * phase_exp
-                double pe_r = real(phase_exp), pe_i = imag(phase_exp);
-                double j11r = real(cb.J.m11), j11i = imag(cb.J.m11);
-                double j12r = real(cb.J.m12), j12i = imag(cb.J.m12);
-                double j21r = real(cb.J.m21), j21i = imag(cb.J.m21);
-                double j22r = real(cb.J.m22), j22i = imag(cb.J.m22);
-                complex jp00(pe_r * j11r - pe_i * j11i, pe_r * j11i + pe_i * j11r);
-                complex jp01(pe_r * j12r - pe_i * j12i, pe_r * j12i + pe_i * j12r);
-                complex jp10(pe_r * j21r - pe_i * j21i, pe_r * j21i + pe_i * j21r);
-                complex jp11(pe_r * j22r - pe_i * j22i, pe_r * j22i + pe_i * j22r);
-
-                jp_vec[s].jp00r = real(jp00); jp_vec[s].jp00i = imag(jp00);
-                jp_vec[s].jp01r = real(jp01); jp_vec[s].jp01i = imag(jp01);
-                jp_vec[s].jp10r = real(jp10); jp_vec[s].jp10i = imag(jp10);
-                jp_vec[s].jp11r = real(jp11); jp_vec[s].jp11i = imag(jp11);
+                // J_phased = J * exp(i*phase_arg), store doubles directly
+                jp_vec[s].jp00r = pe_r * j11r - pe_i * j11i;
+                jp_vec[s].jp00i = pe_r * j11i + pe_i * j11r;
+                jp_vec[s].jp01r = pe_r * j12r - pe_i * j12i;
+                jp_vec[s].jp01i = pe_r * j12i + pe_i * j12r;
+                jp_vec[s].jp10r = pe_r * j21r - pe_i * j21i;
+                jp_vec[s].jp10i = pe_r * j21i + pe_i * j21r;
+                jp_vec[s].jp11r = pe_r * j22r - pe_i * j22i;
+                jp_vec[s].jp11i = pe_r * j22i + pe_i * j22r;
             }
 
             // Loop: direction → size (size loop is innermost)
@@ -1323,19 +1416,85 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
                     for (int v = 0; v < nv; ++v)
                         base_phase[v] = A * cb.vx_norm[v] + B * cb.vy_norm[v];
 
-                    double cwr = real(m_complWave), cwi = imag(m_complWave);
-                    double icwr = real(m_invComplWave), icwi = imag(m_invComplWave);
+                    // Precompute edge next-vertex indices (size-independent)
+                    int enext_arr[32];
+                    for (int e = 0; e < nv; ++e)
+                        enext_arr[e] = (e + 1 < nv) ? e + 1 : 0;
+
+                    // Precompute branch divisor (size-independent, hoisted out of size loop)
+                    double branch_inv = use_B_branch ? (1.0 / B) : (-1.0 / A);
+
+                    // -------------------------------------------------------
+                    // Batch sincos: compute ALL vertex sincos for ALL sizes
+                    // before entering the size loop. Uses AVX to batch across
+                    // sizes: for each vertex, compute sincos(kD[0..3]*bp)
+                    // simultaneously with fast_sincos_4x.
+                    // Layout: vc_all[s][v], vs_all[s][v]
+                    // -------------------------------------------------------
+                    bool is_forward = (absA < m_eps2 && absB < m_eps2);
+
+                    double vc_all[32][32], vs_all[32][32]; // [size][vertex]
+
+                    if (!is_forward)
+                    {
+                        // For each vertex, batch the nSizes phases via AVX
+                        // phase[s] = kD[s] * base_phase[v]
+                        for (int v = 0; v < nv; ++v)
+                        {
+                            double bp = base_phase[v];
+                            // Build array of phases across sizes for this vertex
+                            double ph_sizes[32];
+                            for (int s = 0; s < nSizes; ++s)
+                                ph_sizes[s] = kD[s] * bp;
+
+                            double sv_sizes[32], cv_sizes[32];
+                            int ss = 0;
+                            for (; ss + 7 < nSizes; ss += 8)
+                                fast_sincos_8x(&ph_sizes[ss], &sv_sizes[ss], &cv_sizes[ss]);
+                            for (; ss + 3 < nSizes; ss += 4)
+                                fast_sincos_4x(&ph_sizes[ss], &sv_sizes[ss], &cv_sizes[ss]);
+                            for (; ss < nSizes; ++ss)
+                                fast_sincos(ph_sizes[ss], sv_sizes[ss], cv_sizes[ss]);
+
+                            for (int s = 0; s < nSizes; ++s)
+                            {
+                                vc_all[s][v] = cv_sizes[s];
+                                vs_all[s][v] = sv_sizes[s];
+                            }
+                        }
+                    }
+
+                    // Precompute dirPhase for all sizes (batch across sizes)
+                    double dpr_all[32], dpi_all[32];
+                    if (!cb.isExternal)
+                    {
+                        double dp_phases[32];
+                        for (int s = 0; s < nSizes; ++s)
+                            dp_phases[s] = -kD[s] * dir_dot_cen;
+
+                        int ss = 0;
+                        for (; ss + 7 < nSizes; ss += 8)
+                            fast_sincos_8x(&dp_phases[ss], &dpi_all[ss], &dpr_all[ss]);
+                        for (; ss + 3 < nSizes; ss += 4)
+                            fast_sincos_4x(&dp_phases[ss], &dpi_all[ss], &dpr_all[ss]);
+                        for (; ss < nSizes; ++ss)
+                            fast_sincos(dp_phases[ss], dpi_all[ss], dpr_all[ss]);
+                    }
+                    else
+                    {
+                        for (int s = 0; s < nSizes; ++s)
+                        { dpr_all[s] = 1.0; dpi_all[s] = 0.0; }
+                    }
 
                     // Now loop over sizes (the tight inner loop)
                     for (int s = 0; s < nSizes; ++s)
                     {
-                        double kD_s = kD[s]; // = 2*x_sizes[s]
                         double D_s = D_vals[s];
 
                         double fr, fi; // fresnel result
 
                         // Forward direction: area * invComplWave
-                        if (absA < m_eps2 && absB < m_eps2)
+                        if (is_forward)
                         {
                             double area_s = cb.area_norm * D_s * D_s;
                             fr = icwr * area_s;
@@ -1343,20 +1502,9 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
                         }
                         else
                         {
-                            // Compute vertex phases = kD_s * base_phase[v]
-                            double phases[32];
-                            for (int v = 0; v < nv; ++v)
-                                phases[v] = kD_s * base_phase[v];
-
-                            // Compute sin/cos for all vertices
-                            double vc[32], vs_arr[32];
-                            int vv = 0;
-                            for (; vv + 7 < nv; vv += 8)
-                                fast_sincos_8x(&phases[vv], &vs_arr[vv], &vc[vv]);
-                            for (; vv + 3 < nv; vv += 4)
-                                fast_sincos_4x(&phases[vv], &vs_arr[vv], &vc[vv]);
-                            for (; vv < nv; ++vv)
-                                fast_sincos(phases[vv], vs_arr[vv], vc[vv]);
+                            // Use precomputed sincos arrays
+                            const double *vc = vc_all[s];
+                            const double *vs_arr = vs_all[s];
 
                             // Edge sum
                             double esr = 0, esi = 0;
@@ -1365,46 +1513,44 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
                                 for (int e = 0; e < nv; ++e)
                                 {
                                     if (!cb.edge_valid_x[e]) continue;
-                                    int enext = (e + 1 < nv) ? e + 1 : 0;
+                                    int en = enext_arr[e];
                                     double ic = inv_Ci_arr[e];
-                                    esr += (vc[enext] - vc[e]) * ic;
-                                    esi += (vs_arr[enext] - vs_arr[e]) * ic;
+                                    esr += (vc[en] - vc[e]) * ic;
+                                    esi += (vs_arr[en] - vs_arr[e]) * ic;
                                     if (__builtin_expect(ic == 0.0 && cb.edge_valid_x[e], 0)) {
                                         double Ci = A + cb.slope_yx[e] * B;
                                         double p1x = cb.vx_norm[e] * D_s;
-                                        double p2x = cb.vx_norm[enext] * D_s;
+                                        double p2x = cb.vx_norm[en] * D_s;
                                         double tr = -m_wi2*Ci*(p2x*p2x-p1x*p1x)*0.5;
                                         double ti = m_waveIndex*(p2x-p1x);
                                         esr += vc[e]*tr - vs_arr[e]*ti;
                                         esi += vc[e]*ti + vs_arr[e]*tr;
                                     }
                                 }
-                                double inv_B = 1.0 / B;
-                                esr *= inv_B;
-                                esi *= inv_B;
+                                esr *= branch_inv;
+                                esi *= branch_inv;
                             }
                             else
                             {
                                 for (int e = 0; e < nv; ++e)
                                 {
                                     if (!cb.edge_valid_y[e]) continue;
-                                    int enext = (e + 1 < nv) ? e + 1 : 0;
+                                    int en = enext_arr[e];
                                     double ic = inv_Ci_arr[e];
-                                    esr += (vc[enext] - vc[e]) * ic;
-                                    esi += (vs_arr[enext] - vs_arr[e]) * ic;
+                                    esr += (vc[en] - vc[e]) * ic;
+                                    esi += (vs_arr[en] - vs_arr[e]) * ic;
                                     if (__builtin_expect(ic == 0.0 && cb.edge_valid_y[e], 0)) {
                                         double Ei = A * cb.slope_xy[e] + B;
                                         double p1y = cb.vy_norm[e] * D_s;
-                                        double p2y = cb.vy_norm[enext] * D_s;
+                                        double p2y = cb.vy_norm[en] * D_s;
                                         double tr = -m_wi2*Ei*(p2y*p2y-p1y*p1y)*0.5;
                                         double ti = m_waveIndex*(p2y-p1y);
                                         esr += vc[e]*tr - vs_arr[e]*ti;
                                         esi += vc[e]*ti + vs_arr[e]*tr;
                                     }
                                 }
-                                double inv_nA = -1.0 / A;
-                                esr *= inv_nA;
-                                esi *= inv_nA;
+                                esr *= branch_inv;
+                                esi *= branch_inv;
                             }
 
                             // fresnel = complWave * s
@@ -1414,14 +1560,8 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
                             if (isnan(fr)) continue;
                         }
 
-                        // dirPhase
-                        double dpr, dpi;
-                        if (!cb.isExternal) {
-                            double dpArg = -kD_s * dir_dot_cen;
-                            fast_sincos(dpArg, dpi, dpr);
-                        } else {
-                            dpr = 1.0; dpi = 0.0;
-                        }
+                        // dirPhase (precomputed above)
+                        double dpr = dpr_all[s], dpi = dpi_all[s];
 
                         // combined = fresnel * dirPhase
                         double cpr = fr*dpr - fi*dpi;

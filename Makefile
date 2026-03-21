@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -O2 -std=gnu++11 -march=corei7 -msse4.2
+CXXFLAGS = -O3 -march=native -std=gnu++11 -funroll-loops -flto -mavx512f -mavx512dq
 
 SRC_DIR = src
 INCLUDES = -I$(SRC_DIR) -I$(SRC_DIR)/math -I$(SRC_DIR)/handler \

@@ -393,17 +393,18 @@ inline void precompute_theta_coeffs(
 {
     tc.nv = nv;
 
-    // dir = (sin(t)*cos(p), sin(t)*sin(p), cos(t))
+    // dir = (sin(t)*cos(p), sin(t)*sin(p), -cos(t))   [MBS convention: z = -cos(theta)]
     // k_k0 = -dir + beam_dir
-    // k_k0_x = -sin(t)*cos(p) + bdx = sin(t)*(-cos(p)) + bdx
-    // A = dot(k_k0, hor) = sin(t)*(-cos(p)*hx - sin(p)*hy) + cos(t)*(-hz) + (bdx*hx+bdy*hy+bdz*hz)
+    // k_k0_x = -sin(t)*cos(p) + bdx
+    // k_k0_z = +cos(t) + bdz
+    // A = dot(k_k0, hor) = sin(t)*(-cp*hx - sp*hy) + cos(t)*(+hz) + (bdx*hx+bdy*hy+bdz*hz)
     double neg_cp = -cos_phi, neg_sp = -sin_phi;
     tc.a_sin = neg_cp*horAx + neg_sp*horAy;
-    tc.a_cos = -horAz;
+    tc.a_cos = +horAz;
     tc.a0 = bdx*horAx + bdy*horAy + bdz*horAz;
 
     tc.b_sin = neg_cp*verAx + neg_sp*verAy;
-    tc.b_cos = -verAz;
+    tc.b_cos = +verAz;
     tc.b0 = bdx*verAx + bdy*verAy + bdz*verAz;
 
     // Per-vertex phase coefficients:
@@ -416,9 +417,10 @@ inline void precompute_theta_coeffs(
         tc.p0[v]   = waveIndex * (tc.a0    * vx_norm[v] + tc.b0    * vy_norm[v]);
     }
 
-    // dirPhase: arg = -k*(dir·center) = -k*(sin(t)*cos(p)*cx + sin(t)*sin(p)*cy + cos(t)*cz)
+    // dirPhase: arg = -k*(dir·center) = -k*(sin(t)*cp*cx + sin(t)*sp*cy + (-cos(t))*cz)
+    //                = -k*(sin(t)*(cp*cx+sp*cy) + cos(t)*(-cz))
     tc.dp_sin = cos_phi*cenx + sin_phi*ceny;
-    tc.dp_cos = cenz;
+    tc.dp_cos = -cenz;
 
     // RotateJones decomposition:
     // dir = (sin(t)*cp, sin(t)*sp, cos(t))
