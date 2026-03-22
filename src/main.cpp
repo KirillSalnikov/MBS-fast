@@ -85,7 +85,6 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("sobol", 1, true); // Sobol quasi-random orientations (number, power of 2)
     parser.AddRule("auto_tgrid", 0, true); // auto-generate theta grid based on size parameter
     parser.AddRule("adaptive", 1, true); // adaptive convergence (target relative accuracy)
-    parser.AddRule("exact_abs", 0, true); // exact gradient absorption (DiffractInclineAbs)
 }
 
 ScatteringRange SetConus(ArgPP &parser)
@@ -496,7 +495,6 @@ int main(int argc, const char* argv[])
 
             handler->isCoh = !args.IsCatched("incoh");
             handler->useKarczewski = args.IsCatched("karczewski");
-            handler->useExactAbsorption = args.IsCatched("exact_abs");
             handler->outputJones = args.IsCatched("jones");
             handler->SetScatteringSphere(bsCone);
             handler->SetTracks(&trackGroups);
@@ -601,7 +599,6 @@ int main(int argc, const char* argv[])
 
                 handler->isCoh = !args.IsCatched("incoh");
                 handler->useKarczewski = args.IsCatched("karczewski");
-            handler->useExactAbsorption = args.IsCatched("exact_abs");
                 handler->SetScatteringSphere(conus);
                 handler->SetTracks(&trackGroups);
                 handler->SetAbsorptionAccounting(isAbs);
@@ -671,7 +668,6 @@ int main(int argc, const char* argv[])
 
             handler->isCoh = !args.IsCatched("incoh");
             handler->useKarczewski = args.IsCatched("karczewski");
-            handler->useExactAbsorption = args.IsCatched("exact_abs");
             handler->SetScatteringSphere(conus);
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
@@ -750,7 +746,6 @@ int main(int argc, const char* argv[])
 
             handler->isCoh = !args.IsCatched("incoh");
             handler->useKarczewski = args.IsCatched("karczewski");
-            handler->useExactAbsorption = args.IsCatched("exact_abs");
             handler->SetScatteringSphere(conus);
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
