@@ -155,11 +155,13 @@ void ApplyAutoThetaGrid(ScatteringRange &range, double D, double wave)
     // 3. Medium: side scattering (Δθ = 1°)
     // 4. Coarse: backscattering where Mueller oscillates slowly (Δθ = 2°)
 
-    // Zone 1: Forward peak [0, 5×peak_width]
-    double fine_step = std::max(0.01, std::min(peak_width_deg / 10.0, 1.0));
-    double fine_end = std::min(5.0 * peak_width_deg, 15.0);
+    // Zone 1: Forward peak [0, fine_end]
+    // Fine step: resolve peak with at least 20 points across half-width
+    double fine_step = std::max(0.002, std::min(peak_width_deg / 20.0, 0.5));
+    // Extend fine zone to capture side lobes (important for Q_sca integration)
+    double fine_end = std::min(10.0 * peak_width_deg, 20.0);
     // For small x (<30): peak is wide, fine zone covers more
-    if (x < 30) fine_end = std::min(10.0 * peak_width_deg, 30.0);
+    if (x < 30) fine_end = std::min(15.0 * peak_width_deg, 40.0);
 
     for (double t = 0; t <= fine_end + 1e-9; t += fine_step)
         thetas.push_back(t);
@@ -182,17 +184,17 @@ void ApplyAutoThetaGrid(ScatteringRange &range, double D, double wave)
         }
     }
 
-    // Zone 3: Medium [transition_end, 120°] — 1° step
-    double medium_step = 1.0;
+    // Zone 3: Medium [transition_end, 120°] — 0.5° for small x, 1° otherwise
+    double medium_step = (x < 100) ? 0.5 : 1.0;
     for (double t = transition_end + medium_step; t <= 120.0 + 1e-9; t += medium_step)
         thetas.push_back(t);
 
-    // Zone 4: Coarse [120°, 175°] — 1° step (backscattering still important)
+    // Zone 4: Side/back [120°, 175°] — 1° step
     for (double t = 121.0; t <= 175.0 + 1e-9; t += 1.0)
         thetas.push_back(t);
 
-    // Zone 5: Near-backscattering [175°, 180°] — 0.5° step (LDR, depolarization)
-    for (double t = 175.5; t <= 180.0 + 1e-9; t += 0.5)
+    // Zone 5: Near-backscattering [175°, 180°] — 0.25° step (LDR, depolarization)
+    for (double t = 175.25; t <= 180.0 + 1e-9; t += 0.25)
         thetas.push_back(t);
 
     // Remove duplicates and sort

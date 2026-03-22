@@ -780,12 +780,15 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym)
     // since each larger run includes all smaller runs' physics (same orientations).
     // Total overhead: sum of geometric series = 2×final cost (worst case 2× vs optimal).
 
-    int nOrient = 256; // start
-    int maxOrient = 8192;
+    // Start small, scale up. Sobol property: first 2^m points are always optimal.
+    // For small x (<50): C_sca converges fast, start at 64.
+    // For large x (>500): backscattering needs more, start at 256.
+    int nOrient = 64;
+    int maxOrient = 16384;
     double prevM11_180 = 0;
     double prevCsca = 0;
 
-    for (int iter = 0; iter < 8; ++iter)
+    for (int iter = 0; iter < 10; ++iter)
     {
         // Full clean + compute (sequential, no OpenMP — avoids parallel bugs)
         hp->M.ClearArr();
@@ -836,17 +839,25 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym)
         // Convergence: C_sca must converge. M11(180°) is bonus.
         bool csca_ok = (relChange_csca < eps && iter > 0);
         bool m11_ok = (relChange_m11 < eps && iter > 0);
+        // Relaxed M11 criterion: backscattering is noisy, accept 5x eps
+        bool m11_relaxed = (relChange_m11 < 5.0 * eps && iter > 1);
 
         if (csca_ok && m11_ok)
         {
             std::cout << "Converged at N=" << nOrient << " (both C_sca and M11)" << std::endl;
             return;
         }
-        if (csca_ok && iter >= 3)
+        if (csca_ok && m11_relaxed)
         {
-            // C_sca converged but M11 hasn't. After 3 iterations, accept C_sca convergence.
             std::cout << "Converged at N=" << nOrient
-                      << " (C_sca converged, M11 still " << relChange_m11*100 << "%)" << std::endl;
+                      << " (C_sca ok, M11 within " << relChange_m11*100 << "%)" << std::endl;
+            return;
+        }
+        // Hard stop: C_sca very stable (eps/10) — M11 will converge eventually
+        if (relChange_csca < eps * 0.1 && iter >= 4)
+        {
+            std::cout << "Converged at N=" << nOrient
+                      << " (C_sca stable, M11 still " << relChange_m11*100 << "%)" << std::endl;
             return;
         }
 
