@@ -846,7 +846,29 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym)
     // For small x (<50): C_sca converges fast, start at 64.
     // For large x (>500): backscattering needs more, start at 256.
     int nOrient = 64;
-    int maxOrient = 16384;
+    // Max orientations: limited by available RAM (~350 KB per orientation).
+    // Default 16384 (~5.5 GB). Auto-scale with available memory.
+    long long availMB_ad = 2048;
+#ifdef __linux__
+    {
+        std::ifstream meminfo("/proc/meminfo");
+        std::string line;
+        while (std::getline(meminfo, line)) {
+            if (line.find("MemAvailable:") == 0) {
+                long long kb = 0;
+                sscanf(line.c_str(), "MemAvailable: %lld", &kb);
+                if (kb > 0) availMB_ad = kb / 1024;
+                break;
+            }
+        }
+    }
+#endif
+    // Use 50% of RAM, ~350 KB/orient. Min 1024, cap at 131072.
+    int maxOrient = std::max(1024, std::min(131072, (int)(availMB_ad / 2 * 1024 / 350)));
+    // Round down to power of 2 (Sobol property)
+    { int p = 1; while (p * 2 <= maxOrient) p *= 2; maxOrient = p; }
+    std::cerr << "Adaptive: max orientations = " << maxOrient
+              << " (" << availMB_ad << " MB available)" << std::endl;
     double prevM11_180 = 0;
     double prevCsca = 0;
 
