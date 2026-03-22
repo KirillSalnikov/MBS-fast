@@ -874,17 +874,20 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
     int nZen = hp->m_sphere.nZenith;
     int nAz = hp->m_sphere.nAzimuth;
 
-    // Restart-from-scratch adaptive: each iteration runs full TraceFromSobol.
-    // Sobol property ensures first 2^m points are optimal → no wasted work
-    // since each larger run includes all smaller runs' physics (same orientations).
-    // Total overhead: sum of geometric series = 2×final cost (worst case 2× vs optimal).
-
-    // Start small, scale up. Sobol property: first 2^m points are always optimal.
-    // For small x (<50): C_sca converges fast, start at 64.
-    // For large x (>500): backscattering needs more, start at 256.
+    // =========================================================================
+    // Incremental adaptive: each iteration adds NEW orientations only.
+    // Sobol property: first 2^m points ⊂ first 2^(m+1) points.
+    // So doubling N means adding N new points (indices N..2N-1).
+    //
+    // Mueller is accumulated with weight=1 per batch, then after each
+    // doubling: M_total = (M_old + M_new) / 2 = average of equal-size batches.
+    // Since Mueller is additive, we store M_accumulated (sum of all batches)
+    // and divide by number of batches when extracting results.
+    //
+    // Cost: N + N + N + ... = 2N (geometric series) instead of N+2N+4N = 7N.
+    // Speedup vs restart: ~3.5× for convergence at the same N.
+    // =========================================================================
     int nOrient = 64;
-    // Max orientations: limited by available RAM (~350 KB per orientation).
-    // Default 16384 (~5.5 GB). Auto-scale with available memory.
     long long availMB_ad = 2048;
 #ifdef __linux__
     {
@@ -902,103 +905,197 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
 #endif
     int maxOrient;
     if (maxOrientOverride > 0) {
-        // User-specified: round to power of 2
         maxOrient = 1;
         while (maxOrient < maxOrientOverride) maxOrient *= 2;
         if (maxOrient > maxOrientOverride) maxOrient /= 2;
         if (maxOrient < 64) maxOrient = 64;
     } else {
-        // Auto from RAM: 50% of available, ~350 KB/orient. Min 1024, cap 131072.
         maxOrient = std::max(1024, std::min(131072, (int)(availMB_ad / 2 * 1024 / 350)));
         int p = 1; while (p * 2 <= maxOrient) p *= 2; maxOrient = p;
     }
     std::cerr << "Adaptive: max orientations = " << maxOrient
               << " (" << availMB_ad << " MB available)" << std::endl;
+
+    // Generate ALL Sobol points up to maxOrient at once (deterministic)
+    Sobol2D sobol_gen(42);
+    std::vector<double> su_all, sv_all;
+    sobol_gen.generate(maxOrient, su_all, sv_all);
+
+    // Accumulator: M stores sum of ALL batches (not averaged yet)
+    hp->M.ClearArr();
+    hp->M_noshadow.ClearArr();
+    hp->CleanJ();
+    m_incomingEnergy = 0;
+    hp->m_outputEnergy = 0;
+
     double prevM11_180 = 0;
     double prevCsca = 0;
+    int totalOrient = 0;    // total orientations processed so far
+    int nBatches = 0;       // number of equal-size batches
 
-    for (int iter = 0; iter < 10; ++iter)
+    for (int iter = 0; iter < 15; ++iter)
     {
-        // Full clean + compute (sequential, no OpenMP — avoids parallel bugs)
-        hp->M.ClearArr();
-        hp->CleanJ();
-        m_incomingEnergy = 0;
-        hp->m_outputEnergy = 0;
+        int batchStart = totalOrient;
+        int batchEnd = nOrient;  // nOrient = target total after this iteration
+        int batchSize = batchEnd - batchStart;
 
-        Sobol2D sobol_gen(42);
-        std::vector<double> su, sv;
-        sobol_gen.generate(nOrient, su, sv);
+        if (batchSize <= 0) { nOrient *= 2; continue; }
 
-        double weight = 1.0 / nOrient;
+        // Trace and diffract only the NEW orientations [batchStart..batchEnd)
+        // Each batch uses weight = 1.0/batchSize (self-contained average)
+        // After all batches: M_total = sum(M_batch_i) / nBatches
+
+        // Store batch result in temporary Mueller, then add to accumulator
+        Arr2D batchM(nAz + 1, nZen + 1, 4, 4);
+        batchM.ClearArr();
+        Arr2D batchM_ns(nAz + 1, nZen + 1, 4, 4);
+        batchM_ns.ClearArr();
+
+        double batchEnergy = 0;
+        double weight = 1.0 / batchSize;
         std::vector<Beam> outBeams;
 
-        for (int i = 0; i < nOrient; ++i)
+        // Phase 1: trace new orientations
+        for (int i = batchStart; i < batchEnd; ++i)
         {
-            double beta = acos(1.0 - (1.0 - cosBetaSym) * su[i]);
-            double gamma = gammaSym * sv[i];
+            double beta  = acos(1.0 - (1.0 - cosBetaSym) * su_all[i]);
+            double gamma = gammaSym * sv_all[i];
             m_particle->Rotate(beta, gamma, 0);
             if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
             bool ok = m_scattering->ScatterLight(0, 0, outBeams);
-            if (ok) m_handler->HandleBeams(outBeams, weight);
-            m_incomingEnergy += m_scattering->GetIncedentEnergy() * weight;
+
+            if (ok)
+            {
+                // Preprocess + diffract into batch accumulators
+                PreparedOrientation prepared;
+                hp->PrepareBeams(outBeams, weight, prepared);
+
+                // Inline single-orientation diffraction
+                std::vector<Arr2DC> localJ, localJ_ns;
+                if (hp->isCoh) {
+                    Arr2DC tmp(nAz+1, nZen+1, 2, 2); tmp.ClearArr();
+                    localJ.push_back(tmp);
+                    Arr2DC tmp2(nAz+1, nZen+1, 2, 2); tmp2.ClearArr();
+                    localJ_ns.push_back(tmp2);
+                }
+
+                hp->HandleBeamsToLocal(prepared, batchM, localJ,
+                                        hp->isCoh ? &localJ_ns : nullptr);
+
+                if (hp->isCoh && !localJ.empty()) {
+                    double w = prepared.sinZenith;
+                    HandlerPO::AddToMuellerLocal(localJ, w, batchM, nAz, nZen);
+                    HandlerPO::AddToMuellerLocal(localJ_ns, w, batchM_ns, nAz, nZen);
+                }
+            }
+
+            batchEnergy += m_scattering->GetIncedentEnergy() * weight;
             outBeams.clear();
         }
 
-        // Extract M11(180°) from raw Mueller (phi-averaged)
+        // Add batch to accumulator (sum of batches)
+        for (int p = 0; p <= nAz; ++p)
+            for (int t = 0; t <= nZen; ++t) {
+                hp->M.insert(p, t, batchM(p, t));
+                hp->M_noshadow.insert(p, t, batchM_ns(p, t));
+            }
+        m_incomingEnergy += batchEnergy;
+        totalOrient = batchEnd;
+        nBatches++;
+
+        // Extract averaged M11(180°) = sum / nBatches
         double M11_180_avg = 0;
         for (int p = 0; p <= nAz; ++p)
             M11_180_avg += hp->M(p, nZen)[0][0];
-        M11_180_avg /= (nAz + 1);
+        M11_180_avg /= ((nAz + 1) * nBatches);
 
-        double Csca = m_incomingEnergy;
+        double Csca = m_incomingEnergy / nBatches;
 
         double relChange_m11 = (prevM11_180 != 0) ?
             fabs(M11_180_avg - prevM11_180) / fabs(prevM11_180) : 1.0;
         double relChange_csca = (prevCsca > 0) ?
             fabs(Csca - prevCsca) / prevCsca : 1.0;
 
-        std::cout << "  N=" << nOrient
-                  << " (+" << nOrient
+        std::cout << "  N=" << totalOrient
+                  << " (+" << batchSize
                   << " new), M11(180)=" << M11_180_avg
                   << ", dM11=" << relChange_m11*100 << "%"
                   << ", Csca=" << Csca
                   << ", dCsca=" << relChange_csca*100 << "%"
                   << std::endl;
 
-        // Convergence: C_sca must converge. M11(180°) is bonus.
+        // Convergence checks
         bool csca_ok = (relChange_csca < eps && iter > 0);
         bool m11_ok = (relChange_m11 < eps && iter > 0);
-        // Relaxed M11 criterion: backscattering is noisy, accept 5x eps
         bool m11_relaxed = (relChange_m11 < 5.0 * eps && iter > 1);
 
         if (csca_ok && m11_ok)
         {
-            std::cout << "Converged at N=" << nOrient << " (both C_sca and M11)" << std::endl;
-            return;
+            std::cout << "Converged at N=" << totalOrient << " (both C_sca and M11)" << std::endl;
+            break;
         }
         if (csca_ok && m11_relaxed)
         {
-            std::cout << "Converged at N=" << nOrient
+            std::cout << "Converged at N=" << totalOrient
                       << " (C_sca ok, M11 within " << relChange_m11*100 << "%)" << std::endl;
-            return;
+            break;
         }
-        // Hard stop: C_sca very stable (eps/10) — M11 will converge eventually
         if (relChange_csca < eps * 0.1 && iter >= 4)
         {
-            std::cout << "Converged at N=" << nOrient
+            std::cout << "Converged at N=" << totalOrient
                       << " (C_sca stable, M11 still " << relChange_m11*100 << "%)" << std::endl;
-            return;
+            break;
         }
 
         prevM11_180 = M11_180_avg;
         prevCsca = Csca;
         nOrient *= 2;
-        if (nOrient > maxOrient) break;
+        if (nOrient > maxOrient)
+        {
+            std::cout << "WARNING: Max orientations reached (N=" << totalOrient
+                      << ", limit=" << maxOrient << "). Target accuracy "
+                      << eps*100 << "% may not be achieved." << std::endl;
+            std::cout << "  To improve: use --maxorient " << maxOrient*2 << std::endl;
+            break;
+        }
     }
 
-    std::cout << "WARNING: Max orientations reached (N=" << nOrient/2
-              << ", limit=" << maxOrient << "). Target accuracy "
-              << eps*100 << "% may not be achieved." << std::endl;
-    std::cout << "  To improve: increase RAM or use --sobol " << maxOrient*2
-              << " manually." << std::endl;
+    // Normalize accumulated Mueller: divide by nBatches
+    // (each batch was computed with weight=1/batchSize, so sum of nBatches
+    // batches needs to be divided by nBatches to get the average)
+    for (int p = 0; p <= nAz; ++p)
+        for (int t = 0; t <= nZen; ++t)
+        {
+            matrix m = hp->M(p, t);
+            m *= (1.0 / nBatches);
+            hp->M.replace(p, t, m);
+
+            matrix m_ns = hp->M_noshadow(p, t);
+            m_ns *= (1.0 / nBatches);
+            hp->M_noshadow.replace(p, t, m_ns);
+        }
+    m_incomingEnergy /= nBatches;
+
+    // Write results
+    std::string dir = CreateFolder(m_resultDirName);
+#ifdef _WIN32
+    m_resultDirName += '\\' + m_resultDirName;
+#else
+    m_resultDirName = dir + m_resultDirName;
+#endif
+
+    m_handler->WriteTotalMatricesToFile(m_resultDirName);
+    m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
+
+    // Write no-shadow Mueller
+    {
+        std::swap(hp->M, hp->M_noshadow);
+        std::string nsName = m_resultDirName + "_noshadow";
+        hp->WriteMatricesToFile(nsName, m_incomingEnergy);
+        std::swap(hp->M, hp->M_noshadow);
+    }
+
+    CalcTimer timer;
+    timer.Start();
+    OutputStatisticsPO(timer, totalOrient, m_resultDirName);
 }
