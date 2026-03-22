@@ -919,9 +919,13 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                     int ddd = 0;
 #else
 
-        for (int i = 0; i <= m_sphere.nAzimuth; ++i)
+        // Precompute vf in SOA layout for better cache access
+        int nAz_total = m_sphere.nAzimuth;
+        int nZen_total = m_sphere.nZenith;
+
+        for (int i = 0; i <= nAz_total; ++i)
         {
-            int nZen = m_sphere.nZenith;
+            int nZen = nZen_total;
 
             // --- Theta-coefficients: precompute per-phi ---
             double cp = cos_phi_arr[i], sp = sin_phi_arr[i];

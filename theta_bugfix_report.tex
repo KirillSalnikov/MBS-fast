@@ -1,0 +1,248 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{geometry}\geometry{margin=2cm}
+\usepackage{graphicx,booktabs,longtable,amsmath,hyperref,xcolor,listings}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,backgroundcolor=\color[gray]{0.96}}
+
+\title{\textbf{MBS-raw Technical Report}\\[6pt]
+\large Forward-Direction Fresnel Sign Bugfix,\\
+Multi-Size Mode, and Phi Averaging}
+\author{}
+\date{2026-03-22}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+%======================================================================
+\section{Forward-Direction Fresnel Sign Bug}
+
+\subsection{Problem Description}
+
+In coherent mode, $M_{11}(\theta{=}0)$ was anomalously small compared to $M_{11}(\theta{=}0.1^\circ)$
+for small particles ($D \leq 30\,\mu$m). The forward peak—which should be the global maximum—showed
+a sharp dip at exactly $\theta=0$.
+
+\begin{table}[h]\centering
+\caption{$M_{11}$ ratio at $\theta=0$ vs $\theta=0.1^\circ$ (256 Sobol, hex column $D{=}H$, $m{=}1.31$, $n{=}6$)}
+\label{tab:ratio}
+\begin{tabular}{rrrrr}
+\toprule
+$D$ ($\mu$m) & $x$ & Before fix & After fix & Expected \\
+\midrule
+3   & 18  & 0.019  & \textbf{1.03} & $\approx 1$ \\
+10  & 59  & 0.012  & \textbf{1.39} & $> 1$ \\
+30  & 177 & 0.11   & \textbf{5.1}  & $\gg 1$ \\
+100 & 835 & 4.1    & \textbf{789}  & $\gg 1$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+For small $x$, the forward peak is broad and $M_{11}(0)/M_{11}(0.1^\circ) \approx 1$.
+For large $x$, the peak is sharp and the ratio is large. Both limits are now correct after the fix.
+
+\subsection{Root Cause}
+
+The Kirchhoff diffraction integral has a special case when the scattering direction equals the
+beam exit direction ($A \approx 0$, $B \approx 0$). The edge-sum formula converges to:
+\[
+F_\text{edge} = \frac{-ik}{(2\pi)^2} \cdot \text{Area} = -F_\text{inv} \cdot \text{Area}
+\]
+where $F_\text{inv} = i/\lambda$. But the code used $+F_\text{inv} \cdot \text{Area}$.
+
+This sign error created a discontinuity: beams hitting the $A{\approx}0$ threshold at $\theta=0$
+had opposite Fresnel amplitude from the same beams at $\theta=0.1^\circ$ (computed via edge-sum).
+In coherent mode, this caused destructive interference.
+
+\textbf{Verification}: per-beam diagnostic logging showed that 20 out of 172 beams (for a typical
+orientation) hit the forward special case at $\theta=0$ but not at $\theta=0.1^\circ$.
+These 20 beams had Fresnel amplitude $(0, +F)$ at $\theta=0$ vs $(0, -F)$ at $\theta=0.1^\circ$—opposite sign.
+After negating the 20 contributions, $M_{11}(0)/M_{11}(0.1^\circ) = 1.03$ (smooth).
+
+\subsection{Fix}
+
+Changed \texttt{+m\_invComplWave * area} to \texttt{-m\_invComplWave * area} in 6 locations:
+
+\begin{table}[h]\centering
+\caption{Modified lines}
+\begin{tabular}{lrl}
+\toprule
+File & Line & Function \\
+\midrule
+\texttt{HandlerPO.cpp} & 970  & \texttt{HandleBeams} \\
+\texttt{HandlerPO.cpp} & 1333 & \texttt{HandleBeamsToLocal} \\
+\texttt{HandlerPO.cpp} & 1889 & \texttt{ComputeFromCache} \\
+\texttt{Handler.cpp}   & 255  & \texttt{DiffractIncline} \\
+\texttt{Handler.cpp}   & 473  & \texttt{DiffractInclineFast} \\
+\texttt{Handler.cpp}   & 642  & \texttt{DiffractInclineAbs} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Impact}
+
+\begin{itemize}
+\item \textbf{Incoherent mode}: unaffected ($|J|^2$ is sign-independent)
+\item \textbf{$Q_\text{sca}$}: changed by $\sim$0.06\% ($\theta{=}0$ has near-zero integration weight)
+\item \textbf{Coherent $M_{11}$}: fixed for all $\theta \leq 0.1^\circ$ and all particle sizes
+\end{itemize}
+
+\subsection{Figures}
+
+\begin{figure}[h]\centering
+\includegraphics[width=\textwidth]{/tmp/theta_report/fig1_bugfix_comparison.pdf}
+\caption{$M_{11}$ near $\theta=0$ before (red dashed) and after (blue solid) the sign fix,
+compared with incoherent reference (green dotted). The bug caused $M_{11}(0^\circ)$ to be
+much larger than $M_{11}(0.1^\circ)$ in the buggy version (note log scale). After the fix,
+the curve is smooth.}
+\label{fig:bugfix}
+\end{figure}
+
+\begin{figure}[h]\centering
+\includegraphics[width=0.7\textwidth]{/tmp/theta_report/fig2_ratio.pdf}
+\caption{Ratio $M_{11}(0^\circ)/M_{11}(0.1^\circ)$ vs size parameter. Before the fix (red squares),
+the ratio was $\ll 1$ for small particles. After the fix (blue circles), the ratio is $\geq 1$
+and grows with $x$ as expected (sharper forward peak for larger particles).}
+\label{fig:ratio}
+\end{figure}
+
+\begin{figure}[h]\centering
+\includegraphics[width=0.85\textwidth]{/tmp/theta_report/fig3_full_range.pdf}
+\caption{$M_{11}(\theta)$ full range after fix for different particle sizes.
+Forward peak width scales as $\sim\lambda/D$.}
+\label{fig:fullrange}
+\end{figure}
+
+\begin{figure}[h]\centering
+\includegraphics[width=\textwidth]{/tmp/theta_report/fig4_coh_vs_incoh.pdf}
+\caption{Coherent (fixed) vs incoherent $M_{11}$ near forward direction.
+For small particles ($D{=}3\,\mu$m), both modes agree closely.
+For larger particles ($D{=}30\,\mu$m), coherent forward peak is much sharper.}
+\label{fig:cohincoh}
+\end{figure}
+
+%======================================================================
+\newpage
+\section{Multi-Size Mode (\texttt{--sizefile})}
+
+\subsection{How It Works}
+
+The \texttt{--sizefile} flag enables computation for multiple size parameters $x = \pi D/\lambda$
+from a single ray-tracing pass:
+
+\begin{enumerate}
+\item \textbf{Phase 1}: Trace rays for a reference size $D_\text{ref}$, cache beam geometry
+  (vertices$/D$, slopes, Jones, optical paths) in \texttt{BeamCache}.
+\item \textbf{Phase 2}: For each size $x_i$, recompute diffraction integrals with scaled phases:
+  $\text{phase}_i = k_i D_i \cdot (\text{base\_phase})$ where base\_phase is size-independent.
+\end{enumerate}
+
+The key invariant: beam \emph{topology} (number of reflections, edge structure, Jones matrix
+up to phase) is the same for all sizes. Only vertex positions and phases scale with $D$.
+
+\subsection{Existing Optimizations}
+
+\texttt{ComputeFromCache} (in \texttt{HandlerPO.cpp}) is already heavily optimized:
+
+\begin{itemize}
+\item \textbf{Size-independent hoisting}: \texttt{rotate\_jones}, edge $1/C_i$, and branch selection
+  are computed once per direction, reused across all sizes.
+\item \textbf{Batched sincos across sizes}: vertex phases for all sizes at one direction are
+  batched via \texttt{fast\_sincos\_8x}/\texttt{4x} (AVX-512/AVX2).
+\item \textbf{Inline Mueller}: Mueller matrix computed directly from Jones components—no heap allocation.
+\item \textbf{Theta-coefficients}: $A(\theta), B(\theta)$ decomposed into $\sin\theta/\cos\theta$ terms.
+\end{itemize}
+
+\subsection{What is NOT Optimized}
+
+\begin{enumerate}
+\item \textbf{No OpenMP}: \texttt{ComputeFromCache} is single-threaded. Could parallelize over
+  orientations (same as \texttt{TraceFromSobol}).
+\item \textbf{No batched sincos across $\theta$}: unlike \texttt{HandleBeamsToLocal},
+  vertex sincos is computed per-$\theta$ (not pre-batched for all $\theta$ at once).
+\item \textbf{Requires \texttt{--orientfile}}: currently only works with orientation files,
+  not with \texttt{--sobol} or \texttt{--adaptive}.
+\end{enumerate}
+
+\subsection{When Does It Help?}
+
+\begin{table}[h]\centering
+\caption{Speedup from \texttt{--sizefile} vs $N$ separate runs}
+\begin{tabular}{llll}
+\toprule
+Scenario & Separate & \texttt{--sizefile} & Speedup \\
+\midrule
+$N{=}10$ sizes, Phase 1 = 5\% & $10 \times T$ & $1.5 \times T$ & $\sim 7\times$ \\
+$N{=}10$ sizes, Phase 1 = 50\% & $10 \times T$ & $5.5 \times T$ & $\sim 2\times$ \\
+$N{=}2$ sizes & $2 \times T$  & $1.1 \times T$ & $\sim 1.8\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Rule of thumb}: \texttt{--sizefile} helps when Phase 1 (tracing) is expensive relative to
+Phase 2 (diffraction). This happens for:
+\begin{itemize}
+\item Large $n$ (many reflections): Phase 1 grows, Phase 2 stays constant per size.
+\item Complex particles (concave, aggregates): tracing is expensive.
+\item Many sizes ($N \geq 5$): amortization is significant.
+\end{itemize}
+
+It does \emph{not} help when Phase 2 dominates (small $n$, simple particles)—the overhead
+of \texttt{ComputeFromCache} is similar to \texttt{HandleBeamsToLocal} per size.
+
+%======================================================================
+\section{Phi Averaging}
+
+\subsection{Current Behavior}
+
+MBS-raw computes Mueller matrices on a 2D grid $(\theta, \phi)$ where $\phi$ ranges from 0 to
+$2\pi$ with $N_\phi$ bins (specified by \texttt{--grid}). The output file \texttt{M.dat} contains
+\textbf{phi-averaged} $M_{11}(\theta)$: the code sums Mueller over all $\phi$ bins and divides by $N_\phi+1$.
+
+\subsection{Is There an Auto Mode for Phi?}
+
+\textbf{No.} $N_\phi$ is fixed by the \texttt{--grid} argument. There is no \texttt{--auto\_phi}
+or adaptive phi mode.
+
+\subsection{How Many Phi Bins Are Needed?}
+
+\begin{table}[h]\centering
+\caption{$N_\phi$ requirements (from validation in previous sessions)}
+\begin{tabular}{lll}
+\toprule
+$N_\phi$ & Error vs $N_\phi{=}48$ & Notes \\
+\midrule
+6    & 50--200\% at side/back angles & \textbf{Insufficient!} Old default. \\
+12   & $\sim$20\% & Still poor for polarization \\
+24   & $<5\%$ & Acceptable for $M_{11}$ \\
+48   & reference & \textbf{Recommended minimum} \\
+96   & $<0.1\%$ vs 48 & For high-precision work \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+For orientation-averaged calculations, $N_\phi = 48$ is the recommended minimum.
+$N_\phi = 6$ (the original default) causes gross errors.
+
+\subsection{Could Phi Be Optimized?}
+
+In principle, fewer $\phi$ bins could suffice for $M_{11}$ (which varies slowly with $\phi$ after
+orientation averaging) while more are needed for $M_{33}, M_{34}$ (fast $\phi$ oscillations).
+An adaptive scheme would:
+\begin{enumerate}
+\item Start with $N_\phi = 12$
+\item Check $M_{11}$ convergence vs $N_\phi = 24$
+\item Double until converged
+\end{enumerate}
+
+This is not implemented but would be straightforward. The main barrier is that $\phi$ bins
+affect the 2D grid size (memory and computation scale as $N_\phi \times N_\theta$), so
+reducing $N_\phi$ gives a proportional speedup.
+
+\textbf{For most applications, $N_\phi = 48$ is a good fixed default.}
+
+\end{document}
