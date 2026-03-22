@@ -951,5 +951,9 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym)
         if (nOrient > maxOrient) break;
     }
 
-    std::cout << "Max iterations reached, using N=" << nOrient/2 << std::endl;
+    std::cout << "WARNING: Max orientations reached (N=" << nOrient/2
+              << ", limit=" << maxOrient << "). Target accuracy "
+              << eps*100 << "% may not be achieved." << std::endl;
+    std::cout << "  To improve: increase RAM or use --sobol " << maxOrient*2
+              << " manually." << std::endl;
 }
