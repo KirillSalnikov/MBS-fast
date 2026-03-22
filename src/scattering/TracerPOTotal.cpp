@@ -818,7 +818,7 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
     OutputStatisticsPO(timer, nOrient, m_resultDirName);
 }
 
-void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym)
+void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, int maxOrientOverride)
 {
     std::cout << "Adaptive mode: target relative change = " << eps << std::endl;
     std::cout << "  Convergence criterion: M11(180°) backscattering" << std::endl;
@@ -863,10 +863,18 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym)
         }
     }
 #endif
-    // Use 50% of RAM, ~350 KB/orient. Min 1024, cap at 131072.
-    int maxOrient = std::max(1024, std::min(131072, (int)(availMB_ad / 2 * 1024 / 350)));
-    // Round down to power of 2 (Sobol property)
-    { int p = 1; while (p * 2 <= maxOrient) p *= 2; maxOrient = p; }
+    int maxOrient;
+    if (maxOrientOverride > 0) {
+        // User-specified: round to power of 2
+        maxOrient = 1;
+        while (maxOrient < maxOrientOverride) maxOrient *= 2;
+        if (maxOrient > maxOrientOverride) maxOrient /= 2;
+        if (maxOrient < 64) maxOrient = 64;
+    } else {
+        // Auto from RAM: 50% of available, ~350 KB/orient. Min 1024, cap 131072.
+        maxOrient = std::max(1024, std::min(131072, (int)(availMB_ad / 2 * 1024 / 350)));
+        int p = 1; while (p * 2 <= maxOrient) p *= 2; maxOrient = p;
+    }
     std::cerr << "Adaptive: max orientations = " << maxOrient
               << " (" << availMB_ad << " MB available)" << std::endl;
     double prevM11_180 = 0;

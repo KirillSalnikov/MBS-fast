@@ -87,6 +87,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("auto_phi", 0, true); // auto-select N_phi based on size parameter
     parser.AddRule("adaptive", 1, true); // adaptive convergence (target relative accuracy)
     parser.AddRule("auto", 1, true); // full auto: auto_tgrid + auto_phi + adaptive (one arg: eps)
+    parser.AddRule("maxorient", 1, true); // max orientations for adaptive (power of 2)
     parser.AddRule("sym", 2, true); // symmetry override: beta_factor gamma_factor (e.g. --sym 2 6)
 }
 
@@ -817,7 +818,9 @@ int main(int argc, const char* argv[])
             {
                 double epsAdapt = isAuto ? args.GetDoubleValue("auto", 0)
                                          : args.GetDoubleValue("adaptive", 0);
-                tracer->TraceAdaptive(epsAdapt, betaSym, gammaSym);
+                int maxOrientUser = args.IsCatched("maxorient")
+                    ? args.GetIntValue("maxorient", 0) : 0;
+                tracer->TraceAdaptive(epsAdapt, betaSym, gammaSym, maxOrientUser);
             }
             else
             {

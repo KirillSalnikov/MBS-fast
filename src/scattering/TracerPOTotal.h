@@ -24,5 +24,5 @@ public:
     void TraceFromSobol(int nOrient, double betaSym, double gammaSym);
 
     /// Adaptive convergence mode
-    void TraceAdaptive(double eps, double betaSym, double gammaSym);
+    void TraceAdaptive(double eps, double betaSym, double gammaSym, int maxOrientOverride = 0);
 };
