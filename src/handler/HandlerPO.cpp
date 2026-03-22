@@ -595,11 +595,10 @@ matrixC HandlerPO::ApplyDiffraction(const Beam &beam, const BeamInfo &info,
         RotateJones(beam, info, vf, direction, jones_rot);
     auto t2 = std::chrono::high_resolution_clock::now();
 
-    complex fresnel = DiffractIncline(info, beam, direction);
+    complex fresnel = (m_hasAbsorption && useExactAbsorption && beam.lastFacetId != __INT_MAX__ && beam.nActs > 0)
+            ? DiffractInclineAbs(info, beam, direction)
+            : DiffractIncline(info, beam, direction);
     auto t3 = std::chrono::high_resolution_clock::now();
-//	complex fresnel = (m_hasAbsorption && beam.lastFacetId != INT_MAX && beam.nActs > 0)
-//			? DiffractInclineAbs(info, beam, direction)
-//			: DiffractIncline(info, beam, direction);
 
     if (isnan(real(fresnel)))
     {
@@ -840,10 +839,11 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
             continue;
         }
 
-        if (m_hasAbsorption && beam.lastFacetId != __INT_MAX__ && beam.lastFacetId != -1)
+        if (m_hasAbsorption && !useExactAbsorption && beam.lastFacetId != __INT_MAX__ && beam.lastFacetId != -1)
         {
-            ApplyAbsorption(beam);
+            ApplyAbsorption(beam);  // approximate: uniform absorption across aperture
         }
+        // When useExactAbsorption: DiffractInclineAbs handles it per-vertex (gradient)
 
         if (beam.lastFacetId != __INT_MAX__)
         {

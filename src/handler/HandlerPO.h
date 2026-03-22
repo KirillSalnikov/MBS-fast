@@ -151,6 +151,7 @@ protected:
     double backScatteringConus = 180;
 public:
     bool useKarczewski = false;
+    bool useExactAbsorption = false;  ///< Use DiffractInclineAbs (gradient absorption across aperture)
 protected:
     void KarczewskiJones(const Beam &beam, const BeamInfo &info,
                          const Vector3d &vf, const Vector3d &direction,
