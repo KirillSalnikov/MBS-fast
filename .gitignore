@@ -1,11 +1,31 @@
+# Build
 *.o
 bin/
+build/
+
+# Output data
 *.dat
-*.txt
-*.orig
+M_*/
+M\out.txt
+
+# Logs
 *.log
+*.txt
+!README.md
+
+# LaTeX aux
 *.aux
 *.out
 *.toc
-M_random
+*.synctex.gz
+
+# Runtime
 particle_for_check.dat
+beam_log.dat
+log1.txt
+goad_run/
+
+# OS
+.DS_Store
+*.swp
+*~
