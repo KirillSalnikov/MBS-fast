@@ -932,6 +932,7 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
     double prevCsca = 0;
     int totalOrient = 0;    // total orientations processed so far
     int nBatches = 0;       // number of equal-size batches
+    int convergedCount = 0; // consecutive iterations with dM11 < eps
 
     for (int iter = 0; iter < 15; ++iter)
     {
@@ -1036,26 +1037,20 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
                   << ", dCsca=" << relChange_csca*100 << "%"
                   << std::endl;
 
-        // Convergence checks
-        bool csca_ok = (relChange_csca < eps && iter > 0);
+        // Convergence: M11(180°) must be within eps for TWO consecutive iterations.
+        // C_sca is printed but NOT used as convergence criterion.
         bool m11_ok = (relChange_m11 < eps && iter > 0);
-        bool m11_relaxed = (relChange_m11 < 5.0 * eps && iter > 1);
 
-        if (csca_ok && m11_ok)
-        {
-            std::cout << "Converged at N=" << totalOrient << " (both C_sca and M11)" << std::endl;
-            break;
-        }
-        if (csca_ok && m11_relaxed)
-        {
-            std::cout << "Converged at N=" << totalOrient
-                      << " (C_sca ok, M11 within " << relChange_m11*100 << "%)" << std::endl;
-            break;
-        }
-        if (relChange_csca < eps * 0.1 && iter >= 4)
+        if (m11_ok)
+            convergedCount++;
+        else
+            convergedCount = 0;
+
+        if (convergedCount >= 2)
         {
             std::cout << "Converged at N=" << totalOrient
-                      << " (C_sca stable, M11 still " << relChange_m11*100 << "%)" << std::endl;
+                      << " (M11(180) within " << eps*100 << "% for 2 consecutive steps)"
+                      << std::endl;
             break;
         }
 
