@@ -729,6 +729,7 @@ void HandlerPO::SetScatteringSphere(const ScatteringRange &grid)
 {
     m_sphere = grid;
     M = Arr2D(m_sphere.nAzimuth+1, m_sphere.nZenith+1, 4, 4);
+    M_noshadow = Arr2D(m_sphere.nAzimuth+1, m_sphere.nZenith+1, 4, 4);
 
     m_sphere.ComputeSphereDirections(*m_incidentLight);
 }
@@ -1219,7 +1220,8 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
 // =============================================================================
 void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                                     Arr2D &localM,
-                                    std::vector<Arr2DC> &localJ)
+                                    std::vector<Arr2DC> &localJ,
+                                    std::vector<Arr2DC> *localJ_noshadow)
 {
     double sinZenith = prepared.sinZenith;
     int nAz_global = m_sphere.nAzimuth;
@@ -1442,8 +1444,10 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                 else
                 {
                     // For coherent mode, accumulate into localJ[0]
-                    // (simplified: no group tracking in parallel mode)
                     localJ[0].insert_2x2(i, j, d00, d01, d10, d11);
+                    // Also accumulate without shadow beam (for separate output)
+                    if (localJ_noshadow && !isExternal)
+                        (*localJ_noshadow)[0].insert_2x2(i, j, d00, d01, d10, d11);
                 }
             }
         }

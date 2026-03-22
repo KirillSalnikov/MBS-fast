@@ -76,7 +76,8 @@ public:
     /// and writes only to the provided localM.
     void HandleBeamsToLocal(const PreparedOrientation &prepared,
                             Arr2D &localM,
-                            std::vector<Arr2DC> &localJ);
+                            std::vector<Arr2DC> &localJ,
+                            std::vector<Arr2DC> *localJ_noshadow = nullptr);
 
     /// Convert coherent Jones (localJ) to Mueller and add to localM.
     static void AddToMuellerLocal(const std::vector<Arr2DC> &localJ,
@@ -94,7 +95,8 @@ public:
 
     matrix *m_Lp;
     matrix *m_Ln;
-    Arr2D M;				// Mueller matrices
+    Arr2D M;				// Mueller matrices (all beams including shadow)
+    Arr2D M_noshadow;		// Mueller matrices (without shadow/external beam)
 
 protected:
     virtual void AddToMueller();

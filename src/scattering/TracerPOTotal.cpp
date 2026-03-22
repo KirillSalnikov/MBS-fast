@@ -392,13 +392,18 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
         {
             Arr2D localM(nAz + 1, nZen + 1, 4, 4);
             localM.ClearArr();
+            Arr2D localM_ns(nAz + 1, nZen + 1, 4, 4); // no-shadow
+            localM_ns.ClearArr();
 
-            std::vector<Arr2DC> localJ;
+            std::vector<Arr2DC> localJ, localJ_ns;
             if (handlerPO->isCoh)
             {
                 Arr2DC tmp(nAz + 1, nZen + 1, 2, 2);
                 tmp.ClearArr();
                 localJ.push_back(tmp);
+                Arr2DC tmp2(nAz + 1, nZen + 1, 2, 2);
+                tmp2.ClearArr();
+                localJ_ns.push_back(tmp2);
             }
 
             #pragma omp for schedule(dynamic, 1)
@@ -406,14 +411,17 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
             {
                 if (!chunkPrepared[i].beams.empty())
                 {
-                    handlerPO->HandleBeamsToLocal(chunkPrepared[i], localM, localJ);
+                    handlerPO->HandleBeamsToLocal(chunkPrepared[i], localM, localJ,
+                                                   handlerPO->isCoh ? &localJ_ns : nullptr);
                 }
 
                 if (handlerPO->isCoh && !localJ.empty())
                 {
                     double w = chunkPrepared[i].sinZenith;
                     HandlerPO::AddToMuellerLocal(localJ, w, localM, nAz, nZen);
+                    HandlerPO::AddToMuellerLocal(localJ_ns, w, localM_ns, nAz, nZen);
                     localJ[0].ClearArr();
+                    localJ_ns[0].ClearArr();
                 }
             }
 
@@ -422,8 +430,8 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
                 for (int p = 0; p <= nAz; ++p)
                     for (int t = 0; t <= nZen; ++t)
                     {
-                        matrix m = localM(p, t);
-                        handlerPO->M.insert(p, t, m);
+                        handlerPO->M.insert(p, t, localM(p, t));
+                        handlerPO->M_noshadow.insert(p, t, localM_ns(p, t));
                     }
             }
         } // end omp parallel
@@ -451,6 +459,18 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
 
     m_handler->WriteTotalMatricesToFile(m_resultDirName);
     m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
+
+    // Write no-shadow Mueller matrix (swap M <-> M_noshadow temporarily)
+    {
+        HandlerPO *hp = dynamic_cast<HandlerPO*>(m_handler);
+        if (hp) {
+            std::swap(hp->M, hp->M_noshadow);
+            std::string nsName = m_resultDirName + "_noshadow";
+            hp->WriteMatricesToFile(nsName, m_incomingEnergy);
+            std::swap(hp->M, hp->M_noshadow); // swap back
+        }
+    }
+
     OutputStatisticsPO(timer, nOrientations, m_resultDirName);
 }
 
@@ -772,22 +792,30 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
         {
             Arr2D localM(nAz + 1, nZen + 1, 4, 4);
             localM.ClearArr();
-            std::vector<Arr2DC> localJ;
+            Arr2D localM_ns(nAz + 1, nZen + 1, 4, 4);
+            localM_ns.ClearArr();
+            std::vector<Arr2DC> localJ, localJ_ns;
             if (handlerPO->isCoh) {
                 Arr2DC tmp(nAz + 1, nZen + 1, 2, 2);
                 tmp.ClearArr();
                 localJ.push_back(tmp);
+                Arr2DC tmp2(nAz + 1, nZen + 1, 2, 2);
+                tmp2.ClearArr();
+                localJ_ns.push_back(tmp2);
             }
 
             #pragma omp for schedule(dynamic, 1)
             for (int i = 0; i < thisChunk; ++i)
             {
                 if (!chunkPrepared[i].beams.empty())
-                    handlerPO->HandleBeamsToLocal(chunkPrepared[i], localM, localJ);
+                    handlerPO->HandleBeamsToLocal(chunkPrepared[i], localM, localJ,
+                                                   handlerPO->isCoh ? &localJ_ns : nullptr);
                 if (handlerPO->isCoh && !localJ.empty()) {
                     double w = chunkPrepared[i].sinZenith;
                     HandlerPO::AddToMuellerLocal(localJ, w, localM, nAz, nZen);
+                    HandlerPO::AddToMuellerLocal(localJ_ns, w, localM_ns, nAz, nZen);
                     localJ[0].ClearArr();
+                    localJ_ns[0].ClearArr();
                 }
             }
 
@@ -795,8 +823,8 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
             {
                 for (int p = 0; p <= nAz; ++p)
                     for (int t = 0; t <= nZen; ++t) {
-                        matrix m = localM(p, t);
-                        handlerPO->M.insert(p, t, m);
+                        handlerPO->M.insert(p, t, localM(p, t));
+                        handlerPO->M_noshadow.insert(p, t, localM_ns(p, t));
                     }
             }
         }
@@ -815,6 +843,15 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
 
     m_handler->WriteTotalMatricesToFile(m_resultDirName);
     m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
+
+    // Write no-shadow Mueller
+    {
+        std::swap(handlerPO->M, handlerPO->M_noshadow);
+        std::string nsName = m_resultDirName + "_noshadow";
+        handlerPO->WriteMatricesToFile(nsName, m_incomingEnergy);
+        std::swap(handlerPO->M, handlerPO->M_noshadow);
+    }
+
     OutputStatisticsPO(timer, nOrient, m_resultDirName);
 }
 
