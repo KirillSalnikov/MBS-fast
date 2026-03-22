@@ -274,10 +274,49 @@ For x=100: 1800 uniform bins -> 156 non-uniform bins = **11x speedup**.
 
 #### `--auto_tgrid` (RECOMMENDED)
 
-Automatically generate optimal non-uniform theta grid based on size parameter x = pi*D/lambda:
-- Fine zone (0 to 5x peak width): step = 0.1 x (180 deg/x)
-- Transition zone: logarithmic spacing to 10 deg
-- Coarse zone (10 deg to 180 deg): step 2 deg
+Automatically generate optimal non-uniform theta grid based on size parameter x = pi*D/lambda.
+Five zones with adaptive step sizes:
+
+| Zone | Range | Step | Purpose |
+|------|-------|------|---------|
+| Fine | 0 to 10×peak_width | peak_width/20 | Resolve forward diffraction peak |
+| Transition | to 20° (or 40° if x<30) | geometric ×1.3, max 1° | Smooth transition |
+| Medium | to 120° | 0.5° (x<100) or 1° | Side scattering |
+| Side/back | 120° to 175° | 1° | Backscattering |
+| Near-backscatter | 175° to 180° | 0.25° | LDR, depolarization |
+
+**Total points vs size parameter:**
+
+| x | peak width | N_theta | Fine step | N_phi (auto) |
+|---|---|---|---|---|
+| 10 | 18.0° | 316 | 0.50° | 48 |
+| 50 | 3.6° | 389 | 0.18° | 48 |
+| 100 | 1.8° | 383 | 0.09° | 48 |
+| 200 | 0.9° | 395 | 0.045° | 60 |
+| 500 | 0.36° | 404 | 0.018° | 90 |
+| 1000 | 0.18° | 408 | 0.009° | 132 |
+| 2000 | 0.09° | 412 | 0.0045° | 180 |
+| 3000 | 0.06° | 414 | 0.003° | 222 |
+
+See `fig_auto_grid_points.pdf` and `fig_auto_grid_steps.pdf` for visualizations.
+
+#### `--auto_phi`
+
+Automatically select N_phi based on size parameter. Formula: `N_phi = max(48, 6*ceil(sqrt(x)/1.5))`.
+
+Phi convergence **depends on x**: fixed N_phi=48 gives 2% Q_sca error at x=18 but 13% at x=600.
+Auto_phi keeps error uniform at ~2-3% across all sizes.
+
+| x | auto N_phi | Q_sca error |
+|---|---|---|
+| 18 | 48 | 2.0% |
+| 59 | 48 | 2.5% |
+| 177 | 66 | 2.2% |
+| 591 | 120 | 2.9% |
+
+See `fig_auto_phi.pdf` for convergence plots.
+
+**Recommended**: use both `--auto_tgrid --auto_phi` together.
 
 #### `--point`
 

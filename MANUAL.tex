@@ -167,8 +167,42 @@ Example: \texttt{--sym 6 2} $\to$ $\beta\in[0,30\degree]$, $\gamma\in[0,180\degr
 Uniform grid. \textbf{Use $N_\phi \geq 48$}; $N_\phi=6$ causes 50--200\% error.
 
 \subsubsection{\texttt{--auto\_tgrid} (recommended)}
-Auto non-uniform $\theta$ grid based on $x = \pi D/\lambda$:
-fine zone near forward peak, geometric transition, coarse at side/back.
+Auto non-uniform $\theta$ grid with 5 adaptive zones:
+
+\begin{tabular}{llll}
+\toprule
+Zone & Range & Step & Purpose \\
+\midrule
+Fine & $0$ to $10\times$peak & peak$/20$ & Forward peak \\
+Transition & to $20\degree$ & geometric $\times 1.3$ & Smooth bridging \\
+Medium & to $120\degree$ & $0.5\degree$ ($x{<}100$) or $1\degree$ & Side scattering \\
+Side/back & to $175\degree$ & $1\degree$ & Backscattering \\
+Near-backscatter & to $180\degree$ & $0.25\degree$ & LDR \\
+\bottomrule
+\end{tabular}
+
+\begin{figure}[h]\centering
+\includegraphics[width=\textwidth]{fig_auto_grid_points.pdf}
+\caption{Left: total $N_\theta$ and $N_\phi$ vs size parameter $x$.
+Right: zone breakdown of $\theta$-grid points.}
+\end{figure}
+
+\begin{figure}[h]\centering
+\includegraphics[width=0.85\textwidth]{fig_auto_grid_steps.pdf}
+\caption{Step size $\Delta\theta$ vs scattering angle for different $x$.
+Small $x$ has coarser steps (broad peak); large $x$ needs fine steps near $\theta{=}0$.}
+\end{figure}
+
+\subsubsection{\texttt{--auto\_phi}}
+Auto-select $N_\phi$ based on $x$: $N_\phi = \max(48,\; 6\lceil\sqrt{x}/1.5\rceil)$.
+
+\begin{figure}[h]\centering
+\includegraphics[width=\textwidth]{fig_auto_phi.pdf}
+\caption{Left: $N_\phi$ from auto\_phi (blue) vs fixed values.
+Right: $Q_\text{sca}$ error vs $N_\phi$ for different sizes—larger $x$ needs more $\phi$ bins.}
+\end{figure}
+
+\textbf{Recommended}: use both \texttt{--auto\_tgrid --auto\_phi} together.
 
 \subsubsection{\texttt{--tgrid FILENAME}}
 Custom $\theta$ grid from file (degrees, one per line).
