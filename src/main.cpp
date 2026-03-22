@@ -475,6 +475,12 @@ int main(int argc, const char* argv[])
     {
         additionalSummary += "Physical optics";
 
+        if (args.IsCatched("karczewski"))
+        {
+            cout << "Note: --karczewski does not affect M11 (same Frobenius norm as RotateJones)." << endl;
+            cout << "      Experimental flag for M33/M34/M44 research only." << endl;
+        }
+
         if (args.IsCatched("fixed"))
         {
             additionalSummary += ", fixed orientation\n\n";

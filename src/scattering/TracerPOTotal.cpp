@@ -284,7 +284,15 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
     }
 
     // =========================================================================
-    // Phase 1 (sequential): Trace beams for all orientations, preprocess them
+    // Phase 1 (sequential): Trace beams for all orientations, preprocess them.
+    //
+    // WHY SEQUENTIAL: Particle::Rotate() and ScatterLight() modify shared
+    // state (particle geometry, scattering internals). Parallelizing would
+    // require N_THREADS copies of Particle and Scattering (no Clone() method
+    // exists, and the virtual hierarchy makes it complex to implement).
+    //
+    // PERFORMANCE: Phase 1 is typically <5% of total time. The dominant
+    // Phase 2 (diffraction integrals) IS parallelized with OpenMP.
     // =========================================================================
     auto t_phase1_start = std::chrono::high_resolution_clock::now();
 
@@ -632,7 +640,21 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
         throw std::exception();
     }
 
-    // Phase 1: Trace beams for all orientations
+    // =========================================================================
+    // Phase 1 (sequential): Trace beams for all orientations.
+    //
+    // WHY SEQUENTIAL: Particle::Rotate() modifies shared particle geometry
+    // (vertices, normals, facets) and ScatterLight() modifies shared
+    // Scattering state. Making these thread-safe would require either:
+    //   (a) Particle::Clone() — complex due to virtual hierarchy, or
+    //   (b) Critical sections around stateful parts — serializes the work.
+    //
+    // PERFORMANCE IMPACT: Phase 1 typically takes <5% of total time
+    // (e.g., ~0.5s out of ~30s for x=50, 512 orientations). The dominant
+    // cost is Phase 2 (diffraction integrals), which IS parallelized.
+    // Parallelizing Phase 1 would save <2% of total runtime — not worth
+    // the complexity (Amdahl's law).
+    // =========================================================================
     auto t_phase1_start = std::chrono::high_resolution_clock::now();
 
     std::vector<PreparedOrientation> allPrepared(nOrient);

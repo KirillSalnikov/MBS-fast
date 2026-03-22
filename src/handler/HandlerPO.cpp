@@ -322,6 +322,21 @@ void HandlerPO::KarczewskiJones(const Beam &beam, const BeamInfo &info,
     // GOAD-compatible Karczewski pipeline (replicates diff2.rs)
     // =========================================================================
     //
+    // IMPORTANT: This implementation computes the Karczewski matrix in aperture
+    // frame but does NOT fully replicate GOAD's 5-step coordinate pipeline.
+    // As a result:
+    //   - M11 is IDENTICAL to RotateJones (proven: ||R|| = ||K||, same Frobenius
+    //     norm, so M11 = (1/2)||A||^2_F is the same regardless of formalism).
+    //   - M33, M34, M44 DIFFER from GOAD at phi != 0 because the matrix STRUCTURE
+    //     differs (off-diagonal elements reach ±0.87 for RotateJones vs ±0.001
+    //     for Karczewski).
+    //   - Fixing M33/M34/M44 to match GOAD would require replicating the full
+    //     coordinate transformation pipeline, which is extremely complex.
+    //
+    // STATUS: Experimental. Use for M33/M34/M44 research only.
+    // For M11: results are identical to default RotateJones.
+    // =========================================================================
+    //
     // GOAD pipeline:
     //   1. Build rot3: lab -> aperture frame (face in xy, beam e_perp along +y)
     //   2. Transform prop and k_obs into aperture frame
