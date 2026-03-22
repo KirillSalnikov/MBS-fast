@@ -85,6 +85,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("sobol", 1, true); // Sobol quasi-random orientations (number, power of 2)
     parser.AddRule("auto_tgrid", 0, true); // auto-generate theta grid based on size parameter
     parser.AddRule("adaptive", 1, true); // adaptive convergence (target relative accuracy)
+    parser.AddRule("sym", 2, true); // symmetry override: beta_factor gamma_factor (e.g. --sym 2 6)
 }
 
 ScatteringRange SetConus(ArgPP &parser)
@@ -764,6 +765,20 @@ int main(int argc, const char* argv[])
 
             double betaSym = particle->GetSymmetry().beta;
             double gammaSym = particle->GetSymmetry().gamma;
+
+            // Override symmetry: --sym beta_factor gamma_factor
+            // e.g. --sym 2 6 means β∈[0,π/2], γ∈[0,2π/6] = 2× and 6× reduction
+            // --sym 1 1 means full sphere (no symmetry reduction)
+            if (args.IsCatched("sym"))
+            {
+                int symBeta = args.GetIntValue("sym", 0);
+                int symGamma = args.GetIntValue("sym", 1);
+                betaSym = M_PI / std::max(symBeta, 1);
+                gammaSym = 2.0 * M_PI / std::max(symGamma, 1);
+                cout << "Symmetry override: beta_sym=" << RadToDeg(betaSym)
+                     << " deg (/" << symBeta << "), gamma_sym=" << RadToDeg(gammaSym)
+                     << " deg (/" << symGamma << ")" << endl;
+            }
 
             if (isAdaptive)
             {
