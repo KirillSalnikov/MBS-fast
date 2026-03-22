@@ -86,6 +86,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("auto_tgrid", 0, true); // auto-generate theta grid based on size parameter
     parser.AddRule("auto_phi", 0, true); // auto-select N_phi based on size parameter
     parser.AddRule("adaptive", 1, true); // adaptive convergence (target relative accuracy)
+    parser.AddRule("auto", 1, true); // full auto: auto_tgrid + auto_phi + adaptive (one arg: eps)
     parser.AddRule("sym", 2, true); // symmetry override: beta_factor gamma_factor (e.g. --sym 2 6)
 }
 
@@ -726,9 +727,11 @@ int main(int argc, const char* argv[])
 
             delete handler;
         }
-        else if (args.IsCatched("sobol") || args.IsCatched("adaptive"))
+        else if (args.IsCatched("sobol") || args.IsCatched("adaptive") || args.IsCatched("auto"))
         {
-            bool isAdaptive = args.IsCatched("adaptive");
+            // --auto EPS implies --adaptive EPS + --auto_tgrid + --auto_phi
+            bool isAuto = args.IsCatched("auto");
+            bool isAdaptive = args.IsCatched("adaptive") || isAuto;
             if (isAdaptive)
                 additionalSummary += ", adaptive Sobol\n\n";
             else
@@ -744,15 +747,15 @@ int main(int argc, const char* argv[])
             HandlerPOTotal *handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
                                          nTheta, wave);
 
-            // Apply auto_tgrid if requested
-            if (args.IsCatched("auto_tgrid"))
+            // Apply auto_tgrid if requested (or implied by --auto)
+            if (args.IsCatched("auto_tgrid") || isAuto)
             {
                 double D = particle->MaximalDimention();
                 ApplyAutoThetaGrid(conus, D, wave);
             }
 
-            // Apply auto_phi if requested
-            if (args.IsCatched("auto_phi"))
+            // Apply auto_phi if requested (or implied by --auto)
+            if (args.IsCatched("auto_phi") || isAuto)
             {
                 double D = particle->MaximalDimention();
                 double x = (wave > 0) ? M_PI * D / wave : 100;
@@ -812,7 +815,8 @@ int main(int argc, const char* argv[])
 
             if (isAdaptive)
             {
-                double epsAdapt = args.GetDoubleValue("adaptive", 0);
+                double epsAdapt = isAuto ? args.GetDoubleValue("auto", 0)
+                                         : args.GetDoubleValue("adaptive", 0);
                 tracer->TraceAdaptive(epsAdapt, betaSym, gammaSym);
             }
             else
