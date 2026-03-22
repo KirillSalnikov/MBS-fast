@@ -2,15 +2,15 @@
 set -e
 
 CXX="g++"
-CXXFLAGS="-O2 -std=gnu++11 -march=native -mavx512f -mavx512dq -fopenmp -flto"
+CXXFLAGS="-O3 -std=gnu++11 -march=native -mavx512f -mavx512dq -fopenmp -funroll-loops"
 INCLUDES="-Isrc -Isrc/math -Isrc/handler -Isrc/common -Isrc/geometry \
           -Isrc/geometry/intrinsic -Isrc/geometry/sse -Isrc/particle \
           -Isrc/scattering -Isrc/tracer -Isrc/splitting -Isrc/bigint"
 
 cd "$(dirname "$0")"
 
-# Collect all source files
-SOURCES=$(find src -name '*.cpp')
+# Collect all source files (avoid bigint duplication)
+SOURCES=$(find src -not -path '*/bigint/*' -name '*.cpp')
 SOURCES="$SOURCES $(find src/bigint -name '*.cc' 2>/dev/null)"
 
 echo "Compiling $(echo "$SOURCES" | wc -w) source files..."

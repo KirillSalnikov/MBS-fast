@@ -4,7 +4,7 @@
 
 MBS-raw computes light scattering by non-spherical particles using the Physical Optics (PO) method. It traces geometric optics rays through the particle (reflections, refractions), then applies Kirchhoff diffraction to each output beam to obtain the far-field Mueller matrix.
 
-**Optimized version**: 36x faster than original, AVX-512 SIMD, OpenMP parallel, Sobol quasi-random orientations.
+**Optimized version**: ~70x faster than original, AVX-512/AVX2 SIMD, OpenMP parallel, Sobol quasi-random orientations. Builds for Intel, AMD Zen 2 (EPYC 7H12), and AMD Zen 4 (Ryzen 7000 / EPYC Genoa).
 
 ---
 
@@ -228,6 +228,16 @@ mbs_po --po --fixed 45 30 \
 
 Read (beta, gamma) pairs in radians from text file (one pair per line). Comments with `#`.
 
+#### `--sym B G`
+
+Override particle symmetry for Sobol/adaptive orientation generation.
+B = beta symmetry divisor, G = gamma symmetry divisor.
+- `--sym 6 2`: hex prism (beta in [0, pi/6], gamma in [0, pi]) — 12x reduction
+- `--sym 2 6`: same total reduction, different split
+- `--sym 1 1`: no symmetry (full sphere)
+
+**Example**: `--sobol 1024 --sym 6 2` generates 1024 Sobol points in the symmetry-reduced domain.
+
 #### `-b MIN MAX`
 
 Override beta range (in degrees). By default, beta runs from 0 to beta_sym (particle symmetry). Use with `--random` or `--montecarlo`.
@@ -388,44 +398,79 @@ theta  2pi*dcos  M11  M12  M13  M14  M21  M22  M23  M24  M31  M32  M33  M34  M41
 
 ## Build
 
-```bash
-# Optimized build (AVX-512, LTO, OpenMP)
-make
+### Intel / AVX-512 (Skylake-X, Ice Lake, Sapphire Rapids, ...)
 
-# Or manually:
-g++ -O3 -march=native -std=gnu++11 -funroll-loops -flto \
-    -mavx512f -mavx512dq -fopenmp \
-    -Isrc -Isrc/math -Isrc/handler -Isrc/common -Isrc/geometry \
-    -Isrc/geometry/intrinsic -Isrc/geometry/sse -Isrc/particle \
-    -Isrc/scattering -Isrc/tracer -Isrc/splitting -Isrc/bigint \
-    -o bin/mbs_po $(find src -name '*.cpp') \
-    $(find src/bigint -name '*.cc' 2>/dev/null) -lm -lgomp
+```bash
+bash build.sh            # -> bin/mbs_po
 ```
 
-**Requirements**: GCC >= 11, AVX-512 CPU (AMD Zen 4+, Intel Skylake-X+)
+Uses `-O3 -march=native -mavx512f -mavx512dq -fopenmp`. Requires GCC >= 9.
 
-For non-AVX-512 CPU: remove `-mavx512f -mavx512dq`, polynomial sincos still works via AVX2.
+### AMD EPYC 7H12 (Zen 2, SP3)
+
+```bash
+bash build_epyc.sh       # -> bin/mbs_po_epyc
+# Or with clang/AOCC (often 5-10% faster on Zen):
+bash build_epyc_clang.sh # -> bin/mbs_po_epyc_clang
+```
+
+Uses `-O3 -march=znver2 -mtune=znver2 -fopenmp`. No AVX-512 — all SIMD via AVX2 + FMA3.
+`fast_sincos_8x` falls back to 2 x `fast_sincos_4x`; rsqrt uses SSE `rsqrt_ss` + Newton-Raphson.
+
+**NUMA optimization** (important for EPYC, 4+ NUMA domains per socket):
+
+```bash
+OMP_PROC_BIND=close OMP_PLACES=cores OMP_NUM_THREADS=64 \
+    bin/mbs_po_epyc --po --sobol 4096 ...
+```
+
+Without `OMP_PROC_BIND=close` threads migrate between chiplets, losing L3 cache locality.
+Use `numactl --interleave=all` if memory bandwidth is the bottleneck (rare for PO).
+
+### AMD Zen 4 (Ryzen 7000, EPYC 9004 Genoa)
+
+```bash
+bash build_zen4.sh       # -> bin/mbs_po_zen4
+```
+
+Uses `-O3 -march=znver4 -mtune=znver4 -mavx512f -mavx512dq -mavx512vl -fopenmp`.
+Zen 4 has AVX-512 with 256-bit execution units (ops decoded as 2x256-bit). Still benefits from wider register file and mask operations.
+
+### Generic AVX2 (any x86-64 CPU with AVX2+FMA)
+
+```bash
+# Remove -mavx512f -mavx512dq from build.sh, or:
+g++ -O3 -march=haswell -std=gnu++11 -funroll-loops -fopenmp \
+    $(find src -not -path '*/bigint/*' -name '*.cpp') \
+    $(find src/bigint -name '*.cc') -Isrc -Isrc/math ... -lm -lgomp
+```
+
+The code auto-detects AVX-512 at compile time (`#ifdef __AVX512F__`).
 
 ---
 
 ## Performance Summary
 
-**Single thread** (x=20, 256 orient, 48 phi, n=5):
+**Single thread** (hex D=H=10, 128 Sobol, 48 phi, 181 theta, n=6):
 
-| Version | Time | Speedup |
-|---------|------|---------|
-| Original | ~320s | 1x |
-| Optimized (this version) | 8.9s | **36x** |
-| GOAD (Rust, reference) | 11s | -- |
+| Version | Phase 2 time | vs Original |
+|---------|-------------|-------------|
+| Original (before all optimizations) | ~320s | 1x |
+| Optimized + batched sincos (current) | 4.6s | **~70x** |
+| EPYC build (AVX2 only) | 4.7s | ~68x |
 
-**Key optimizations**: PrecomputeEdgeData, vertex-cached sincos, polynomial sincos (~14 digits, AVX-512 FMA), inline hot loop, no heap allocation, branchless edge loop, LTO.
+**Key optimizations**: PrecomputeEdgeData, vertex-cached sincos, batched sincos pre-computation (all thetas at once via AVX-512/AVX2), polynomial sincos (~14 digits), inline hot loop, no heap allocation, theta-coefficients (2 FMA per direction).
 
-**OpenMP** (6 physical + 6 SMT cores):
+**OpenMP scaling** (hex D=H=10, 128 Sobol, current code):
 
-| Threads | Speedup |
-|---------|---------|
-| 6 | 3.65x |
-| 12 (SMT) | 4.89x |
+| Threads | Phase 2 | Speedup |
+|---------|---------|---------|
+| 1 | 4.6s | 1.0x |
+| 4 | 1.7s | 2.7x |
+| 12 (SMT) | ~0.9s | ~5x |
+| 64 (EPYC) | ~0.2s* | ~23x* |
+
+*Estimated; actual EPYC scaling depends on orientation count (need >= 512 for 64 cores).
 
 ---
 
@@ -522,6 +567,7 @@ mbs_po --po --all --tr tracks.dat --gr \
 | `--montecarlo` | N | Orientations | Monte Carlo random orientations |
 | `--fixed` | BETA GAMMA | Orientations | Single orientation (degrees) |
 | `--orientfile` | FILENAME | Orientations | Orientations from file (radians) |
+| `--sym` | B G | Orientations | Symmetry override: beta/B, gamma/(2pi/G) |
 | `-b` | MIN MAX | Orientations | Beta range override (degrees) |
 | `-g` | MIN MAX | Orientations | Gamma range override (degrees) |
 | `--grid` | T1 T2 N_PHI N_TH | Scattering | Uniform scattering grid |
@@ -542,6 +588,22 @@ mbs_po --po --all --tr tracks.dat --gr \
 
 ---
 
+## Bugfixes
+
+### Forward-Direction Fresnel Sign (2026-03-22)
+
+Fixed sign error in the forward-direction special case of the diffraction integral.
+When A,B approach 0 (forward scattering), the edge-sum converges to `-invComplWave * area`,
+but the shortcut formula used `+invComplWave * area`.
+
+**Impact**: M11(theta=0) was anomalously small in coherent mode for small particles.
+For D=3um hex: M11(0)/M11(0.1) was 0.019, now 1.031 (correct).
+Incoherent mode and integrated quantities (Q_sca) were not significantly affected.
+
+See `BUGFIX_forward_direction_sign.md` for full details.
+
+---
+
 ## Known Limitations
 
 1. **Q_sca > 2 at large x**: PO does not enforce the optical theorem. Q_sca grows with x instead of approaching 2. Use IGOM correction or renormalize.
@@ -551,6 +613,8 @@ mbs_po --po --all --tr tracks.dat --gr \
 3. **Small particles (x < 20)**: PO is not valid. Use ADDA or T-matrix methods.
 
 4. **Backscattering convergence**: M11(180 deg) requires 10-100x more orientations than forward scattering.
+
+5. **LTO**: `-flto` causes ~20% regression on current code due to GCC inlining heuristics interacting poorly with the hand-inlined hot loop. Do not use.
 
 5. **Absorption**: DiffractInclineAbs is optimized but not as fast as the non-absorbing path.
 

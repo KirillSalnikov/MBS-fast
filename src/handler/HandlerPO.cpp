@@ -967,7 +967,7 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                     complex fresnel;
                     if (absA < m_eps2 && absB < m_eps2)
                     {
-                        fresnel = m_invComplWave * beam_area;
+                        fresnel = -m_invComplWave * beam_area;
                     }
                     else
                     {
@@ -1066,6 +1066,7 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                                     sr10r*jp00i+sr10i*jp00r+sr11r*jp10i+sr11i*jp10r);
                         d11=complex(sr10r*jp01r-sr10i*jp01i+sr11r*jp11r-sr11i*jp11i,
                                     sr10r*jp01i+sr10i*jp01r+sr11r*jp11i+sr11i*jp11r);
+
                     }
                 }
                 else
@@ -1267,6 +1268,43 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                     tc);
             }
 
+            // Pre-batch vertex sincos for ALL thetas at once (AVX-512/AVX2)
+            int nv = edgeData.valid ? tc.nv : 0;
+            double all_vc[32768], all_vs[32768];
+            double dir_dpr[1024], dir_dpi[1024];
+            if (edgeData.valid && nv > 0) {
+                double all_phases[32768];
+                int total = 0;
+                for (int j = 0; j <= nZen; ++j) {
+                    double sin_t = sin_theta_arr[j], cos_t = cos_theta_arr[j];
+                    int base = j * nv;
+                    for (int v = 0; v < nv; ++v)
+                        all_phases[base + v] = sin_t * tc.psin[v] + cos_t * tc.pcos[v] + tc.p0[v];
+                    total = base + nv;
+                }
+                int pp = 0;
+                for (; pp + 7 < total; pp += 8)
+                    fast_sincos_8x(&all_phases[pp], &all_vs[pp], &all_vc[pp]);
+                for (; pp + 3 < total; pp += 4)
+                    fast_sincos_4x(&all_phases[pp], &all_vs[pp], &all_vc[pp]);
+                for (; pp < total; ++pp)
+                    fast_sincos(all_phases[pp], all_vs[pp], all_vc[pp]);
+                if (!isExternal) {
+                    double dp_phases[1024];
+                    for (int j = 0; j <= nZen; ++j)
+                        dp_phases[j] = -m_waveIndex*(sin_theta_arr[j]*tc.dp_sin + cos_theta_arr[j]*tc.dp_cos);
+                    int jj = 0;
+                    for (; jj + 7 <= nZen; jj += 8)
+                        fast_sincos_8x(&dp_phases[jj], &dir_dpi[jj], &dir_dpr[jj]);
+                    for (; jj + 3 <= nZen; jj += 4)
+                        fast_sincos_4x(&dp_phases[jj], &dir_dpi[jj], &dir_dpr[jj]);
+                    for (; jj <= nZen; ++jj)
+                        fast_sincos(dp_phases[jj], dir_dpi[jj], dir_dpr[jj]);
+                } else {
+                    for (int j = 0; j <= nZen; ++j) { dir_dpr[j] = 1.0; dir_dpi[j] = 0.0; }
+                }
+            }
+
             for (int j = 0; j <= nZen; ++j)
             {
                 complex d00(0,0), d01(0,0), d10(0,0), d11(0,0);
@@ -1292,23 +1330,13 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                     complex fresnel;
                     if (absA < m_eps2 && absB < m_eps2)
                     {
-                        fresnel = m_invComplWave * beam_area;
+                        fresnel = -m_invComplWave * beam_area;
                     }
                     else
                     {
-                        int nv = tc.nv;
-                        double vc[32], vs[32];
-                        double phases[32];
-                        for (int v = 0; v < nv; ++v)
-                            phases[v] = sin_t * tc.psin[v] + cos_t * tc.pcos[v] + tc.p0[v];
-
-                        int vv = 0;
-                        for (; vv + 7 < nv; vv += 8)
-                            fast_sincos_8x(&phases[vv], &vs[vv], &vc[vv]);
-                        for (; vv + 3 < nv; vv += 4)
-                            fast_sincos_4x(&phases[vv], &vs[vv], &vc[vv]);
-                        for (; vv < nv; ++vv)
-                            fast_sincos(phases[vv], vs[vv], vc[vv]);
+                        int base = j * nv;
+                        double *vc = &all_vc[base];
+                        double *vs = &all_vs[base];
 
                         double sr = 0, si = 0;
                         if (absB > absA)
@@ -1361,11 +1389,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
 
                     if (!isnan(real(fresnel)))
                     {
-                        double dpr,dpi;
-                        if (!isExternal) {
-                            double dpArg = -m_waveIndex*(sin_t*tc.dp_sin + cos_t*tc.dp_cos);
-                            fast_sincos(dpArg,dpi,dpr);
-                        } else { dpr=1.0; dpi=0.0; }
+                        double dpr = dir_dpr[j], dpi = dir_dpi[j];
 
                         double r00, r01, r10, r11;
                         rotate_jones_inline(
@@ -1389,6 +1413,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                                     sr10r*jp00i+sr10i*jp00r+sr11r*jp10i+sr11i*jp10r);
                         d11=complex(sr10r*jp01r-sr10i*jp01i+sr11r*jp11r-sr11i*jp11i,
                                     sr10r*jp01i+sr10i*jp01r+sr11r*jp11i+sr11i*jp11r);
+
                     }
                 }
                 else
@@ -1861,8 +1886,8 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
                         if (is_forward)
                         {
                             double area_s = cb.area_norm * D_s * D_s;
-                            fr = icwr * area_s;
-                            fi = icwi * area_s;
+                            fr = -icwr * area_s;
+                            fi = -icwi * area_s;
                         }
                         else
                         {

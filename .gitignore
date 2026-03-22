@@ -3,6 +3,9 @@ bin/
 *.dat
 *.txt
 *.orig
-*.sh
-*.dat
+*.log
+*.aux
+*.out
+*.toc
 M_random
+particle_for_check.dat

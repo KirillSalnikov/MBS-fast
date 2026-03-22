@@ -1,0 +1,44 @@
+# Makefile for AMD EPYC 7H12 (Zen 2, SP3 socket)
+# No AVX-512 — uses AVX2 + FMA3 only
+# 64 cores → OpenMP scales well
+#
+# Usage:  make -f Makefile.epyc -j$(nproc)
+#         make -f Makefile.epyc clean
+
+CXX = g++
+CXXFLAGS = -O3 -march=znver2 -mtune=znver2 -std=gnu++11 -funroll-loops -fopenmp
+LDFLAGS = -lm -lgomp
+
+SRC_DIR = src
+INCLUDES = -I$(SRC_DIR) -I$(SRC_DIR)/math -I$(SRC_DIR)/handler \
+           -I$(SRC_DIR)/common -I$(SRC_DIR)/geometry \
+           -I$(SRC_DIR)/geometry/intrinsic -I$(SRC_DIR)/geometry/sse \
+           -I$(SRC_DIR)/particle -I$(SRC_DIR)/scattering \
+           -I$(SRC_DIR)/tracer -I$(SRC_DIR)/splitting \
+           -Isrc/bigint
+
+SOURCES = $(shell find $(SRC_DIR) -not -path '*/bigint/*' -name '*.cpp') \
+          $(shell find src/bigint -name '*.cc' 2>/dev/null)
+OBJECTS = $(SOURCES:.cpp=.o)
+OBJECTS := $(OBJECTS:.cc=.o)
+
+TARGET = bin/mbs_po_epyc
+
+all: $(TARGET)
+
+$(TARGET): $(OBJECTS)
+	@mkdir -p bin
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
+
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+%.o: %.cc
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+
+clean:
+	find $(SRC_DIR) -name '*.o' -delete
+	find src/bigint -name '*.o' -delete 2>/dev/null; true
+	rm -f $(TARGET)
+
+.PHONY: all clean

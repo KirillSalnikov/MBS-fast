@@ -4,6 +4,7 @@
 #include <immintrin.h>
 #include "compl.hpp"
 
+#ifdef __AVX512F__
 // AVX-512: compute 8 sincos simultaneously using polynomial approximation
 inline void fast_sincos_8x(const double *x_in, double *s_out, double *c_out) {
     __m512d vx = _mm512_loadu_pd(x_in);
@@ -46,6 +47,10 @@ inline void fast_sincos_8x(const double *x_in, double *s_out, double *c_out) {
     _mm512_storeu_pd(s_out, sv);
     _mm512_storeu_pd(c_out, cv);
 }
+#else
+// Fallback: process 8 sincos as 2 × AVX2 fast_sincos_4x
+inline void fast_sincos_8x(const double *x_in, double *s_out, double *c_out);  // forward decl
+#endif
 
 // AVX2: compute 4 sincos simultaneously using polynomial approximation
 // ~14 decimal digits accuracy
@@ -95,6 +100,14 @@ inline void fast_sincos_4x(const double *x_in, double *s_out, double *c_out) {
     _mm256_storeu_pd(s_out, sv);
     _mm256_storeu_pd(c_out, cv);
 }
+
+// AVX2 fallback for fast_sincos_8x: two calls to fast_sincos_4x
+#ifndef __AVX512F__
+inline void fast_sincos_8x(const double *x_in, double *s_out, double *c_out) {
+    fast_sincos_4x(x_in,     s_out,     c_out);
+    fast_sincos_4x(x_in + 4, s_out + 4, c_out + 4);
+}
+#endif
 
 // Fast sincos: range-reduce to [-pi, pi], then Chebyshev polynomial
 // ~14 decimal digits accuracy, ~2x faster than glibc sincos
@@ -435,6 +448,24 @@ inline void precompute_theta_coeffs(
     tc.vfx_base = 0; tc.vfy_base = 0; tc.vfz_base = 0; // filled per theta from sphere.vf
 }
 
+#ifdef __AVX512F__
+// Fast reciprocal: rcp14 + 2 Newton-Raphson iterations (~56-bit accuracy)
+// ~6 cycles vs ~15 for vdivsd. For the edge loop 1/Ci divisions.
+// NOTE: not faster than vdivsd on modern CPUs, kept for reference.
+inline double fast_rcp(double x) {
+    __m128d vx = _mm_set_sd(x);
+    __m128d r = _mm_rcp14_sd(vx, vx);
+    __m128d two = _mm_set1_pd(2.0);
+    r = _mm_mul_sd(r, _mm_sub_sd(two, _mm_mul_sd(vx, r)));
+    r = _mm_mul_sd(r, _mm_sub_sd(two, _mm_mul_sd(vx, r)));
+    double result;
+    _mm_store_sd(&result, r);
+    return result;
+}
+#else
+inline double fast_rcp(double x) { return 1.0 / x; }
+#endif
+
 // Inline RotateJones using precomputed polData
 inline void rotate_jones_inline(
     double NTx, double NTy, double NTz,
@@ -448,18 +479,34 @@ inline void rotate_jones_inline(
     double vtx = vfy*dirz - vfz*diry;
     double vty = vfz*dirx - vfx*dirz;
     double vtz = vfx*diry - vfy*dirx;
-    // Normalize vt: use AVX-512 rsqrt14 for speed (~4 cycles vs 20 for sqrt+div)
+    // Normalize vt
     double vtLen2 = vtx*vtx + vty*vty + vtz*vtz;
     if (__builtin_expect(vtLen2 > 1e-30, 1)) {
+#ifdef __AVX512F__
+        // AVX-512: rsqrt14 + Newton-Raphson (~8 cycles)
         __m128d v2 = _mm_set_sd(vtLen2);
-        __m128d rs = _mm_rsqrt14_sd(v2, v2); // ~14 bit approximation
-        // Newton-Raphson refinement: rs = rs * (1.5 - 0.5*x*rs*rs)
+        __m128d rs = _mm_rsqrt14_sd(v2, v2);
         __m128d half = _mm_set_sd(0.5);
         __m128d three_half = _mm_set_sd(1.5);
         __m128d xrs2 = _mm_mul_sd(_mm_mul_sd(v2, rs), rs);
         rs = _mm_mul_sd(rs, _mm_sub_sd(three_half, _mm_mul_sd(half, xrs2)));
         double invLen;
         _mm_store_sd(&invLen, rs);
+#else
+        // AVX2/SSE: use float rsqrt + NR for approximate 1/sqrt, then refine
+        // rsqrt_ss gives ~12 bits, NR gives ~24, sufficient for normalization
+        __m128 vf = _mm_set_ss((float)vtLen2);
+        __m128 rsf = _mm_rsqrt_ss(vf);
+        // NR in float: rsf = rsf * (1.5f - 0.5f*x*rsf*rsf)
+        __m128 half_f = _mm_set_ss(0.5f);
+        __m128 three_half_f = _mm_set_ss(1.5f);
+        __m128 xrs2f = _mm_mul_ss(_mm_mul_ss(vf, rsf), rsf);
+        rsf = _mm_mul_ss(rsf, _mm_sub_ss(three_half_f, _mm_mul_ss(half_f, xrs2f)));
+        // One more NR step in double for full precision
+        double invLen = (double)_mm_cvtss_f32(rsf);
+        double xr2 = vtLen2 * invLen * invLen;
+        invLen *= 1.5 - 0.5 * xr2;
+#endif
         vtx *= invLen; vty *= invLen; vtz *= invLen;
     }
 
