@@ -84,6 +84,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("beam_cutoff", 1, true); // beam importance cutoff (relative to C_geo)
     parser.AddRule("sobol", 1, true); // Sobol quasi-random orientations (number, power of 2)
     parser.AddRule("auto_tgrid", 0, true); // auto-generate theta grid based on size parameter
+    parser.AddRule("auto_phi", 0, true); // auto-select N_phi based on size parameter
     parser.AddRule("adaptive", 1, true); // adaptive convergence (target relative accuracy)
     parser.AddRule("sym", 2, true); // symmetry override: beta_factor gamma_factor (e.g. --sym 2 6)
 }
@@ -748,6 +749,27 @@ int main(int argc, const char* argv[])
             {
                 double D = particle->MaximalDimention();
                 ApplyAutoThetaGrid(conus, D, wave);
+            }
+
+            // Apply auto_phi if requested
+            if (args.IsCatched("auto_phi"))
+            {
+                double D = particle->MaximalDimention();
+                double x = (wave > 0) ? M_PI * D / wave : 100;
+                // Phi convergence depends on x (tested empirically):
+                //   N_phi=48: <2% error for x<20, but 13% for x=600
+                //   N_phi=72: <4% for x=600, <1% for x<200
+                //   N_phi=96: reference (<0.5% for all tested sizes)
+                //
+                // Formula: N_phi = max(48, 6*ceil(sqrt(x)/1.5))
+                // Gives: x=18->48, x=60->54, x=180->54, x=600->102
+                // Always round to multiple of 6 (hex symmetry)
+                int nPhi_raw = std::max(48, (int)(6.0 * ceil(sqrt(x) / 1.5)));
+                int nPhi = ((nPhi_raw + 5) / 6) * 6; // round up to multiple of 6
+
+                conus.nAzimuth = nPhi;
+                conus.azinuthStep = 2.0 * M_PI / nPhi;
+                cout << "Auto phi: x=" << x << ", N_phi=" << nPhi << endl;
             }
 
             cout << additionalSummary;
