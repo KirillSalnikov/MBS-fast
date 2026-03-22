@@ -27,14 +27,154 @@ TracerPOTotal::TracerPOTotal(Particle *particle, int nActs,
 void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
                                 const AngleRange &gammaRange)
 {
+    // Generate all orientations from the uniform grid, then use the
+    // same chunked + OpenMP pipeline as TraceFromSobol.
+
+    int betaNorm = (m_symmetry.beta < M_PI_2+FLT_EPSILON && m_symmetry.beta > M_PI_2-FLT_EPSILON) ? 1 : 2;
+    double normGamma = gammaRange.number * betaNorm;
+
+    // Build orientation list with proper dcos weights
+    std::vector<std::pair<double,double>> orientations;
+    std::vector<double> weights;
+
+    for (int i = 0; i <= betaRange.number; ++i)
+    {
+        double beta = betaRange.min + i * betaRange.step;
+        double dcos;
+        CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
+
+        for (int j = 0; j < gammaRange.number; ++j)
+        {
+            double gamma = gammaRange.min + j * gammaRange.step;
+            orientations.push_back({beta, gamma});
+            weights.push_back(dcos);
+        }
+    }
+
+    int nOrientations = orientations.size();
+    std::cout << "Random grid: " << (betaRange.number+1) << " x " << gammaRange.number
+              << " = " << nOrientations << " orientations" << std::endl;
+
+    // Use the same chunked + OpenMP pipeline as TraceFromSobol
+    CalcTimer timer;
+    timer.Start();
+    OutputStartTime(timer);
+
+    m_handler->SetNormIndex(1);
+
+    std::string dir = CreateFolder(m_resultDirName);
+#ifdef _WIN32
+    m_resultDirName += '\\' + m_resultDirName;
+#else
+    m_resultDirName = dir + m_resultDirName;
+#endif
+
+    HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
+    if (!handlerPO) {
+        std::cerr << "Error: handler is not HandlerPO in TraceRandom" << std::endl;
+        return;
+    }
+
+    int nAz = handlerPO->m_sphere.nAzimuth;
+    int nZen = handlerPO->m_sphere.nZenith;
+
+    // Chunked streaming (same as TraceFromSobol)
+    long long availMB = 2048;
+#ifdef __linux__
+    { std::ifstream meminfo("/proc/meminfo"); std::string line;
+      while (std::getline(meminfo, line)) {
+          if (line.find("MemAvailable:") == 0) {
+              long long kb = 0; sscanf(line.c_str(), "MemAvailable: %lld", &kb);
+              if (kb > 0) availMB = kb / 1024; break;
+    } } }
+#endif
+    long long beamBudget = std::max(100LL, availMB / 2);
+    int chunkSize = std::max(32, std::min(nOrientations, (int)(beamBudget * 1024 / 350)));
+    int nChunks = (nOrientations + chunkSize - 1) / chunkSize;
+
+    double phase1_total = 0, phase2_total = 0;
+    std::vector<Beam> outBeams;
+    long long count = 0;
+
+    for (int chunk = 0; chunk < nChunks; ++chunk)
+    {
+        int iStart = chunk * chunkSize;
+        int iEnd = std::min(iStart + chunkSize, nOrientations);
+        int thisChunk = iEnd - iStart;
+
+        auto tp1 = std::chrono::high_resolution_clock::now();
+        std::vector<PreparedOrientation> chunkPrepared(thisChunk);
+
+        for (int i = 0; i < thisChunk; ++i)
+        {
+            int idx = iStart + i;
+            m_particle->Rotate(orientations[idx].first, orientations[idx].second, 0);
+            if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
+            bool ok = m_scattering->ScatterLight(0, 0, outBeams);
+            if (ok) handlerPO->PrepareBeams(outBeams, weights[idx], chunkPrepared[i]);
+            else    chunkPrepared[i].sinZenith = weights[idx];
+            m_incomingEnergy += m_scattering->GetIncedentEnergy() * weights[idx];
+            OutputProgress(nOrientations, count, iStart + i, 0, timer, outBeams.size());
+            outBeams.clear();
+            ++count;
+        }
+        phase1_total += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - tp1).count();
+
+        auto tp2 = std::chrono::high_resolution_clock::now();
+        #pragma omp parallel
+        {
+            Arr2D localM(nAz+1, nZen+1, 4, 4); localM.ClearArr();
+            Arr2D localM_ns(nAz+1, nZen+1, 4, 4); localM_ns.ClearArr();
+            std::vector<Arr2DC> localJ, localJ_ns;
+            if (handlerPO->isCoh) {
+                Arr2DC t1(nAz+1,nZen+1,2,2); t1.ClearArr(); localJ.push_back(t1);
+                Arr2DC t2(nAz+1,nZen+1,2,2); t2.ClearArr(); localJ_ns.push_back(t2);
+            }
+            #pragma omp for schedule(dynamic, 1)
+            for (int i = 0; i < thisChunk; ++i) {
+                if (!chunkPrepared[i].beams.empty())
+                    handlerPO->HandleBeamsToLocal(chunkPrepared[i], localM, localJ,
+                                                   handlerPO->isCoh ? &localJ_ns : nullptr);
+                if (handlerPO->isCoh && !localJ.empty()) {
+                    double w = chunkPrepared[i].sinZenith;
+                    HandlerPO::AddToMuellerLocal(localJ, w, localM, nAz, nZen);
+                    HandlerPO::AddToMuellerLocal(localJ_ns, w, localM_ns, nAz, nZen);
+                    localJ[0].ClearArr(); localJ_ns[0].ClearArr();
+                }
+            }
+            #pragma omp critical
+            { for (int p=0;p<=nAz;++p) for (int t=0;t<=nZen;++t) {
+                handlerPO->M.insert(p,t,localM(p,t));
+                handlerPO->M_noshadow.insert(p,t,localM_ns(p,t));
+            } }
+        }
+        phase2_total += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - tp2).count();
+        chunkPrepared.clear(); chunkPrepared.shrink_to_fit();
+    }
+
+    EraseConsoleLine(60);
+    std::cout << "Phase 1 (tracing): " << std::fixed << std::setprecision(2) << phase1_total << " s" << std::endl;
+    std::cout << "Phase 2 (diffraction, OpenMP): " << phase2_total << " s" << std::endl;
+    std::cout << "Total: " << phase1_total + phase2_total << " s" << std::endl;
+
+    m_handler->WriteTotalMatricesToFile(m_resultDirName);
+    m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
+    { std::swap(handlerPO->M, handlerPO->M_noshadow);
+      std::string nsName = m_resultDirName + "_noshadow";
+      handlerPO->WriteMatricesToFile(nsName, m_incomingEnergy);
+      std::swap(handlerPO->M, handlerPO->M_noshadow); }
+    OutputStatisticsPO(timer, nOrientations, m_resultDirName);
+}
+
+// OLD TraceRandom code removed — now uses chunked + OpenMP pipeline above.
+
+#if 0 // DEAD CODE
 #ifdef _CHECK_ENERGY_BALANCE
-    m_incomingEnergy = 0;
+    m_incomingEnergy_DEAD = 0;
     m_outcomingEnergy = 0;
 #endif
 
-    CalcTimer timer;
-    long long count = 0;
-    long long nOrientations = (betaRange.number) * (gammaRange.number);
+    long long nOrientations_old = (betaRange.number) * (gammaRange.number);
 
 #ifdef _DEBUG  /* DEB */
     ofstream outFile(m_resultDirName + "log.dat", ios::out);
@@ -178,9 +318,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
 //#ifndef _DEBUG
 
-    OutputStatisticsPO(timer, nOrientations, m_resultDirName);
-//#endif
-}
+#endif // DEAD CODE
 
 void TracerPOTotal::TraceMonteCarlo(const AngleRange &betaRange,
                                     const AngleRange &gammaRange,

@@ -610,15 +610,18 @@ int main(int argc, const char* argv[])
                 }
                 else
                 {
-                    tracer = new TracerPO(particle, reflNum, dirName);
+                    // Use TracerPOTotal for OpenMP + batched sincos acceleration
+                    tracer = new TracerPOTotal(particle, reflNum, dirName);
                     tracer->m_scattering->m_wave = wave;
                     tracer->shadowOff = args.IsCatched("shadow_off");
                     if (args.IsCatched("r"))
                     {
                         tracer->m_scattering->restriction = args.GetDoubleValue("r", 0);
                     }
-                    handler = new HandlerPO(particle, &tracer->m_incidentLight,
-                                            nTheta, wave);
+
+                    trackGroups.push_back(TrackGroup());
+                    handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
+                                                 nTheta, wave);
 
                     if (args.IsCatched("filter"))
                     {
