@@ -945,60 +945,72 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         // Each batch uses weight = 1.0/batchSize (self-contained average)
         // After all batches: M_total = sum(M_batch_i) / nBatches
 
-        // Store batch result in temporary Mueller, then add to accumulator
-        Arr2D batchM(nAz + 1, nZen + 1, 4, 4);
-        batchM.ClearArr();
-        Arr2D batchM_ns(nAz + 1, nZen + 1, 4, 4);
-        batchM_ns.ClearArr();
-
         double batchEnergy = 0;
         double weight = 1.0 / batchSize;
         std::vector<Beam> outBeams;
 
-        // Phase 1: trace new orientations
-        for (int i = batchStart; i < batchEnd; ++i)
+        // Phase 1 (sequential): trace and preprocess new orientations
+        std::vector<PreparedOrientation> batchPrepared(batchSize);
+        for (int i = 0; i < batchSize; ++i)
         {
-            double beta  = acos(1.0 - (1.0 - cosBetaSym) * su_all[i]);
-            double gamma = gammaSym * sv_all[i];
+            int idx = batchStart + i;
+            double beta  = acos(1.0 - (1.0 - cosBetaSym) * su_all[idx]);
+            double gamma = gammaSym * sv_all[idx];
             m_particle->Rotate(beta, gamma, 0);
             if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
             bool ok = m_scattering->ScatterLight(0, 0, outBeams);
 
             if (ok)
-            {
-                // Preprocess + diffract into batch accumulators
-                PreparedOrientation prepared;
-                hp->PrepareBeams(outBeams, weight, prepared);
-
-                // Inline single-orientation diffraction
-                std::vector<Arr2DC> localJ, localJ_ns;
-                if (hp->isCoh) {
-                    Arr2DC tmp(nAz+1, nZen+1, 2, 2); tmp.ClearArr();
-                    localJ.push_back(tmp);
-                    Arr2DC tmp2(nAz+1, nZen+1, 2, 2); tmp2.ClearArr();
-                    localJ_ns.push_back(tmp2);
-                }
-
-                hp->HandleBeamsToLocal(prepared, batchM, localJ,
-                                        hp->isCoh ? &localJ_ns : nullptr);
-
-                if (hp->isCoh && !localJ.empty()) {
-                    double w = prepared.sinZenith;
-                    HandlerPO::AddToMuellerLocal(localJ, w, batchM, nAz, nZen);
-                    HandlerPO::AddToMuellerLocal(localJ_ns, w, batchM_ns, nAz, nZen);
-                }
-            }
+                hp->PrepareBeams(outBeams, weight, batchPrepared[i]);
+            else
+                batchPrepared[i].sinZenith = weight;
 
             batchEnergy += m_scattering->GetIncedentEnergy() * weight;
             outBeams.clear();
         }
 
-        // Add batch to accumulator (sum of batches)
-        for (int p = 0; p <= nAz; ++p)
-            for (int t = 0; t <= nZen; ++t) {
-                hp->M.insert(p, t, batchM(p, t));
-                hp->M_noshadow.insert(p, t, batchM_ns(p, t));
+        // Phase 2 (parallel): diffract all orientations in this batch
+        #pragma omp parallel
+        {
+            Arr2D localM(nAz + 1, nZen + 1, 4, 4);
+            localM.ClearArr();
+            Arr2D localM_ns(nAz + 1, nZen + 1, 4, 4);
+            localM_ns.ClearArr();
+            std::vector<Arr2DC> localJ, localJ_ns;
+            if (hp->isCoh) {
+                Arr2DC tmp(nAz+1, nZen+1, 2, 2); tmp.ClearArr();
+                localJ.push_back(tmp);
+                Arr2DC tmp2(nAz+1, nZen+1, 2, 2); tmp2.ClearArr();
+                localJ_ns.push_back(tmp2);
             }
+
+            #pragma omp for schedule(dynamic, 1)
+            for (int i = 0; i < batchSize; ++i)
+            {
+                if (!batchPrepared[i].beams.empty())
+                    hp->HandleBeamsToLocal(batchPrepared[i], localM, localJ,
+                                            hp->isCoh ? &localJ_ns : nullptr);
+                if (hp->isCoh && !localJ.empty()) {
+                    double w = batchPrepared[i].sinZenith;
+                    HandlerPO::AddToMuellerLocal(localJ, w, localM, nAz, nZen);
+                    HandlerPO::AddToMuellerLocal(localJ_ns, w, localM_ns, nAz, nZen);
+                    localJ[0].ClearArr();
+                    localJ_ns[0].ClearArr();
+                }
+            }
+
+            #pragma omp critical
+            {
+                for (int p = 0; p <= nAz; ++p)
+                    for (int t = 0; t <= nZen; ++t) {
+                        hp->M.insert(p, t, localM(p, t));
+                        hp->M_noshadow.insert(p, t, localM_ns(p, t));
+                    }
+            }
+        }
+
+        batchPrepared.clear();
+        batchPrepared.shrink_to_fit();
         m_incomingEnergy += batchEnergy;
         totalOrient = batchEnd;
         nBatches++;
