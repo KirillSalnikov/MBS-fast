@@ -188,9 +188,29 @@ void ApplyAutoThetaGrid(ScatteringRange &range, double D, double wave)
     }
 
     // Zone 3: Medium [transition_end, 120°] — 0.5° for small x, 1° otherwise
+    // BUT: add fine zones around halo angles (22° and 46° for hex prisms)
     double medium_step = (x < 100) ? 0.5 : 1.0;
-    for (double t = transition_end + medium_step; t <= 120.0 + 1e-9; t += medium_step)
+
+    // Halo fine zones: 0.1° step around 22° and 46° (±4°)
+    // Only for particles large enough to produce halos (x > 50)
+    double halo_step = std::max(0.05, std::min(0.2, peak_width_deg));
+    double halo1_center = 22.0;  // 22° halo (two prism faces)
+    double halo2_center = 46.0;  // 46° halo (basal + prism face)
+    double halo_half = 4.0;      // ±4° around halo center
+
+    for (double t = transition_end + medium_step; t <= 120.0 + 1e-9; )
+    {
         thetas.push_back(t);
+
+        // Check if next step enters a halo zone
+        bool in_halo1 = (x > 50) && (t >= halo1_center - halo_half) && (t <= halo1_center + halo_half);
+        bool in_halo2 = (x > 50) && (t >= halo2_center - halo_half) && (t <= halo2_center + halo_half);
+
+        if (in_halo1 || in_halo2)
+            t += halo_step;
+        else
+            t += medium_step;
+    }
 
     // Zone 4: Side/back [120°, 175°] — 1° step
     for (double t = 121.0; t <= 175.0 + 1e-9; t += 1.0)
