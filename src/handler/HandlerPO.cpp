@@ -1149,6 +1149,18 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
     out.beams.clear();
     out.sinZenith = sinZenith;
 
+    // Pass 1: compute total beam energy for auto-cutoff
+    double totalBeamEnergy = 0;
+    for (Beam &beam : beams)
+    {
+        if (beam.lastFacetId != __INT_MAX__)
+            totalBeamEnergy += beam.J.Norm() * beam.Area();
+    }
+    // Auto cutoff: skip beams contributing < 0.01% of total energy
+    double autoCutoff = (m_beamCutoff > 0) ? m_beamCutoff : totalBeamEnergy * 1e-4;
+    int skippedBeams = 0;
+
+    // Pass 2: prepare beams, skip negligible ones
     for (Beam &beam : beams)
     {
         if (isBackScatteringConusEnabled && beam.direction.cz < backScatteringConus)
@@ -1171,6 +1183,14 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         {
             matrix m_ = Mueller(beam.J);
             m_outputEnergy += BeamCrossSection(beam)*m_[0][0]*sinZenith;
+
+            // Skip negligible beams (saves diffraction cost)
+            double contribution = beam.J.Norm() * info.area;
+            if (contribution < autoCutoff)
+            {
+                skippedBeams++;
+                continue;
+            }
         }
 
         PreparedBeam pb;
@@ -1209,6 +1229,15 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         pb.origBeam = beam;
 
         out.beams.push_back(pb);
+    }
+
+    // Log beam cutoff statistics (first call only)
+    static bool logged = false;
+    if (!logged && skippedBeams > 0) {
+        std::cerr << "Beam cutoff: " << skippedBeams << "/" << (skippedBeams + (int)out.beams.size())
+                  << " beams skipped (threshold=" << std::scientific << std::setprecision(1)
+                  << autoCutoff << ")" << std::endl;
+        logged = true;
     }
 }
 
