@@ -856,6 +856,15 @@ int main(int argc, const char* argv[])
                      << " deg (/" << symGamma << ")" << endl;
             }
 
+            // Pass target accuracy to handler for beam cutoff
+            if (isAdaptive) {
+                double epsForCutoff = args.IsCatched("autofull")
+                    ? args.GetDoubleValue("autofull", 0)
+                    : (args.IsCatched("auto") ? args.GetDoubleValue("auto", 0)
+                    : (args.IsCatched("adaptive") ? args.GetDoubleValue("adaptive", 0) : 0.01));
+                handler->m_targetEps = epsForCutoff;
+            }
+
             if (isAutoFull)
             {
                 double epsAdapt = args.GetDoubleValue("autofull", 0);

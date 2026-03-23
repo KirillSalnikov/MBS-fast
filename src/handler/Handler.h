@@ -454,9 +454,11 @@ protected:
 
 public:
     /// Beam importance cutoff: skip diffraction if |J|²×area < this threshold.
-    /// Set via --beam_cutoff CLI or SetBeamCutoffRelative(eps, C_geo).
-    /// Default 0 = auto (set from incoming energy after first orientation).
+    /// Default 0 = auto (eps² × totalBeamEnergy per orientation).
+    /// Set via --beam_cutoff CLI to override.
     double m_beamCutoff = 0;
+    /// Target accuracy for auto beam cutoff (set from --auto eps)
+    double m_targetEps = 0.01;
     void SetBeamCutoff(double val) { m_beamCutoff = val; }
     /// Set cutoff relative to geometric cross-section: threshold = eps × C_geo
     void SetBeamCutoffRelative(double eps, double C_geo) { m_beamCutoff = eps * C_geo; }
