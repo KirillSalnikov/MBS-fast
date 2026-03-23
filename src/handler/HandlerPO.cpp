@@ -222,7 +222,6 @@ void HandlerPO::WriteTotalMatricesToFile(const std::string &destName)
 
         WriteGroupMatrices(M, destName + "_total.dat");
     }
-    std::cout << std::endl << destName;
 }
 
 // double HandlerPO::ComputeTotalScatteringEnergy()

@@ -996,6 +996,8 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
     std::cerr << "Adaptive: max orientations = " << maxOrient
               << " (" << availMB_ad << " MB available)" << std::endl;
 
+    auto t_start = std::chrono::high_resolution_clock::now();
+
     // Generate ALL Sobol points up to maxOrient at once (deterministic)
     Sobol2D sobol_gen(42);
     std::vector<double> su_all, sv_all;
@@ -1148,8 +1150,6 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
     }
 
     // Normalize accumulated Mueller: divide by nBatches
-    // (each batch was computed with weight=1/batchSize, so sum of nBatches
-    // batches needs to be divided by nBatches to get the average)
     for (int p = 0; p <= nAz; ++p)
         for (int t = 0; t <= nZen; ++t)
         {
@@ -1163,26 +1163,48 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         }
     m_incomingEnergy /= nBatches;
 
-    // Write results
-    std::string dir = CreateFolder(m_resultDirName);
+    // MPI reduce
+    MPI_ReduceMueller(hp, nAz, nZen, m_incomingEnergy, m_mpiRank);
+
+    if (m_mpiRank == 0)
+    {
+        // Summary
+        auto t_end = std::chrono::high_resolution_clock::now();
+        double total_sec = std::chrono::duration<double>(t_end - t_start).count();
+
+        std::cout << std::endl;
+        std::cout << "===== SUMMARY =====" << std::endl;
+        std::cout << "Orientations: " << totalOrient << " (" << nBatches << " batches)" << std::endl;
+        std::cout << "Theta grid:   " << (nZen+1) << " points" << std::endl;
+        std::cout << "Phi bins:     " << (nAz+1) << std::endl;
+        std::cout << "Total time:   " << std::fixed << std::setprecision(1) << total_sec << " s" << std::endl;
+
+        // Write results
+        std::string dir = CreateFolder(m_resultDirName);
 #ifdef _WIN32
-    m_resultDirName += '\\' + m_resultDirName;
+        m_resultDirName += '\\' + m_resultDirName;
 #else
-    m_resultDirName = dir + m_resultDirName;
+        m_resultDirName = dir + m_resultDirName;
 #endif
 
-    m_handler->WriteTotalMatricesToFile(m_resultDirName);
-    m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
+        m_handler->WriteTotalMatricesToFile(m_resultDirName);
+        m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
 
-    // Write no-shadow Mueller
-    {
+        // Write no-shadow
         std::swap(hp->M, hp->M_noshadow);
         std::string nsName = m_resultDirName + "_noshadow";
+        std::cerr << "(no shadow):" << std::endl;
         hp->WriteMatricesToFile(nsName, m_incomingEnergy);
         std::swap(hp->M, hp->M_noshadow);
-    }
 
-    CalcTimer timer;
-    timer.Start();
-    OutputStatisticsPO(timer, totalOrient, m_resultDirName);
+        // Write summary to out.txt
+        std::ofstream out(m_resultDirName + "\\out.txt", std::ios::out);
+        if (!out.is_open()) out.open(m_resultDirName + "_out.txt", std::ios::out);
+        out << m_summary << std::endl;
+        out << "Orientations: " << totalOrient << std::endl;
+        out << "Total time: " << total_sec << " s" << std::endl;
+        out.close();
+
+        std::cout << std::endl << "Output: " << m_resultDirName << ".dat" << std::endl;
+    }
 }
