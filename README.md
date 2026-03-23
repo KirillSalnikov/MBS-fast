@@ -1,99 +1,100 @@
-# MBS-raw: Physical Optics for Ice Crystals
+# MBS-fast: Physical Optics for Ice Crystals
 
 Fast Kirchhoff diffraction code for light scattering by non-spherical ice particles.
-~70x faster than original, AVX-512/AVX2 SIMD, OpenMP parallel.
+OpenMP + MPI parallel. AVX-512/AVX2 SIMD. Adaptive grids.
 
 ## Requirements
 
 - **GCC >= 9** (or Clang >= 14)
 - **OpenMP** (libgomp for GCC, libomp for Clang)
 - x86-64 CPU with AVX2+FMA (minimum) or AVX-512 (optimal)
+- **MPI** (optional, for cluster runs): `sudo apt install libopenmpi-dev`
 
 ## Build
 
-### Intel (Skylake-X, Ice Lake, Sapphire Rapids, ...)
-
-```bash
-bash build.sh              # -> bin/mbs_po
-```
-
-### AMD EPYC 7H12 (Zen 2, SP3)
-
-```bash
-bash build_epyc.sh         # -> bin/mbs_po_epyc
-```
-
-No AVX-512. SIMD via AVX2+FMA3. For Clang/AOCC:
-
-```bash
-sudo apt install libomp-16-dev   # if using clang-16
-bash build_epyc_clang.sh         # -> bin/mbs_po_epyc_clang
-```
-
-### AMD Zen 4 (Ryzen 7000, EPYC 9004 Genoa)
-
-```bash
-bash build_zen4.sh         # -> bin/mbs_po_zen4
-```
-
-AVX-512 supported on Zen 4 (256-bit execution units).
-
-### With make (if installed)
-
-```bash
-make                       # Intel, uses Makefile
-make -f Makefile.epyc      # EPYC 7H12
-```
-
-### Generic (any AVX2+FMA CPU)
-
-```bash
-g++ -O3 -march=haswell -std=gnu++11 -funroll-loops -fopenmp \
-    $(find src -not -path '*/bigint/*' -name '*.cpp') \
-    $(find src/bigint -name '*.cc') \
-    -Isrc -Isrc/math -Isrc/handler -Isrc/common -Isrc/geometry \
-    -Isrc/geometry/intrinsic -Isrc/geometry/sse -Isrc/particle \
-    -Isrc/scattering -Isrc/tracer -Isrc/splitting -Isrc/bigint \
-    -o bin/mbs_po -lm -lgomp
-```
+| Script | Target CPU | Binary |
+|--------|-----------|--------|
+| `bash build.sh` | Intel AVX-512 | `bin/mbs_po` |
+| `bash build_epyc.sh` | AMD EPYC 7H12 (Zen 2) | `bin/mbs_po_epyc` |
+| `bash build_zen4.sh` | AMD Zen 4 (Ryzen 7000 / Genoa) | `bin/mbs_po_zen4` |
+| `bash build_epyc_clang.sh` | EPYC + Clang/AOCC | `bin/mbs_po_epyc_clang` |
+| `bash build_mpi.sh` | MPI + OpenMP (cluster) | `bin/mbs_po_mpi` |
+| `make` | Intel (Makefile) | `bin/mbs_po` |
 
 ## Quick Start
 
 ```bash
-# Hex column D=H=10um, 1024 Sobol orientations, auto theta grid
-bin/mbs_po --po --sobol 1024 --auto_tgrid \
-    -p 1 10 10 -w 0.532 --ri 1.31 0 -n 12 \
-    --grid 0 180 48 180 --close
+# Full auto: adaptive orientations + auto theta/phi grids
+bin/mbs_po --po --auto 0.05 \
+    -p 1 100 70 -w 0.532 --ri 1.31 0 -n 14 \
+    --grid 0 180 48 181 --sym 6 2 --close
 
-# Adaptive convergence (auto orientations)
-bin/mbs_po --po --adaptive 0.01 --auto_tgrid \
-    -p 1 10 10 -w 0.532 --ri 1.31 0 -n 12 \
-    --grid 0 180 48 180 --close
+# Fixed Sobol orientations
+bin/mbs_po --po --sobol 1024 --auto_tgrid --auto_phi \
+    -p 1 100 70 -w 0.532 --ri 1.31 0 -n 14 \
+    --grid 0 180 48 181 --sym 6 2 --close
 ```
 
 ## Multi-core (OpenMP)
 
 ```bash
-# Intel / desktop
-OMP_NUM_THREADS=12 bin/mbs_po --po --sobol 1024 ...
+OMP_NUM_THREADS=12 bin/mbs_po --po --auto 0.05 ...
 
-# EPYC 7H12 (64 cores, NUMA-aware)
+# EPYC (64 cores, NUMA-aware)
 OMP_PROC_BIND=close OMP_PLACES=cores OMP_NUM_THREADS=64 \
-    bin/mbs_po_epyc --po --sobol 4096 ...
+    bin/mbs_po_epyc --po --auto 0.05 ...
 ```
+
+## Cluster (MPI + OpenMP)
+
+```bash
+# Build
+sudo apt install libopenmpi-dev
+bash build_mpi.sh
+
+# Run on 8 nodes × 64 cores = 512 cores
+mpirun -np 8 --hostfile nodes.txt \
+    -x OMP_NUM_THREADS=64 -x OMP_PROC_BIND=close \
+    bin/mbs_po_mpi --po --sobol 8192 --auto_tgrid --auto_phi \
+    -p 1 1000 700 -w 0.532 --ri 1.31 0 -n 16 \
+    --grid 0 180 48 181 --sym 6 2 --close
+
+# SLURM cluster
+sbatch cluster_mpi.sh
+```
+
+See `cluster_mpi.sh` for a ready-to-use SLURM script.
+
+**nodes.txt** format:
+```
+node01 slots=1
+node02 slots=1
+...
+```
+
+Requirements: SSH without password between nodes, shared filesystem (NFS) or binary copied to each node.
+
+## Output
+
+Each run produces two Mueller matrix files:
+- `M.dat` — full Mueller (with Babinet/shadow beam)
+- `M_noshadow.dat` — without shadow (refracted beams only, better for halo studies)
 
 ## Documentation
 
-- **MANUAL.md** / **MANUAL.pdf** — full CLI reference, all flags, performance notes
-- **BUGFIX_forward_direction_sign.md** — forward-direction Fresnel sign fix
+- **docs/MANUAL.pdf** — full CLI reference (35+ flags), performance, build guides
+- **docs/reports/** — bugfix reports, theta investigation
+- **docs/figures/** — all plots (size scans, GOAD comparison, halos)
+- **MANUAL.md** — manual (markdown)
 - **tests/run_tests.sh** — regression tests
 
 ## Performance
 
-| CPU | Build | Phase 2 (1 thread) | Speedup |
-|-----|-------|--------------------|---------|
-| Intel (AVX-512) | `build.sh` | 4.6 s | ~70x |
-| EPYC 7H12 (AVX2) | `build_epyc.sh` | 4.7 s | ~68x |
-| Original code | — | ~320 s | 1x |
+| Setup | Time | Speedup |
+|-------|------|---------|
+| Original code, 1 thread | ~320 s | 1× |
+| Optimized, 1 thread | 4.6 s | 70× |
+| + OpenMP 12 threads | 1.7 s | 190× |
+| + MPI 8 nodes × 64 cores | ~0.03 s* | ~10000×* |
 
-Benchmark: hex D=H=10um, 128 Sobol, 48 phi x 181 theta, n=6.
+*Estimated for 8192 Sobol on 512 cores. Benchmark: hex D=H=10um, n=6.
