@@ -1010,11 +1010,11 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
     m_incomingEnergy = 0;
     hp->m_outputEnergy = 0;
 
-    double prevM11_180 = 0;
+    double prevM11_180 = 0, prevM11_90 = 0, prevM11_22 = 0;
     double prevCsca = 0;
     int totalOrient = 0;    // total orientations processed so far
     int nBatches = 0;       // number of equal-size batches
-    int convergedCount = 0; // consecutive iterations with dM11 < eps
+    int convergedCount = 0; // consecutive iterations with all controls < eps
 
     for (int iter = 0; iter < 15; ++iter)
     {
@@ -1098,32 +1098,55 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         totalOrient = batchEnd;
         nBatches++;
 
-        // Extract averaged M11(180°) = sum / nBatches
-        double M11_180_avg = 0;
-        for (int p = 0; p <= nAz; ++p)
-            M11_180_avg += hp->M(p, nZen)[0][0];
-        M11_180_avg /= ((nAz + 1) * nBatches);
-
+        // Extract control points: Q_sca, M11(22°), M11(90°), M11(180°)
+        // All phi-averaged, divided by nBatches
         double Csca = m_incomingEnergy / nBatches;
 
-        double relChange_m11 = (prevM11_180 != 0) ?
-            fabs(M11_180_avg - prevM11_180) / fabs(prevM11_180) : 1.0;
-        double relChange_csca = (prevCsca > 0) ?
-            fabs(Csca - prevCsca) / prevCsca : 1.0;
+        // Find theta indices closest to control angles
+        auto findThetaIdx = [&](double deg) -> int {
+            double rad = DegToRad(deg);
+            int best = 0;
+            double bestDiff = 1e30;
+            for (int j = 0; j <= nZen; ++j) {
+                double d = fabs(hp->m_sphere.GetZenith(j) - rad);
+                if (d < bestDiff) { bestDiff = d; best = j; }
+            }
+            return best;
+        };
+        int idx22  = findThetaIdx(22.0);
+        int idx90  = findThetaIdx(90.0);
+        int idx180 = nZen; // last bin
 
-        std::cout << "  N=" << totalOrient
-                  << " (+" << batchSize
-                  << " new), M11(180)=" << M11_180_avg
-                  << ", dM11=" << relChange_m11*100 << "%"
-                  << ", Csca=" << Csca
-                  << ", dCsca=" << relChange_csca*100 << "%"
+        // Phi-averaged M11 at control angles
+        double M11_22 = 0, M11_90 = 0, M11_180 = 0;
+        for (int p = 0; p <= nAz; ++p) {
+            M11_22  += hp->M(p, idx22)[0][0];
+            M11_90  += hp->M(p, idx90)[0][0];
+            M11_180 += hp->M(p, idx180)[0][0];
+        }
+        double norm = (nAz + 1) * nBatches;
+        M11_22 /= norm; M11_90 /= norm; M11_180 /= norm;
+
+        // Relative changes vs previous iteration
+        double dCsca  = (prevCsca > 0)    ? fabs(Csca - prevCsca) / prevCsca : 1.0;
+        double dM22   = (prevM11_22 > 0)  ? fabs(M11_22 - prevM11_22) / prevM11_22 : 1.0;
+        double dM90   = (prevM11_90 > 0)  ? fabs(M11_90 - prevM11_90) / prevM11_90 : 1.0;
+        double dM180  = (prevM11_180 > 0) ? fabs(M11_180 - prevM11_180) / fabs(prevM11_180) : 1.0;
+        double dMax = std::max({dCsca, dM22, dM90, dM180});
+
+        std::cout << std::fixed << std::setprecision(2);
+        std::cout << "  N=" << totalOrient << " (+" << batchSize << ")"
+                  << "  dQ=" << dCsca*100 << "%"
+                  << "  dM11(22)=" << dM22*100 << "%"
+                  << "  dM11(90)=" << dM90*100 << "%"
+                  << "  dM11(180)=" << dM180*100 << "%"
+                  << "  max=" << dMax*100 << "%"
                   << std::endl;
 
-        // Convergence: M11(180°) must be within eps for TWO consecutive iterations.
-        // C_sca is printed but NOT used as convergence criterion.
-        bool m11_ok = (relChange_m11 < eps && iter > 0);
+        // Convergence: ALL control points must be within eps, twice in a row
+        bool all_ok = (dMax < eps && iter > 0);
 
-        if (m11_ok)
+        if (all_ok)
             convergedCount++;
         else
             convergedCount = 0;
@@ -1131,13 +1154,15 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         if (convergedCount >= 2)
         {
             std::cout << "Converged at N=" << totalOrient
-                      << " (M11(180) within " << eps*100 << "% for 2 consecutive steps)"
-                      << std::endl;
+                      << " (all control points within " << eps*100
+                      << "% for 2 consecutive steps)" << std::endl;
             break;
         }
 
-        prevM11_180 = M11_180_avg;
         prevCsca = Csca;
+        prevM11_22 = M11_22;
+        prevM11_90 = M11_90;
+        prevM11_180 = M11_180;
         nOrient *= 2;
         if (nOrient > maxOrient)
         {
