@@ -1,7 +1,7 @@
 # MBS-fast: Physical Optics for Ice Crystals
 
 Fast Kirchhoff diffraction code for light scattering by non-spherical ice particles.
-OpenMP + MPI parallel. AVX-512/AVX2 SIMD. Adaptive grids.
+OpenMP + MPI parallel. AVX-512/AVX2 SIMD. Adaptive grids. Auto beam cutoff.
 
 ## Requirements
 
@@ -24,25 +24,53 @@ OpenMP + MPI parallel. AVX-512/AVX2 SIMD. Adaptive grids.
 ## Quick Start
 
 ```bash
-# Full auto: adaptive orientations + auto theta/phi grids
+# Simplest: full auto (finds N_theta, N_phi, N_orient automatically)
 bin/mbs_po --po --auto 0.05 \
-    -p 1 100 70 -w 0.532 --ri 1.31 0 -n 14 \
-    --grid 0 180 48 181 --sym 6 2 --close
+    -p 1 100 70 -w 0.532 --ri 1.31 0 -n 8 --close
 
-# Fixed Sobol orientations
+# Full auto including n search (--autofull)
+bin/mbs_po --po --autofull 0.05 \
+    -p 1 100 70 -w 0.532 --ri 1.31 0 --close
+
+# Manual Sobol orientations
 bin/mbs_po --po --sobol 1024 --auto_tgrid --auto_phi \
-    -p 1 100 70 -w 0.532 --ri 1.31 0 -n 14 \
-    --grid 0 180 48 181 --sym 6 2 --close
+    -p 1 100 70 -w 0.532 --ri 1.31 0 -n 8 --close
 ```
+
+**Note**: `--grid` and `--sym` are NOT needed with `--auto`/`--autofull`. Theta grid, phi bins, and particle symmetry are set automatically.
+
+## Choosing n (reflections)
+
+| n | Use case |
+|---|----------|
+| 6 | Fast estimate, forward scattering |
+| 8 | General purpose (Q_sca < 0.1% error) |
+| 12-14 | Backscattering, depolarization |
+| 16-20 | Reference calculations |
+| omit | `--autofull` finds n automatically |
+
+## --auto vs --autofull
+
+| Mode | What it automates | Speed |
+|------|-------------------|-------|
+| `--auto EPS` | N_theta, N_phi, N_orient, beam cutoff | Fast |
+| `--autofull EPS` | Same + n (reflections) | 3-4× slower |
+
+Both converge on 5 control points: Q_sca, M₁₁(22°), M₁₁(46°), M₁₁(90°), M₁₁(180°).
+All must be within EPS for 2 consecutive iterations.
+
+Auto beam cutoff: eps³ × total beam energy. Skips 70-90% of weak beams.
 
 ## Multi-core (OpenMP)
 
 ```bash
-OMP_NUM_THREADS=12 bin/mbs_po --po --auto 0.05 ...
+OMP_NUM_THREADS=12 bin/mbs_po --po --auto 0.05 \
+    -p 1 100 70 -w 0.532 --ri 1.31 0 -n 8 --close
 
 # EPYC (64 cores, NUMA-aware)
 OMP_PROC_BIND=close OMP_PLACES=cores OMP_NUM_THREADS=64 \
-    bin/mbs_po_epyc --po --auto 0.05 ...
+    bin/mbs_po_epyc --po --auto 0.05 \
+    -p 1 100 70 -w 0.532 --ri 1.31 0 -n 8 --close
 ```
 
 ## Cluster (MPI + OpenMP)
@@ -52,49 +80,40 @@ OMP_PROC_BIND=close OMP_PLACES=cores OMP_NUM_THREADS=64 \
 sudo apt install libopenmpi-dev
 bash build_mpi.sh
 
-# Run on 8 nodes × 64 cores = 512 cores
+# Run on 8 nodes × 64 cores
 mpirun -np 8 --hostfile nodes.txt \
     -x OMP_NUM_THREADS=64 -x OMP_PROC_BIND=close \
     bin/mbs_po_mpi --po --sobol 8192 --auto_tgrid --auto_phi \
-    -p 1 1000 700 -w 0.532 --ri 1.31 0 -n 16 \
-    --grid 0 180 48 181 --sym 6 2 --close
+    -p 1 1000 700 -w 0.532 --ri 1.31 0 -n 16 --close
 
-# SLURM cluster
+# SLURM
 sbatch cluster_mpi.sh
 ```
-
-See `cluster_mpi.sh` for a ready-to-use SLURM script.
-
-**nodes.txt** format:
-```
-node01 slots=1
-node02 slots=1
-...
-```
-
-Requirements: SSH without password between nodes, shared filesystem (NFS) or binary copied to each node.
 
 ## Output
 
 Each run produces two Mueller matrix files:
-- `M.dat` — full Mueller (with Babinet/shadow beam)
-- `M_noshadow.dat` — without shadow (refracted beams only, better for halo studies)
+- `M.dat` — full Mueller (with Babinet/shadow beam diffraction)
+- `M_noshadow.dat` — without shadow beam (refracted beams only, better for halo studies)
+
+Format: `theta 2pi*dcos M11 M12 ... M44` (18 columns, phi-averaged).
 
 ## Documentation
 
-- **docs/MANUAL.pdf** — full CLI reference (35+ flags), performance, build guides
-- **docs/reports/** — bugfix reports, theta investigation
-- **docs/figures/** — all plots (size scans, GOAD comparison, halos)
+- **docs/MANUAL.pdf** — full CLI reference (35+ flags), build guides, output format
+- **docs/reports/** — bugfix reports (forward-direction Fresnel sign)
+- **docs/figures/** — convergence plots, comparisons
 - **MANUAL.md** — manual (markdown)
 - **tests/run_tests.sh** — regression tests
 
-## Performance
+## Key Features
 
-| Setup | Time | Speedup |
-|-------|------|---------|
-| Original code, 1 thread | ~320 s | 1× |
-| Optimized, 1 thread | 4.6 s | 70× |
-| + OpenMP 12 threads | 1.7 s | 190× |
-| + MPI 8 nodes × 64 cores | ~0.03 s* | ~10000×* |
-
-*Estimated for 8192 Sobol on 512 cores. Benchmark: hex D=H=10um, n=6.
+- **Batched sincos**: all vertex phases pre-computed via AVX-512/AVX2 before theta loop
+- **Auto theta grid**: 7 zones (forward peak, halos 22°/46°, side, backscatter)
+- **Auto phi**: N_phi = x/5 + 48 (linear in size parameter, validated by --autofull)
+- **Incremental adaptive**: reuses previous orientations (Sobol subset property)
+- **5 convergence controls**: Q_sca, M₁₁(22°), M₁₁(46°), M₁₁(90°), M₁₁(180°)
+- **Auto beam cutoff**: eps³ × total energy, skips negligible beams
+- **Dual output**: M.dat (with shadow) + M_noshadow.dat (without) at no extra cost
+- **Memory-aware chunking**: auto-sizes orientation batches to fit in RAM
+- **MPI + OpenMP hybrid**: distributed across nodes, threaded within node

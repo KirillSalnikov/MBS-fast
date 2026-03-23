@@ -59,7 +59,6 @@ OUTPUT=results
 
 srun $MBS --po --sobol $N_ORIENT --auto_tgrid --auto_phi \
     -p 1 $L $D -w $WAVE --ri $RI_RE $RI_IM -n $N_REFL \
-    --grid 0 180 48 181 --sym 6 2 \
     --close -o $OUTPUT
 
 echo ""

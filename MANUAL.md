@@ -11,14 +11,17 @@ MBS-raw computes light scattering by non-spherical particles using the Physical 
 ## Quick Start
 
 ```bash
-# Simple run: hex column, Sobol orientations, auto theta grid
-mbs_po --po --sobol 1024 --auto_tgrid \
-    -p 1 10 10 -w 0.532 --ri 1.31 0 -n 12 \
-    --grid 0 180 48 180 --close
+# Full auto: adaptive orientations + auto grids + auto beam cutoff
+mbs_po --po --auto 0.05 \
+    -p 1 10 10 -w 0.532 --ri 1.31 0 -n 8 --close
 
-# Fully adaptive (auto everything)
-mbs_po --po --adaptive 0.01 --auto_tgrid \
-    -p 1 10 10 -w 0.532 --ri 1.31 0 -n 12 \
+# Full auto including n search
+mbs_po --po --autofull 0.05 \
+    -p 1 10 10 -w 0.532 --ri 1.31 0 --close
+
+# Manual: fixed Sobol orientations with auto grids
+mbs_po --po --sobol 1024 --auto_tgrid --auto_phi \
+    -p 1 10 10 -w 0.532 --ri 1.31 0 -n 8 \
     --grid 0 180 48 180 --close
 ```
 
@@ -232,11 +235,14 @@ Read (beta, gamma) pairs in radians from text file (one pair per line). Comments
 
 Override particle symmetry for Sobol/adaptive orientation generation.
 B = beta symmetry divisor, G = gamma symmetry divisor.
-- `--sym 6 2`: hex prism (beta in [0, pi/6], gamma in [0, pi]) — 12x reduction
-- `--sym 2 6`: same total reduction, different split
+beta_sym = pi/B, gamma_sym = 2*pi/G.
+
+**WARNING**: Usually NOT needed. Particle symmetry is detected automatically from `-p` type (e.g. hex prism: beta_sym=90°, gamma_sym=60°). Use `--sym` only for custom particles loaded with `--pf`.
+
+- `--sym 2 6`: hex prism (beta in [0, pi/2=90°], gamma in [0, 2pi/6=60°]) — 12x reduction
 - `--sym 1 1`: no symmetry (full sphere)
 
-**Example**: `--sobol 1024 --sym 6 2` generates 1024 Sobol points in the symmetry-reduced domain.
+**Note**: `--auto` and `--autofull` use particle auto-symmetry. Do NOT add `--sym`.
 
 #### `-b MIN MAX`
 
