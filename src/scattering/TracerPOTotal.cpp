@@ -15,8 +15,61 @@
 #ifdef _OPENMP
 #include <omp.h>
 #endif
+#ifdef USE_MPI
+#include <mpi.h>
+#endif
 
 using namespace std;
+
+// Helper: pack Arr2D (N x M grid of n x m matrices) into flat double array
+static void Arr2DToFlat(const Arr2D &arr, int N, int M, double *buf)
+{
+    for (int i = 0; i < N; ++i)
+        for (int j = 0; j < M; ++j) {
+            matrix m = arr(i, j);
+            for (int a = 0; a < 4; ++a)
+                for (int b = 0; b < 4; ++b)
+                    buf[((i*M + j)*4 + a)*4 + b] = m[a][b];
+        }
+}
+
+// Helper: unpack flat double array into Arr2D (replace mode)
+static void FlatToArr2D(const double *buf, int N, int M, Arr2D &arr)
+{
+    for (int i = 0; i < N; ++i)
+        for (int j = 0; j < M; ++j) {
+            matrix mt(4, 4);
+            for (int a = 0; a < 4; ++a)
+                for (int b = 0; b < 4; ++b)
+                    mt[a][b] = buf[((i*M + j)*4 + a)*4 + b];
+            arr.replace(i, j, mt);
+        }
+}
+
+// Helper: MPI reduce Arr2D + incomingEnergy, rank 0 gets result
+static void MPI_ReduceMueller(HandlerPO *hp, int nAz, int nZen,
+                               double &incomingEnergy, int mpi_rank)
+{
+#ifdef USE_MPI
+    int totalDoubles = (nAz+1) * (nZen+1) * 16;
+    std::vector<double> sendbuf(totalDoubles), recvbuf(totalDoubles);
+
+    // Reduce M
+    Arr2DToFlat(hp->M, nAz+1, nZen+1, sendbuf.data());
+    MPI_Reduce(sendbuf.data(), recvbuf.data(), totalDoubles, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (mpi_rank == 0) FlatToArr2D(recvbuf.data(), nAz+1, nZen+1, hp->M);
+
+    // Reduce M_noshadow
+    Arr2DToFlat(hp->M_noshadow, nAz+1, nZen+1, sendbuf.data());
+    MPI_Reduce(sendbuf.data(), recvbuf.data(), totalDoubles, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (mpi_rank == 0) FlatToArr2D(recvbuf.data(), nAz+1, nZen+1, hp->M_noshadow);
+
+    // Reduce incomingEnergy
+    double totalEnergy = 0;
+    MPI_Reduce(&incomingEnergy, &totalEnergy, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (mpi_rank == 0) incomingEnergy = totalEnergy;
+#endif
+}
 
 TracerPOTotal::TracerPOTotal(Particle *particle, int nActs,
                              const string &resultFileName)
@@ -52,17 +105,34 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     }
 
     int nOrientations = orientations.size();
-    std::cout << "Random grid: " << (betaRange.number+1) << " x " << gammaRange.number
-              << " = " << nOrientations << " orientations" << std::endl;
 
-    // Use the same chunked + OpenMP pipeline as TraceFromSobol
+    // MPI: each rank processes a subset
+    int myStart = m_mpiRank * nOrientations / m_mpiSize;
+    int myEnd = (m_mpiRank + 1) * nOrientations / m_mpiSize;
+    int myCount = myEnd - myStart;
+
+    if (m_mpiRank == 0)
+        std::cout << "Random grid: " << (betaRange.number+1) << " x " << gammaRange.number
+                  << " = " << nOrientations << " orientations"
+                  << (m_mpiSize > 1 ? " (" + std::to_string(myCount) + "/rank)" : "")
+                  << std::endl;
+
     CalcTimer timer;
     timer.Start();
-    OutputStartTime(timer);
+    if (m_mpiRank == 0) OutputStartTime(timer);
 
     m_handler->SetNormIndex(1);
 
-    std::string dir = CreateFolder(m_resultDirName);
+    std::string dir;
+    if (m_mpiRank == 0) dir = CreateFolder(m_resultDirName);
+#ifdef USE_MPI
+    if (m_mpiSize > 1) {
+        int dirLen = dir.size();
+        MPI_Bcast(&dirLen, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        dir.resize(dirLen);
+        MPI_Bcast(&dir[0], dirLen, MPI_CHAR, 0, MPI_COMM_WORLD);
+    }
+#endif
 #ifdef _WIN32
     m_resultDirName += '\\' + m_resultDirName;
 #else
@@ -89,8 +159,8 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     } } }
 #endif
     long long beamBudget = std::max(100LL, availMB / 2);
-    int chunkSize = std::max(32, std::min(nOrientations, (int)(beamBudget * 1024 / 350)));
-    int nChunks = (nOrientations + chunkSize - 1) / chunkSize;
+    int chunkSize = std::max(32, std::min(myCount, (int)(beamBudget * 1024 / 350)));
+    int nChunks = (myCount + chunkSize - 1) / chunkSize;
 
     double phase1_total = 0, phase2_total = 0;
     std::vector<Beam> outBeams;
@@ -98,8 +168,8 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
 
     for (int chunk = 0; chunk < nChunks; ++chunk)
     {
-        int iStart = chunk * chunkSize;
-        int iEnd = std::min(iStart + chunkSize, nOrientations);
+        int iStart = myStart + chunk * chunkSize;
+        int iEnd = std::min(iStart + chunkSize, myEnd);
         int thisChunk = iEnd - iStart;
 
         auto tp1 = std::chrono::high_resolution_clock::now();
@@ -152,173 +222,25 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         chunkPrepared.clear(); chunkPrepared.shrink_to_fit();
     }
 
-    EraseConsoleLine(60);
-    std::cout << "Phase 1 (tracing): " << std::fixed << std::setprecision(2) << phase1_total << " s" << std::endl;
-    std::cout << "Phase 2 (diffraction, OpenMP): " << phase2_total << " s" << std::endl;
-    std::cout << "Total: " << phase1_total + phase2_total << " s" << std::endl;
+    // MPI: reduce Mueller from all ranks
+    MPI_ReduceMueller(handlerPO, nAz, nZen, m_incomingEnergy, m_mpiRank);
 
-    m_handler->WriteTotalMatricesToFile(m_resultDirName);
-    m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
-    { std::swap(handlerPO->M, handlerPO->M_noshadow);
-      std::string nsName = m_resultDirName + "_noshadow";
-      handlerPO->WriteMatricesToFile(nsName, m_incomingEnergy);
-      std::swap(handlerPO->M, handlerPO->M_noshadow); }
-    OutputStatisticsPO(timer, nOrientations, m_resultDirName);
+    EraseConsoleLine(60);
+    if (m_mpiRank == 0) {
+        std::cout << "Phase 1 (tracing): " << std::fixed << std::setprecision(2) << phase1_total << " s" << std::endl;
+        std::cout << "Phase 2 (diffraction, OpenMP): " << phase2_total << " s" << std::endl;
+        std::cout << "Total: " << phase1_total + phase2_total << " s" << std::endl;
+
+        m_handler->WriteTotalMatricesToFile(m_resultDirName);
+        m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
+        std::swap(handlerPO->M, handlerPO->M_noshadow);
+        std::string nsName = m_resultDirName + "_noshadow";
+        handlerPO->WriteMatricesToFile(nsName, m_incomingEnergy);
+        std::swap(handlerPO->M, handlerPO->M_noshadow);
+        OutputStatisticsPO(timer, nOrientations, m_resultDirName);
+    }
 }
 
-// OLD TraceRandom code removed — now uses chunked + OpenMP pipeline above.
-
-#if 0 // DEAD CODE
-#ifdef _CHECK_ENERGY_BALANCE
-    m_incomingEnergy_DEAD = 0;
-    m_outcomingEnergy = 0;
-#endif
-
-    long long nOrientations_old = (betaRange.number) * (gammaRange.number);
-
-#ifdef _DEBUG  /* DEB */
-    ofstream outFile(m_resultDirName + "log.dat", ios::out);
-    if (!outFile.is_open())
-    {
-        std::cerr << "Error! File \"" << m_resultDirName
-                  << "\" was not opened. " << __FUNCTION__;
-        throw std::exception();
-    }
-#endif
-
-
-    vector<Beam> outBeams;
-    double beta, gamma;
-
-    int betaNorm = (m_symmetry.beta < M_PI_2+FLT_EPSILON && m_symmetry.beta > M_PI_2-FLT_EPSILON) ? 1 : 2;
-    double normIndex = gammaRange.number * betaNorm;
-    m_handler->SetNormIndex(normIndex);
-
-    std::string dir = CreateFolder(m_resultDirName);
-#ifdef _WIN32
-    m_resultDirName += '\\' + m_resultDirName;
-#else
-    m_resultDirName = dir + m_resultDirName;
-#endif
-
-    m_handler->betaFile = new std::ofstream(m_resultDirName + "_beta.dat", ios::out);
-
-    *(m_handler->betaFile) << "Beta CS M11 M12 M13 M14 "\
-        "M21 M22 M23 M24 "\
-        "M31 M32 M33 M34 "\
-        "M41 M42 M43 M44";
-
-//    ++nOrientations;
-    timer.Start();
-    OutputStartTime(timer);
-
-#ifdef _DEBUG  /* DEB */
-    for (int i = 0; i <= betaRange.number; ++i)
-    {
-//        std::cout  << "i: "<< i << std::endl;
-#else
-    for (int i = 0; i <= betaRange.number; ++i)
-    {
-#endif
-        beta = betaRange.min + i*betaRange.step;
-
-//		double dcos = (i == 0 || i == betaRange.number)
-//				? (1.0-cos(0.5*betaRange.step))/normIndex
-//				: (cos((i-0.5)*betaRange.step) -
-//				   cos((i+0.5)*betaRange.step))/normIndex;
-
-        double dcos;
-        CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normIndex, dcos);
-        m_handler->SetSinZenith(dcos);
-
-#ifdef _DEBUG // DEB
-        for (int j = 0; j < gammaRange.number; ++j)
-        {
-//            std::cout  << "j: "<< j << std::endl;
-//			beta = DegToRad(15); gamma = DegToRad(0);
-#else
-        for (int j = 0; j < gammaRange.number; ++j)
-        {
-#endif
-            gamma = gammaRange.min + j*gammaRange.step;
-            m_particle->Rotate(/*M_PI-*/beta, /*M_PI+*/gamma, 0);
-
-            if (!shadowOff)
-            {
-                m_scattering->FormShadowBeam(outBeams);
-            }
-
-#ifdef _DEBUG  /* DEB */
-            // if (i == 4 && j ==0)
-            //     int ffff = 0;
-#endif
-            bool ok = m_scattering->ScatterLight(0, 0, outBeams);
-
-            if (ok)
-            {
-#ifdef _DEBUG  /* DEB */
-//             vector<Beam> be = outBeams;
-//            for (int k = 1; k < be.size(); ++k) {
-//                if (be[k].nActs==2) {
-//                    outBeams.push_back(be[k]);
-//                }
-//            }
-#endif
-                m_handler->HandleBeams(outBeams, dcos);
-//#ifdef _DEBUG  /* DEB */
-//            double sum = 0;
-//            for (int k = 0; k < outBeams.size(); ++k) {
-//                double aaa = outBeams[k].Area();
-////                ofstream outFile(m_resultDirName + to_string(k) + "_vertices.dat", ios::out);
-//                sum += aaa;
-//                std::vector<int> tr;
-//                m_handler->m_tracks->RecoverTrack(outBeams[k], m_particle->nFacets, tr);
-//                outFile << outBeams[k].id << " ";
-//                for (int l = 0; l < tr.size(); ++l) {
-//                    outFile << tr[l] << " ";
-//                }
-//               outFile << aaa << std::endl;
-////                outFile << outBeams[k].arr[0] << endl << endl;
-////                outFile.close();
-//            }
-//            outFile.close();
-//            double mm = ((HandlerPO*)m_handler)->M(0, 0)[0][0];
-//            std::cout << mm << " " << j << std::endl;
-//#else
-//#endif
-            }
-            else
-            {
-                std::cout << std::endl << "Orientation (" << i << ", " << j << ") has been skipped!!!" << std::endl;
-            }
-
-            m_incomingEnergy += m_scattering->GetIncedentEnergy()*dcos;
-
-            OutputProgress(nOrientations, count, i, j, timer, outBeams.size());
-            outBeams.clear();
-//            std::cout << "sdfewtwr";
-            ++count;
-        }
-
-        static_cast<HandlerPOTotal*>(m_handler)->OutputContribution(beta, m_incomingEnergy);
-    }
-
-    static_cast<HandlerPOTotal*>(m_handler)->betaFile->close();
-
-//#ifdef _DEBUG  /* DEB */
-//    double mm = ((HandlerPO*)m_handler)->M(0, 0)[0][0];
-//    outFile.close();
-//#endif
-
-    EraseConsoleLine(60);
-    std::cout << "100%" << std::endl;
-
-    // m_handler->m_outputEnergy = m_handler->ComputeTotalScatteringEnergy();
-    m_handler->WriteTotalMatricesToFile(m_resultDirName);
-    m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
-//#ifndef _DEBUG
-
-#endif // DEAD CODE
 
 void TracerPOTotal::TraceMonteCarlo(const AngleRange &betaRange,
                                     const AngleRange &gammaRange,
@@ -828,18 +750,35 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
         orientations[i] = {beta, gamma};
     }
 
-    std::cout << "Sobol: " << nOrient << " orientations, beta_sym="
-              << RadToDeg(betaSym) << " deg, gamma_sym="
-              << RadToDeg(gammaSym) << " deg" << std::endl;
+    // MPI: each rank processes a subset of orientations
+    int myStart = m_mpiRank * nOrient / m_mpiSize;
+    int myEnd = (m_mpiRank + 1) * nOrient / m_mpiSize;
+    int myCount = myEnd - myStart;
+
+    if (m_mpiRank == 0)
+        std::cout << "Sobol: " << nOrient << " orientations"
+                  << (m_mpiSize > 1 ? " (" + std::to_string(myCount) + " per rank, " + std::to_string(m_mpiSize) + " ranks)" : "")
+                  << ", beta_sym=" << RadToDeg(betaSym) << " deg, gamma_sym="
+                  << RadToDeg(gammaSym) << " deg" << std::endl;
 
     CalcTimer timer;
     timer.Start();
-    OutputStartTime(timer);
+    if (m_mpiRank == 0) OutputStartTime(timer);
 
-    double weight = 1.0 / nOrient;
+    double weight = 1.0 / nOrient;  // same weight regardless of MPI split
     m_handler->SetNormIndex(1);
 
-    std::string dir = CreateFolder(m_resultDirName);
+    std::string dir;
+    if (m_mpiRank == 0) dir = CreateFolder(m_resultDirName);
+#ifdef USE_MPI
+    if (m_mpiSize > 1) {
+        // Broadcast dir name to all ranks
+        int dirLen = dir.size();
+        MPI_Bcast(&dirLen, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        dir.resize(dirLen);
+        MPI_Bcast(&dir[0], dirLen, MPI_CHAR, 0, MPI_COMM_WORLD);
+    }
+#endif
 #ifdef _WIN32
     m_resultDirName += '\\' + m_resultDirName;
 #else
@@ -887,12 +826,13 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
         }
     }
 #endif
-    long long beamBudget = std::max(100LL, availMB / 2); // 50% of RAM, min 100 MB
-    int chunkSize = std::max(32, std::min(nOrient, (int)(beamBudget * 1024 / 350)));
-    int nChunks = (nOrient + chunkSize - 1) / chunkSize;
+    long long beamBudget = std::max(100LL, availMB / 2);
+    int chunkSize = std::max(32, std::min(myCount, (int)(beamBudget * 1024 / 350)));
+    int nChunks = (myCount + chunkSize - 1) / chunkSize;
 
-    std::cerr << "Memory: " << availMB << " MB available, chunk="
-              << chunkSize << " orientations (" << nChunks << " chunks)" << std::endl;
+    if (m_mpiRank == 0)
+        std::cerr << "Memory: " << availMB << " MB available, chunk="
+                  << chunkSize << " orientations (" << nChunks << " chunks)" << std::endl;
 
     double phase1_total = 0, phase2_total = 0;
     std::vector<Beam> outBeams;
@@ -900,8 +840,8 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
 
     for (int chunk = 0; chunk < nChunks; ++chunk)
     {
-        int iStart = chunk * chunkSize;
-        int iEnd = std::min(iStart + chunkSize, nOrient);
+        int iStart = myStart + chunk * chunkSize;
+        int iEnd = std::min(iStart + chunkSize, myEnd);
         int thisChunk = iEnd - iStart;
 
         // Phase 1: trace this chunk
@@ -972,25 +912,27 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
         chunkPrepared.shrink_to_fit();
     }
 
+    // MPI: reduce Mueller matrices from all ranks to rank 0
+    MPI_ReduceMueller(handlerPO, nAz, nZen, m_incomingEnergy, m_mpiRank);
+
     EraseConsoleLine(60);
-    std::cout << "Phase 1 (tracing + preprocessing): " << std::fixed
-              << std::setprecision(2) << phase1_total << " s" << std::endl;
-    std::cout << "Phase 2 (diffraction, OpenMP): " << std::fixed
-              << std::setprecision(2) << phase2_total << " s" << std::endl;
-    std::cout << "Total: " << phase1_total + phase2_total << " s" << std::endl;
+    if (m_mpiRank == 0) {
+        std::cout << "Phase 1 (tracing): " << std::fixed
+                  << std::setprecision(2) << phase1_total << " s" << std::endl;
+        std::cout << "Phase 2 (diffraction, OpenMP): " << phase2_total << " s" << std::endl;
+        std::cout << "Total: " << phase1_total + phase2_total << " s" << std::endl;
 
-    m_handler->WriteTotalMatricesToFile(m_resultDirName);
-    m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
+        m_handler->WriteTotalMatricesToFile(m_resultDirName);
+        m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
 
-    // Write no-shadow Mueller
-    {
+        // Write no-shadow Mueller
         std::swap(handlerPO->M, handlerPO->M_noshadow);
         std::string nsName = m_resultDirName + "_noshadow";
         handlerPO->WriteMatricesToFile(nsName, m_incomingEnergy);
         std::swap(handlerPO->M, handlerPO->M_noshadow);
-    }
 
-    OutputStatisticsPO(timer, nOrient, m_resultDirName);
+        OutputStatisticsPO(timer, nOrient, m_resultDirName);
+    }
 }
 
 void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, int maxOrientOverride)

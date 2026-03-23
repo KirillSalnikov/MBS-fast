@@ -25,4 +25,9 @@ public:
 
     /// Adaptive convergence mode
     void TraceAdaptive(double eps, double betaSym, double gammaSym, int maxOrientOverride = 0);
+
+    /// MPI rank and size (default: single process)
+    int m_mpiRank = 0;
+    int m_mpiSize = 1;
+    void SetMPI(int rank, int size) { m_mpiRank = rank; m_mpiSize = size; }
 };

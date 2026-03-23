@@ -4,6 +4,10 @@
 #include <float.h>
 #include <string>
 
+#ifdef USE_MPI
+#include <mpi.h>
+#endif
+
 #include "HexagonalAggregate.h"
 #include "ConcaveHexagonal.h"
 #include "CertainAggregate.h"
@@ -292,6 +296,15 @@ AngleRange GetRange(const ArgPP &parser, const std::string &key,
 
 int main(int argc, const char* argv[])
 {
+    int mpi_rank = 0, mpi_size = 1;
+#ifdef USE_MPI
+    MPI_Init(&argc, const_cast<char***>(&argv));
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+    if (mpi_rank == 0 && mpi_size > 1)
+        std::cout << "MPI: " << mpi_size << " processes" << std::endl;
+#endif
+
     RenameConsole("MBS");
 
     std::string additionalSummary;
@@ -591,6 +604,7 @@ int main(int argc, const char* argv[])
                 if (args.IsCatched("all"))
                 {
                     tracer = new TracerPOTotal(particle, reflNum, dirName);
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) tpt->SetMPI(mpi_rank, mpi_size); }
                     tracer->m_scattering->m_wave = wave;
                     if (args.IsCatched("r"))
                     {
@@ -612,6 +626,7 @@ int main(int argc, const char* argv[])
                 {
                     // Use TracerPOTotal for OpenMP + batched sincos acceleration
                     tracer = new TracerPOTotal(particle, reflNum, dirName);
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) tpt->SetMPI(mpi_rank, mpi_size); }
                     tracer->m_scattering->m_wave = wave;
                     tracer->shadowOff = args.IsCatched("shadow_off");
                     if (args.IsCatched("r"))
@@ -661,6 +676,7 @@ int main(int argc, const char* argv[])
             ScatteringRange conus = SetConus(args);
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) tpt->SetMPI(mpi_rank, mpi_size); }
             trackGroups.push_back(TrackGroup());
             handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
                                          nTheta, wave);
@@ -692,6 +708,7 @@ int main(int argc, const char* argv[])
             ScatteringRange conus = SetConus(args);
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) tpt->SetMPI(mpi_rank, mpi_size); }
             tracer->m_scattering->m_wave = wave;
             tracer->shadowOff = args.IsCatched("shadow_off");
             trackGroups.push_back(TrackGroup());
@@ -765,6 +782,7 @@ int main(int argc, const char* argv[])
             ScatteringRange conus = SetConus(args);
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) tpt->SetMPI(mpi_rank, mpi_size); }
             tracer->m_scattering->m_wave = wave;
             tracer->shadowOff = args.IsCatched("shadow_off");
             trackGroups.push_back(TrackGroup());
@@ -929,12 +947,16 @@ int main(int argc, const char* argv[])
         delete handler;
     }
 
-    cout << endl << "done";
+    if (mpi_rank == 0)
+        cout << endl << "done";
 
-    if (!args.IsCatched("close"))
+    if (!args.IsCatched("close") && mpi_rank == 0)
     {
         getchar();
     }
 
+#ifdef USE_MPI
+    MPI_Finalize();
+#endif
     return 0;
 }
