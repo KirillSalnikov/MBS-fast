@@ -1156,9 +1156,10 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         if (beam.lastFacetId != __INT_MAX__)
             totalBeamEnergy += beam.J.Norm() * beam.Area();
     }
-    // Auto cutoff: eps² × totalEnergy (eps from --auto target accuracy)
-    // eps=5% → cutoff=0.25%, eps=1% → cutoff=0.01%, eps=0.1% → cutoff=0.0001%
-    double cutoffFrac = m_targetEps * m_targetEps;
+    // Auto cutoff: eps³ × totalEnergy (conservative to protect forward peak)
+    // eps=5% → cutoff=0.0125%, eps=1% → cutoff=0.0001%
+    // Note: eps² was too aggressive — killed forward peak for large particles
+    double cutoffFrac = m_targetEps * m_targetEps * m_targetEps;
     double autoCutoff = (m_beamCutoff > 0) ? m_beamCutoff : totalBeamEnergy * cutoffFrac;
     int skippedBeams = 0;
 
