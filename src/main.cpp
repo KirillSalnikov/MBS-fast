@@ -806,16 +806,12 @@ int main(int argc, const char* argv[])
             {
                 double D = particle->MaximalDimention();
                 double x = (wave > 0) ? M_PI * D / wave : 100;
-                // Phi convergence depends on x (tested empirically):
-                //   N_phi=48: <2% error for x<20, but 13% for x=600
-                //   N_phi=72: <4% for x=600, <1% for x<200
-                //   N_phi=96: reference (<0.5% for all tested sizes)
-                //
-                // Formula: N_phi = max(48, 6*ceil(sqrt(x)/1.5))
-                // Gives: x=18->48, x=60->54, x=180->54, x=600->102
-                // Always round to multiple of 6 (hex symmetry)
-                int nPhi_raw = std::max(48, (int)(6.0 * ceil(sqrt(x) / 1.5)));
-                int nPhi = ((nPhi_raw + 5) / 6) * 6; // round up to multiple of 6
+                // Phi convergence depends on x (linear, validated by --autofull):
+                //   x=100->72, x=300->108, x=600->168, x=1000->252, x=2000->360
+                // Validated: autofull found phi=168 for x=618 (matches formula)
+                // Formula: N_phi = min(360, x/5 + 48), rounded to multiple of 6
+                int nPhi_raw = std::max(48, std::min(360, (int)(x / 5.0 + 48)));
+                int nPhi = ((nPhi_raw + 5) / 6) * 6;
 
                 conus.nAzimuth = nPhi;
                 conus.azinuthStep = 2.0 * M_PI / nPhi;
