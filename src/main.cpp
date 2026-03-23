@@ -506,7 +506,7 @@ int main(int argc, const char* argv[])
 
     }
 
-    int nTheta = args.GetDoubleValue("grid", 2);
+    int nTheta = args.IsCatched("grid") ? (int)args.GetDoubleValue("grid", 2) : 1;
 
     additionalSummary += "Method: ";
 
@@ -781,7 +781,10 @@ int main(int argc, const char* argv[])
                 additionalSummary += ", Sobol quasi-random\n\n";
 
             TracerPOTotal *tracer;
-            ScatteringRange conus = SetConus(args);
+            // --auto/--autofull: --grid is optional (default 0→180°)
+            ScatteringRange conus = args.IsCatched("grid")
+                ? SetConus(args)
+                : ScatteringRange(0, M_PI, 1, 1);
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) tpt->SetMPI(mpi_rank, mpi_size); }
