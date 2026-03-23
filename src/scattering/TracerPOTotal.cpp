@@ -1233,3 +1233,189 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         std::cout << std::endl << "Output: " << m_resultDirName << ".dat" << std::endl;
     }
 }
+
+// =============================================================================
+// TraceAutoFull: 3D sequential optimization n → N_phi → N_orient
+// Step 1: Increase n until Q_sca converges (cheap: tracing only)
+// Step 2: Increase N_phi until Q_sca converges (medium: new grid)
+// Step 3: Increase N_orient until all control points converge (expensive)
+// =============================================================================
+void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
+                                   int maxOrientOverride,
+                                   Particle *particle, double wave,
+                                   ScatteringRange &conus,
+                                   HandlerPOTotal *handler)
+{
+    auto t_total_start = std::chrono::high_resolution_clock::now();
+    HandlerPO *hp = dynamic_cast<HandlerPO*>(m_handler);
+    if (!hp) { std::cerr << "Error: not HandlerPO" << std::endl; return; }
+
+    int nAz = hp->m_sphere.nAzimuth;
+    int nZen = hp->m_sphere.nZenith;
+
+    std::cout << "===== AUTOFULL: 3D sequential optimization =====" << std::endl;
+    std::cout << "Target accuracy: " << eps*100 << "%" << std::endl;
+    std::cout << std::endl;
+
+    // =========================================================================
+    // STEP 1: Find optimal n (reflections)
+    // Run with small N_orient=128 and current N_phi, vary n
+    // =========================================================================
+    std::cout << "--- Step 1: n convergence (N_orient=128, current N_phi) ---" << std::endl;
+
+    int n_opt = 4;
+    double prev_qsca_n = 0;
+    int n_converged_count = 0;
+
+    for (int n_test = 4; n_test <= 30; n_test += 2)
+    {
+        // Set reflection count
+        m_scattering->restriction = n_test; // hacky but works
+
+        // Run quick computation
+        hp->M.ClearArr(); hp->M_noshadow.ClearArr(); hp->CleanJ();
+        m_incomingEnergy = 0; hp->m_outputEnergy = 0;
+
+        Sobol2D sobol(42);
+        std::vector<double> su, sv;
+        sobol.generate(128, su, sv);
+        double cosBetaSym = cos(betaSym);
+        double weight = 1.0 / 128;
+        std::vector<Beam> outBeams;
+
+        for (int i = 0; i < 128; ++i)
+        {
+            double beta = acos(1.0 - (1.0 - cosBetaSym) * su[i]);
+            double gamma = gammaSym * sv[i];
+            m_particle->Rotate(beta, gamma, 0);
+            if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
+            m_scattering->ScatterLight(0, 0, outBeams);
+            m_handler->HandleBeams(outBeams, weight);
+            m_incomingEnergy += m_scattering->GetIncedentEnergy() * weight;
+            outBeams.clear();
+        }
+
+        // Extract Q_sca
+        double csca = 0;
+        for (int j = 0; j <= nZen; ++j) {
+            double m11_avg = 0;
+            for (int p = 0; p <= nAz; ++p) m11_avg += hp->M(p, j)[0][0];
+            m11_avg /= (nAz + 1);
+            csca += m11_avg * hp->m_sphere.Compute2PiDcos(j);
+        }
+        double qsca = (m_incomingEnergy > 0) ? csca / m_incomingEnergy : 0;
+        double dq = (prev_qsca_n > 0) ? fabs(qsca - prev_qsca_n) / prev_qsca_n : 1.0;
+
+        std::cout << "  n=" << n_test << " Q_sca=" << std::fixed << std::setprecision(4)
+                  << qsca << " dQ=" << std::setprecision(2) << dq*100 << "%" << std::endl;
+
+        if (dq < eps && n_test > 4) n_converged_count++;
+        else n_converged_count = 0;
+
+        if (n_converged_count >= 2) {
+            n_opt = n_test - 2; // use the value that first converged
+            std::cout << "  → n converged at " << n_opt << std::endl;
+            break;
+        }
+        prev_qsca_n = qsca;
+        n_opt = n_test;
+    }
+    m_scattering->restriction = n_opt;
+    std::cout << std::endl;
+
+    // =========================================================================
+    // STEP 2: Find optimal N_phi
+    // Run with N_orient=128, n=n_opt, vary N_phi
+    // =========================================================================
+    std::cout << "--- Step 2: N_phi convergence (n=" << n_opt << ", N_orient=128) ---" << std::endl;
+
+    int phi_opt = 48;
+    double prev_qsca_phi = 0;
+    int phi_converged_count = 0;
+
+    for (int phi_test = 36; phi_test <= 300; phi_test = (int)(phi_test * 1.5 / 6) * 6)
+    {
+        if (phi_test < 36) phi_test = 36;
+
+        // Rebuild scattering sphere with new N_phi
+        conus.nAzimuth = phi_test;
+        conus.azinuthStep = 2.0 * M_PI / phi_test;
+        hp->SetScatteringSphere(conus);
+        hp->SetTracks(hp->GetTracks());
+
+        int nAz2 = hp->m_sphere.nAzimuth;
+        int nZen2 = hp->m_sphere.nZenith;
+
+        hp->M.ClearArr(); hp->M_noshadow.ClearArr(); hp->CleanJ();
+        m_incomingEnergy = 0; hp->m_outputEnergy = 0;
+
+        Sobol2D sobol(42);
+        std::vector<double> su, sv;
+        sobol.generate(128, su, sv);
+        double cosBetaSym = cos(betaSym);
+        double weight = 1.0 / 128;
+        std::vector<Beam> outBeams;
+
+        for (int i = 0; i < 128; ++i)
+        {
+            double beta = acos(1.0 - (1.0 - cosBetaSym) * su[i]);
+            double gamma = gammaSym * sv[i];
+            m_particle->Rotate(beta, gamma, 0);
+            if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
+            m_scattering->ScatterLight(0, 0, outBeams);
+            m_handler->HandleBeams(outBeams, weight);
+            m_incomingEnergy += m_scattering->GetIncedentEnergy() * weight;
+            outBeams.clear();
+        }
+
+        double csca = 0;
+        for (int j = 0; j <= nZen2; ++j) {
+            double m11_avg = 0;
+            for (int p = 0; p <= nAz2; ++p) m11_avg += hp->M(p, j)[0][0];
+            m11_avg /= (nAz2 + 1);
+            csca += m11_avg * hp->m_sphere.Compute2PiDcos(j);
+        }
+        double qsca = (m_incomingEnergy > 0) ? csca / m_incomingEnergy : 0;
+        double dq = (prev_qsca_phi > 0) ? fabs(qsca - prev_qsca_phi) / prev_qsca_phi : 1.0;
+
+        std::cout << "  N_phi=" << phi_test << " Q_sca=" << std::fixed << std::setprecision(4)
+                  << qsca << " dQ=" << std::setprecision(2) << dq*100 << "%" << std::endl;
+
+        if (dq < eps && phi_test > 36) phi_converged_count++;
+        else phi_converged_count = 0;
+
+        if (phi_converged_count >= 2) {
+            phi_opt = phi_test - (int)((phi_test - phi_test/1.5) + 0.5); // approximate previous
+            phi_opt = ((phi_opt + 5) / 6) * 6;
+            std::cout << "  → N_phi converged at " << phi_opt << std::endl;
+            break;
+        }
+        prev_qsca_phi = qsca;
+        phi_opt = phi_test;
+    }
+
+    // Set final N_phi
+    conus.nAzimuth = phi_opt;
+    conus.azinuthStep = 2.0 * M_PI / phi_opt;
+    hp->SetScatteringSphere(conus);
+    hp->SetTracks(hp->GetTracks());
+    std::cout << std::endl;
+
+    // =========================================================================
+    // STEP 3: Adaptive N_orient (reuse TraceAdaptive with found n, N_phi)
+    // =========================================================================
+    std::cout << "--- Step 3: N_orient convergence (n=" << n_opt
+              << ", N_phi=" << phi_opt << ") ---" << std::endl;
+
+    // Clean and run adaptive
+    hp->M.ClearArr(); hp->M_noshadow.ClearArr(); hp->CleanJ();
+    m_incomingEnergy = 0; hp->m_outputEnergy = 0;
+
+    TraceAdaptive(eps, betaSym, gammaSym, maxOrientOverride);
+
+    auto t_total_end = std::chrono::high_resolution_clock::now();
+    double total_time = std::chrono::duration<double>(t_total_end - t_total_start).count();
+    std::cout << std::endl << "===== AUTOFULL TOTAL: " << std::fixed
+              << std::setprecision(1) << total_time << " s =====" << std::endl;
+    std::cout << "Final: n=" << n_opt << ", N_phi=" << phi_opt << std::endl;
+}

@@ -26,6 +26,11 @@ public:
     /// Adaptive convergence mode
     void TraceAdaptive(double eps, double betaSym, double gammaSym, int maxOrientOverride = 0);
 
+    /// Full 3D sequential optimization: n → N_phi → N_orient
+    void TraceAutoFull(double eps, double betaSym, double gammaSym, int maxOrientOverride,
+                       Particle *particle, double wave, ScatteringRange &conus,
+                       class HandlerPOTotal *handler);
+
     /// MPI rank and size (default: single process)
     int m_mpiRank = 0;
     int m_mpiSize = 1;

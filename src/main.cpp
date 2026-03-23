@@ -90,6 +90,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("auto_tgrid", 0, true); // auto-generate theta grid based on size parameter
     parser.AddRule("auto_phi", 0, true); // auto-select N_phi based on size parameter
     parser.AddRule("adaptive", 1, true); // adaptive convergence (target relative accuracy)
+    parser.AddRule("autofull", 1, true); // full 3D sequential: n → N_phi → N_orient
     parser.AddRule("auto", 1, true); // full auto: auto_tgrid + auto_phi + adaptive (one arg: eps)
     parser.AddRule("maxorient", 1, true); // max orientations for adaptive (power of 2)
     parser.AddRule("sym", 2, true); // symmetry override: beta_factor gamma_factor (e.g. --sym 2 6)
@@ -768,10 +769,11 @@ int main(int argc, const char* argv[])
 
             delete handler;
         }
-        else if (args.IsCatched("sobol") || args.IsCatched("adaptive") || args.IsCatched("auto"))
+        else if (args.IsCatched("sobol") || args.IsCatched("adaptive") || args.IsCatched("auto") || args.IsCatched("autofull"))
         {
             // --auto EPS implies --adaptive EPS + --auto_tgrid + --auto_phi
-            bool isAuto = args.IsCatched("auto");
+            bool isAuto = args.IsCatched("auto") || args.IsCatched("autofull");
+            bool isAutoFull = args.IsCatched("autofull");
             bool isAdaptive = args.IsCatched("adaptive") || isAuto;
             if (isAdaptive)
                 additionalSummary += ", adaptive Sobol\n\n";
@@ -855,7 +857,15 @@ int main(int argc, const char* argv[])
                      << " deg (/" << symGamma << ")" << endl;
             }
 
-            if (isAdaptive)
+            if (isAutoFull)
+            {
+                double epsAdapt = args.GetDoubleValue("autofull", 0);
+                int maxOrientUser = args.IsCatched("maxorient")
+                    ? args.GetIntValue("maxorient", 0) : 0;
+                tracer->TraceAutoFull(epsAdapt, betaSym, gammaSym, maxOrientUser,
+                                      particle, wave, conus, handler);
+            }
+            else if (isAdaptive)
             {
                 double epsAdapt = isAuto ? args.GetDoubleValue("auto", 0)
                                          : args.GetDoubleValue("adaptive", 0);
