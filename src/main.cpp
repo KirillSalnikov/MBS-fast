@@ -51,7 +51,7 @@ void SetArgRules(ArgPP &parser)
     int zero = 0;
     parser.AddRule("p", '+'); // particle (type, size, ...)
     parser.AddRule("ri", 2); // refractive index (Re and Im parts)
-    parser.AddRule("n", 1); // number of internal reflection
+    parser.AddRule("n", 1, true); // number of internal reflection (optional for --autofull)
     parser.AddRule("pf", zero, true); // particle (filename)
     parser.AddRule("rs", 1, true, "pf"); // resize particle (new size)
     parser.AddRule("fixed", 2, true); // fixed orientarion (beta, gamma)
@@ -444,7 +444,7 @@ int main(int argc, const char* argv[])
     particle->Output("particle_for_check.dat");
     additionalSummary += "\tArea:" + to_string(particle->Area()) + "\n\n";
 
-    int reflNum = args.GetDoubleValue("n");
+    int reflNum = args.IsCatched("n") ? (int)args.GetDoubleValue("n") : 6; // default n=6
     additionalSummary += "Number of secondary reflections: " + to_string(reflNum) + "\n";
 
     string dirName = (args.IsCatched("o")) ? args.GetStringValue("o")
