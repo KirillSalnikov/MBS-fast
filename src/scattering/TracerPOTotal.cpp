@@ -246,50 +246,90 @@ void TracerPOTotal::TraceMonteCarlo(const AngleRange &betaRange,
                                     const AngleRange &gammaRange,
                                     int nOrientations)
 {
-    CalcTimer timer;
-    long long count = 0;
-
-    ofstream outFile(m_resultDirName + ".dat", ios::out);
-
-    if (!outFile.is_open())
-    {
-        std::cerr << "Error! File \"" << m_resultDirName << "\" was not opened. "
-                  << __FUNCTION__;
-
-        throw std::exception();
-    }
-
-    vector<Beam> outBeams;
-    double beta, gamma;
-    timer.Start();
+    // Generate random orientations, then use same chunked+OpenMP pipeline
+    std::vector<std::pair<double,double>> orientations;
+    std::vector<double> weights;
 
     long long nTacts;
     asm("rdtsc" : "=A"(nTacts));
     srand(nTacts);
-//    srand(static_cast<unsigned>(time(0)));
 
     for (int i = 0; i < nOrientations; ++i)
     {
-        beta = RandomDouble(0, 1)*betaRange.max;
-        gamma = RandomDouble(0, 1)*gammaRange.max;
-
-        m_particle->Rotate(beta, gamma, 0);
-        m_scattering->ScatterLight(beta, gamma, outBeams);
-
-        m_handler->HandleBeams(outBeams, sin(beta));
-        outBeams.clear();
-
-        ++count;
-        OutputProgress(nOrientations, count, i, i, timer, outBeams.size());
+        double beta = RandomDouble(0, 1) * betaRange.max;
+        double gamma = RandomDouble(0, 1) * gammaRange.max;
+        orientations.push_back({beta, gamma});
+        weights.push_back(sin(beta));
     }
 
-    m_handler->WriteTotalMatricesToFile(m_resultDirName);
+    std::cout << "Monte Carlo: " << nOrientations << " orientations" << std::endl;
+
+    CalcTimer timer;
+    timer.Start();
+    if (m_mpiRank == 0) OutputStartTime(timer);
+
+    m_handler->SetNormIndex(1);
 
     std::string dir = CreateFolder(m_resultDirName);
-    m_resultDirName = dir + m_resultDirName + '\\' + m_resultDirName;
-    m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
-    OutputStatisticsPO(timer, nOrientations, dir);
-    outFile.close();
+#ifdef _WIN32
+    m_resultDirName += '\\' + m_resultDirName;
+#else
+    m_resultDirName = dir + m_resultDirName;
+#endif
+
+    HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
+    if (!handlerPO) { std::cerr << "Error: not HandlerPO" << std::endl; return; }
+
+    int nAz = handlerPO->m_sphere.nAzimuth;
+    int nZen = handlerPO->m_sphere.nZenith;
+
+    // MPI split
+    int myStart = m_mpiRank * nOrientations / m_mpiSize;
+    int myEnd = (m_mpiRank + 1) * nOrientations / m_mpiSize;
+    int myCount = myEnd - myStart;
+
+    // Chunked + OpenMP (same as TraceRandom)
+    std::vector<Beam> outBeams;
+    for (int i = myStart; i < myEnd; ++i)
+    {
+        m_particle->Rotate(orientations[i].first, orientations[i].second, 0);
+        if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
+        bool ok = m_scattering->ScatterLight(0, 0, outBeams);
+
+        if (ok)
+        {
+            PreparedOrientation prepared;
+            handlerPO->PrepareBeams(outBeams, weights[i], prepared);
+
+            std::vector<Arr2DC> localJ, localJ_ns;
+            if (handlerPO->isCoh) {
+                Arr2DC t1(nAz+1,nZen+1,2,2); t1.ClearArr(); localJ.push_back(t1);
+                Arr2DC t2(nAz+1,nZen+1,2,2); t2.ClearArr(); localJ_ns.push_back(t2);
+            }
+            handlerPO->HandleBeamsToLocal(prepared, handlerPO->M, localJ,
+                                           handlerPO->isCoh ? &localJ_ns : nullptr);
+            if (handlerPO->isCoh && !localJ.empty()) {
+                HandlerPO::AddToMuellerLocal(localJ, prepared.sinZenith,
+                                              handlerPO->M, nAz, nZen);
+                HandlerPO::AddToMuellerLocal(localJ_ns, prepared.sinZenith,
+                                              handlerPO->M_noshadow, nAz, nZen);
+            }
+        }
+        m_incomingEnergy += m_scattering->GetIncedentEnergy() * weights[i];
+        outBeams.clear();
+    }
+
+    MPI_ReduceMueller(handlerPO, nAz, nZen, m_incomingEnergy, m_mpiRank);
+
+    if (m_mpiRank == 0) {
+        m_handler->WriteTotalMatricesToFile(m_resultDirName);
+        m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
+        std::swap(handlerPO->M, handlerPO->M_noshadow);
+        std::string nsName = m_resultDirName + "_noshadow";
+        handlerPO->WriteMatricesToFile(nsName, m_incomingEnergy);
+        std::swap(handlerPO->M, handlerPO->M_noshadow);
+        OutputStatisticsPO(timer, nOrientations, m_resultDirName);
+    }
 }
 
 void TracerPOTotal::TraceFromFile(const std::string &orientFile)
@@ -1028,15 +1068,20 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         // Each batch uses weight = 1.0/batchSize (self-contained average)
         // After all batches: M_total = sum(M_batch_i) / nBatches
 
+        // MPI: each rank processes a subset of this batch
+        int myBatchStart = m_mpiRank * batchSize / m_mpiSize;
+        int myBatchEnd = (m_mpiRank + 1) * batchSize / m_mpiSize;
+        int myBatchSize = myBatchEnd - myBatchStart;
+
         double batchEnergy = 0;
-        double weight = 1.0 / batchSize;
+        double weight = 1.0 / batchSize;  // global weight (not per-rank)
         std::vector<Beam> outBeams;
 
-        // Phase 1 (sequential): trace and preprocess new orientations
-        std::vector<PreparedOrientation> batchPrepared(batchSize);
-        for (int i = 0; i < batchSize; ++i)
+        // Phase 1 (sequential): trace and preprocess this rank's portion
+        std::vector<PreparedOrientation> batchPrepared(myBatchSize);
+        for (int i = 0; i < myBatchSize; ++i)
         {
-            int idx = batchStart + i;
+            int idx = batchStart + myBatchStart + i;
             double beta  = acos(1.0 - (1.0 - cosBetaSym) * su_all[idx]);
             double gamma = gammaSym * sv_all[idx];
             m_particle->Rotate(beta, gamma, 0);
@@ -1052,7 +1097,7 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
             outBeams.clear();
         }
 
-        // Phase 2 (parallel): diffract all orientations in this batch
+        // Phase 2 (parallel): diffract this rank's portion of the batch
         #pragma omp parallel
         {
             Arr2D localM(nAz + 1, nZen + 1, 4, 4);
@@ -1068,7 +1113,7 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
             }
 
             #pragma omp for schedule(dynamic, 1)
-            for (int i = 0; i < batchSize; ++i)
+            for (int i = 0; i < myBatchSize; ++i)
             {
                 if (!batchPrepared[i].beams.empty())
                     hp->HandleBeamsToLocal(batchPrepared[i], localM, localJ,
@@ -1097,6 +1142,27 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         m_incomingEnergy += batchEnergy;
         totalOrient = batchEnd;
         nBatches++;
+
+        // MPI: reduce M across ranks so all see same convergence metrics
+#ifdef USE_MPI
+        if (m_mpiSize > 1)
+        {
+            // Allreduce M (all ranks need it for convergence check)
+            int totalDoubles = (nAz+1) * (nZen+1) * 16;
+            std::vector<double> sbuf(totalDoubles), rbuf(totalDoubles);
+            Arr2DToFlat(hp->M, nAz+1, nZen+1, sbuf.data());
+            MPI_Allreduce(sbuf.data(), rbuf.data(), totalDoubles, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+            FlatToArr2D(rbuf.data(), nAz+1, nZen+1, hp->M);
+            // Also M_noshadow
+            Arr2DToFlat(hp->M_noshadow, nAz+1, nZen+1, sbuf.data());
+            MPI_Allreduce(sbuf.data(), rbuf.data(), totalDoubles, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+            FlatToArr2D(rbuf.data(), nAz+1, nZen+1, hp->M_noshadow);
+            // incomingEnergy
+            double totalE = 0;
+            MPI_Allreduce(&m_incomingEnergy, &totalE, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+            m_incomingEnergy = totalE;
+        }
+#endif
 
         // Extract 5 control points: Q_sca, M11(22°), M11(46°), M11(90°), M11(180°)
         double Csca = m_incomingEnergy / nBatches;
@@ -1134,7 +1200,7 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         double dMax = std::max({dCsca, dM22, dM46, dM90, dM180});
 
         std::cout << std::fixed << std::setprecision(2);
-        std::cout << "  N=" << totalOrient << " (+" << batchSize << ")"
+        if (m_mpiRank == 0) std::cout << "  N=" << totalOrient << " (+" << batchSize << ")"
                   << "  dQ=" << dCsca*100 << "%"
                   << "  d22=" << dM22*100 << "%"
                   << "  d46=" << dM46*100 << "%"
@@ -1152,7 +1218,7 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
 
         if (convergedCount >= 2)
         {
-            std::cout << "Converged at N=" << totalOrient
+            if (m_mpiRank == 0) std::cout << "Converged at N=" << totalOrient
                       << " (all 5 controls within " << eps*100
                       << "% for 2 consecutive steps)" << std::endl;
             break;
@@ -1166,7 +1232,7 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         nOrient *= 2;
         if (nOrient > maxOrient)
         {
-            std::cout << "WARNING: Max orientations reached (N=" << totalOrient
+            if (m_mpiRank == 0) std::cout << "WARNING: Max orientations reached (N=" << totalOrient
                       << ", limit=" << maxOrient << "). Target accuracy "
                       << eps*100 << "% may not be achieved." << std::endl;
             std::cout << "  To improve: use --maxorient " << maxOrient*2 << std::endl;

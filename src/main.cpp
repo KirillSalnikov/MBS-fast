@@ -859,7 +859,8 @@ int main(int argc, const char* argv[])
             }
 
             // Pass target accuracy to handler for beam cutoff
-            if (isAdaptive) {
+            // --beam_cutoff has priority over --auto/--adaptive eps
+            if (!args.IsCatched("beam_cutoff") && isAdaptive) {
                 double epsForCutoff = args.IsCatched("autofull")
                     ? args.GetDoubleValue("autofull", 0)
                     : (args.IsCatched("auto") ? args.GetDoubleValue("auto", 0)
