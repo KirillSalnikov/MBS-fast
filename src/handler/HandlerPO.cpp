@@ -803,14 +803,14 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
 
     // Precompute sin(theta), cos(theta) for ALL theta bins (once for all beams)
     int nZen_global = m_sphere.nZenith;
-    double sin_theta_arr[1024], cos_theta_arr[1024];
+    std::vector<double> sin_theta_arr(nZen_global+1), cos_theta_arr(nZen_global+1);
     for (int j = 0; j <= nZen_global; ++j) {
         double theta_rad = m_sphere.GetZenith(j);
         fast_sincos(theta_rad, sin_theta_arr[j], cos_theta_arr[j]);
     }
     // Precompute sin(phi), cos(phi) for all phi bins
     int nAz_global = m_sphere.nAzimuth;
-    double sin_phi_arr[2048], cos_phi_arr[2048];
+    std::vector<double> sin_phi_arr(nAz_global+1), cos_phi_arr(nAz_global+1);
     for (int i = 0; i <= nAz_global; ++i) {
         double phi_rad = i * m_sphere.azinuthStep;
         fast_sincos(phi_rad, sin_phi_arr[i], cos_phi_arr[i]);
@@ -1393,12 +1393,12 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
     int nZen_global = m_sphere.nZenith;
 
     // Precompute sin/cos for theta and phi (same as HandleBeams)
-    double sin_theta_arr[1024], cos_theta_arr[1024];
+    std::vector<double> sin_theta_arr(nZen_global+1), cos_theta_arr(nZen_global+1);
     for (int j = 0; j <= nZen_global; ++j) {
         double theta_rad = m_sphere.GetZenith(j);
         fast_sincos(theta_rad, sin_theta_arr[j], cos_theta_arr[j]);
     }
-    double sin_phi_arr[2048], cos_phi_arr[2048];
+    std::vector<double> sin_phi_arr(nAz_global+1), cos_phi_arr(nAz_global+1);
     for (int i = 0; i <= nAz_global; ++i) {
         double phi_rad = i * m_sphere.azinuthStep;
         fast_sincos(phi_rad, sin_phi_arr[i], cos_phi_arr[i]);
@@ -1441,8 +1441,8 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
 
             // Pre-batch vertex sincos for ALL thetas at once (AVX-512/AVX2)
             int nv = edgeData.valid ? tc.nv : 0;
-            double all_vc[32768], all_vs[32768];
-            double dir_dpr[1024], dir_dpi[1024];
+            std::vector<double> all_vc((nZen+1)*nv), all_vs((nZen+1)*nv);
+            std::vector<double> dir_dpr(nZen+1), dir_dpi(nZen+1);
             if (edgeData.valid && nv > 0) {
                 double all_phases[32768];
                 int total = 0;
