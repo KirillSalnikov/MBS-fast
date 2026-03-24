@@ -725,15 +725,10 @@ int main(int argc, const char* argv[])
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
 
-            // Beam importance cutoff
+            // Beam cutoff
             if (args.IsCatched("beam_cutoff"))
             {
-                double eps = args.GetDoubleValue("beam_cutoff", 0);
-                double D_particle = particle->MaximalDimention();
-                double C_geo = M_PI * D_particle * D_particle / 4.0;
-                handler->SetBeamCutoffRelative(eps, C_geo);
-                cout << "Beam cutoff: eps=" << eps << ", C_geo=" << C_geo
-                     << ", threshold=" << handler->m_beamCutoff << endl;
+                handler->m_targetEps = args.GetDoubleValue("beam_cutoff", 0);
             }
 
             tracer->SetIsOutputGroups(isOutputGroups);
@@ -828,12 +823,11 @@ int main(int argc, const char* argv[])
             handler->SetAbsorptionAccounting(isAbs);
 
             // Beam importance cutoff
+            // Beam cutoff: --beam_cutoff EPS sets relative accuracy for beam skipping
+            // cutoff = EPS³ × totalBeamEnergy (computed per orientation in PrepareBeams)
             if (args.IsCatched("beam_cutoff"))
             {
-                double eps_bc = args.GetDoubleValue("beam_cutoff", 0);
-                double D_particle = particle->MaximalDimention();
-                double C_geo = M_PI * D_particle * D_particle / 4.0;
-                handler->SetBeamCutoffRelative(eps_bc, C_geo);
+                handler->m_targetEps = args.GetDoubleValue("beam_cutoff", 0);
             }
 
             tracer->SetIsOutputGroups(isOutputGroups);
