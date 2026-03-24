@@ -35,3 +35,22 @@ echo ""
 echo "=== Done ==="
 echo "Forward: $OUTDIR/fwd.dat"
 echo "Backward: $OUTDIR/bwd.dat"
+
+# === MPI VERSION ===
+# Uncomment below for multi-node:
+# MBS=./bin/mbs_po_mpi
+# NRANKS=8
+#
+# mpirun -np $NRANKS --bind-to none \
+#     -x OMP_NUM_THREADS=$THREADS -x OMP_PROC_BIND=false \
+#     $MBS --po --random 321 215 \
+#     -p 1 199.5 24.9375 -w 0.532 --ri 1.31 0 -n 4 \
+#     --tgrid tests/reference_test/tgrid_fwd.txt \
+#     --beam_cutoff 0.01 --close -o $OUTDIR/fwd_mpi
+#
+# mpirun -np $NRANKS --bind-to none \
+#     -x OMP_NUM_THREADS=$THREADS -x OMP_PROC_BIND=false \
+#     $MBS --po --random 321 215 \
+#     -p 1 199.5 24.9375 -w 0.532 --ri 1.31 0 -n 11 \
+#     --grid 0 180 180 1 --tgrid tests/reference_test/tgrid_bwd.txt \
+#     --beam_cutoff 0.01 --close -o $OUTDIR/bwd_mpi
