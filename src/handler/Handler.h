@@ -459,6 +459,7 @@ public:
     double m_beamCutoff = 0;
     /// Target accuracy for auto beam cutoff (set from --auto eps)
     double m_targetEps = 0.01;
+    bool m_legacySign = false; ///< Use old (+invComplWave) sign for forward direction
     void SetBeamCutoff(double val) { m_beamCutoff = val; }
     /// Set cutoff relative to geometric cross-section: threshold = eps × C_geo
     void SetBeamCutoffRelative(double eps, double C_geo) { m_beamCutoff = eps * C_geo; }

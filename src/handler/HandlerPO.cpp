@@ -971,7 +971,7 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                     complex fresnel;
                     if (absA < m_eps2 && absB < m_eps2)
                     {
-                        fresnel = -m_invComplWave * beam_area;
+                        fresnel = (m_legacySign ? m_invComplWave : -m_invComplWave) * beam_area;
                     }
                     else
                     {
@@ -1322,7 +1322,7 @@ void HandlerPO::DiffractControlPoints(const PreparedOrientation &prepared,
 
                 complex fresnel;
                 if (absA < m_eps2 && absB < m_eps2) {
-                    fresnel = -m_invComplWave * beam_area;
+                    fresnel = (m_legacySign ? m_invComplWave : -m_invComplWave) * beam_area;
                 } else {
                     double phases[32], vc[32], vs[32];
                     for (int v = 0; v < nv; ++v)
@@ -1501,7 +1501,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                     complex fresnel;
                     if (absA < m_eps2 && absB < m_eps2)
                     {
-                        fresnel = -m_invComplWave * beam_area;
+                        fresnel = (m_legacySign ? m_invComplWave : -m_invComplWave) * beam_area;
                     }
                     else
                     {
@@ -2059,8 +2059,8 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
                         if (is_forward)
                         {
                             double area_s = cb.area_norm * D_s * D_s;
-                            fr = -icwr * area_s;
-                            fi = -icwi * area_s;
+                            fr = (m_legacySign ? icwr : -icwr) * area_s;
+                            fi = (m_legacySign ? icwi : -icwi) * area_s;
                         }
                         else
                         {

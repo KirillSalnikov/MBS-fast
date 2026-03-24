@@ -252,7 +252,7 @@ complex Handler::DiffractInclineAbs(const BeamInfo &info, const Beam &beam,
 
     if (abs(A) < m_eps2 && abs(B) < m_eps2)
     {
-        return -m_invComplWave * info.area;
+        return (m_legacySign ? m_invComplWave : -m_invComplWave) * info.area;
     }
 
     complex s(0, 0);
@@ -470,7 +470,7 @@ complex Handler::DiffractIncline(const BeamInfo &info, const Beam &beam,
 #endif
     if (absA < m_eps2 && absB < m_eps2)
     {
-        return -m_invComplWave * info.area;
+        return (m_legacySign ? m_invComplWave : -m_invComplWave) * info.area;
     }
 
     complex s(0, 0);
@@ -639,7 +639,7 @@ complex Handler::DiffractInclineFast(const BeamInfo &info, const BeamEdgeData &e
     double absB = fabs(B);
 
     if (absA < m_eps2 && absB < m_eps2)
-        return -m_invComplWave * info.area;
+        return (m_legacySign ? m_invComplWave : -m_invComplWave) * info.area;
 
     complex s(0, 0);
     const int nv = ed.nVertices;

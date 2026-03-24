@@ -95,6 +95,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("maxorient", 1, true); // max orientations for adaptive (power of 2)
     parser.AddRule("oldauto", 1, true); // physics-based: div2/div4/div8 of diffraction-limited grid
     parser.AddRule("coh_orient", 0, true); // coherent across orientations (legacy mode)
+    parser.AddRule("legacy_sign", 0, true); // use old (+) Fresnel sign for forward direction
     parser.AddRule("sym", 2, true); // symmetry override: beta_factor gamma_factor (e.g. --sym 2 6)
 }
 
@@ -549,6 +550,7 @@ int main(int argc, const char* argv[])
             }
 
             handler->isCoh = !args.IsCatched("incoh");
+            handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             handler->outputJones = args.IsCatched("jones");
             handler->SetScatteringSphere(bsCone);
@@ -650,6 +652,7 @@ int main(int argc, const char* argv[])
             tracer->m_summary = additionalSummary;
 
             handler->isCoh = !args.IsCatched("incoh");
+            handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             handler->SetScatteringSphere(conus);
             handler->SetTracks(&trackGroups);
@@ -691,6 +694,7 @@ int main(int argc, const char* argv[])
 //                                                       nTheta, wave);
 //                 double normIndex = gamma.step/gamma.norm;
 // //                handler->isCoh = !args.IsCatched("incoh");
+            handler->m_legacySign = args.IsCatched("legacy_sign");
 //                 handler->SetNormIndex(normIndex);
 //                 handler->SetTracks(&trackGroups);
 //                 trackGroups.shouldComputeTracksOnly = !args.IsCatched("all");
@@ -761,6 +765,7 @@ int main(int argc, const char* argv[])
                 tracer->m_summary = additionalSummary;
 
                 handler->isCoh = !args.IsCatched("incoh");
+            handler->m_legacySign = args.IsCatched("legacy_sign");
                 handler->useKarczewski = args.IsCatched("karczewski");
                 handler->SetScatteringSphere(conus);
                 handler->SetTracks(&trackGroups);
@@ -832,6 +837,7 @@ int main(int argc, const char* argv[])
             tracer->m_summary = additionalSummary;
 
             handler->isCoh = !args.IsCatched("incoh");
+            handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             handler->SetScatteringSphere(conus);
             handler->SetTracks(&trackGroups);
@@ -930,6 +936,7 @@ int main(int argc, const char* argv[])
             tracer->m_summary = additionalSummary;
 
             handler->isCoh = !args.IsCatched("incoh");
+            handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             handler->SetScatteringSphere(conus);
             handler->SetTracks(&trackGroups);
@@ -1041,6 +1048,7 @@ int main(int argc, const char* argv[])
         tracer.m_summary = additionalSummary;
         ScatteringRange grid = SetConus(args);
         handler->isCoh = !args.IsCatched("incoh");
+            handler->m_legacySign = args.IsCatched("legacy_sign");
         handler->SetScatteringSphere(grid);
         handler->SetAbsorptionAccounting(isAbs);
         tracer.SetHandler(handler);
