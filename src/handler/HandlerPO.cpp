@@ -1149,18 +1149,23 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
     out.beams.clear();
     out.sinZenith = sinZenith;
 
-    // Pass 1: compute total beam energy for auto-cutoff
-    double totalBeamEnergy = 0;
+    // Pass 1: compute max |J|² and max area for two-threshold cutoff
+    double maxJnorm = 0, maxArea = 0;
     for (Beam &beam : beams)
     {
         if (beam.lastFacetId != __INT_MAX__)
-            totalBeamEnergy += beam.J.Norm() * beam.Area();
+        {
+            double jn = beam.J.Norm();  // |J|² (Frobenius norm²)
+            double ar = beam.Area();
+            if (jn > maxJnorm) maxJnorm = jn;
+            if (ar > maxArea) maxArea = ar;
+        }
     }
-    // Auto cutoff: eps³ × totalEnergy (conservative to protect forward peak)
-    // eps=5% → cutoff=0.0125%, eps=1% → cutoff=0.0001%
-    // Note: eps² was too aggressive — killed forward peak for large particles
-    double cutoffFrac = m_targetEps * m_targetEps * m_targetEps;
-    double autoCutoff = (m_beamCutoff > 0) ? m_beamCutoff : totalBeamEnergy * cutoffFrac;
+    // Two-threshold cutoff: skip beam only if BOTH |J|²/max AND area/max < eps.
+    // Protects: large-area beams (forward peak) and strong narrow beams.
+    // Both ratios are dimensionless (0..1), independent of particle size.
+    double jThreshold = maxJnorm * m_targetEps;
+    double areaThreshold = maxArea * m_targetEps;
     int skippedBeams = 0;
 
     // Pass 2: prepare beams, skip negligible ones
@@ -1187,9 +1192,11 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
             matrix m_ = Mueller(beam.J);
             m_outputEnergy += BeamCrossSection(beam)*m_[0][0]*sinZenith;
 
-            // Skip negligible beams (saves diffraction cost)
-            double contribution = beam.J.Norm() * info.area;
-            if (contribution < autoCutoff)
+            // Skip beam only if BOTH |J|² and area are small
+            // Protects: large-area beams (forward peak) and strong narrow beams
+            double jn = beam.J.Norm();
+            double ar = info.area;
+            if (jn < jThreshold && ar < areaThreshold)
             {
                 skippedBeams++;
                 continue;
@@ -1238,8 +1245,8 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
     static bool logged = false;
     if (!logged && skippedBeams > 0) {
         std::cerr << "Beam cutoff: " << skippedBeams << "/" << (skippedBeams + (int)out.beams.size())
-                  << " beams skipped (threshold=" << std::scientific << std::setprecision(1)
-                  << autoCutoff << ")" << std::endl;
+                  << " beams skipped (|J|²<" << std::scientific << std::setprecision(1)
+                  << jThreshold << " AND area<" << areaThreshold << ")" << std::endl;
         logged = true;
     }
 }
