@@ -657,7 +657,7 @@ void TracerPOTotal::TraceFromFileMultiSize(const std::string &orientFile,
         {
             cache.orientations[i].weight = weight;
             cache.orientations[i].incomingEnergy = incomingE;
-            std::cout << std::endl << "Orientation " << i
+            if (m_mpiRank == 0) std::cout << std::endl << "Orientation " << i
                       << " (beta=" << beta << ", gamma=" << gamma
                       << ") has been skipped!!!" << std::endl;
         }
@@ -671,8 +671,8 @@ void TracerPOTotal::TraceFromFileMultiSize(const std::string &orientFile,
     double cache_sec = std::chrono::duration<double>(t_cache_end - t_cache_start).count();
 
     EraseConsoleLine(60);
-    std::cout << "Phase 1 (tracing): 100%" << std::endl;
-    std::cout << "Cached " << cache.totalBeams() << " beams from "
+    if (m_mpiRank == 0) std::cout << "Phase 1 (tracing): 100%" << std::endl;
+    if (m_mpiRank == 0) std::cout << "Cached " << cache.totalBeams() << " beams from "
               << nOrientations << " orientations in " << cache_sec << " s" << std::endl;
 
     // Phase 2: Compute diffraction for all sizes
