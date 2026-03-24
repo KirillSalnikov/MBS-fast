@@ -1242,7 +1242,7 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
     }
 
     // Log beam cutoff statistics (first call only)
-    bool logged = false;
+    static bool logged = false;
     if (!logged && skippedBeams > 0) {
         std::cerr << "Beam cutoff: " << skippedBeams << "/" << (skippedBeams + (int)out.beams.size())
                   << " beams skipped (|J|²<" << std::scientific << std::setprecision(1)

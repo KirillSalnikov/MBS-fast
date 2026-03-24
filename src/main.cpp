@@ -618,17 +618,14 @@ int main(int argc, const char* argv[])
 
             additionalSummary += ", oldauto div" + to_string(div) + "\n\n";
 
-            // Build conus with specified N_phi
-            ScatteringRange conus = args.IsCatched("grid")
+            // Build conus
+            ScatteringRange conus = (args.IsCatched("grid") || args.IsCatched("tgrid"))
                 ? SetConus(args)
                 : ScatteringRange(0, M_PI, N_phi, 1);
 
-            // Apply auto_tgrid
-            if (args.IsCatched("auto_tgrid") || args.IsCatched("tgrid")) {
-                if (args.IsCatched("tgrid"))
-                    ; // already loaded in SetConus
-                else
-                    ApplyAutoThetaGrid(conus, L, wave);
+            // Apply theta grid
+            if (args.IsCatched("tgrid")) {
+                // tgrid already loaded in SetConus above
             } else {
                 ApplyAutoThetaGrid(conus, L, wave);
             }
