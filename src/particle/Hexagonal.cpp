@@ -18,6 +18,7 @@ Hexagonal::Hexagonal(const complex &refrIndex, double diameter, double height)
 
 	SetDefaultNormals();
 	Reset();
+	SetDParams();
 	SetDefaultCenters();
 }
 

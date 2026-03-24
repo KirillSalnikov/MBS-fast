@@ -96,6 +96,7 @@ void Particle::SetFromFile(const std::string &filename)
 
     SetDefaultNormals();
     Reset();
+    SetDParams();
     SetDefaultCenters();
 
     if (isConcave || isAggregated)

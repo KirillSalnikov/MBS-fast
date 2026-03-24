@@ -520,11 +520,11 @@ complex Handler::DiffractIncline(const BeamInfo &info, const Beam &beam,
             else
             {
                 double kCi = m_waveIndex*Ci;
-                tmp = (fast_exp_im(kCi*p2.x) - exp_im(kCi*p1.x))/Ci;
+                tmp = (exp_im(kCi*p2.x) - exp_im(kCi*p1.x))/Ci;
             }
 
             const double bi = p1.y - ai*p1.x;
-            s += fast_exp_im(m_waveIndex*B*bi) * tmp;
+            s += exp_im(m_waveIndex*B*bi) * tmp;
 
             p1 = p2;
         }
@@ -557,11 +557,11 @@ complex Handler::DiffractIncline(const BeamInfo &info, const Beam &beam,
             else
             {
                 double kEi = m_waveIndex*Ei;
-                tmp = (fast_exp_im(kEi*p2.y) - exp_im(kEi*p1.y))/Ei;
+                tmp = (exp_im(kEi*p2.y) - exp_im(kEi*p1.y))/Ei;
             }
 
             const double di = p1.x - ci*p1.y;
-            s += fast_exp_im(m_waveIndex*A*di) * tmp;
+            s += exp_im(m_waveIndex*A*di) * tmp;
 
             p1 = p2;
         }
@@ -665,11 +665,11 @@ complex Handler::DiffractInclineFast(const BeamInfo &info, const BeamEdgeData &e
             else
             {
                 double kCi = m_waveIndex * Ci;
-                tmp = (fast_exp_im(kCi*p2x) - exp_im(kCi*p1x)) / Ci;
+                tmp = (exp_im(kCi*p2x) - exp_im(kCi*p1x)) / Ci;
             }
 
             double bi = p1y - ai * p1x;
-            s += fast_exp_im(m_waveIndex * B * bi) * tmp;
+            s += exp_im(m_waveIndex * B * bi) * tmp;
 
             p1x = p2x; p1y = p2y;
         }
@@ -695,11 +695,11 @@ complex Handler::DiffractInclineFast(const BeamInfo &info, const BeamEdgeData &e
             else
             {
                 double kEi = m_waveIndex * Ei;
-                tmp = (fast_exp_im(kEi*p2y) - exp_im(kEi*p1y)) / Ei;
+                tmp = (exp_im(kEi*p2y) - exp_im(kEi*p1y)) / Ei;
             }
 
             double di = p1x - ci * p1y;
-            s += fast_exp_im(m_waveIndex * A * di) * tmp;
+            s += exp_im(m_waveIndex * A * di) * tmp;
 
             p1x = p2x; p1y = p2y;
         }

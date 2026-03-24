@@ -501,7 +501,7 @@ matrixC HandlerPO::ApplyDiffractionFast(const Beam &beam, const BeamInfo &info,
     auto t0 = std::chrono::high_resolution_clock::now();
     matrixC fnJones = (beam.lastFacetId != __INT_MAX__) ?
                 ComputeFnJones(beam.J, info, direction) :
-                beam.J * fast_exp_im(m_waveIndex*beam.opticalPath);
+                beam.J * exp_im(m_waveIndex*beam.opticalPath);
     auto t1 = std::chrono::high_resolution_clock::now();
 
     matrixC jones_rot(2, 2);
@@ -542,7 +542,7 @@ matrixC HandlerPO::ApplyDiffractionFast2(const Beam &beam, const BeamInfo &info,
     complex dirPhase;
     if (!isExternal) {
         double dp = DotProductD(direction, info.center);
-        dirPhase = fast_exp_im(-m_waveIndex * dp);
+        dirPhase = exp_im(-m_waveIndex * dp);
     } else {
         dirPhase = complex(1.0, 0.0);
     }
@@ -599,7 +599,7 @@ matrixC HandlerPO::ApplyDiffraction(const Beam &beam, const BeamInfo &info,
     auto t0 = std::chrono::high_resolution_clock::now();
     matrixC fnJones = (beam.lastFacetId != __INT_MAX__) ?
                 ComputeFnJones(beam.J, info, direction) :
-                beam.J * fast_exp_im(m_waveIndex*beam.opticalPath);
+                beam.J * exp_im(m_waveIndex*beam.opticalPath);
     auto t1 = std::chrono::high_resolution_clock::now();
 
     matrixC jones_rot(2, 2);
@@ -654,7 +654,7 @@ matrixC HandlerPO::ComputeFnJones(const Matrix2x2c &matrix, const BeamInfo &info
 {
     double dp = DotProductD(direction, info.center);
     double arg = m_waveIndex*(info.projLenght - dp);
-    return matrix*fast_exp_im(arg);
+    return matrix*exp_im(arg);
 }
 
 void HandlerPO::AddToMueller()

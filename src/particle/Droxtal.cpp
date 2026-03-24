@@ -28,5 +28,6 @@ Droxtal::Droxtal(const complex &refrIndex,
 
 	SetDefaultNormals();
 	Reset();
+	SetDParams();
 	SetDefaultCenters();
 }

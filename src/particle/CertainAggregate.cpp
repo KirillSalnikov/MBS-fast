@@ -329,8 +329,9 @@ CertainAggregate::CertainAggregate(const complex &refrIndex, double sizeIndex)
 	}
 
 	SetDefaultNormals();
-	SetDefaultCenters();
 	Reset();
+	SetDParams();
+	SetDefaultCenters();
 
 	for (int i = 0; i < nFacets; ++i)
 	{

@@ -22,8 +22,9 @@ Bullet::Bullet(const complex &refrIndex, double diameter, double height, double 
 	SetPeakFacets(8, 13, baseTop.arr, peak); // top facets (triangles)
 
 	SetDefaultNormals();
-	SetDefaultCenters();
 	Reset();
+	SetDParams();
+	SetDefaultCenters();
 }
 
 void Bullet::SetBaseFacet(Facet &facet)

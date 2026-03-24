@@ -78,8 +78,9 @@ BulletRosette::BulletRosette(const complex &refrIndex, double diameter,
 	Concate(bullets);
 
 	SetDefaultNormals();
-	SetDefaultCenters();
 	Reset();
+	SetDParams();
+	SetDefaultCenters();
 
 	for (int i = 0; i < nFacets; ++i)
 	{
