@@ -1182,18 +1182,14 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
             ctrlAccum[0]=rbuf5[0]; ctrlAccum[1]=rbuf5[1]; ctrlAccum[2]=rbuf5[2]; ctrlAccum[3]=rbuf5[3];
             m_incomingEnergy = rbuf5[4];
             // Need global allPrepared count too
-            double totalE = 0;
-            MPI_Allreduce(&m_incomingEnergy, &totalE, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-            m_incomingEnergy = totalE;
-        }
 #endif
 
         // Control points from fast DiffractControlPoints (not full grid)
-        double Csca = m_incomingEnergy / nBatches;
-        double M11_22  = ctrlAccum[0] / nBatches;
-        double M11_46  = ctrlAccum[1] / nBatches;
-        double M11_90  = ctrlAccum[2] / nBatches;
-        double M11_180 = ctrlAccum[3] / nBatches;
+        double Csca = (nBatches > 0) ? m_incomingEnergy / nBatches : 0;
+        double M11_22  = ((nBatches > 0) ? ctrlAccum[0] / nBatches : 0);
+        double M11_46  = ((nBatches > 0) ? ctrlAccum[1] / nBatches : 0);
+        double M11_90  = ((nBatches > 0) ? ctrlAccum[2] / nBatches : 0);
+        double M11_180 = ((nBatches > 0) ? ctrlAccum[3] / nBatches : 0);
 
         double dCsca  = (prevCsca > 0)    ? fabs(Csca - prevCsca) / prevCsca : 1.0;
         double dM22   = (prevM11_22 > 0)  ? fabs(M11_22 - prevM11_22) / prevM11_22 : 1.0;
@@ -1307,7 +1303,7 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
     for (int n_test = 4; n_test <= 30; n_test += 2)
     {
         // Set reflection count
-        m_scattering->restriction = n_test; // hacky but works
+        m_scattering->SetMaxReflections(n_test); // hacky but works
 
         // Run quick computation
         hp->M.ClearArr(); hp->M_noshadow.ClearArr(); hp->CleanJ();
@@ -1357,7 +1353,7 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
         prev_qsca_n = qsca;
         n_opt = n_test;
     }
-    m_scattering->restriction = n_opt;
+    m_scattering->SetMaxReflections(n_opt);
     std::cout << std::endl;
 
     // =========================================================================

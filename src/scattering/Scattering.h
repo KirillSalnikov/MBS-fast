@@ -54,6 +54,7 @@ protected:
 public:
     Scattering(Particle *particle, Light *incidentLight, bool isOpticalPath,
                int nActs);
+    void SetMaxReflections(int n) { m_nActs = n; }
 
     virtual bool ScatterLight(double /*beta*/, double /*gamma*/, std::vector<Beam> &/*scaterredBeams*/)
     {
