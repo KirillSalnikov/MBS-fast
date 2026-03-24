@@ -797,7 +797,8 @@ int main(int argc, const char* argv[])
                                          nTheta, wave);
 
             // Apply auto_tgrid if requested (or implied by --auto)
-            if (args.IsCatched("auto_tgrid") || isAuto)
+            // --tgrid has priority: if user provided a custom grid, don't overwrite it
+            if ((args.IsCatched("auto_tgrid") || isAuto) && !args.IsCatched("tgrid"))
             {
                 double D = particle->MaximalDimention();
                 ApplyAutoThetaGrid(conus, D, wave);
