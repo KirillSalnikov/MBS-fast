@@ -31,6 +31,9 @@ public:
                        Particle *particle, double wave, ScatteringRange &conus,
                        class HandlerPOTotal *handler);
 
+    /// Coherent across orientations (legacy mode, physically incorrect for random)
+    bool m_cohOrient = false;
+
     /// MPI rank and size (default: single process)
     int m_mpiRank = 0;
     int m_mpiSize = 1;

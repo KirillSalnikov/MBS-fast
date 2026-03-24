@@ -80,11 +80,40 @@ TracerPOTotal::TracerPOTotal(Particle *particle, int nActs,
 void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
                                 const AngleRange &gammaRange)
 {
-    // Generate all orientations from the uniform grid, then use the
-    // same chunked + OpenMP pipeline as TraceFromSobol.
-
     int betaNorm = (m_symmetry.beta < M_PI_2+FLT_EPSILON && m_symmetry.beta > M_PI_2-FLT_EPSILON) ? 1 : 2;
     double normGamma = gammaRange.number * betaNorm;
+
+    // --coh_orient: legacy mode — HandleBeams accumulates Jones coherently
+    // across ALL orientations, then single AddToMueller at end.
+    // No chunking, no OpenMP (matches old MBS-raw exactly).
+    if (m_cohOrient) {
+        m_handler->SetNormIndex(normGamma);
+        std::string dir = CreateFolder(m_resultDirName);
+        m_resultDirName = dir + m_resultDirName;
+        vector<Beam> outBeams;
+        for (int i = 0; i <= betaRange.number; ++i) {
+            double beta = betaRange.min + i * betaRange.step;
+            double dcos;
+            CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
+            m_handler->SetSinZenith(dcos);
+            for (int j = 0; j < gammaRange.number; ++j) {
+                double gamma = gammaRange.min + j * gammaRange.step;
+                m_particle->Rotate(beta, gamma, 0);
+                if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
+                m_scattering->ScatterLight(0, 0, outBeams);
+                m_handler->HandleBeams(outBeams, dcos);
+                m_incomingEnergy += m_scattering->GetIncedentEnergy() * dcos;
+                outBeams.clear();
+            }
+        }
+        m_handler->WriteTotalMatricesToFile(m_resultDirName);
+        m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
+        CalcTimer timer; timer.Start();
+        OutputStatisticsPO(timer, (betaRange.number+1)*gammaRange.number, m_resultDirName);
+        return;
+    }
+
+    // Default: incoherent per-orientation (physically correct)
 
     // Build orientation list with proper dcos weights
     std::vector<std::pair<double,double>> orientations;

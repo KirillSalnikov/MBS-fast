@@ -94,6 +94,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("auto", 1, true); // full auto: auto_tgrid + auto_phi + adaptive (one arg: eps)
     parser.AddRule("maxorient", 1, true); // max orientations for adaptive (power of 2)
     parser.AddRule("oldauto", 1, true); // physics-based: div2/div4/div8 of diffraction-limited grid
+    parser.AddRule("coh_orient", 0, true); // coherent across orientations (legacy mode)
     parser.AddRule("sym", 2, true); // symmetry override: beta_factor gamma_factor (e.g. --sym 2 6)
 }
 
@@ -635,7 +636,7 @@ int main(int argc, const char* argv[])
             conus.azinuthStep = 2.0 * M_PI / N_phi;
 
             TracerPOTotal *tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) tpt->SetMPI(mpi_rank, mpi_size); }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); } }
             tracer->m_scattering->m_wave = wave;
             tracer->shadowOff = args.IsCatched("shadow_off");
             trackGroups.push_back(TrackGroup());
@@ -716,7 +717,7 @@ int main(int argc, const char* argv[])
                 if (args.IsCatched("all"))
                 {
                     tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) tpt->SetMPI(mpi_rank, mpi_size); }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); } }
                     tracer->m_scattering->m_wave = wave;
                     if (args.IsCatched("r"))
                     {
@@ -738,7 +739,7 @@ int main(int argc, const char* argv[])
                 {
                     // Use TracerPOTotal for OpenMP + batched sincos acceleration
                     tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) tpt->SetMPI(mpi_rank, mpi_size); }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); } }
                     tracer->m_scattering->m_wave = wave;
                     tracer->shadowOff = args.IsCatched("shadow_off");
                     if (args.IsCatched("r"))
@@ -788,7 +789,7 @@ int main(int argc, const char* argv[])
             ScatteringRange conus = SetConus(args);
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) tpt->SetMPI(mpi_rank, mpi_size); }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); } }
             trackGroups.push_back(TrackGroup());
             handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
                                          nTheta, wave);
@@ -820,7 +821,7 @@ int main(int argc, const char* argv[])
             ScatteringRange conus = SetConus(args);
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) tpt->SetMPI(mpi_rank, mpi_size); }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); } }
             tracer->m_scattering->m_wave = wave;
             tracer->shadowOff = args.IsCatched("shadow_off");
             trackGroups.push_back(TrackGroup());
@@ -893,7 +894,7 @@ int main(int argc, const char* argv[])
                 : ScatteringRange(0, M_PI, 1, 1);
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) tpt->SetMPI(mpi_rank, mpi_size); }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); } }
             tracer->m_scattering->m_wave = wave;
             tracer->shadowOff = args.IsCatched("shadow_off");
             trackGroups.push_back(TrackGroup());
