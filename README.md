@@ -59,7 +59,9 @@ bin/mbs_po --po --sobol 1024 --auto_tgrid --auto_phi \
 Both converge on 5 control points: Q_sca, M₁₁(22°), M₁₁(46°), M₁₁(90°), M₁₁(180°).
 All must be within EPS for 2 consecutive iterations.
 
-Auto beam cutoff: eps³ × total beam energy. Skips 70-90% of weak beams.
+Auto beam cutoff: skip beams where BOTH `|J|²/max < eps` AND `area/max < eps`. Dimensionless, size-independent. Protects forward peak (large area) and strong beams (large |J|²). Skips 45-80% of negligible beams depending on eps.
+
+`--beam_cutoff EPS` can also be used standalone with `--random` or `--sobol`.
 
 ## Multi-core (OpenMP)
 
@@ -113,7 +115,7 @@ Format: `theta 2pi*dcos M11 M12 ... M44` (18 columns, phi-averaged).
 - **Auto phi**: N_phi = x/5 + 48 (linear in size parameter, validated by --autofull)
 - **Incremental adaptive**: reuses previous orientations (Sobol subset property)
 - **5 convergence controls**: Q_sca, M₁₁(22°), M₁₁(46°), M₁₁(90°), M₁₁(180°)
-- **Auto beam cutoff**: eps³ × total energy, skips negligible beams
+- **Auto beam cutoff**: two dimensionless thresholds (|J|²/max < eps AND area/max < eps). Protects forward peak and strong beams, skips 45-80% of negligible beams
 - **Dual output**: M.dat (with shadow) + M_noshadow.dat (without) at no extra cost
 - **Memory-aware chunking**: auto-sizes orientation batches to fit in RAM
 - **MPI + OpenMP hybrid**: distributed across nodes, threaded within node

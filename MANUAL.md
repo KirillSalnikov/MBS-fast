@@ -368,9 +368,27 @@ Compute multiple size parameters from one beam tracing pass. Uses `BeamCache`: b
 
 #### `--beam_cutoff EPS`
 
-Skip diffraction for beams with |J|^2 x area < EPS x C_geo (geometric cross-section).
+Skip diffraction for negligible beams. Two dimensionless conditions must BOTH be true:
+- `|J|² / max|J|² < EPS` — beam amplitude is small relative to strongest beam
+- `area / maxArea < EPS` — beam aperture is small relative to largest beam
 
-Testing shows MBS-raw's built-in area cutoff in polygon clipping already handles this, so additional cutoff has negligible effect. Default threshold: 1e-12.
+This protects the forward diffraction peak (large area beams always kept) and strong narrow beams (large |J|² always kept). Only beams weak in BOTH amplitude AND area are skipped.
+
+EPS = target accuracy (0 to 1). Set automatically by `--auto`/`--adaptive`. Can also be used standalone with `--random` or `--sobol`.
+
+| EPS | Typical beams skipped | Use case |
+|-----|----------------------|----------|
+| 0.1 (10%) | ~75% | Fast estimate |
+| 0.05 (5%) | ~65% | General purpose |
+| 0.01 (1%) | ~45% | Accurate |
+| 0.001 (0.1%) | ~5% | Reference |
+
+**Example**:
+```bash
+mbs_po --po --random 10 30 --beam_cutoff 0.05 \
+    -p 1 42.857 30 -w 0.532 --ri 1.31 0 -n 14 \
+    --grid 0 180 48 180 --close
+```
 
 #### `--shadow_off`
 
