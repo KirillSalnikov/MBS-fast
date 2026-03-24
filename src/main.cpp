@@ -565,6 +565,9 @@ int main(int argc, const char* argv[])
         }
         else if (args.IsCatched("random"))
         {
+            // Warn if --auto/--adaptive also specified (random takes priority)
+            if (args.IsCatched("auto") || args.IsCatched("autofull") || args.IsCatched("adaptive"))
+                std::cerr << "WARNING: --random overrides --auto/--adaptive. Use --sobol instead." << std::endl;
             additionalSummary += ", random orientation\n\n";
             AngleRange beta = GetRange(args, "b", particle);
             AngleRange gamma = GetRange(args, "g", particle);
@@ -856,6 +859,10 @@ int main(int argc, const char* argv[])
                 cout << "Symmetry override: beta_sym=" << RadToDeg(betaSym)
                      << " deg (/" << symBeta << "), gamma_sym=" << RadToDeg(gammaSym)
                      << " deg (/" << symGamma << ")" << endl;
+                if (isAuto)
+                    std::cerr << "WARNING: --sym overrides auto-symmetry. "
+                              << "Usually NOT needed with --auto (particle symmetry is auto-detected)."
+                              << std::endl;
             }
 
             // Pass target accuracy to handler for beam cutoff
@@ -878,6 +885,8 @@ int main(int argc, const char* argv[])
             }
             else if (isAdaptive)
             {
+                if (args.IsCatched("sobol"))
+                    std::cerr << "WARNING: --sobol N ignored (--auto/--adaptive overrides with adaptive orientations)." << std::endl;
                 double epsAdapt = isAuto ? args.GetDoubleValue("auto", 0)
                                          : args.GetDoubleValue("adaptive", 0);
                 int maxOrientUser = args.IsCatched("maxorient")
