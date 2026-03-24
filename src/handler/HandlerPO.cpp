@@ -1444,7 +1444,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
             std::vector<double> all_vc((nZen+1)*nv), all_vs((nZen+1)*nv);
             std::vector<double> dir_dpr(nZen+1), dir_dpi(nZen+1);
             if (edgeData.valid && nv > 0) {
-                double all_phases[32768];
+                std::vector<double> all_phases((nZen+1)*nv);
                 int total = 0;
                 for (int j = 0; j <= nZen; ++j) {
                     double sin_t = sin_theta_arr[j], cos_t = cos_theta_arr[j];
@@ -1461,7 +1461,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                 for (; pp < total; ++pp)
                     fast_sincos(all_phases[pp], all_vs[pp], all_vc[pp]);
                 if (!isExternal) {
-                    double dp_phases[1024];
+                    std::vector<double> dp_phases(nZen+1);
                     for (int j = 0; j <= nZen; ++j)
                         dp_phases[j] = -m_waveIndex*(sin_theta_arr[j]*tc.dp_sin + cos_theta_arr[j]*tc.dp_cos);
                     int jj = 0;
@@ -1829,12 +1829,12 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
     double icwr = real(m_invComplWave), icwi = imag(m_invComplWave);
 
     // Precompute sin/cos theta and phi ONCE for all beams
-    double sin_theta_cache[1024], cos_theta_cache[1024];
+    std::vector<double> sin_theta_cache(nZen+1), cos_theta_cache(nZen+1);
     for (int j = 0; j <= nZen; ++j) {
         double theta_rad = m_sphere.GetZenith(j);
         fast_sincos(theta_rad, sin_theta_cache[j], cos_theta_cache[j]);
     }
-    double cos_phi_cache[256], sin_phi_cache[256];
+    std::vector<double> cos_phi_cache(nAz+1), sin_phi_cache(nAz+1);
     for (int i = 0; i <= nAz; ++i) {
         double phi_rad = i * m_sphere.azinuthStep;
         fast_sincos(phi_rad, sin_phi_cache[i], cos_phi_cache[i]);
