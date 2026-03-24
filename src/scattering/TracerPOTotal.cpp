@@ -1112,7 +1112,6 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         int ctrlIdx[4] = { findThetaIdx(22.0), findThetaIdx(46.0),
                            findThetaIdx(90.0), nZen };
 
-        // Accumulate control point M11 for this batch
         double batchCtrl[4] = {0,0,0,0};
         for (int i = 0; i < myBatchSize; ++i) {
             if (batchPrepared[i].beams.empty()) continue;
@@ -1121,7 +1120,6 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
             for (int k = 0; k < 4; ++k) batchCtrl[k] += m11[k];
         }
 
-        // Accumulate into global control sums
         for (int k = 0; k < 4; ++k) ctrlAccum[k] += batchCtrl[k];
 
         // Free batch memory — NOT stored (final phase re-traces)

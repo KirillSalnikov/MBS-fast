@@ -810,7 +810,7 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
     }
     // Precompute sin(phi), cos(phi) for all phi bins
     int nAz_global = m_sphere.nAzimuth;
-    double sin_phi_arr[256], cos_phi_arr[256];
+    double sin_phi_arr[2048], cos_phi_arr[2048];
     for (int i = 0; i <= nAz_global; ++i) {
         double phi_rad = i * m_sphere.azinuthStep;
         fast_sincos(phi_rad, sin_phi_arr[i], cos_phi_arr[i]);
@@ -1257,20 +1257,17 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
 // and writes to the provided localM / localJ arrays.
 // =============================================================================
 // =============================================================================
-// DiffractControlPoints: fast diffraction for only nPoints theta values.
-// Computes incoherent M11 (|fresnel*rot*J|²) at phi=0 for each control angle.
-// ~40000× faster than full HandleBeamsToLocal for a 500×200 grid.
-// Used during adaptive convergence phase; full grid computed once at the end.
+// DiffractControlPoints: fast diffraction for nPoints theta values,
+// phi-averaged (same as full HandleBeamsToLocal but only at control thetas).
+// Cost: nPoints × N_phi × beams — ~100× cheaper than full N_theta × N_phi.
 // =============================================================================
 void HandlerPO::DiffractControlPoints(const PreparedOrientation &prepared,
                                        const int *thetaIndices, int nPoints,
                                        double *m11_out)
 {
-    // Zero output
     for (int k = 0; k < nPoints; ++k) m11_out[k] = 0;
 
-    int iPhi = 0; // use phi=0 only
-    double cp = cos(0.0), sp = sin(0.0); // phi=0
+    int nAz = m_sphere.nAzimuth;
 
     for (const PreparedBeam &pb : prepared.beams)
     {
@@ -1293,88 +1290,95 @@ void HandlerPO::DiffractControlPoints(const PreparedOrientation &prepared,
         bool isExternal = pb.isExternal;
         int nv = edgeData.nVertices;
 
-        // Theta-coefficients for phi=0
-        ThetaCoeffs tc;
-        precompute_theta_coeffs(
-            edgeData.x, edgeData.y, nv,
-            horAx, horAy, horAz, verAx, verAy, verAz,
-            bdx, bdy, bdz, cenx, ceny, cenz,
-            cp, sp, m_waveIndex,
-            pNTx, pNTy, pNTz, pNPx, pNPy, pNPz,
-            pnxDTx, pnxDTy, pnxDTz, pnxDPx, pnxDPy, pnxDPz,
-            tc);
-
-        for (int k = 0; k < nPoints; ++k)
+        // Loop over ALL phi bins (same as HandleBeamsToLocal)
+        for (int iPhi = 0; iPhi <= nAz; ++iPhi)
         {
-            int j = thetaIndices[k];
-            double theta_rad = m_sphere.GetZenith(j);
-            double sin_t, cos_t;
-            fast_sincos(theta_rad, sin_t, cos_t);
+            double cp = cos(iPhi * m_sphere.azinuthStep);
+            double sp = sin(iPhi * m_sphere.azinuthStep);
 
-            double dx = sin_t * cp, dy = sin_t * sp, dz = -cos_t;
+            ThetaCoeffs tc;
+            precompute_theta_coeffs(
+                edgeData.x, edgeData.y, nv,
+                horAx, horAy, horAz, verAx, verAy, verAz,
+                bdx, bdy, bdz, cenx, ceny, cenz,
+                cp, sp, m_waveIndex,
+                pNTx, pNTy, pNTz, pNPx, pNPy, pNPz,
+                pnxDTx, pnxDTy, pnxDTz, pnxDPx, pnxDPy, pnxDPz,
+                tc);
 
-            double A = sin_t * tc.a_sin + cos_t * tc.a_cos + tc.a0;
-            double B = sin_t * tc.b_sin + cos_t * tc.b_cos + tc.b0;
-            double absA = fabs(A), absB = fabs(B);
+            // Only nPoints theta values (not full nZenith)
+            for (int k = 0; k < nPoints; ++k)
+            {
+                int j = thetaIndices[k];
+                double theta_rad = m_sphere.GetZenith(j);
+                double sin_t, cos_t;
+                fast_sincos(theta_rad, sin_t, cos_t);
 
-            complex fresnel;
-            if (absA < m_eps2 && absB < m_eps2) {
-                fresnel = -m_invComplWave * beam_area;
-            } else {
-                double phases[32], vc[32], vs[32];
-                for (int v = 0; v < nv; ++v)
-                    phases[v] = sin_t * tc.psin[v] + cos_t * tc.pcos[v] + tc.p0[v];
-                for (int v = 0; v < nv; ++v)
-                    fast_sincos(phases[v], vs[v], vc[v]);
+                double dx = sin_t*cp, dy = sin_t*sp, dz = -cos_t;
 
-                double sr = 0, si = 0;
-                if (absB > absA) {
-                    for (int e = 0; e < nv; ++e) {
-                        if (!edgeData.edge_valid_x[e]) continue;
-                        int en = (e+1 < nv) ? e+1 : 0;
-                        double Ci = A + edgeData.slope_yx[e] * B;
-                        double inv = (fabs(Ci) > m_eps1) ? 1.0/Ci : 0.0;
-                        sr += (vc[en]-vc[e])*inv; si += (vs[en]-vs[e])*inv;
-                    }
-                    double inv_B = 1.0/B; sr *= inv_B; si *= inv_B;
+                double A = sin_t*tc.a_sin + cos_t*tc.a_cos + tc.a0;
+                double B = sin_t*tc.b_sin + cos_t*tc.b_cos + tc.b0;
+                double absA = fabs(A), absB = fabs(B);
+
+                complex fresnel;
+                if (absA < m_eps2 && absB < m_eps2) {
+                    fresnel = -m_invComplWave * beam_area;
                 } else {
-                    for (int e = 0; e < nv; ++e) {
-                        if (!edgeData.edge_valid_y[e]) continue;
-                        int en = (e+1 < nv) ? e+1 : 0;
-                        double Ei = A * edgeData.slope_xy[e] + B;
-                        double inv = (fabs(Ei) > m_eps1) ? 1.0/Ei : 0.0;
-                        sr += (vc[en]-vc[e])*inv; si += (vs[en]-vs[e])*inv;
+                    double phases[32], vc[32], vs[32];
+                    for (int v = 0; v < nv; ++v)
+                        phases[v] = sin_t*tc.psin[v] + cos_t*tc.pcos[v] + tc.p0[v];
+                    for (int v = 0; v < nv; ++v)
+                        fast_sincos(phases[v], vs[v], vc[v]);
+
+                    double sr = 0, si = 0;
+                    if (absB > absA) {
+                        for (int e = 0; e < nv; ++e) {
+                            if (!edgeData.edge_valid_x[e]) continue;
+                            int en = (e+1<nv)?e+1:0;
+                            double Ci = A + edgeData.slope_yx[e]*B;
+                            double inv = (fabs(Ci)>m_eps1)?1.0/Ci:0.0;
+                            sr += (vc[en]-vc[e])*inv; si += (vs[en]-vs[e])*inv;
+                        }
+                        sr /= B; si /= B;
+                    } else {
+                        for (int e = 0; e < nv; ++e) {
+                            if (!edgeData.edge_valid_y[e]) continue;
+                            int en = (e+1<nv)?e+1:0;
+                            double Ei = A*edgeData.slope_xy[e]+B;
+                            double inv = (fabs(Ei)>m_eps1)?1.0/Ei:0.0;
+                            sr += (vc[en]-vc[e])*inv; si += (vs[en]-vs[e])*inv;
+                        }
+                        double inv_nA = -1.0/A; sr *= inv_nA; si *= inv_nA;
                     }
-                    double inv_nA = -1.0/A; sr *= inv_nA; si *= inv_nA;
+                    fresnel = m_complWave * complex(sr, si);
                 }
-                fresnel = m_complWave * complex(sr, si);
+                if (isnan(real(fresnel))) continue;
+
+                double dpr=1.0, dpi=0.0;
+                if (!isExternal) {
+                    double dpArg = -m_waveIndex*(sin_t*tc.dp_sin+cos_t*tc.dp_cos);
+                    fast_sincos(dpArg, dpi, dpr);
+                }
+
+                Point3d &vf = m_sphere.vf[iPhi][j];
+                double r00,r01,r10,r11;
+                rotate_jones_inline(pNTx,pNTy,pNTz,pNPx,pNPy,pNPz,
+                    pnxDTx,pnxDTy,pnxDTz,pnxDPx,pnxDPy,pnxDPz,
+                    vf.x,vf.y,vf.z,dx,dy,dz,r00,r01,r10,r11);
+
+                double fr=real(fresnel),fi=imag(fresnel);
+                double cpr=fr*dpr-fi*dpi, cpi=fr*dpi+fi*dpr;
+                double sr00r=cpr*r00,sr00i=cpi*r00,sr01r=cpr*r01,sr01i=cpi*r01;
+                double sr10r=cpr*r10,sr10i=cpi*r10,sr11r=cpr*r11,sr11i=cpi*r11;
+                double d00r=sr00r*jp00r-sr00i*jp00i+sr01r*jp10r-sr01i*jp10i;
+                double d00i=sr00r*jp00i+sr00i*jp00r+sr01r*jp10i+sr01i*jp10r;
+                double d11r=sr10r*jp01r-sr10i*jp01i+sr11r*jp11r-sr11i*jp11i;
+                double d11i=sr10r*jp01i+sr10i*jp01r+sr11r*jp11i+sr11i*jp11r;
+
+                // Incoherent M11 (phi-averaged): |d00|²+|d11|²
+                m11_out[k] += (d00r*d00r+d00i*d00i + d11r*d11r+d11i*d11i)
+                              * prepared.sinZenith / (nAz + 1);
             }
-
-            if (isnan(real(fresnel))) continue;
-
-            double dpr = 1.0, dpi = 0.0;
-            if (!isExternal) {
-                double dpArg = -m_waveIndex*(sin_t*tc.dp_sin + cos_t*tc.dp_cos);
-                fast_sincos(dpArg, dpi, dpr);
-            }
-
-            Point3d &vf = m_sphere.vf[iPhi][j];
-            double r00, r01, r10, r11;
-            rotate_jones_inline(pNTx,pNTy,pNTz, pNPx,pNPy,pNPz,
-                                pnxDTx,pnxDTy,pnxDTz, pnxDPx,pnxDPy,pnxDPz,
-                                vf.x,vf.y,vf.z, dx,dy,dz, r00,r01,r10,r11);
-
-            double fr = real(fresnel), fi = imag(fresnel);
-            double cpr = fr*dpr-fi*dpi, cpi = fr*dpi+fi*dpr;
-            double sr00r=cpr*r00, sr00i=cpi*r00, sr01r=cpr*r01, sr01i=cpi*r01;
-            double sr10r=cpr*r10, sr10i=cpi*r10, sr11r=cpr*r11, sr11i=cpi*r11;
-            double d00r=sr00r*jp00r-sr00i*jp00i+sr01r*jp10r-sr01i*jp10i;
-            double d00i=sr00r*jp00i+sr00i*jp00r+sr01r*jp10i+sr01i*jp10r;
-            double d11r=sr10r*jp01r-sr10i*jp01i+sr11r*jp11r-sr11i*jp11i;
-            double d11i=sr10r*jp01i+sr10i*jp01r+sr11r*jp11i+sr11i*jp11r;
-
-            // Incoherent M11 contribution: |d00|² + |d11|²
-            m11_out[k] += (d00r*d00r+d00i*d00i + d11r*d11r+d11i*d11i) * prepared.sinZenith;
         }
     }
 }
@@ -1394,7 +1398,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
         double theta_rad = m_sphere.GetZenith(j);
         fast_sincos(theta_rad, sin_theta_arr[j], cos_theta_arr[j]);
     }
-    double sin_phi_arr[256], cos_phi_arr[256];
+    double sin_phi_arr[2048], cos_phi_arr[2048];
     for (int i = 0; i <= nAz_global; ++i) {
         double phi_rad = i * m_sphere.azinuthStep;
         fast_sincos(phi_rad, sin_phi_arr[i], cos_phi_arr[i]);
