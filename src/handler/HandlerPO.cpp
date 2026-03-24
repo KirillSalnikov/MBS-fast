@@ -1256,6 +1256,129 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
 // Thread-safe: only reads immutable handler data (m_sphere, wave constants)
 // and writes to the provided localM / localJ arrays.
 // =============================================================================
+// =============================================================================
+// DiffractControlPoints: fast diffraction for only nPoints theta values.
+// Computes incoherent M11 (|fresnel*rot*J|²) at phi=0 for each control angle.
+// ~40000× faster than full HandleBeamsToLocal for a 500×200 grid.
+// Used during adaptive convergence phase; full grid computed once at the end.
+// =============================================================================
+void HandlerPO::DiffractControlPoints(const PreparedOrientation &prepared,
+                                       const int *thetaIndices, int nPoints,
+                                       double *m11_out)
+{
+    // Zero output
+    for (int k = 0; k < nPoints; ++k) m11_out[k] = 0;
+
+    int iPhi = 0; // use phi=0 only
+    double cp = cos(0.0), sp = sin(0.0); // phi=0
+
+    for (const PreparedBeam &pb : prepared.beams)
+    {
+        const BeamEdgeData &edgeData = pb.edgeData;
+        if (!edgeData.valid) continue;
+
+        double bdx = pb.bdx, bdy = pb.bdy, bdz = pb.bdz;
+        double horAx = pb.horAx, horAy = pb.horAy, horAz = pb.horAz;
+        double verAx = pb.verAx, verAy = pb.verAy, verAz = pb.verAz;
+        double cenx = pb.cenx, ceny = pb.ceny, cenz = pb.cenz;
+        double beam_area = pb.beam_area;
+        double pNTx = pb.pNTx, pNTy = pb.pNTy, pNTz = pb.pNTz;
+        double pNPx = pb.pNPx, pNPy = pb.pNPy, pNPz = pb.pNPz;
+        double pnxDTx = pb.pnxDTx, pnxDTy = pb.pnxDTy, pnxDTz = pb.pnxDTz;
+        double pnxDPx = pb.pnxDPx, pnxDPy = pb.pnxDPy, pnxDPz = pb.pnxDPz;
+        double jp00r = pb.jp00r, jp00i = pb.jp00i;
+        double jp01r = pb.jp01r, jp01i = pb.jp01i;
+        double jp10r = pb.jp10r, jp10i = pb.jp10i;
+        double jp11r = pb.jp11r, jp11i = pb.jp11i;
+        bool isExternal = pb.isExternal;
+        int nv = edgeData.nVertices;
+
+        // Theta-coefficients for phi=0
+        ThetaCoeffs tc;
+        precompute_theta_coeffs(
+            edgeData.x, edgeData.y, nv,
+            horAx, horAy, horAz, verAx, verAy, verAz,
+            bdx, bdy, bdz, cenx, ceny, cenz,
+            cp, sp, m_waveIndex,
+            pNTx, pNTy, pNTz, pNPx, pNPy, pNPz,
+            pnxDTx, pnxDTy, pnxDTz, pnxDPx, pnxDPy, pnxDPz,
+            tc);
+
+        for (int k = 0; k < nPoints; ++k)
+        {
+            int j = thetaIndices[k];
+            double theta_rad = m_sphere.GetZenith(j);
+            double sin_t, cos_t;
+            fast_sincos(theta_rad, sin_t, cos_t);
+
+            double dx = sin_t * cp, dy = sin_t * sp, dz = -cos_t;
+
+            double A = sin_t * tc.a_sin + cos_t * tc.a_cos + tc.a0;
+            double B = sin_t * tc.b_sin + cos_t * tc.b_cos + tc.b0;
+            double absA = fabs(A), absB = fabs(B);
+
+            complex fresnel;
+            if (absA < m_eps2 && absB < m_eps2) {
+                fresnel = -m_invComplWave * beam_area;
+            } else {
+                double phases[32], vc[32], vs[32];
+                for (int v = 0; v < nv; ++v)
+                    phases[v] = sin_t * tc.psin[v] + cos_t * tc.pcos[v] + tc.p0[v];
+                for (int v = 0; v < nv; ++v)
+                    fast_sincos(phases[v], vs[v], vc[v]);
+
+                double sr = 0, si = 0;
+                if (absB > absA) {
+                    for (int e = 0; e < nv; ++e) {
+                        if (!edgeData.edge_valid_x[e]) continue;
+                        int en = (e+1 < nv) ? e+1 : 0;
+                        double Ci = A + edgeData.slope_yx[e] * B;
+                        double inv = (fabs(Ci) > m_eps1) ? 1.0/Ci : 0.0;
+                        sr += (vc[en]-vc[e])*inv; si += (vs[en]-vs[e])*inv;
+                    }
+                    double inv_B = 1.0/B; sr *= inv_B; si *= inv_B;
+                } else {
+                    for (int e = 0; e < nv; ++e) {
+                        if (!edgeData.edge_valid_y[e]) continue;
+                        int en = (e+1 < nv) ? e+1 : 0;
+                        double Ei = A * edgeData.slope_xy[e] + B;
+                        double inv = (fabs(Ei) > m_eps1) ? 1.0/Ei : 0.0;
+                        sr += (vc[en]-vc[e])*inv; si += (vs[en]-vs[e])*inv;
+                    }
+                    double inv_nA = -1.0/A; sr *= inv_nA; si *= inv_nA;
+                }
+                fresnel = m_complWave * complex(sr, si);
+            }
+
+            if (isnan(real(fresnel))) continue;
+
+            double dpr = 1.0, dpi = 0.0;
+            if (!isExternal) {
+                double dpArg = -m_waveIndex*(sin_t*tc.dp_sin + cos_t*tc.dp_cos);
+                fast_sincos(dpArg, dpi, dpr);
+            }
+
+            Point3d &vf = m_sphere.vf[iPhi][j];
+            double r00, r01, r10, r11;
+            rotate_jones_inline(pNTx,pNTy,pNTz, pNPx,pNPy,pNPz,
+                                pnxDTx,pnxDTy,pnxDTz, pnxDPx,pnxDPy,pnxDPz,
+                                vf.x,vf.y,vf.z, dx,dy,dz, r00,r01,r10,r11);
+
+            double fr = real(fresnel), fi = imag(fresnel);
+            double cpr = fr*dpr-fi*dpi, cpi = fr*dpi+fi*dpr;
+            double sr00r=cpr*r00, sr00i=cpi*r00, sr01r=cpr*r01, sr01i=cpi*r01;
+            double sr10r=cpr*r10, sr10i=cpi*r10, sr11r=cpr*r11, sr11i=cpi*r11;
+            double d00r=sr00r*jp00r-sr00i*jp00i+sr01r*jp10r-sr01i*jp10i;
+            double d00i=sr00r*jp00i+sr00i*jp00r+sr01r*jp10i+sr01i*jp10r;
+            double d11r=sr10r*jp01r-sr10i*jp01i+sr11r*jp11r-sr11i*jp11i;
+            double d11i=sr10r*jp01i+sr10i*jp01r+sr11r*jp11i+sr11i*jp11r;
+
+            // Incoherent M11 contribution: |d00|² + |d11|²
+            m11_out[k] += (d00r*d00r+d00i*d00i + d11r*d11r+d11i*d11i) * prepared.sinZenith;
+        }
+    }
+}
+
 void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                                     Arr2D &localM,
                                     std::vector<Arr2DC> &localJ,

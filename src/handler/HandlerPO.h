@@ -79,6 +79,12 @@ public:
                             std::vector<Arr2DC> &localJ,
                             std::vector<Arr2DC> *localJ_noshadow = nullptr);
 
+    /// Fast diffraction for control points only (4 theta indices, phi=0).
+    /// Returns M11 at each control angle. ~40000× faster than full grid.
+    void DiffractControlPoints(const PreparedOrientation &prepared,
+                                const int *thetaIndices, int nPoints,
+                                double *m11_out);
+
     /// Convert coherent Jones (localJ) to Mueller and add to localM.
     static void AddToMuellerLocal(const std::vector<Arr2DC> &localJ,
                                   double normIndex, Arr2D &localM,

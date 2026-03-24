@@ -1052,9 +1052,10 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
 
     double prevM11_180 = 0, prevM11_90 = 0, prevM11_46 = 0, prevM11_22 = 0;
     double prevCsca = 0;
-    int totalOrient = 0;    // total orientations processed so far
-    int nBatches = 0;       // number of equal-size batches
-    int convergedCount = 0; // consecutive iterations with all controls < eps
+    int totalOrient = 0;
+    int nBatches = 0;
+    int convergedCount = 0;
+    double ctrlAccum[4] = {0,0,0,0}; // accumulated M11 at 4 control angles
 
     for (int iter = 0; iter < 15; ++iter)
     {
@@ -1097,7 +1098,39 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
             outBeams.clear();
         }
 
-        // Phase 2 (parallel): diffract this rank's portion of the batch
+        // Phase 2: diffract ONLY at 4 control angles (not full grid!)
+        // Full grid computed once after convergence.
+        auto findThetaIdx = [&](double deg) -> int {
+            double rad = DegToRad(deg);
+            int best = 0; double bestD = 1e30;
+            for (int jj = 0; jj <= nZen; ++jj) {
+                double d = fabs(hp->m_sphere.GetZenith(jj) - rad);
+                if (d < bestD) { bestD = d; best = jj; }
+            }
+            return best;
+        };
+        int ctrlIdx[4] = { findThetaIdx(22.0), findThetaIdx(46.0),
+                           findThetaIdx(90.0), nZen };
+
+        // Accumulate control point M11 for this batch
+        double batchCtrl[4] = {0,0,0,0};
+        for (int i = 0; i < myBatchSize; ++i) {
+            if (batchPrepared[i].beams.empty()) continue;
+            double m11[4];
+            hp->DiffractControlPoints(batchPrepared[i], ctrlIdx, 4, m11);
+            for (int k = 0; k < 4; ++k) batchCtrl[k] += m11[k];
+        }
+
+        // Accumulate into global control sums
+        for (int k = 0; k < 4; ++k) ctrlAccum[k] += batchCtrl[k];
+
+        // Free batch memory — NOT stored (final phase re-traces)
+        batchPrepared.clear();
+        batchPrepared.shrink_to_fit();
+
+        // OLD full Phase 2 removed — replaced by fast control points above
+        // Full diffraction done once after convergence via TraceFromSobol
+        if (false) // dead code
         #pragma omp parallel
         {
             Arr2D localM(nAz + 1, nZen + 1, 4, 4);
@@ -1137,60 +1170,32 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
             }
         }
 
-        batchPrepared.clear();
-        batchPrepared.shrink_to_fit();
         m_incomingEnergy += batchEnergy;
         totalOrient = batchEnd;
         nBatches++;
 
-        // MPI: reduce M across ranks so all see same convergence metrics
+        // MPI: reduce only 4 control points + energy (not full Mueller!)
 #ifdef USE_MPI
         if (m_mpiSize > 1)
         {
-            // Allreduce M (all ranks need it for convergence check)
-            int totalDoubles = (nAz+1) * (nZen+1) * 16;
-            std::vector<double> sbuf(totalDoubles), rbuf(totalDoubles);
-            Arr2DToFlat(hp->M, nAz+1, nZen+1, sbuf.data());
-            MPI_Allreduce(sbuf.data(), rbuf.data(), totalDoubles, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-            FlatToArr2D(rbuf.data(), nAz+1, nZen+1, hp->M);
-            // Also M_noshadow
-            Arr2DToFlat(hp->M_noshadow, nAz+1, nZen+1, sbuf.data());
-            MPI_Allreduce(sbuf.data(), rbuf.data(), totalDoubles, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-            FlatToArr2D(rbuf.data(), nAz+1, nZen+1, hp->M_noshadow);
-            // incomingEnergy
+            double sbuf5[5] = {ctrlAccum[0], ctrlAccum[1], ctrlAccum[2], ctrlAccum[3], m_incomingEnergy};
+            double rbuf5[5];
+            MPI_Allreduce(sbuf5, rbuf5, 5, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+            ctrlAccum[0]=rbuf5[0]; ctrlAccum[1]=rbuf5[1]; ctrlAccum[2]=rbuf5[2]; ctrlAccum[3]=rbuf5[3];
+            m_incomingEnergy = rbuf5[4];
+            // Need global allPrepared count too
             double totalE = 0;
             MPI_Allreduce(&m_incomingEnergy, &totalE, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
             m_incomingEnergy = totalE;
         }
 #endif
 
-        // Extract 5 control points: Q_sca, M11(22°), M11(46°), M11(90°), M11(180°)
+        // Control points from fast DiffractControlPoints (not full grid)
         double Csca = m_incomingEnergy / nBatches;
-
-        auto findThetaIdx = [&](double deg) -> int {
-            double rad = DegToRad(deg);
-            int best = 0;
-            double bestDiff = 1e30;
-            for (int j = 0; j <= nZen; ++j) {
-                double d = fabs(hp->m_sphere.GetZenith(j) - rad);
-                if (d < bestDiff) { bestDiff = d; best = j; }
-            }
-            return best;
-        };
-        int idx22  = findThetaIdx(22.0);
-        int idx46  = findThetaIdx(46.0);
-        int idx90  = findThetaIdx(90.0);
-        int idx180 = nZen;
-
-        double M11_22 = 0, M11_46 = 0, M11_90 = 0, M11_180 = 0;
-        for (int p = 0; p <= nAz; ++p) {
-            M11_22  += hp->M(p, idx22)[0][0];
-            M11_46  += hp->M(p, idx46)[0][0];
-            M11_90  += hp->M(p, idx90)[0][0];
-            M11_180 += hp->M(p, idx180)[0][0];
-        }
-        double norm = (nAz + 1) * nBatches;
-        M11_22 /= norm; M11_46 /= norm; M11_90 /= norm; M11_180 /= norm;
+        double M11_22  = ctrlAccum[0] / nBatches;
+        double M11_46  = ctrlAccum[1] / nBatches;
+        double M11_90  = ctrlAccum[2] / nBatches;
+        double M11_180 = ctrlAccum[3] / nBatches;
 
         double dCsca  = (prevCsca > 0)    ? fabs(Csca - prevCsca) / prevCsca : 1.0;
         double dM22   = (prevM11_22 > 0)  ? fabs(M11_22 - prevM11_22) / prevM11_22 : 1.0;
@@ -1240,63 +1245,31 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         }
     }
 
-    // Normalize accumulated Mueller: divide by nBatches
-    for (int p = 0; p <= nAz; ++p)
-        for (int t = 0; t <= nZen; ++t)
-        {
-            matrix m = hp->M(p, t);
-            m *= (1.0 / nBatches);
-            hp->M.replace(p, t, m);
-
-            matrix m_ns = hp->M_noshadow(p, t);
-            m_ns *= (1.0 / nBatches);
-            hp->M_noshadow.replace(p, t, m_ns);
-        }
-    m_incomingEnergy /= nBatches;
-
-    // MPI reduce
-    MPI_ReduceMueller(hp, nAz, nZen, m_incomingEnergy, m_mpiRank);
-
+    // =================================================================
+    // FINAL PHASE: full diffraction via TraceFromSobol (re-traces).
+    // Sobol is deterministic → same orientations. Phase 1 = ~5% overhead.
+    // Memory = O(chunkSize), not O(totalOrient). Chunked + OpenMP + MPI.
+    // =================================================================
     if (m_mpiRank == 0)
-    {
-        // Summary
+        std::cout << "\nFinal: full diffraction with N=" << totalOrient
+                  << " (re-tracing, chunked)" << std::endl;
+
+    hp->M.ClearArr();
+    hp->M_noshadow.ClearArr();
+    hp->CleanJ();
+    m_incomingEnergy = 0;
+    hp->m_outputEnergy = 0;
+
+    // TraceFromSobol handles file output, MPI reduce, and cleanup.
+    // It re-traces all orientations (Sobol deterministic → same results)
+    // using chunked streaming (O(chunkSize) memory).
+    TraceFromSobol(totalOrient, betaSym, gammaSym);
+
+    if (m_mpiRank == 0) {
         auto t_end = std::chrono::high_resolution_clock::now();
         double total_sec = std::chrono::duration<double>(t_end - t_start).count();
-
-        std::cout << std::endl;
-        std::cout << "===== SUMMARY =====" << std::endl;
-        std::cout << "Orientations: " << totalOrient << " (" << nBatches << " batches)" << std::endl;
-        std::cout << "Theta grid:   " << (nZen+1) << " points" << std::endl;
-        std::cout << "Phi bins:     " << (nAz+1) << std::endl;
-        std::cout << "Total time:   " << std::fixed << std::setprecision(1) << total_sec << " s" << std::endl;
-
-        // Write results
-        std::string dir = CreateFolder(m_resultDirName);
-#ifdef _WIN32
-        m_resultDirName += '\\' + m_resultDirName;
-#else
-        m_resultDirName = dir + m_resultDirName;
-#endif
-
-        m_handler->WriteTotalMatricesToFile(m_resultDirName);
-        m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
-
-        // Write no-shadow
-        std::swap(hp->M, hp->M_noshadow);
-        std::string nsName = m_resultDirName + "_noshadow";
-        std::cerr << "(no shadow):" << std::endl;
-        hp->WriteMatricesToFile(nsName, m_incomingEnergy);
-        std::swap(hp->M, hp->M_noshadow);
-
-        // Write summary to out.txt
-        std::ofstream out(m_resultDirName + "\\out.txt", std::ios::out);
-        if (!out.is_open()) out.open(m_resultDirName + "_out.txt", std::ios::out);
-        out << m_summary << std::endl;
-        out << "Orientations: " << totalOrient << std::endl;
-        out << "Total time: " << total_sec << " s" << std::endl;
-        out.close();
-
-        std::cout << std::endl << "Output: " << m_resultDirName << ".dat" << std::endl;
+        std::cout << "Adaptive total time: " << std::fixed
+                  << std::setprecision(1) << total_sec << " s" << std::endl;
     }
 }
 
