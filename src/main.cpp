@@ -124,11 +124,12 @@ ScatteringRange SetConus(ArgPP &parser)
             exit(1);
         }
     }
-    else
+    else if (parser.IsCatched("grid"))
     {
         std::cerr << "ERROR!!!!!!! Wrong \"grid\" argument number";
         exit(1);
     }
+    // else: no --grid → use placeholder (0, pi, 1, 1), will be overwritten by --auto_tgrid or --tgrid
 
     // Apply non-uniform theta grid if --tgrid is specified
     if (parser.IsCatched("tgrid"))
@@ -138,6 +139,12 @@ ScatteringRange SetConus(ArgPP &parser)
         {
             std::cerr << "ERROR: Cannot load theta grid from file: " << tgridFile << std::endl;
             exit(1);
+        }
+        // If --tgrid without --grid, set default N_phi=48
+        if (!parser.IsCatched("grid"))
+        {
+            range.nAzimuth = 48;
+            range.azinuthStep = 2.0 * M_PI / 48;
         }
         std::cout << "Non-uniform theta grid: " << (range.nZenith + 1)
                   << " points from " << RadToDeg(range.zenithStart)
@@ -776,8 +783,8 @@ int main(int argc, const char* argv[])
                 additionalSummary += ", Sobol quasi-random\n\n";
 
             TracerPOTotal *tracer;
-            // --auto/--autofull: --grid is optional (default 0→180°)
-            ScatteringRange conus = args.IsCatched("grid")
+            // --grid optional for --auto/--autofull/--tgrid
+            ScatteringRange conus = (args.IsCatched("grid") || args.IsCatched("tgrid"))
                 ? SetConus(args)
                 : ScatteringRange(0, M_PI, 1, 1);
 

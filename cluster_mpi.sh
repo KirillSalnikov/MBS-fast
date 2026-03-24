@@ -19,9 +19,12 @@
 #SBATCH --error=mbs_%j.err
 
 # --- OpenMP settings ---
+# IMPORTANT: OMP_PROC_BIND=false to avoid conflict with MPI pinning.
+# MPI launcher (srun) handles process placement; OpenMP should NOT
+# further restrict threads within the allocated CPU set.
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-64}
-export OMP_PROC_BIND=close
-export OMP_PLACES=cores
+export OMP_PROC_BIND=false
+unset OMP_PLACES
 
 # --- Path to binary ---
 MBS=./bin/mbs_po_mpi

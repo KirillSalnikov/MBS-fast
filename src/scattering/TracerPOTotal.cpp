@@ -112,7 +112,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     int myCount = myEnd - myStart;
 
     if (m_mpiRank == 0)
-        std::cout << "Random grid: " << (betaRange.number+1) << " x " << gammaRange.number
+        if (m_mpiRank == 0) std::cout << "Random grid: " << (betaRange.number+1) << " x " << gammaRange.number
                   << " = " << nOrientations << " orientations"
                   << (m_mpiSize > 1 ? " (" + std::to_string(myCount) + "/rank)" : "")
                   << std::endl;
@@ -184,7 +184,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             if (ok) handlerPO->PrepareBeams(outBeams, weights[idx], chunkPrepared[i]);
             else    chunkPrepared[i].sinZenith = weights[idx];
             m_incomingEnergy += m_scattering->GetIncedentEnergy() * weights[idx];
-            OutputProgress(nOrientations, count, iStart + i, 0, timer, outBeams.size());
+            if (m_mpiRank == 0) OutputProgress(nOrientations, count, iStart + i, 0, timer, outBeams.size());
             outBeams.clear();
             ++count;
         }
@@ -437,7 +437,7 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
                 chunkPrepared[i].sinZenith = weight;
 
             m_incomingEnergy += m_scattering->GetIncedentEnergy() * weight;
-            OutputProgress(nOrientations, count, iStart + i, 0, timer, outBeams.size());
+            if (m_mpiRank == 0) OutputProgress(nOrientations, count, iStart + i, 0, timer, outBeams.size());
             outBeams.clear();
             ++count;
         }
@@ -857,7 +857,7 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
             if (ok) handlerPO->PrepareBeams(outBeams, weight, chunkPrepared[i]);
             else    chunkPrepared[i].sinZenith = weight;
             m_incomingEnergy += m_scattering->GetIncedentEnergy() * weight;
-            OutputProgress(nOrient, count, iStart + i, 0, timer, outBeams.size());
+            if (m_mpiRank == 0) OutputProgress(nOrient, count, iStart + i, 0, timer, outBeams.size());
             outBeams.clear();
             ++count;
         }
