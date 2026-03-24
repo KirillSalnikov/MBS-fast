@@ -159,7 +159,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     } } }
 #endif
     long long beamBudget = std::max(100LL, availMB / 2);
-    int chunkSize = std::max(32, std::min(myCount, (int)(beamBudget * 1024 / 350)));
+    int chunkSize = std::max(32, std::min(4096, std::min(myCount, (int)(beamBudget * 1024 / 350))));
     int nChunks = (myCount + chunkSize - 1) / chunkSize;
 
     double phase1_total = 0, phase2_total = 0;
@@ -434,7 +434,7 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
     if (beamBudget < 100LL * 1024 * 1024) beamBudget = 100LL * 1024 * 1024; // min 100 MB
 
     long long bytesPerOrient = 350LL * 1024; // ~350 KB estimated (100 beams × 3.5 KB)
-    int chunkSize = std::max(32, std::min(nOrientations, (int)(beamBudget / bytesPerOrient)));
+    int chunkSize = std::max(32, std::min(4096, std::min(nOrientations, (int)(beamBudget / bytesPerOrient))));
     // Round up to nice number for Sobol (power of 2 or at least multiple of nThreads)
     if (chunkSize >= nOrientations) chunkSize = nOrientations;
 
@@ -867,7 +867,7 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
     }
 #endif
     long long beamBudget = std::max(100LL, availMB / 2);
-    int chunkSize = std::max(32, std::min(myCount, (int)(beamBudget * 1024 / 350)));
+    int chunkSize = std::max(32, std::min(4096, std::min(myCount, (int)(beamBudget * 1024 / 350))));
     int nChunks = (myCount + chunkSize - 1) / chunkSize;
 
     if (m_mpiRank == 0)
