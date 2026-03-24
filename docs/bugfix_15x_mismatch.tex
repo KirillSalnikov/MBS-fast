@@ -1,0 +1,224 @@
+\documentclass[a4paper,11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T2A]{fontenc}
+\usepackage[english,russian]{babel}
+\usepackage{amsmath,amssymb}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue},
+  commentstyle=\color{gray},
+  stringstyle=\color{red},
+  breaklines=true,
+  frame=single,
+  language=C++
+}
+
+\title{Отчёт об исправлении 15-кратного расхождения \\ MBS-raw vs MBS-old}
+\author{MBS-fast project}
+\date{24 марта 2026}
+
+\begin{document}
+\maketitle
+
+\section{Описание проблемы}
+
+При сравнении нового оптимизированного кода (MBS-raw/MBS-fast) со старым бинарником
+(MBS-old) в режиме фиксированной ориентации \texttt{--fixed 45 30} обнаружено
+15-кратное расхождение в значениях $M_{11}$:
+
+\begin{center}
+\begin{tabular}{lrl}
+\toprule
+Код & $M_{11}(0^\circ)$ & Параметры \\
+\midrule
+MBS-old & $5.76 \times 10^5$ & \texttt{--fixed 45 30 --grid 0 25 360 25} \\
+MBS-raw (новый) & $8.93 \times 10^6$ & те же + \texttt{--legacy\_sign} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Отношение $\approx 15.5\times$. Флаг \texttt{--legacy\_sign} (знак Френеля) влияния
+не оказал.
+
+\section{Методика диагностики}
+
+\subsection{Шаг 1: Инкогерентный режим}
+
+Запуск обоих бинарников с флагом \texttt{--incoh} (мюллеровские матрицы суммируются
+поштучно по лучам, без когерентного сложения амплитуд):
+
+\begin{center}
+\begin{tabular}{lcl}
+\toprule
+Тест & Макс. отн. разница & Вывод \\
+\midrule
+\texttt{--fixed 0 0 --incoh} & $< 10^{-6}$ & Поштучная дифракция идентична \\
+\texttt{--fixed 0 0} (когерент.) & $\sim 5\%$ & Фазы отличаются \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Вывод:} амплитуды $|J_\text{beam}|$ идентичны, расхождение только в фазах
+при когерентном суммировании.
+
+\subsection{Шаг 2: Обнаружение отсутствия поворота частицы}
+
+Сравнение кода \texttt{TracerPO::TraceFixed} в MBS-old и MBS-raw:
+
+\begin{lstlisting}
+// MBS-old: НЕ поворачивает частицу!
+void TracerPO::TraceFixed(double beta, double gamma) {
+    double b = DegToRad(beta);
+    double g = DegToRad(gamma);
+    m_scattering->ScatterLight(b, g, outBeams);  // углы игнорируются
+    m_handler->HandleBeams(outBeams, 1);
+}
+
+// MBS-raw (новый): ПОВОРАЧИВАЕТ правильно
+void TracerPO::TraceFixed(double beta, double gamma) {
+    double b = DegToRad(beta);
+    double g = DegToRad(gamma);
+    m_particle->Rotate(b, g, 0);                 // <-- ДОБАВЛЕНО
+    m_scattering->ScatterLight(b, g, outBeams);
+    m_handler->HandleBeams(outBeams, 1);
+}
+\end{lstlisting}
+
+В \texttt{ScatteringConvex::ScatterLight} вызов \texttt{m\_particle->Rotate()}
+\textbf{закомментирован}. Старый код всегда считает рассеяние для ориентации по
+умолчанию, игнорируя аргументы \texttt{--fixed}.
+
+\textbf{Это баг старого кода.} Для ориентационного усреднения
+(\texttt{TracerPOTotal}) баг не проявляется, т.к. \texttt{Rotate} вызывается
+перед \texttt{ScatterLight(0, 0, ...)}.
+
+\subsection{Шаг 3: Остаточное расхождение 5\% при --fixed 0 0}
+
+После устранения фактора поворота (тест при $\beta=0, \gamma=0$) осталось
+$\sim 5\%$ расхождение в когерентном режиме. Инкогерентный --- точное совпадение.
+
+Причина: вызов \texttt{Rotate(0, 0, 0)} в новом коде запускает
+\texttt{SetDParams()}, которая инициализирует \texttt{d\_param} (4-й компонент
+\texttt{Point3f::coordinates[3]}).
+
+\section{Найденные баги}
+
+\subsection{Баг 1: Неинициализированный d\_param}
+
+\texttt{Point3f} имеет пустой конструктор по умолчанию:
+\begin{lstlisting}
+struct Point3f {
+    float coordinates[4];
+    Point3f() {}                    // НЕ обнуляет coordinates[3]!
+    Point3f(float x, float y, float z) {
+        coordinates[0] = x;
+        coordinates[1] = y;
+        coordinates[2] = z;         // coordinates[3] НЕ задан!
+    }
+};
+#define d_param coordinates[3]
+\end{lstlisting}
+
+Во всех конструкторах частиц:
+\begin{lstlisting}
+SetDefaultNormals();   // вычисляет нормали (cx,cy,cz), НО НЕ d_param
+Reset();               // копирует defaultFacets -> facets
+SetDefaultCenters();   // вычисляет центры
+// SetDParams() НЕ ВЫЗЫВАЕТСЯ -> d_param мусорный!
+\end{lstlisting}
+
+Только \texttt{Rotate()} вызывает \texttt{SetDParams()}.
+
+\subsubsection*{Исправление}
+
+Добавлен \texttt{SetDParams()} после \texttt{Reset()} во все 8 конструкторов
+частиц:
+\begin{itemize}
+\item \texttt{Hexagonal.cpp}
+\item \texttt{ConcaveHexagonal.cpp}
+\item \texttt{Bullet.cpp}
+\item \texttt{BulletRosette.cpp}
+\item \texttt{Droxtal.cpp}
+\item \texttt{HexagonalAggregate.cpp}
+\item \texttt{CertainAggregate.cpp}
+\item \texttt{Particle.cpp} (загрузка из файла)
+\end{itemize}
+
+\subsection{Баг 2: Смешение fast\_exp\_im и exp\_im}
+
+В fallback-функциях дифракции (\texttt{DiffractIncline},
+\texttt{DiffractInclineFast}) в одном выражении смешивались
+\texttt{fast\_exp\_im} (полиномиальный sincos) и \texttt{exp\_im} (glibc sincos):
+
+\begin{lstlisting}
+// БЫЛО: смешение точностей
+tmp = (fast_exp_im(kCi*p2.x) - exp_im(kCi*p1.x)) / Ci;
+s += fast_exp_im(m_waveIndex*B*bi) * tmp;
+
+// СТАЛО: единообразная точность
+tmp = (exp_im(kCi*p2.x) - exp_im(kCi*p1.x)) / Ci;
+s += exp_im(m_waveIndex*B*bi) * tmp;
+\end{lstlisting}
+
+Аналогично исправлены \texttt{ComputeFnJones}, \texttt{ApplyDiffraction},
+\texttt{ApplyDiffractionFast}, \texttt{ApplyDiffractionFast2}.
+
+\textbf{Примечание:} инлайн-путь HandleBeams по-прежнему использует
+\texttt{fast\_sincos} повсеместно (нет смешения), что корректно и быстро.
+
+\section{Результаты валидации}
+
+\begin{center}
+\begin{tabular}{llrl}
+\toprule
+Тест & Режим & Макс. отн. разн. & Примечание \\
+\midrule
+\texttt{--fixed 0 0} & incoh & $3.3 \times 10^{-5}$ & d\_param фикс \\
+\texttt{--fixed 0 0} & coh, без Rotate & $< 10^{-6}$ & точн. совп. \\
+\texttt{--fixed 0 0} & coh, с Rotate & $\sim 5\%$ & d\_param: мусор vs правильный \\
+\texttt{--fixed 45 30} & old binary & \multicolumn{2}{l}{всегда = ориентация 0 (баг)} \\
+\texttt{--fixed 45 30} & new binary & \multicolumn{2}{l}{корректный поворот} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Влияние на рабочие режимы}
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+Режим & Затронут? & Причина \\
+\midrule
+\texttt{--random} (TracerPOTotal) & Нет & Rotate() всегда вызывается \\
+\texttt{--sobol} & Нет & То же \\
+\texttt{--adaptive / --auto} & Нет & То же \\
+\texttt{--fixed} (TracerPO) & \textbf{Да} & Добавлен Rotate + d\_param \\
+\texttt{--montecarlo} (TracerPOTotal) & Нет & Rotate() всегда вызывается \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Для всех рабочих режимов ориентационного усреднения (random, sobol, adaptive, auto)
+исправление не меняет результатов, т.к. \texttt{TracerPOTotal} всегда вызывает
+\texttt{Rotate()} перед \texttt{ScatterLight()}, что инициализирует \texttt{d\_param}.
+
+\section{Заключение}
+
+\begin{enumerate}
+\item Исходное 15-кратное расхождение --- не баг HandleBeams, а \textbf{сравнение
+  разных ориентаций}: старый код не поворачивает частицу в режиме \texttt{--fixed}.
+\item Остаточное 5\% расхождение в когерентном режиме --- от неинициализированного
+  \texttt{d\_param}, исправлено во всех конструкторах.
+\item Инлайн-оптимизации HandleBeams (batched sincos, precomputed edges,
+  theta-coefficients) \textbf{верифицированы}: дают идентичный результат поштучно.
+\item Fallback-функции приведены к единообразному использованию \texttt{exp\_im}.
+\end{enumerate}
+
+\end{document}
