@@ -121,7 +121,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     timer.Start();
     if (m_mpiRank == 0) OutputStartTime(timer);
 
-    m_handler->SetNormIndex(1);
+    m_handler->SetNormIndex(normGamma);
 
     std::string dir;
     if (m_mpiRank == 0) dir = CreateFolder(m_resultDirName);
@@ -222,7 +222,6 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         chunkPrepared.clear(); chunkPrepared.shrink_to_fit();
     }
 
-    // MPI: reduce Mueller from all ranks
     MPI_ReduceMueller(handlerPO, nAz, nZen, m_incomingEnergy, m_mpiRank);
 
     EraseConsoleLine(60);
