@@ -84,7 +84,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     // same chunked + OpenMP pipeline as TraceFromSobol.
 
     int betaNorm = (m_symmetry.beta < M_PI_2+FLT_EPSILON && m_symmetry.beta > M_PI_2-FLT_EPSILON) ? 1 : 2;
-    double normGamma = gammaRange.number * betaNorm;
+    double normGamma = gammaRange.number;
 
     // Build orientation list with proper dcos weights
     std::vector<std::pair<double,double>> orientations;

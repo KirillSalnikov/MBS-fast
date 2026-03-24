@@ -93,6 +93,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("autofull", 1, true); // full 3D sequential: n → N_phi → N_orient
     parser.AddRule("auto", 1, true); // full auto: auto_tgrid + auto_phi + adaptive (one arg: eps)
     parser.AddRule("maxorient", 1, true); // max orientations for adaptive (power of 2)
+    parser.AddRule("oldauto", 1, true); // physics-based: div2/div4/div8 of diffraction-limited grid
     parser.AddRule("sym", 2, true); // symmetry override: beta_factor gamma_factor (e.g. --sym 2 6)
 }
 
@@ -562,6 +563,109 @@ int main(int argc, const char* argv[])
             tracer.SetIsOutputGroups(isOutputGroups);
             tracer.SetHandler(handler);
             tracer.TraceFixed(beta, gamma);
+        }
+        else if (args.IsCatched("oldauto"))
+        {
+            // Physics-based orientation grid from diffraction angular step
+            // --oldauto DIV: DIV = 2,4,8 (divisor for full diffraction-limited grid)
+            int div = args.GetIntValue("oldauto", 0);
+            if (div < 1) div = 8;
+
+            double L = particle->MaximalDimention();
+            double D_particle = L; // will be overridden below
+            // D = 6.96 * sqrt(L) from Excel formula
+            // But actual D is from -p argument, use particle geometry
+            // L is the height (first -p arg), D is the diameter (second -p arg)
+            // particle->MaximalDimention() returns max(L,D)
+
+            // Diffraction angular step: Δθ = 0.69 * λ / L * (180/π)
+            double delta_theta_deg = 0.69 * wave / L * (180.0 / M_PI);
+            int points_per_ring = 3; // from Excel AB4
+
+            // Angular step for orientation grid
+            double orient_step = delta_theta_deg / points_per_ring;
+
+            // Get symmetry from particle
+            double betaSym_deg = RadToDeg(particle->GetSymmetry().beta);
+            double gammaSym_deg = RadToDeg(particle->GetSymmetry().gamma);
+
+            // Full grid: N = sym_range / step
+            int N_beta_full = (int)ceil(betaSym_deg / orient_step);
+            int N_gamma_full = (int)ceil(gammaSym_deg / orient_step);
+
+            // Divide by div factor
+            int N_beta = N_beta_full / div;
+            int N_gamma = N_gamma_full / div;
+            // Make odd (from Excel ODD function)
+            if (N_beta % 2 == 0) N_beta++;
+            if (N_gamma % 2 == 0) N_gamma++;
+            if (N_beta < 3) N_beta = 3;
+            if (N_gamma < 3) N_gamma = 3;
+
+            // N_phi default 360, can override with --grid
+            int N_phi = args.IsCatched("grid") ? (int)args.GetDoubleValue("grid", 2) : 360;
+
+            cout << "=== oldauto (physics-based) ===" << endl;
+            cout << "  L=" << L << " um, lambda=" << wave << " um" << endl;
+            cout << "  Diffraction step: " << delta_theta_deg << " deg" << endl;
+            cout << "  Orient step: " << orient_step << " deg (3 pts/ring)" << endl;
+            cout << "  Full grid: " << N_beta_full << " x " << N_gamma_full
+                 << " = " << (long long)N_beta_full * N_gamma_full << endl;
+            cout << "  div" << div << ": " << N_beta << " x " << N_gamma
+                 << " = " << N_beta * N_gamma << " orientations" << endl;
+            cout << "  N_phi=" << N_phi << endl;
+            cout << "  n=" << reflNum << endl;
+
+            additionalSummary += ", oldauto div" + to_string(div) + "\n\n";
+
+            // Build conus with specified N_phi
+            ScatteringRange conus = args.IsCatched("grid")
+                ? SetConus(args)
+                : ScatteringRange(0, M_PI, N_phi, 1);
+
+            // Apply auto_tgrid
+            if (args.IsCatched("auto_tgrid") || args.IsCatched("tgrid")) {
+                if (args.IsCatched("tgrid"))
+                    ; // already loaded in SetConus
+                else
+                    ApplyAutoThetaGrid(conus, L, wave);
+            } else {
+                ApplyAutoThetaGrid(conus, L, wave);
+            }
+
+            // Set N_phi
+            conus.nAzimuth = N_phi;
+            conus.azinuthStep = 2.0 * M_PI / N_phi;
+
+            TracerPOTotal *tracer = new TracerPOTotal(particle, reflNum, dirName);
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) tpt->SetMPI(mpi_rank, mpi_size); }
+            tracer->m_scattering->m_wave = wave;
+            tracer->shadowOff = args.IsCatched("shadow_off");
+            trackGroups.push_back(TrackGroup());
+            HandlerPOTotal *handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
+                                         nTheta, wave);
+
+            if (args.IsCatched("beam_cutoff"))
+                handler->m_targetEps = args.GetDoubleValue("beam_cutoff", 0);
+
+            cout << additionalSummary;
+            tracer->m_summary = additionalSummary;
+
+            handler->isCoh = !args.IsCatched("incoh");
+            handler->useKarczewski = args.IsCatched("karczewski");
+            handler->SetScatteringSphere(conus);
+            handler->SetTracks(&trackGroups);
+            handler->SetAbsorptionAccounting(isAbs);
+
+            tracer->SetIsOutputGroups(isOutputGroups);
+            tracer->SetHandler(handler);
+
+            // Use --random with computed N_beta, N_gamma
+            AngleRange betaRange(0, particle->GetSymmetry().beta, N_beta);
+            AngleRange gammaRange(0, particle->GetSymmetry().gamma, N_gamma);
+
+            tracer->TraceRandom(betaRange, gammaRange);
+            delete handler;
         }
         else if (args.IsCatched("random"))
         {
