@@ -529,21 +529,32 @@ Comparison of \texttt{--fixed 45 30} between old and new binaries showed a $15.5
 
 \subsection{Validation}
 
-\begin{tabular}{lrl}
+\begin{tabular}{lrll}
 \toprule
-Test & Max diff & Notes \\
+Test & Max diff & Mode & Notes \\
 \midrule
-\texttt{--fixed 0 0 --incoh} & $3\times10^{-5}$ & d\_param fix only \\
-\texttt{--fixed 0 0 --coh} (no Rotate) & $<10^{-6}$ & exact match \\
-HandleBeams inline vs fallback & identical & optimizations verified \\
+\texttt{--fixed 0 0 --incoh} & exact & incoh & per-beam $|J|^2$ identical \\
+\texttt{--random 64 43 --incoh} & exact & incoh & per-beam physics identical \\
+\texttt{--random 32 22 --coh\_orient} & $10^{-7}$ & coh & machine precision \\
+\texttt{--random 64 43} (default) & $0.007\%$ & incoh avg & coh vs incoh averaging \\
+HandleBeams inline vs fallback & identical & & SIMD optimizations verified \\
 \bottomrule
 \end{tabular}
 
 \medskip
+\textbf{Speedup:} 55$\times$ (23\,min $\to$ 25\,sec at 2860 orientations, 4 threads).
+
+\textbf{d\_param note:}
+\texttt{d\_param} is the plane equation parameter ($ax+by+cz+d=0$) stored in
+\texttt{Point3f::coordinates[3]}. It was uninitialized before \texttt{Rotate()} call.
+\texttt{SetDParams()} now added to all particle constructors. This changes coherent
+single-orientation $M_{11}$ by $\sim$7\% (phase-sensitive), but incoherent $|J|^2$ is
+identical. After orientation averaging the effect is $<0.01\%$.
+
 \textbf{Impact:} Only \texttt{--fixed} mode affected.
 Orientation averaging modes (\texttt{--random}, \texttt{--sobol}, \texttt{--adaptive}, \texttt{--auto})
 always call \texttt{Rotate()} via \texttt{TracerPOTotal}, so d\_param is always initialized correctly.
 
-See \texttt{docs/bugfix\_15x\_mismatch.pdf} for the full investigation report.
+See \texttt{docs/bugfix\_15x\_mismatch.pdf} and \texttt{tests/reference\_test/} for full reports and plots.
 
 \end{document}

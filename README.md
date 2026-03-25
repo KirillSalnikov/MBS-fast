@@ -100,12 +100,20 @@ Each run produces two Mueller matrix files:
 
 Format: `theta 2pi*dcos M11 M12 ... M44` (18 columns, phi-averaged).
 
+## Validation
+
+Old binary vs MBS-fast verified to **machine precision** (1e-7) with `--coh_orient`.
+Default incoherent mode: **0.007% max M11 diff** at 2860 orientations.
+Speedup: **55×** (23 min → 25 sec on 4 cores).
+
+See `tests/reference_test/RESULTS.md` and comparison plots in `tests/reference_test/`.
+
 ## Documentation
 
 - **docs/MANUAL.pdf** — full CLI reference (35+ flags), build guides, output format
-- **docs/reports/** — bugfix reports (forward-direction Fresnel sign)
+- **docs/bugfix_15x_mismatch.pdf** — investigation of 15× mismatch (d_param init, Rotate fix)
 - **docs/figures/** — convergence plots, comparisons
-- **MANUAL.md** — manual (markdown)
+- **tests/reference_test/** — reference test scripts, comparison plots, results
 - **tests/run_tests.sh** — regression tests
 
 ## Key Features
