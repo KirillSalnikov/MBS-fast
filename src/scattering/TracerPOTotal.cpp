@@ -278,9 +278,9 @@ void TracerPOTotal::TraceMonteCarlo(const AngleRange &betaRange,
     std::vector<std::pair<double,double>> orientations;
     std::vector<double> weights;
 
-    long long nTacts;
-    asm("rdtsc" : "=A"(nTacts));
-    srand(nTacts);
+    unsigned int lo, hi;
+    asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    srand(lo ^ hi);
 
     for (int i = 0; i < nOrientations; ++i)
     {

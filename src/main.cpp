@@ -696,7 +696,7 @@ int main(int argc, const char* argv[])
 //                                                       nTheta, wave);
 //                 double normIndex = gamma.step/gamma.norm;
 // //                handler->isCoh = !args.IsCatched("incoh");
-            handler->m_legacySign = args.IsCatched("legacy_sign");
+//              handler->m_legacySign = args.IsCatched("legacy_sign");
 //                 handler->SetNormIndex(normIndex);
 //                 handler->SetTracks(&trackGroups);
 //                 trackGroups.shouldComputeTracksOnly = !args.IsCatched("all");
@@ -801,6 +801,10 @@ int main(int argc, const char* argv[])
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); } }
+            tracer->m_scattering->m_wave = wave;
+            tracer->shadowOff = args.IsCatched("shadow_off");
+            if (args.IsCatched("r"))
+                tracer->m_scattering->restriction = args.GetDoubleValue("r", 0);
             trackGroups.push_back(TrackGroup());
             handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
                                          nTheta, wave);
@@ -808,6 +812,8 @@ int main(int argc, const char* argv[])
             cout << additionalSummary;
             tracer->m_summary = additionalSummary;
 
+            handler->isCoh = !args.IsCatched("incoh");
+            handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->SetScatteringSphere(conus);
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);

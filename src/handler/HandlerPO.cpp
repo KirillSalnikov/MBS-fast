@@ -505,7 +505,10 @@ matrixC HandlerPO::ApplyDiffractionFast(const Beam &beam, const BeamInfo &info,
     auto t1 = std::chrono::high_resolution_clock::now();
 
     matrixC jones_rot(2, 2);
-    RotateJones(beam, info, vf, direction, jones_rot);
+    if (useKarczewski)
+        KarczewskiJones(beam, info, vf, direction, jones_rot);
+    else
+        RotateJones(beam, info, vf, direction, jones_rot);
     auto t2 = std::chrono::high_resolution_clock::now();
 
     complex fresnel = DiffractInclineFast(info, edgeData, beamDirD, direction);
@@ -1372,11 +1375,16 @@ void HandlerPO::DiffractControlPoints(const PreparedOrientation &prepared,
                 double sr10r=cpr*r10,sr10i=cpi*r10,sr11r=cpr*r11,sr11i=cpi*r11;
                 double d00r=sr00r*jp00r-sr00i*jp00i+sr01r*jp10r-sr01i*jp10i;
                 double d00i=sr00r*jp00i+sr00i*jp00r+sr01r*jp10i+sr01i*jp10r;
+                double d01r=sr00r*jp01r-sr00i*jp01i+sr01r*jp11r-sr01i*jp11i;
+                double d01i=sr00r*jp01i+sr00i*jp01r+sr01r*jp11i+sr01i*jp11r;
+                double d10r=sr10r*jp00r-sr10i*jp00i+sr11r*jp10r-sr11i*jp10i;
+                double d10i=sr10r*jp00i+sr10i*jp00r+sr11r*jp10i+sr11i*jp10r;
                 double d11r=sr10r*jp01r-sr10i*jp01i+sr11r*jp11r-sr11i*jp11i;
                 double d11i=sr10r*jp01i+sr10i*jp01r+sr11r*jp11i+sr11i*jp11r;
 
-                // Incoherent M11 (phi-averaged): |d00|²+|d11|²
-                m11_out[k] += (d00r*d00r+d00i*d00i + d11r*d11r+d11i*d11i)
+                // Incoherent M11 (phi-averaged): (|d00|²+|d01|²+|d10|²+|d11|²)/2
+                m11_out[k] += 0.5*(d00r*d00r+d00i*d00i + d01r*d01r+d01i*d01i
+                                 + d10r*d10r+d10i*d10i + d11r*d11r+d11i*d11i)
                               * prepared.sinZenith / (nAz + 1);
             }
         }
