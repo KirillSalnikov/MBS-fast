@@ -1359,7 +1359,7 @@ void TracerPOTotal::TraceAdaptiveTheta(int nOrient, double betaSym, double gamma
     // Step 3: Adaptive bisection
     // Start with coarse grid
     double minTheta = 0.0, maxTheta = M_PI;
-    double minStep = m_scattering->m_wave / (2.0 * m_particle->MaximalDimention()); // Nyquist
+    double minStep = m_scattering->m_wave / (8.0 * m_particle->MaximalDimention()); // λ/(8D) = quarter-Nyquist
 
     // Initial points (30 uniform)
     int nInitial = 30;
