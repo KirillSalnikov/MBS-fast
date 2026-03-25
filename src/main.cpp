@@ -626,9 +626,9 @@ int main(int argc, const char* argv[])
                 ? SetConus(args)
                 : ScatteringRange(0, M_PI, N_phi, 1);
 
-            // Apply theta grid
-            if (args.IsCatched("tgrid")) {
-                // tgrid already loaded in SetConus above
+            // Apply theta grid (only if no explicit --grid or --tgrid)
+            if (args.IsCatched("tgrid") || args.IsCatched("grid")) {
+                // tgrid or grid already loaded in SetConus above
             } else {
                 ApplyAutoThetaGrid(conus, L, wave);
             }
