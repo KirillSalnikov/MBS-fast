@@ -204,37 +204,15 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     }
 
     // Default: incoherent per-orientation (physically correct)
+    // Loop over beta explicitly — enables per-beta Mueller saving
 
-    // Build orientation list with proper dcos weights
-    std::vector<std::pair<double,double>> orientations;
-    std::vector<double> weights;
-
-    for (int i = 0; i <= betaRange.number; ++i)
-    {
-        double beta = betaRange.min + i * betaRange.step;
-        double dcos;
-        CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
-
-        for (int j = 0; j < gammaRange.number; ++j)
-        {
-            double gamma = gammaRange.min + j * gammaRange.step;
-            orientations.push_back({beta, gamma});
-            weights.push_back(dcos);
-        }
-    }
-
-    int nOrientations = orientations.size();
-
-    // MPI: each rank processes a subset
-    int myStart = m_mpiRank * nOrientations / m_mpiSize;
-    int myEnd = (m_mpiRank + 1) * nOrientations / m_mpiSize;
-    int myCount = myEnd - myStart;
+    int nGamma = gammaRange.number;
+    int nBeta = betaRange.number + 1;
+    int nOrientations = nBeta * nGamma;
 
     if (m_mpiRank == 0)
-        if (m_mpiRank == 0) std::cout << "Random grid: " << (betaRange.number+1) << " x " << gammaRange.number
-                  << " = " << nOrientations << " orientations"
-                  << (m_mpiSize > 1 ? " (" + std::to_string(myCount) + "/rank)" : "")
-                  << std::endl;
+        std::cout << "Random grid: " << nBeta << " x " << nGamma
+                  << " = " << nOrientations << " orientations" << std::endl;
 
     CalcTimer timer;
     timer.Start();
@@ -267,49 +245,48 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     int nAz = handlerPO->m_sphere.nAzimuth;
     int nZen = handlerPO->m_sphere.nZenith;
 
-    // Chunked streaming (same as TraceFromSobol)
-    long long availMB = 2048;
-#ifdef __linux__
-    { std::ifstream meminfo("/proc/meminfo"); std::string line;
-      while (std::getline(meminfo, line)) {
-          if (line.find("MemAvailable:") == 0) {
-              long long kb = 0; sscanf(line.c_str(), "MemAvailable: %lld", &kb);
-              if (kb > 0) availMB = kb / 1024; break;
-    } } }
-#endif
-    long long beamBudget = std::max(100LL, availMB / 2);
-    int chunkSize = std::max(32, std::min(4096, std::min(myCount, (int)(beamBudget * 1024 / 350))));
-    int nChunks = (myCount + chunkSize - 1) / chunkSize;
+    // --save_betas: create output directory
+    std::string betaDir;
+    if (m_saveBetas && m_mpiRank == 0) {
+        betaDir = m_resultDirName + "_betas";
+        mkdir(betaDir.c_str(), 0755);
+    }
 
     double phase1_total = 0, phase2_total = 0;
     std::vector<Beam> outBeams;
     long long count = 0;
 
-    for (int chunk = 0; chunk < nChunks; ++chunk)
+    // Process beta-by-beta: each beta = one chunk of nGamma orientations
+    for (int ib = 0; ib < nBeta; ++ib)
     {
-        int iStart = myStart + chunk * chunkSize;
-        int iEnd = std::min(iStart + chunkSize, myEnd);
-        int thisChunk = iEnd - iStart;
+        double beta = betaRange.min + ib * betaRange.step;
+        double dcos;
+        CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
 
+        // Phase 1: trace all gamma for this beta
         auto tp1 = std::chrono::high_resolution_clock::now();
-        std::vector<PreparedOrientation> chunkPrepared(thisChunk);
+        std::vector<PreparedOrientation> chunkPrepared(nGamma);
 
-        for (int i = 0; i < thisChunk; ++i)
+        for (int j = 0; j < nGamma; ++j)
         {
-            int idx = iStart + i;
-            m_particle->Rotate(orientations[idx].first, orientations[idx].second, 0);
+            double gamma = gammaRange.min + j * gammaRange.step;
+            m_particle->Rotate(beta, gamma, 0);
             if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
             bool ok = m_scattering->ScatterLight(0, 0, outBeams);
-            if (ok) handlerPO->PrepareBeams(outBeams, weights[idx], chunkPrepared[i]);
-            else    chunkPrepared[i].sinZenith = weights[idx];
-            m_incomingEnergy += m_scattering->GetIncedentEnergy() * weights[idx];
-            if (m_mpiRank == 0) OutputProgress(nOrientations, count, iStart + i, 0, timer, outBeams.size());
+            if (ok) handlerPO->PrepareBeams(outBeams, dcos, chunkPrepared[j]);
+            else    chunkPrepared[j].sinZenith = dcos;
+            m_incomingEnergy += m_scattering->GetIncedentEnergy() * dcos;
+            if (m_mpiRank == 0) OutputProgress(nOrientations, count, ib*nGamma+j, 0, timer, outBeams.size());
             outBeams.clear();
             ++count;
         }
         phase1_total += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - tp1).count();
 
+        // Phase 2: diffraction (OpenMP parallel over gamma orientations)
         auto tp2 = std::chrono::high_resolution_clock::now();
+        Arr2D betaM(nAz+1, nZen+1, 4, 4); betaM.ClearArr();
+        Arr2D betaM_ns(nAz+1, nZen+1, 4, 4); betaM_ns.ClearArr();
+
         #pragma omp parallel
         {
             Arr2D localM(nAz+1, nZen+1, 4, 4); localM.ClearArr();
@@ -320,7 +297,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
                 Arr2DC t2(nAz+1,nZen+1,2,2); t2.ClearArr(); localJ_ns.push_back(t2);
             }
             #pragma omp for schedule(dynamic, 1)
-            for (int i = 0; i < thisChunk; ++i) {
+            for (int i = 0; i < nGamma; ++i) {
                 if (!chunkPrepared[i].beams.empty())
                     handlerPO->HandleBeamsToLocal(chunkPrepared[i], localM, localJ,
                                                    handlerPO->isCoh ? &localJ_ns : nullptr);
@@ -333,13 +310,75 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             }
             #pragma omp critical
             { for (int p=0;p<=nAz;++p) for (int t=0;t<=nZen;++t) {
-                handlerPO->M.insert(p,t,localM(p,t));
-                handlerPO->M_noshadow.insert(p,t,localM_ns(p,t));
+                betaM.insert(p,t,localM(p,t));
+                betaM_ns.insert(p,t,localM_ns(p,t));
             } }
         }
         phase2_total += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - tp2).count();
         chunkPrepared.clear(); chunkPrepared.shrink_to_fit();
 
+        // Accumulate into global Mueller
+        for (int p=0;p<=nAz;++p) for (int t=0;t<=nZen;++t) {
+            handlerPO->M.insert(p,t,betaM(p,t));
+            handlerPO->M_noshadow.insert(p,t,betaM_ns(p,t));
+        }
+
+        // --save_betas: write per-beta Mueller (phi-averaged)
+        if (m_saveBetas && m_mpiRank == 0)
+        {
+            auto &sphere = handlerPO->m_sphere;
+            matrix *Lp = handlerPO->m_Lp;
+
+            // Per-beta contribution
+            std::string fname = betaDir + "/beta_" + std::to_string(ib)
+                + "_" + std::to_string((int)RadToDeg(beta)) + "deg.dat";
+            std::ofstream bf(fname, std::ios::out);
+            bf << std::setprecision(10);
+            bf << "# Per-beta Mueller: beta=" << RadToDeg(beta) << " deg, dcos=" << dcos
+               << ", " << nGamma << " gamma orientations" << std::endl;
+            bf << "ScAngle 2pi*dcos M11 M12 M13 M14 M21 M22 M23 M24 M31 M32 M33 M34 M41 M42 M43 M44";
+            for (int iZen = 0; iZen <= nZen; ++iZen) {
+                matrix Msum(4,4); Msum.Fill(0.0);
+                double radZen = sphere.GetZenith(iZen);
+                for (int iAz = 0; iAz <= nAz; ++iAz) {
+                    double radAz = -iAz * sphere.azinuthStep;
+                    matrix m = betaM(iAz, iZen);
+                    (*Lp)[1][1] = cos(2*radAz); (*Lp)[1][2] = sin(2*radAz);
+                    (*Lp)[2][1] = -(*Lp)[1][2]; (*Lp)[2][2] = (*Lp)[1][1];
+                    Msum += m * (*Lp);
+                }
+                Msum /= nAz;
+                double _2PiDcos = sphere.Compute2PiDcos(iZen);
+                bf << std::endl << RadToDeg(radZen) << ' ' << _2PiDcos << ' ';
+                bf << Msum;
+            }
+            bf.close();
+
+            // Also write cumulative
+            std::string cfname = betaDir + "/cumul_" + std::to_string(ib)
+                + "_" + std::to_string((int)RadToDeg(beta)) + "deg.dat";
+            std::ofstream cf(cfname, std::ios::out);
+            cf << std::setprecision(10);
+            cf << "# Cumulative Mueller up to beta=" << RadToDeg(beta) << " deg"
+               << " (" << (ib+1)*nGamma << "/" << nOrientations << " orientations)" << std::endl;
+            cf << "ScAngle 2pi*dcos M11 M12 M13 M14 M21 M22 M23 M24 M31 M32 M33 M34 M41 M42 M43 M44";
+            for (int iZen = 0; iZen <= nZen; ++iZen) {
+                matrix Msum(4,4); Msum.Fill(0.0);
+                double radZen = sphere.GetZenith(iZen);
+                for (int iAz = 0; iAz <= nAz; ++iAz) {
+                    double radAz = -iAz * sphere.azinuthStep;
+                    matrix m = handlerPO->M(iAz, iZen);
+                    (*Lp)[1][1] = cos(2*radAz); (*Lp)[1][2] = sin(2*radAz);
+                    (*Lp)[2][1] = -(*Lp)[1][2]; (*Lp)[2][2] = (*Lp)[1][1];
+                    Msum += m * (*Lp);
+                }
+                Msum /= nAz;
+                double _2PiDcos = sphere.Compute2PiDcos(iZen);
+                cf << std::endl << RadToDeg(radZen) << ' ' << _2PiDcos << ' ';
+                cf << Msum;
+            }
+            cf.close();
+        }
     }
 
     MPI_ReduceMueller(handlerPO, nAz, nZen, m_incomingEnergy, m_mpiRank);
@@ -349,55 +388,8 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         std::cout << "Phase 1 (tracing): " << std::fixed << std::setprecision(2) << phase1_total << " s" << std::endl;
         std::cout << "Phase 2 (diffraction, OpenMP): " << phase2_total << " s" << std::endl;
         std::cout << "Total: " << phase1_total + phase2_total << " s" << std::endl;
-
-        // --save_betas: write cumulative Mueller for each completed beta
         if (m_saveBetas)
-        {
-            std::string betaDir = m_resultDirName + "_betas";
-            mkdir(betaDir.c_str(), 0755);
-
-            int nGamma = gammaRange.number;
-            int nBeta = betaRange.number + 1;
-            auto &sphere = handlerPO->m_sphere;
-            matrix *Lp = handlerPO->m_Lp;
-
-            // Build cumulative Mueller per beta: re-trace is too slow.
-            // Instead, save the FINAL result for now (all betas accumulated).
-            // For per-beta breakdown, need to restructure the loop.
-            // Practical approach: save cumulative after every N_gamma orientations.
-            // Since we already computed the full result, save it with beta labels.
-            for (int ib = 0; ib < nBeta; ++ib)
-            {
-                double beta = betaRange.min + ib * betaRange.step;
-                int orient_done = (ib + 1) * nGamma;
-                std::string fname = betaDir + "/beta_" + std::to_string(ib)
-                    + "_" + std::to_string((int)RadToDeg(beta)) + "deg.dat";
-                // Write the final Mueller (all betas included) — acts as checkpoint
-                // For true per-beta, would need separate accumulation
-                std::ofstream bf(fname, std::ios::out);
-                bf << std::setprecision(10);
-                bf << "# Mueller at beta=" << RadToDeg(beta) << " deg"
-                   << " (orient " << orient_done << "/" << nOrientations << ")" << std::endl;
-                bf << "ScAngle 2pi*dcos M11 M12 M13 M14 M21 M22 M23 M24 M31 M32 M33 M34 M41 M42 M43 M44";
-                for (int iZen = 0; iZen <= nZen; ++iZen) {
-                    matrix Msum(4,4); Msum.Fill(0.0);
-                    double radZen = sphere.GetZenith(iZen);
-                    for (int iAz = 0; iAz <= nAz; ++iAz) {
-                        double radAz = -iAz * sphere.azinuthStep;
-                        matrix m = handlerPO->M(iAz, iZen);
-                        (*Lp)[1][1] = cos(2*radAz); (*Lp)[1][2] = sin(2*radAz);
-                        (*Lp)[2][1] = -(*Lp)[1][2]; (*Lp)[2][2] = (*Lp)[1][1];
-                        Msum += m * (*Lp);
-                    }
-                    Msum /= nAz;
-                    double _2PiDcos = sphere.Compute2PiDcos(iZen);
-                    bf << std::endl << RadToDeg(radZen) << ' ' << _2PiDcos << ' ';
-                    bf << Msum;
-                }
-                bf.close();
-            }
             std::cout << "Saved " << nBeta << " beta files to " << betaDir << "/" << std::endl;
-        }
 
         m_handler->WriteTotalMatricesToFile(m_resultDirName);
         m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
