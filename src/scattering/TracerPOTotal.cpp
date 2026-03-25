@@ -1209,7 +1209,7 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
             MPI_Allreduce(sbuf5, rbuf5, 5, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
             ctrlAccum[0]=rbuf5[0]; ctrlAccum[1]=rbuf5[1]; ctrlAccum[2]=rbuf5[2]; ctrlAccum[3]=rbuf5[3];
             m_incomingEnergy = rbuf5[4];
-            // Need global allPrepared count too
+        }
 #endif
 
         // Control points from fast DiffractControlPoints (not full grid)
