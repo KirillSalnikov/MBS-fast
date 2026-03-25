@@ -1367,6 +1367,14 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         }
     }
 #endif
+    // maxOrient from div1 estimate (full diffraction-limited grid)
+    int nb1 = std::max(1, (int)(RadToDeg(betaSym) / orient_step));
+    int ng1 = std::max(1, (int)(RadToDeg(gammaSym) / orient_step));
+    int maxFromPhysics = nb1 * ng1;
+    // Round down to power of 2
+    int maxP2 = 1;
+    while (maxP2 * 2 <= maxFromPhysics) maxP2 *= 2;
+
     int maxOrient;
     if (maxOrientOverride > 0) {
         maxOrient = 1;
@@ -1374,9 +1382,14 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         if (maxOrient > maxOrientOverride) maxOrient /= 2;
         if (maxOrient < 64) maxOrient = 64;
     } else {
-        maxOrient = std::max(1024, std::min(131072, (int)(availMB_ad / 2 * 1024 / 350)));
-        int p = 1; while (p * 2 <= maxOrient) p *= 2; maxOrient = p;
+        // Use physics estimate, but cap by available memory
+        int maxFromMem = std::max(1024, (int)(availMB_ad / 2 * 1024 / 350));
+        int memP2 = 1; while (memP2 * 2 <= maxFromMem) memP2 *= 2;
+        maxOrient = std::min(maxP2, memP2);
+        if (maxOrient < 64) maxOrient = 64;
     }
+    std::cout << "  Max estimate (div1): " << nb1 << " x " << ng1
+              << " = " << maxFromPhysics << " -> " << maxP2 << " (power of 2)" << std::endl;
     std::cerr << "Adaptive: max orientations = " << maxOrient
               << " (" << availMB_ad << " MB available)" << std::endl;
 
