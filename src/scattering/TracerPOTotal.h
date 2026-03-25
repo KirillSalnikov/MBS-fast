@@ -20,6 +20,10 @@ public:
                                 const std::vector<double> &x_sizes,
                                 double x_ref);
 
+    /// Multi-size with Sobol: trace reference size, cache, recompute for all x_sizes
+    void TraceSobolMultiSize(int nOrient, double betaSym, double gammaSym,
+                              const std::vector<double> &x_sizes, double x_ref);
+
     /// Sobol quasi-random orientation averaging with particle symmetry
     void TraceFromSobol(int nOrient, double betaSym, double gammaSym);
 

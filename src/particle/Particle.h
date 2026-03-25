@@ -98,8 +98,10 @@ protected:
 
     virtual void SetFacetParams() {}
 
-private:
+protected:
     void SetDParams();
+
+private:
     void RotateNormals();
     void RotatePoint(const Point3f &point, Point3f &result);
     void RotateCenters();
