@@ -83,7 +83,6 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("forced_convex", zero, true);
     parser.AddRule("r", 1, true); // restriction ratio for small beams when intersection (100 by default)
     parser.AddRule("log", 1, true); // time of writing progress (in seconds)
-    parser.AddRule("sizefile", 1, true); // multi-size: file with size parameters (one per line)
     parser.AddRule("multigrid", 1, true); // multi-size: file with -p params (same type, diff size), one per line
     parser.AddRule("tgrid", 1, true); // non-uniform theta grid file
     parser.AddRule("beam_cutoff", 1, true); // beam importance cutoff (relative to C_geo)
@@ -937,31 +936,7 @@ int main(int argc, const char* argv[])
 
             std::string orientFileName = args.GetStringValue("orientfile", 0);
 
-            if (args.IsCatched("sizefile"))
-            {
-                std::string sizeFileName = args.GetStringValue("sizefile", 0);
-                std::vector<double> x_sizes;
-                std::ifstream sizeFile(sizeFileName);
-                double xval;
-                while (sizeFile >> xval) x_sizes.push_back(xval);
-                sizeFile.close();
-
-                // x_ref is determined from current particle size and wavelength
-                // x = pi * D / lambda
-                double D_current = particle->MaximalDimention();
-                double x_ref = M_PI * D_current / wave;
-
-                cout << "Multi-size mode: x_ref=" << x_ref
-                     << ", computing " << x_sizes.size() << " sizes:";
-                for (double xs : x_sizes) cout << " " << xs;
-                cout << endl;
-
-                tracer->TraceFromFileMultiSize(orientFileName, x_sizes, x_ref);
-            }
-            else
-            {
-                tracer->TraceFromFile(orientFileName);
-            }
+            tracer->TraceFromFile(orientFileName);
 
             delete handler;
         }
