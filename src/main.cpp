@@ -859,9 +859,16 @@ int main(int argc, const char* argv[])
                     if (tpt) {
                         double tgridEps = args.GetDoubleValue("auto_tgrid", 0);
                         if (tgridEps <= 0) tgridEps = 0.05;
-                        int nProbe = std::min(256, (beta.number+1) * gamma.number);
                         double betaSym2 = particle->GetSymmetry().beta;
                         double gammaSym2 = particle->GetSymmetry().gamma;
+                        // Probe count from div16 physics estimate
+                        double Dmax2 = particle->MaximalDimention();
+                        double dd2 = 0.69 * wave / Dmax2 * (180.0 / M_PI) / 3.0;
+                        int nb2 = std::max(1, (int)(RadToDeg(betaSym2) / dd2 / 16));
+                        int ng2 = std::max(1, (int)(RadToDeg(gammaSym2) / dd2 / 16));
+                        int nProbe = nb2 * ng2;
+                        int p2 = 1; while (p2 * 2 <= nProbe) p2 *= 2;
+                        nProbe = std::max(64, p2);
                         tpt->TraceAdaptiveTheta(nProbe, betaSym2, gammaSym2, tgridEps, 8);
                         // Grid is now set in handler->m_sphere. TraceRandom will use it.
                     }
@@ -1078,7 +1085,15 @@ int main(int argc, const char* argv[])
                     double tgridEps = args.IsCatched("auto_tgrid")
                         ? args.GetDoubleValue("auto_tgrid", 0) : 0.05;
                     if (tgridEps <= 0) tgridEps = 0.05;
-                    tracer->TraceAdaptiveTheta(256, betaSym, gammaSym, tgridEps, 8, true);
+                    // Probe count from div16 physics estimate
+                    double Dmax_p = particle->MaximalDimention();
+                    double dd_p = 0.69 * wave / Dmax_p * (180.0 / M_PI) / 3.0;
+                    int nb_p = std::max(1, (int)(RadToDeg(betaSym) / dd_p / 16));
+                    int ng_p = std::max(1, (int)(RadToDeg(gammaSym) / dd_p / 16));
+                    int nProbeAuto = nb_p * ng_p;
+                    int p2a = 1; while (p2a * 2 <= nProbeAuto) p2a *= 2;
+                    nProbeAuto = std::max(64, p2a);
+                    tracer->TraceAdaptiveTheta(nProbeAuto, betaSym, gammaSym, tgridEps, 8, true);
                     // Grid now set. TraceAdaptive will compute full Mueller.
                 }
 

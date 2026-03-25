@@ -32,9 +32,13 @@ bin/mbs_po --po --auto 0.05 \
 bin/mbs_po --po --autofull 0.05 \
     -p 1 100 70 -w 0.532 --ri 1.31 0 --close
 
-# Manual Sobol orientations
-bin/mbs_po --po --sobol 1024 --auto_tgrid --auto_phi \
+# Manual Sobol with adaptive theta grid (5% tolerance)
+bin/mbs_po --po --sobol 1024 --auto_tgrid 0.05 --auto_phi \
     -p 1 100 70 -w 0.532 --ri 1.31 0 -n 8 --close
+
+# Multi-size: trace once, compute all sizes
+bin/mbs_po --po --sobol 1024 --multigrid sizes.txt \
+    -p 1 400 50 -w 0.532 --ri 1.31 0 -n 8 --close
 ```
 
 **Note**: `--grid` and `--sym` are NOT needed with `--auto`/`--autofull`. Theta grid, phi bins, and particle symmetry are set automatically.
@@ -119,11 +123,13 @@ See `tests/reference_test/RESULTS.md` and comparison plots in `tests/reference_t
 ## Key Features
 
 - **Batched sincos**: all vertex phases pre-computed via AVX-512/AVX2 before theta loop
-- **Auto theta grid**: 7 zones (forward peak, halos 22°/46°, side, backscatter)
+- **Adaptive theta grid**: recursive bisection — adds points where M₁₁ changes fast (2-3× fewer points than uniform)
 - **Auto phi**: N_phi = x/5 + 48 (linear in size parameter, validated by --autofull)
 - **Incremental adaptive**: reuses previous orientations (Sobol subset property)
 - **5 convergence controls**: Q_sca, M₁₁(22°), M₁₁(46°), M₁₁(90°), M₁₁(180°)
 - **Auto beam cutoff**: two dimensionless thresholds (|J|²/max < eps AND area/max < eps). Protects forward peak and strong beams, skips 45-80% of negligible beams
+- **Multi-size**: `--multigrid` — trace once, recompute diffraction for all sizes
+- **Per-beta save**: `--save_betas` — write intermediate Mueller per beta (backup/resume)
 - **Dual output**: M.dat (with shadow) + M_noshadow.dat (without) at no extra cost
 - **Memory-aware chunking**: auto-sizes orientation batches to fit in RAM
 - **MPI + OpenMP hybrid**: distributed across nodes, threaded within node

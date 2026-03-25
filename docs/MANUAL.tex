@@ -557,4 +557,50 @@ always call \texttt{Rotate()} via \texttt{TracerPOTotal}, so d\_param is always 
 
 See \texttt{docs/bugfix\_15x\_mismatch.pdf} and \texttt{tests/reference\_test/} for full reports and plots.
 
+%======================================================================
+\section{New Features (March 2026)}
+
+\subsection{Adaptive theta grid (\texttt{--auto\_tgrid EPS})}
+
+Replaces the static zone-based theta grid with recursive bisection.
+For each interval $[\theta_i, \theta_{i+1}]$: computes $M_{11}$ at the midpoint,
+compares with linear interpolation. If relative error $> $ EPS, splits the interval.
+
+\begin{itemize}
+\item Minimum step: $\lambda/(8D)$ (quarter-Nyquist)
+\item Maximum depth: 8 levels
+\item Probe orientations: div16 physics estimate (same as adaptive start)
+\item Result: 2--3$\times$ fewer theta points than static grid
+\end{itemize}
+
+Usage: \texttt{--auto\_tgrid 0.05} (5\% tolerance). Works with \texttt{--sobol}, \texttt{--random}, \texttt{--auto}.
+
+\subsection{Multi-size (\texttt{--multigrid FILE})}
+
+File with particle parameters (one per line, same \texttt{-p} format):
+\begin{lstlisting}
+1 50 6.25
+1 100 12.5
+1 200 25
+\end{lstlisting}
+
+Traces the largest particle once, recomputes diffraction for all sizes via \texttt{ComputeFromCache} (OpenMP parallel).
+
+\subsection{Per-beta save (\texttt{--save\_betas})}
+
+With \texttt{--random}: writes per-beta Mueller contribution and cumulative Mueller to \texttt{\_betas/} subfolder.
+Useful for convergence analysis and crash recovery.
+
+\subsection{Additional bugfixes}
+\begin{itemize}
+\item \texttt{--montecarlo} missing handler config (isCoh, m\_wave, shadowOff)
+\item \texttt{DiffractControlPoints}: wrong M11 formula (missing d01, d10 terms)
+\item \texttt{--karczewski} ignored in fast diffraction path
+\item \texttt{rdtsc} inline asm incorrect on x86-64
+\item \texttt{malloc} leak in \texttt{Particle::SetFromFile}
+\item OOM in \texttt{TraceAdaptive}: sub-chunked to 4096 max
+\item \texttt{ComputeFromCache} parallelized with OpenMP
+\item \texttt{--grid} conflicts with auto theta/phi resolved
+\end{itemize}
+
 \end{document}
