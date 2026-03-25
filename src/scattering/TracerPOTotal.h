@@ -29,8 +29,9 @@ public:
 
     /// Adaptive theta grid: trace once, build theta grid by recursive bisection,
     /// then full diffraction on the found grid.
+    /// gridOnly=true: only build theta grid, don't compute full Mueller
     void TraceAdaptiveTheta(int nOrient, double betaSym, double gammaSym,
-                             double eps = 0.05, int maxDepth = 8);
+                             double eps = 0.05, int maxDepth = 8, bool gridOnly = false);
 
     /// Adaptive convergence mode
     void TraceAdaptive(double eps, double betaSym, double gammaSym, int maxOrientOverride = 0);

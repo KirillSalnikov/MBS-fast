@@ -982,13 +982,8 @@ int main(int argc, const char* argv[])
             HandlerPOTotal *handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
                                          nTheta, wave);
 
-            // Apply static auto theta grid only for --auto (not standalone --auto_tgrid)
-            // Standalone --auto_tgrid uses adaptive bisection inside TraceAdaptiveTheta
-            if (isAuto && !args.IsCatched("tgrid") && !args.IsCatched("grid"))
-            {
-                double D = particle->MaximalDimention();
-                ApplyAutoThetaGrid(conus, D, wave);
-            }
+            // Auto theta grid: use adaptive bisection for both --auto and --auto_tgrid
+            // (no static zones anymore)
 
             // Apply auto_phi if requested (or implied by --auto)
             // --grid phi has priority: don't overwrite explicit N_phi
@@ -1076,6 +1071,17 @@ int main(int argc, const char* argv[])
                                          : args.GetDoubleValue("adaptive", 0);
                 int maxOrientUser = args.IsCatched("maxorient")
                     ? args.GetIntValue("maxorient", 0) : 0;
+
+                // Adaptive theta grid probe (bisection) before adaptive orient
+                if (!args.IsCatched("tgrid") && !args.IsCatched("grid"))
+                {
+                    double tgridEps = args.IsCatched("auto_tgrid")
+                        ? args.GetDoubleValue("auto_tgrid", 0) : 0.05;
+                    if (tgridEps <= 0) tgridEps = 0.05;
+                    tracer->TraceAdaptiveTheta(256, betaSym, gammaSym, tgridEps, 8, true);
+                    // Grid now set. TraceAdaptive will compute full Mueller.
+                }
+
                 tracer->TraceAdaptive(epsAdapt, betaSym, gammaSym, maxOrientUser);
             }
             else

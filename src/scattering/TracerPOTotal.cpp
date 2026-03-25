@@ -1306,7 +1306,7 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
 }
 
 void TracerPOTotal::TraceAdaptiveTheta(int nOrient, double betaSym, double gammaSym,
-                                        double eps, int maxDepth)
+                                        double eps, int maxDepth, bool gridOnly)
 {
     HandlerPO *hp = dynamic_cast<HandlerPO*>(m_handler);
     if (!hp) { TraceFromSobol(nOrient, betaSym, gammaSym); return; }
@@ -1429,6 +1429,13 @@ void TracerPOTotal::TraceAdaptiveTheta(int nOrient, double betaSym, double gamma
     hp->M = Arr2D(nAz + 1, nZen + 1, 4, 4);
     hp->M_noshadow = Arr2D(nAz + 1, nZen + 1, 4, 4);
     hp->SetScatteringSphere(hp->m_sphere);
+
+    if (gridOnly) {
+        if (m_mpiRank == 0)
+            std::cout << "Adaptive theta grid set (" << finalThetas.size()
+                      << " points). Full computation deferred." << std::endl;
+        return;
+    }
 
     if (m_mpiRank == 0)
         std::cout << "Full diffraction on " << finalThetas.size()
