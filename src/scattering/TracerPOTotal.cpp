@@ -1382,14 +1382,14 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         if (maxOrient > maxOrientOverride) maxOrient /= 2;
         if (maxOrient < 64) maxOrient = 64;
     } else {
-        // Use physics estimate, but cap by available memory
-        int maxFromMem = std::max(1024, (int)(availMB_ad / 2 * 1024 / 350));
-        int memP2 = 1; while (memP2 * 2 <= maxFromMem) memP2 *= 2;
-        maxOrient = std::min(maxP2, memP2);
-        if (maxOrient < 64) maxOrient = 64;
+        // Physics cap: div2 of full grid (div1 is overkill, hours of compute)
+        // User can override with --maxorient for div1 if needed
+        int maxDiv2 = std::max(1024, maxP2 / 2);
+        int p2 = 1; while (p2 * 2 <= maxDiv2) p2 *= 2;
+        maxOrient = p2;
     }
     std::cout << "  Max estimate (div1): " << nb1 << " x " << ng1
-              << " = " << maxFromPhysics << " -> " << maxP2 << " (power of 2)" << std::endl;
+              << " = " << maxFromPhysics << ", div2 cap -> " << maxOrient << std::endl;
     std::cerr << "Adaptive: max orientations = " << maxOrient
               << " (" << availMB_ad << " MB available)" << std::endl;
 
@@ -1435,28 +1435,7 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         double weight = 1.0 / batchSize;  // global weight (not per-rank)
         std::vector<Beam> outBeams;
 
-        // Phase 1 (sequential): trace and preprocess this rank's portion
-        std::vector<PreparedOrientation> batchPrepared(myBatchSize);
-        for (int i = 0; i < myBatchSize; ++i)
-        {
-            int idx = batchStart + myBatchStart + i;
-            double beta  = acos(1.0 - (1.0 - cosBetaSym) * su_all[idx]);
-            double gamma = gammaSym * sv_all[idx];
-            m_particle->Rotate(beta, gamma, 0);
-            if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
-            bool ok = m_scattering->ScatterLight(0, 0, outBeams);
-
-            if (ok)
-                hp->PrepareBeams(outBeams, weight, batchPrepared[i]);
-            else
-                batchPrepared[i].sinZenith = weight;
-
-            batchEnergy += m_scattering->GetIncedentEnergy() * weight;
-            outBeams.clear();
-        }
-
-        // Phase 2: diffract ONLY at 4 control angles (not full grid!)
-        // Full grid computed once after convergence.
+        // Control angle indices (computed once)
         auto findThetaIdx = [&](double deg) -> int {
             double rad = DegToRad(deg);
             int best = 0; double bestD = 1e30;
@@ -1468,62 +1447,41 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         };
         int ctrlIdx[4] = { findThetaIdx(22.0), findThetaIdx(46.0),
                            findThetaIdx(90.0), nZen };
-
         double batchCtrl[4] = {0,0,0,0};
-        for (int i = 0; i < myBatchSize; ++i) {
-            if (batchPrepared[i].beams.empty()) continue;
-            double m11[4];
-            hp->DiffractControlPoints(batchPrepared[i], ctrlIdx, 4, m11);
-            for (int k = 0; k < 4; ++k) batchCtrl[k] += m11[k];
-        }
+
+        // Process in sub-chunks to limit memory (max 4096 per chunk)
+        int subChunkMax = std::min(4096, myBatchSize);
+        for (int sc = 0; sc < myBatchSize; sc += subChunkMax)
+        {
+            int scSize = std::min(subChunkMax, myBatchSize - sc);
+            std::vector<PreparedOrientation> chunkPrep(scSize);
+
+            for (int i = 0; i < scSize; ++i)
+            {
+                int idx = batchStart + myBatchStart + sc + i;
+                double beta  = acos(1.0 - (1.0 - cosBetaSym) * su_all[idx]);
+                double gamma = gammaSym * sv_all[idx];
+                m_particle->Rotate(beta, gamma, 0);
+                if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
+                bool ok = m_scattering->ScatterLight(0, 0, outBeams);
+                if (ok)
+                    hp->PrepareBeams(outBeams, weight, chunkPrep[i]);
+                else
+                    chunkPrep[i].sinZenith = weight;
+                batchEnergy += m_scattering->GetIncedentEnergy() * weight;
+                outBeams.clear();
+            }
+
+            // Diffract at 4 control angles only
+            for (int i = 0; i < scSize; ++i) {
+                if (chunkPrep[i].beams.empty()) continue;
+                double m11[4];
+                hp->DiffractControlPoints(chunkPrep[i], ctrlIdx, 4, m11);
+                for (int k = 0; k < 4; ++k) batchCtrl[k] += m11[k];
+            }
+        } // sub-chunks
 
         for (int k = 0; k < 4; ++k) ctrlAccum[k] += batchCtrl[k];
-
-        // Free batch memory — NOT stored (final phase re-traces)
-        batchPrepared.clear();
-        batchPrepared.shrink_to_fit();
-
-        // OLD full Phase 2 removed — replaced by fast control points above
-        // Full diffraction done once after convergence via TraceFromSobol
-        if (false) // dead code
-        #pragma omp parallel
-        {
-            Arr2D localM(nAz + 1, nZen + 1, 4, 4);
-            localM.ClearArr();
-            Arr2D localM_ns(nAz + 1, nZen + 1, 4, 4);
-            localM_ns.ClearArr();
-            std::vector<Arr2DC> localJ, localJ_ns;
-            if (hp->isCoh) {
-                Arr2DC tmp(nAz+1, nZen+1, 2, 2); tmp.ClearArr();
-                localJ.push_back(tmp);
-                Arr2DC tmp2(nAz+1, nZen+1, 2, 2); tmp2.ClearArr();
-                localJ_ns.push_back(tmp2);
-            }
-
-            #pragma omp for schedule(dynamic, 1)
-            for (int i = 0; i < myBatchSize; ++i)
-            {
-                if (!batchPrepared[i].beams.empty())
-                    hp->HandleBeamsToLocal(batchPrepared[i], localM, localJ,
-                                            hp->isCoh ? &localJ_ns : nullptr);
-                if (hp->isCoh && !localJ.empty()) {
-                    double w = batchPrepared[i].sinZenith;
-                    HandlerPO::AddToMuellerLocal(localJ, w, localM, nAz, nZen);
-                    HandlerPO::AddToMuellerLocal(localJ_ns, w, localM_ns, nAz, nZen);
-                    localJ[0].ClearArr();
-                    localJ_ns[0].ClearArr();
-                }
-            }
-
-            #pragma omp critical
-            {
-                for (int p = 0; p <= nAz; ++p)
-                    for (int t = 0; t <= nZen; ++t) {
-                        hp->M.insert(p, t, localM(p, t));
-                        hp->M_noshadow.insert(p, t, localM_ns(p, t));
-                    }
-            }
-        }
 
         m_incomingEnergy += batchEnergy;
         totalOrient = batchEnd;
