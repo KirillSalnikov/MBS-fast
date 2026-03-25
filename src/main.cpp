@@ -88,7 +88,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("tgrid", 1, true); // non-uniform theta grid file
     parser.AddRule("beam_cutoff", 1, true); // beam importance cutoff (relative to C_geo)
     parser.AddRule("sobol", 1, true); // Sobol quasi-random orientations (number, power of 2)
-    parser.AddRule("auto_tgrid", 0, true); // auto-generate theta grid based on size parameter
+    parser.AddRule("auto_tgrid", 1, true); // adaptive theta grid (arg: tolerance, e.g. 0.05)
     parser.AddRule("auto_phi", 0, true); // auto-select N_phi based on size parameter
     parser.AddRule("adaptive", 1, true); // adaptive convergence (target relative accuracy)
     parser.AddRule("autofull", 1, true); // full 3D sequential: n → N_phi → N_orient
@@ -851,6 +851,22 @@ int main(int argc, const char* argv[])
                 }
                 tracer->SetIsOutputGroups(isOutputGroups);
                 tracer->SetHandler(handler);
+
+                // Adaptive theta grid for --random
+                if (args.IsCatched("auto_tgrid") && !args.IsCatched("grid") && !args.IsCatched("tgrid"))
+                {
+                    TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer);
+                    if (tpt) {
+                        double tgridEps = args.GetDoubleValue("auto_tgrid", 0);
+                        if (tgridEps <= 0) tgridEps = 0.05;
+                        int nProbe = std::min(256, (beta.number+1) * gamma.number);
+                        double betaSym2 = particle->GetSymmetry().beta;
+                        double gammaSym2 = particle->GetSymmetry().gamma;
+                        tpt->TraceAdaptiveTheta(nProbe, betaSym2, gammaSym2, tgridEps, 8);
+                        // Grid is now set in handler->m_sphere. TraceRandom will use it.
+                    }
+                }
+
                 tracer->TraceRandom(beta, gamma);
             }
 
@@ -966,9 +982,9 @@ int main(int argc, const char* argv[])
             HandlerPOTotal *handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
                                          nTheta, wave);
 
-            // Apply auto_tgrid if requested (or implied by --auto)
-            // --tgrid and --grid have priority: don't overwrite explicit user grid
-            if ((args.IsCatched("auto_tgrid") || isAuto) && !args.IsCatched("tgrid") && !args.IsCatched("grid"))
+            // Apply static auto theta grid only for --auto (not standalone --auto_tgrid)
+            // Standalone --auto_tgrid uses adaptive bisection inside TraceAdaptiveTheta
+            if (isAuto && !args.IsCatched("tgrid") && !args.IsCatched("grid"))
             {
                 double D = particle->MaximalDimention();
                 ApplyAutoThetaGrid(conus, D, wave);
@@ -1083,7 +1099,9 @@ int main(int argc, const char* argv[])
                 }
                 else if (args.IsCatched("auto_tgrid") && !args.IsCatched("grid") && !args.IsCatched("tgrid"))
                 {
-                    tracer->TraceAdaptiveTheta(nSobol, betaSym, gammaSym, 0.05, 8);
+                    double tgridEps = args.GetDoubleValue("auto_tgrid", 0);
+                    if (tgridEps <= 0) tgridEps = 0.05;
+                    tracer->TraceAdaptiveTheta(nSobol, betaSym, gammaSym, tgridEps, 8);
                 }
                 else
                 {
