@@ -12,6 +12,95 @@
 #include <chrono>
 #include <iomanip>
 #include <cmath>
+#include <cstdio>
+
+// ---- Checkpoint save/load for resume after crash ----
+static void SaveCheckpoint(const std::string &path, const Arr2D &M, const Arr2D &M_ns,
+                            double energy, int completedOrient, int totalOrient,
+                            unsigned long paramHash, int nAz, int nZen)
+{
+    std::ofstream f(path, std::ios::binary);
+    if (!f.is_open()) return;
+    uint32_t magic = 0x4D425343; // "MBSC"
+    f.write((char*)&magic, 4);
+    f.write((char*)&paramHash, sizeof(paramHash));
+    f.write((char*)&completedOrient, sizeof(completedOrient));
+    f.write((char*)&totalOrient, sizeof(totalOrient));
+    f.write((char*)&energy, sizeof(energy));
+    f.write((char*)&nAz, 4);
+    f.write((char*)&nZen, 4);
+    // Dump M data
+    for (int p = 0; p < nAz; ++p)
+        for (int t = 0; t < nZen; ++t) {
+            matrix m = M(p, t);
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c) {
+                    double v = m[r][c];
+                    f.write((char*)&v, 8);
+                }
+        }
+    // Dump M_noshadow
+    for (int p = 0; p < nAz; ++p)
+        for (int t = 0; t < nZen; ++t) {
+            matrix m = M_ns(p, t);
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c) {
+                    double v = m[r][c];
+                    f.write((char*)&v, 8);
+                }
+        }
+    f.close();
+}
+
+static bool LoadCheckpoint(const std::string &path, Arr2D &M, Arr2D &M_ns,
+                            double &energy, int &completedOrient, int totalOrient,
+                            unsigned long paramHash)
+{
+    std::ifstream f(path, std::ios::binary);
+    if (!f.is_open()) return false;
+    uint32_t magic; f.read((char*)&magic, 4);
+    if (magic != 0x4D425343) return false;
+    unsigned long storedHash; f.read((char*)&storedHash, sizeof(storedHash));
+    if (storedHash != paramHash) {
+        std::cerr << "Checkpoint param mismatch, ignoring" << std::endl;
+        return false;
+    }
+    int storedCompleted, storedTotal;
+    f.read((char*)&storedCompleted, sizeof(storedCompleted));
+    f.read((char*)&storedTotal, sizeof(storedTotal));
+    if (storedTotal != totalOrient) return false;
+    f.read((char*)&energy, sizeof(energy));
+    int nAz, nZen; f.read((char*)&nAz, 4); f.read((char*)&nZen, 4);
+    // Load M
+    for (int p = 0; p < nAz; ++p)
+        for (int t = 0; t < nZen; ++t)
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c) {
+                    double v; f.read((char*)&v, 8);
+                    M(p, t)[r][c] = v;
+                }
+    // Load M_noshadow
+    for (int p = 0; p < nAz; ++p)
+        for (int t = 0; t < nZen; ++t)
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c) {
+                    double v; f.read((char*)&v, 8);
+                    M_ns(p, t)[r][c] = v;
+                }
+    completedOrient = storedCompleted;
+    f.close();
+    return true;
+}
+
+static unsigned long HashParams(double wave, double ri_re, int nActs, int nOrient,
+                                 double L, double D, int nAz, int nZen)
+{
+    unsigned long h = 0;
+    auto mix = [&](double v) { h ^= std::hash<double>{}(v) + 0x9e3779b9 + (h<<6) + (h>>2); };
+    auto mixi = [&](int v) { h ^= std::hash<int>{}(v) + 0x9e3779b9 + (h<<6) + (h>>2); };
+    mix(wave); mix(ri_re); mixi(nActs); mixi(nOrient); mix(L); mix(D); mixi(nAz); mixi(nZen);
+    return h;
+}
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -478,7 +567,27 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
     std::vector<Beam> outBeams;
     long long count = 0;
 
-    for (int chunk = 0; chunk < nChunks; ++chunk)
+    // Checkpoint: resume from crash
+    std::string ckptPath = m_resultDirName + "_checkpoint.bin";
+    unsigned long paramHash = HashParams(m_scattering->m_wave,
+        real(m_particle->GetRefractiveIndex()), 0,
+        nOrientations, m_particle->MaximalDimention(), 0, nAz, nZen);
+    int resumeChunk = 0;
+    {
+        int completedOrient = 0;
+        if (LoadCheckpoint(ckptPath, handlerPO->M, handlerPO->M_noshadow,
+                           m_incomingEnergy, completedOrient, nOrientations, paramHash))
+        {
+            resumeChunk = completedOrient / chunkSize;
+            count = completedOrient;
+            if (m_mpiRank == 0)
+                std::cout << "*** RESUMED from checkpoint: " << completedOrient
+                          << "/" << nOrientations << " orientations (chunk " << resumeChunk
+                          << "/" << nChunks << ")" << std::endl;
+        }
+    }
+
+    for (int chunk = resumeChunk; chunk < nChunks; ++chunk)
     {
         int iStart = chunk * chunkSize;
         int iEnd = std::min(iStart + chunkSize, nOrientations);
@@ -570,6 +679,12 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
         // Free chunk memory immediately
         chunkPrepared.clear();
         chunkPrepared.shrink_to_fit();
+
+        // Save checkpoint after each chunk
+        if (m_mpiRank == 0) {
+            SaveCheckpoint(ckptPath, handlerPO->M, handlerPO->M_noshadow,
+                           m_incomingEnergy, iEnd, nOrientations, paramHash, nAz+1, nZen+1);
+        }
     }
 
     EraseConsoleLine(60);
@@ -600,6 +715,9 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
     }
 
     OutputStatisticsPO(timer, nOrientations, m_resultDirName);
+
+    // Remove checkpoint on successful completion
+    std::remove(ckptPath.c_str());
 }
 
 void TracerPOTotal::TraceFromFileMultiSize(const std::string &orientFile,
