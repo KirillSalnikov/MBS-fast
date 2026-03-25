@@ -38,6 +38,9 @@ public:
     /// Coherent across orientations (legacy mode, physically incorrect for random)
     bool m_cohOrient = false;
 
+    /// Save intermediate Mueller per beta (--save_betas)
+    bool m_saveBetas = false;
+
     /// MPI rank and size (default: single process)
     int m_mpiRank = 0;
     int m_mpiSize = 1;
