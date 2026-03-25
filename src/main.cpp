@@ -785,8 +785,12 @@ int main(int argc, const char* argv[])
         else if (args.IsCatched("montecarlo"))
         {
             additionalSummary += ", Monte Carlo method\n\n";
-            AngleRange beta = GetRange(args, "b", particle);
-            AngleRange gamma = GetRange(args, "g", particle);
+            // montecarlo doesn't use --random, get ranges from particle symmetry
+            double betaMax = particle->GetSymmetry().beta;
+            double gammaMax = particle->GetSymmetry().gamma;
+            int nOr = args.GetIntValue("montecarlo", 0);
+            AngleRange beta(0, betaMax, nOr);
+            AngleRange gamma(0, gammaMax, nOr);
 
             HandlerPO *handler;
 
@@ -815,7 +819,6 @@ int main(int argc, const char* argv[])
             tracer->SetIsOutputGroups(isOutputGroups);
             tracer->SetHandler(handler);
 
-            int nOr = args.GetIntValue("montecarlo", 0);
             tracer->TraceMonteCarlo(beta, gamma, nOr);
         }
         else if (args.IsCatched("orientfile"))
@@ -1076,11 +1079,13 @@ int main(int argc, const char* argv[])
         else if (args.IsCatched("montecarlo"))
         {
             additionalSummary += ", Monte Carlo method, ";
-            AngleRange beta = GetRange(args, "b", particle);
-            AngleRange gamma = GetRange(args, "g", particle);
+            double betaMax = particle->GetSymmetry().beta;
+            double gammaMax = particle->GetSymmetry().gamma;
+            int nOr = args.GetIntValue("montecarlo", 0);
+            AngleRange beta(0, betaMax, nOr);
+            AngleRange gamma(0, gammaMax, nOr);
             cout << additionalSummary;
             tracer.m_summary = additionalSummary;
-            int nOr = args.GetIntValue("montecarlo", 0);
             tracer.TraceMonteCarlo(beta, gamma, nOr);
         }
 
