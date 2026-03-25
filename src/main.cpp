@@ -633,9 +633,11 @@ int main(int argc, const char* argv[])
                 ApplyAutoThetaGrid(conus, L, wave);
             }
 
-            // Set N_phi
-            conus.nAzimuth = N_phi;
-            conus.azinuthStep = 2.0 * M_PI / N_phi;
+            // Set N_phi (only if --grid didn't set it explicitly)
+            if (!args.IsCatched("grid")) {
+                conus.nAzimuth = N_phi;
+                conus.azinuthStep = 2.0 * M_PI / N_phi;
+            }
 
             TracerPOTotal *tracer = new TracerPOTotal(particle, reflNum, dirName);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); } }
@@ -911,15 +913,16 @@ int main(int argc, const char* argv[])
                                          nTheta, wave);
 
             // Apply auto_tgrid if requested (or implied by --auto)
-            // --tgrid has priority: if user provided a custom grid, don't overwrite it
-            if ((args.IsCatched("auto_tgrid") || isAuto) && !args.IsCatched("tgrid"))
+            // --tgrid and --grid have priority: don't overwrite explicit user grid
+            if ((args.IsCatched("auto_tgrid") || isAuto) && !args.IsCatched("tgrid") && !args.IsCatched("grid"))
             {
                 double D = particle->MaximalDimention();
                 ApplyAutoThetaGrid(conus, D, wave);
             }
 
             // Apply auto_phi if requested (or implied by --auto)
-            if (args.IsCatched("auto_phi") || isAuto)
+            // --grid phi has priority: don't overwrite explicit N_phi
+            if ((args.IsCatched("auto_phi") || isAuto) && !args.IsCatched("grid"))
             {
                 double D = particle->MaximalDimention();
                 double x = (wave > 0) ? M_PI * D / wave : 100;
