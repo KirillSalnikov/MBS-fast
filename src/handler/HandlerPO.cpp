@@ -1391,6 +1391,128 @@ void HandlerPO::DiffractControlPoints(const PreparedOrientation &prepared,
     }
 }
 
+// Same as DiffractControlPoints but accepts arbitrary theta values (radians),
+// not grid indices. Computes vf on the fly.
+void HandlerPO::DiffractAtThetas(const PreparedOrientation &prepared,
+                                  const double *theta_rads, int nPoints,
+                                  double *m11_out)
+{
+    for (int k = 0; k < nPoints; ++k) m11_out[k] = 0;
+    int nAz = m_sphere.nAzimuth;
+
+    for (const PreparedBeam &pb : prepared.beams)
+    {
+        const BeamEdgeData &edgeData = pb.edgeData;
+        if (!edgeData.valid) continue;
+
+        double bdx=pb.bdx,bdy=pb.bdy,bdz=pb.bdz;
+        double horAx=pb.horAx,horAy=pb.horAy,horAz=pb.horAz;
+        double verAx=pb.verAx,verAy=pb.verAy,verAz=pb.verAz;
+        double cenx=pb.cenx,ceny=pb.ceny,cenz=pb.cenz;
+        double beam_area=pb.beam_area;
+        double pNTx=pb.pNTx,pNTy=pb.pNTy,pNTz=pb.pNTz;
+        double pNPx=pb.pNPx,pNPy=pb.pNPy,pNPz=pb.pNPz;
+        double pnxDTx=pb.pnxDTx,pnxDTy=pb.pnxDTy,pnxDTz=pb.pnxDTz;
+        double pnxDPx=pb.pnxDPx,pnxDPy=pb.pnxDPy,pnxDPz=pb.pnxDPz;
+        double jp00r=pb.jp00r,jp00i=pb.jp00i,jp01r=pb.jp01r,jp01i=pb.jp01i;
+        double jp10r=pb.jp10r,jp10i=pb.jp10i,jp11r=pb.jp11r,jp11i=pb.jp11i;
+        bool isExternal=pb.isExternal;
+        int nv=edgeData.nVertices;
+
+        for (int iPhi = 0; iPhi <= nAz; ++iPhi)
+        {
+            double phi_rad = iPhi * m_sphere.azinuthStep;
+            double cp = cos(phi_rad), sp = sin(phi_rad);
+
+            ThetaCoeffs tc;
+            precompute_theta_coeffs(
+                edgeData.x, edgeData.y, nv,
+                horAx,horAy,horAz,verAx,verAy,verAz,
+                bdx,bdy,bdz,cenx,ceny,cenz,
+                cp,sp,m_waveIndex,
+                pNTx,pNTy,pNTz,pNPx,pNPy,pNPz,
+                pnxDTx,pnxDTy,pnxDTz,pnxDPx,pnxDPy,pnxDPz,
+                tc);
+
+            for (int k = 0; k < nPoints; ++k)
+            {
+                double sin_t, cos_t;
+                fast_sincos(theta_rads[k], sin_t, cos_t);
+                double dx=sin_t*cp, dy=sin_t*sp, dz=-cos_t;
+
+                // vf: compute on the fly (same logic as ComputeSphereDirections)
+                double vfx, vfy, vfz;
+                if (dz >= 1.0-1e-15) { vfx=0; vfy=-1; vfz=0; }       // theta=pi (backward)
+                else if (dz <= -1.0+1e-15) { vfx=0; vfy=1; vfz=0; }  // theta=0 (forward)
+                else { vfx=-sp; vfy=cp; vfz=0; }                       // general
+
+                double A=sin_t*tc.a_sin+cos_t*tc.a_cos+tc.a0;
+                double B=sin_t*tc.b_sin+cos_t*tc.b_cos+tc.b0;
+                double absA=fabs(A),absB=fabs(B);
+
+                complex fresnel;
+                if (absA<m_eps2&&absB<m_eps2){
+                    fresnel=(m_legacySign?m_invComplWave:-m_invComplWave)*beam_area;
+                } else {
+                    double phases[32],vc[32],vs[32];
+                    for(int v=0;v<nv;++v) phases[v]=sin_t*tc.psin[v]+cos_t*tc.pcos[v]+tc.p0[v];
+                    for(int v=0;v<nv;++v) fast_sincos(phases[v],vs[v],vc[v]);
+                    double sr=0,si=0;
+                    if(absB>absA){
+                        for(int e=0;e<nv;++e){
+                            if(!edgeData.edge_valid_x[e])continue;
+                            int en=(e+1<nv)?e+1:0;
+                            double Ci=A+edgeData.slope_yx[e]*B;
+                            double inv=(fabs(Ci)>m_eps1)?1.0/Ci:0.0;
+                            sr+=(vc[en]-vc[e])*inv; si+=(vs[en]-vs[e])*inv;
+                        }
+                        sr/=B; si/=B;
+                    } else {
+                        for(int e=0;e<nv;++e){
+                            if(!edgeData.edge_valid_y[e])continue;
+                            int en=(e+1<nv)?e+1:0;
+                            double Ei=A*edgeData.slope_xy[e]+B;
+                            double inv=(fabs(Ei)>m_eps1)?1.0/Ei:0.0;
+                            sr+=(vc[en]-vc[e])*inv; si+=(vs[en]-vs[e])*inv;
+                        }
+                        double inv_nA=-1.0/A; sr*=inv_nA; si*=inv_nA;
+                    }
+                    fresnel=m_complWave*complex(sr,si);
+                }
+                if(isnan(real(fresnel)))continue;
+
+                double dpr=1.0,dpi=0.0;
+                if(!isExternal){
+                    double dpArg=-m_waveIndex*(sin_t*tc.dp_sin+cos_t*tc.dp_cos);
+                    fast_sincos(dpArg,dpi,dpr);
+                }
+
+                double r00,r01,r10,r11;
+                rotate_jones_inline(pNTx,pNTy,pNTz,pNPx,pNPy,pNPz,
+                    pnxDTx,pnxDTy,pnxDTz,pnxDPx,pnxDPy,pnxDPz,
+                    vfx,vfy,vfz,dx,dy,dz,r00,r01,r10,r11);
+
+                double fr=real(fresnel),fi=imag(fresnel);
+                double cpr2=fr*dpr-fi*dpi, cpi2=fr*dpi+fi*dpr;
+                double sr00r=cpr2*r00,sr00i=cpi2*r00,sr01r=cpr2*r01,sr01i=cpi2*r01;
+                double sr10r=cpr2*r10,sr10i=cpi2*r10,sr11r=cpr2*r11,sr11i=cpi2*r11;
+                double d00r=sr00r*jp00r-sr00i*jp00i+sr01r*jp10r-sr01i*jp10i;
+                double d00i=sr00r*jp00i+sr00i*jp00r+sr01r*jp10i+sr01i*jp10r;
+                double d01r=sr00r*jp01r-sr00i*jp01i+sr01r*jp11r-sr01i*jp11i;
+                double d01i=sr00r*jp01i+sr00i*jp01r+sr01r*jp11i+sr01i*jp11r;
+                double d10r=sr10r*jp00r-sr10i*jp00i+sr11r*jp10r-sr11i*jp10i;
+                double d10i=sr10r*jp00i+sr10i*jp00r+sr11r*jp10i+sr11i*jp10r;
+                double d11r=sr10r*jp01r-sr10i*jp01i+sr11r*jp11r-sr11i*jp11i;
+                double d11i=sr10r*jp01i+sr10i*jp01r+sr11r*jp11i+sr11i*jp11r;
+
+                m11_out[k] += 0.5*(d00r*d00r+d00i*d00i + d01r*d01r+d01i*d01i
+                                 + d10r*d10r+d10i*d10i + d11r*d11r+d11i*d11i)
+                              * prepared.sinZenith / (nAz + 1);
+            }
+        }
+    }
+}
+
 void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                                     Arr2D &localM,
                                     std::vector<Arr2DC> &localJ,

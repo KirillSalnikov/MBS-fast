@@ -85,6 +85,12 @@ public:
                                 const int *thetaIndices, int nPoints,
                                 double *m11_out);
 
+    /// Diffract at arbitrary theta values (radians), phi-averaged.
+    /// Like DiffractControlPoints but not tied to existing theta grid.
+    void DiffractAtThetas(const PreparedOrientation &prepared,
+                           const double *theta_rads, int nPoints,
+                           double *m11_out);
+
     /// Convert coherent Jones (localJ) to Mueller and add to localM.
     static void AddToMuellerLocal(const std::vector<Arr2DC> &localJ,
                                   double normIndex, Arr2D &localM,

@@ -111,6 +111,8 @@ public:
         double sinZen;
         double cosZen;
 
+        directions.clear();
+        vf.clear();
         for (int i = 0; i <= nAzimuth; ++i)
         {
             double az = i * azinuthStep;

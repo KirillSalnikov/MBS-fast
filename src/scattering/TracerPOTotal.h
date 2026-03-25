@@ -27,6 +27,11 @@ public:
     /// Sobol quasi-random orientation averaging with particle symmetry
     void TraceFromSobol(int nOrient, double betaSym, double gammaSym);
 
+    /// Adaptive theta grid: trace once, build theta grid by recursive bisection,
+    /// then full diffraction on the found grid.
+    void TraceAdaptiveTheta(int nOrient, double betaSym, double gammaSym,
+                             double eps = 0.05, int maxDepth = 8);
+
     /// Adaptive convergence mode
     void TraceAdaptive(double eps, double betaSym, double gammaSym, int maxOrientOverride = 0);
 

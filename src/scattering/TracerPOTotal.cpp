@@ -13,6 +13,7 @@
 #include <iomanip>
 #include <cmath>
 #include <cstdio>
+#include <map>
 #include <sys/stat.h>
 
 // ---- Checkpoint save/load for resume after crash ----
@@ -1302,6 +1303,140 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
 
         OutputStatisticsPO(timer, nOrient, m_resultDirName);
     }
+}
+
+void TracerPOTotal::TraceAdaptiveTheta(int nOrient, double betaSym, double gammaSym,
+                                        double eps, int maxDepth)
+{
+    HandlerPO *hp = dynamic_cast<HandlerPO*>(m_handler);
+    if (!hp) { TraceFromSobol(nOrient, betaSym, gammaSym); return; }
+
+    // Step 1: Trace and cache beams
+    Sobol2D sobol(42);
+    std::vector<double> su, sv;
+    sobol.generate(nOrient, su, sv);
+    double cosBetaSym = cos(betaSym);
+
+    double weight = 1.0 / nOrient;
+    std::vector<Beam> outBeams;
+
+    // Cache all PreparedOrientations (for DiffractAtThetas)
+    std::vector<PreparedOrientation> allPrepared(nOrient);
+    CalcTimer timer; timer.Start();
+    if (m_mpiRank == 0) {
+        std::cout << "AdaptiveTheta: tracing " << nOrient << " orientations..." << std::endl;
+        OutputStartTime(timer);
+    }
+
+    for (int i = 0; i < nOrient; ++i) {
+        double beta = acos(1.0 - (1.0 - cosBetaSym) * su[i]);
+        double gamma = gammaSym * sv[i];
+        m_particle->Rotate(beta, gamma, 0);
+        if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
+        bool ok = m_scattering->ScatterLight(0, 0, outBeams);
+        if (ok) hp->PrepareBeams(outBeams, weight, allPrepared[i]);
+        else    allPrepared[i].sinZenith = weight;
+        m_incomingEnergy += m_scattering->GetIncedentEnergy() * weight;
+        outBeams.clear();
+    }
+
+    auto t_trace_end = std::chrono::high_resolution_clock::now();
+    if (m_mpiRank == 0) std::cout << "Tracing done." << std::endl;
+
+    // Step 2: Compute M11 at arbitrary theta (summed over all orientations, phi-averaged)
+    auto computeM11 = [&](double theta_rad) -> double {
+        double m11_total = 0;
+        double theta_arr[1] = {theta_rad};
+        for (int i = 0; i < nOrient; ++i) {
+            if (allPrepared[i].beams.empty()) continue;
+            double m11_one[1] = {0};
+            hp->DiffractAtThetas(allPrepared[i], theta_arr, 1, m11_one);
+            m11_total += m11_one[0];
+        }
+        return m11_total;
+    };
+
+    // Step 3: Adaptive bisection
+    // Start with coarse grid
+    double minTheta = 0.0, maxTheta = M_PI;
+    double minStep = m_scattering->m_wave / (2.0 * m_particle->MaximalDimention()); // Nyquist
+
+    // Initial points (30 uniform)
+    int nInitial = 30;
+    std::map<double, double> thetaM11; // theta_rad -> M11
+    for (int i = 0; i <= nInitial; ++i) {
+        double t = minTheta + i * (maxTheta - minTheta) / nInitial;
+        thetaM11[t] = computeM11(t);
+    }
+    if (m_mpiRank == 0)
+        std::cout << "Initial grid: " << thetaM11.size() << " points" << std::endl;
+
+    // Recursive bisection
+    int totalAdded = 0;
+    for (int depth = 0; depth < maxDepth; ++depth) {
+        std::vector<double> toAdd;
+        auto it = thetaM11.begin();
+        auto prev = it; ++it;
+        while (it != thetaM11.end()) {
+            double t1 = prev->first, t2 = it->first;
+            double m1 = prev->second, m2 = it->second;
+            double dt = t2 - t1;
+            if (dt < minStep) { prev = it; ++it; continue; }
+
+            double tmid = (t1 + t2) * 0.5;
+            double m_interp = (m1 + m2) * 0.5;
+            double m_actual = computeM11(tmid);
+            double denom = std::max(fabs(m_actual), fabs(m_interp));
+            double relErr = (denom > 1e-30) ? fabs(m_actual - m_interp) / denom : 0;
+
+            if (relErr > eps) {
+                toAdd.push_back(tmid);
+                thetaM11[tmid] = m_actual;
+            }
+            prev = it; ++it;
+        }
+        totalAdded += toAdd.size();
+        if (m_mpiRank == 0)
+            std::cout << "  Depth " << depth << ": +" << toAdd.size()
+                      << " points (total " << thetaM11.size() << ")" << std::endl;
+        if (toAdd.empty()) break;
+    }
+
+    if (m_mpiRank == 0)
+        std::cout << "Final adaptive grid: " << thetaM11.size() << " theta points" << std::endl;
+
+    // Step 4: Set the adaptive theta grid and re-run full TraceFromSobol
+    // Free cached beams (we'll re-trace with new grid)
+    allPrepared.clear();
+    allPrepared.shrink_to_fit();
+
+    std::vector<double> finalThetas;
+    for (auto &kv : thetaM11)
+        finalThetas.push_back(kv.first);
+
+    // Set the new grid
+    hp->m_sphere.thetaValues = finalThetas;
+    hp->m_sphere.isNonUniform = true;
+    hp->m_sphere.nZenith = finalThetas.size() - 1;
+    hp->m_sphere.zenithStart = finalThetas.front();
+    hp->m_sphere.zenithEnd = finalThetas.back();
+    hp->m_sphere.zenithStep = (hp->m_sphere.zenithEnd - hp->m_sphere.zenithStart) / hp->m_sphere.nZenith;
+    hp->m_sphere.ComputeSphereDirections(m_incidentLight);
+
+    // Reallocate Mueller arrays
+    int nAz = hp->m_sphere.nAzimuth;
+    int nZen = hp->m_sphere.nZenith;
+    hp->M = Arr2D(nAz + 1, nZen + 1, 4, 4);
+    hp->M_noshadow = Arr2D(nAz + 1, nZen + 1, 4, 4);
+    hp->SetScatteringSphere(hp->m_sphere);
+
+    if (m_mpiRank == 0)
+        std::cout << "Full diffraction on " << finalThetas.size()
+                  << " theta × " << (nAz+1) << " phi (re-tracing)..." << std::endl;
+
+    // Re-run full computation with new grid
+    m_incomingEnergy = 0;
+    TraceFromSobol(nOrient, betaSym, gammaSym);
 }
 
 void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, int maxOrientOverride)

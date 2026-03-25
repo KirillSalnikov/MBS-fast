@@ -1081,6 +1081,10 @@ int main(int argc, const char* argv[])
 
                     tracer->TraceSobolMultiSize(nSobol, betaSym, gammaSym, x_sizes, x_ref);
                 }
+                else if (args.IsCatched("auto_tgrid") && !args.IsCatched("grid") && !args.IsCatched("tgrid"))
+                {
+                    tracer->TraceAdaptiveTheta(nSobol, betaSym, gammaSym, 0.05, 8);
+                }
                 else
                 {
                     tracer->TraceFromSobol(nSobol, betaSym, gammaSym);
