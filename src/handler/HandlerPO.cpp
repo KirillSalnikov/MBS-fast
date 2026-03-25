@@ -1848,9 +1848,24 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
         fast_sincos(phi_rad, sin_phi_cache[i], cos_phi_cache[i]);
     }
 
-    // Process all orientations and beams
-    for (const auto &orient : cache.orientations)
+    // Process all orientations and beams (OpenMP parallel over orientations)
+    int nOrient = cache.orientations.size();
+
+    // Thread-local Mueller arrays for parallel accumulation
+    #pragma omp parallel
     {
+        std::vector<Arr2D> localResults_M(nSizes);
+        for (int s = 0; s < nSizes; ++s)
+        {
+            localResults_M[s] = Arr2D(nAz + 1, nZen + 1, 4, 4);
+            localResults_M[s].ClearArr();
+        }
+        std::vector<double> localResults_energy(nSizes, 0.0);
+
+        #pragma omp for schedule(dynamic, 4)
+        for (int iOr = 0; iOr < nOrient; ++iOr)
+        {
+        const auto &orient = cache.orientations[iOr];
         double weight = orient.weight;
 
         for (const auto &cb : orient.beams)
@@ -1876,7 +1891,7 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
                 double jp00r, jp00i, jp01r, jp01i;
                 double jp10r, jp10i, jp11r, jp11i;
             };
-            JPhased jp_vec[32]; // max 32 sizes on stack
+            std::vector<JPhased> jp_vec(nSizes);
 
             // Hoist J component extraction out of size loop
             double j11r = real(cb.J.m11), j11i = imag(cb.J.m11);
@@ -2170,28 +2185,42 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
                         double c6r = d01r*d10r+d01i*d10i, c6i = d01i*d10r-d01r*d10i;
 
                         double w2 = weight * 0.5;
-                        // Accumulate into results_M[s](i,j) += Mueller * weight
-                        results_M[s](i, j, 0, 0) += (A1p+A2p)*w2;
-                        results_M[s](i, j, 0, 1) += (A1p-A2p)*w2;
-                        results_M[s](i, j, 0, 2) += (-c1r-c2r)*weight;
-                        results_M[s](i, j, 0, 3) += (c2i-c1i)*weight;
-                        results_M[s](i, j, 1, 0) += (A1m+A2m)*w2;
-                        results_M[s](i, j, 1, 1) += (A1m-A2m)*w2;
-                        results_M[s](i, j, 1, 2) += (c2r-c1r)*weight;
-                        results_M[s](i, j, 1, 3) += (-c1i-c2i)*weight;
-                        results_M[s](i, j, 2, 0) += (-c3r-c4r)*weight;
-                        results_M[s](i, j, 2, 1) += (c4r-c3r)*weight;
-                        results_M[s](i, j, 2, 2) += (c5r+c6r)*weight;
-                        results_M[s](i, j, 2, 3) += (c5i-c6i)*weight;
-                        results_M[s](i, j, 3, 0) += (c3i-c4i)*weight;
-                        results_M[s](i, j, 3, 1) += (c4i+c3i)*weight;
-                        results_M[s](i, j, 3, 2) += (-c5i-c6i)*weight;
-                        results_M[s](i, j, 3, 3) += (c5r-c6r)*weight;
+                        // Accumulate into thread-local Mueller
+                        localResults_M[s](i, j, 0, 0) += (A1p+A2p)*w2;
+                        localResults_M[s](i, j, 0, 1) += (A1p-A2p)*w2;
+                        localResults_M[s](i, j, 0, 2) += (-c1r-c2r)*weight;
+                        localResults_M[s](i, j, 0, 3) += (c2i-c1i)*weight;
+                        localResults_M[s](i, j, 1, 0) += (A1m+A2m)*w2;
+                        localResults_M[s](i, j, 1, 1) += (A1m-A2m)*w2;
+                        localResults_M[s](i, j, 1, 2) += (c2r-c1r)*weight;
+                        localResults_M[s](i, j, 1, 3) += (-c1i-c2i)*weight;
+                        localResults_M[s](i, j, 2, 0) += (-c3r-c4r)*weight;
+                        localResults_M[s](i, j, 2, 1) += (c4r-c3r)*weight;
+                        localResults_M[s](i, j, 2, 2) += (c5r+c6r)*weight;
+                        localResults_M[s](i, j, 2, 3) += (c5i-c6i)*weight;
+                        localResults_M[s](i, j, 3, 0) += (c3i-c4i)*weight;
+                        localResults_M[s](i, j, 3, 1) += (c4i+c3i)*weight;
+                        localResults_M[s](i, j, 3, 2) += (-c5i-c6i)*weight;
+                        localResults_M[s](i, j, 3, 3) += (c5r-c6r)*weight;
                     } // end size loop
                 } // end zenith
             } // end azimuth
         } // end beam
-    } // end orientation
+    } // end orientation (omp for)
+
+        // Merge thread-local results into global
+        #pragma omp critical
+        {
+            for (int s = 0; s < nSizes; ++s)
+            {
+                for (int ii = 0; ii <= nAz; ++ii)
+                    for (int jj = 0; jj <= nZen; ++jj)
+                        for (int r = 0; r < 4; ++r)
+                            for (int c = 0; c < 4; ++c)
+                                results_M[s](ii, jj, r, c) += localResults_M[s](ii, jj, r, c);
+            }
+        }
+    } // end omp parallel
 
     // Compute energy: scale incoming energy by (D/D_ref)^2
     for (int s = 0; s < nSizes; ++s)
