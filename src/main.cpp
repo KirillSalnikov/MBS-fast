@@ -83,7 +83,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("forced_convex", zero, true);
     parser.AddRule("r", 1, true); // restriction ratio for small beams when intersection (100 by default)
     parser.AddRule("log", 1, true); // time of writing progress (in seconds)
-    parser.AddRule("multigrid", 1, true); // multi-size: file with -p params (same type, diff size), one per line
+    parser.AddRule("multigrid", 3, true); // multi-size: Dmin Dmax Nsizes (log scale)
     parser.AddRule("save_betas", 0, true); // save intermediate Mueller for each beta to betas/ subfolder
     parser.AddRule("tgrid", 1, true); // non-uniform theta grid file
     parser.AddRule("beam_cutoff", 1, true); // beam importance cutoff (relative to C_geo)
@@ -158,76 +158,7 @@ ScatteringRange SetConus(ArgPP &parser)
     return range;
 }
 
-/// Parse --multigrid file: each line = "type L D [extra]" (same format as -p args).
-/// Returns x_sizes (size parameters) and stores the reference particle index (largest).
-/// All particles must have the same type.
-std::vector<double> ParseMultigridFile(const std::string &filename, double wave,
-                                        const complex &refrIndex, int &refIndex)
-{
-    std::ifstream f(filename);
-    if (!f.is_open()) {
-        std::cerr << "Error: cannot open multigrid file: " << filename << std::endl;
-        throw std::exception();
-    }
-
-    struct PEntry { int type; double height, diameter, extra; int nArgs; };
-    std::vector<PEntry> entries;
-
-    std::string line;
-    while (std::getline(f, line)) {
-        if (line.empty() || line[0] == '#') continue;
-        std::istringstream iss(line);
-        PEntry e; e.extra = 0; e.nArgs = 0;
-        if (!(iss >> e.type >> e.height >> e.diameter)) continue;
-        e.nArgs = 3;
-        if (iss >> e.extra) e.nArgs = 4;
-        entries.push_back(e);
-    }
-    f.close();
-
-    if (entries.empty()) {
-        std::cerr << "Error: no entries in multigrid file" << std::endl;
-        throw std::exception();
-    }
-
-    // All must be same type
-    for (size_t i = 1; i < entries.size(); ++i) {
-        if (entries[i].type != entries[0].type) {
-            std::cerr << "Error: multigrid requires same particle type on all lines" << std::endl;
-            throw std::exception();
-        }
-    }
-
-    // Compute x = pi * Dmax / lambda for each entry using a temporary particle
-    std::vector<double> x_sizes;
-    double maxDmax = 0;
-    refIndex = 0;
-    for (size_t i = 0; i < entries.size(); ++i) {
-        auto &e = entries[i];
-        Particle *tmp = nullptr;
-        switch ((ParticleType)e.type) {
-        case ParticleType::Hexagonal:
-            tmp = new Hexagonal(refrIndex, e.diameter, e.height); break;
-        case ParticleType::ConcaveHexagonal: {
-            double sup = (e.nArgs >= 4) ? e.extra : 0;
-            tmp = new ConcaveHexagonal(refrIndex, e.diameter, e.height, sup); break;
-        }
-        case ParticleType::Bullet: {
-            double sup = e.diameter * sqrt(3) * tan(DegToRad(62)) / 4;
-            tmp = new Bullet(refrIndex, e.diameter, e.height, sup); break;
-        }
-        default:
-            tmp = new Hexagonal(refrIndex, e.diameter, e.height); break;
-        }
-        double Dmax = tmp->MaximalDimention();
-        double x = M_PI * Dmax / wave;
-        x_sizes.push_back(x);
-        if (Dmax > maxDmax) { maxDmax = Dmax; refIndex = i; }
-        delete tmp;
-    }
-
-    return x_sizes;
-}
+// (ParseMultigridFile removed — multigrid now takes Dmin Dmax N directly)
 
 /// Generate auto theta grid based on size parameter x = pi * D / lambda
 void ApplyAutoThetaGrid(ScatteringRange &range, double D, double wave)
@@ -1102,16 +1033,32 @@ int main(int argc, const char* argv[])
 
                 if (args.IsCatched("multigrid"))
                 {
-                    int refIdx;
-                    std::vector<double> x_sizes = ParseMultigridFile(
-                        args.GetStringValue("multigrid", 0), wave, refrIndex, refIdx);
-                    double x_ref = x_sizes[refIdx];
-                    // Current particle is already the reference (largest from -p)
-                    double D_current = particle->MaximalDimention();
-                    double x_current = M_PI * D_current / wave;
+                    double Dmin = args.GetDoubleValue("multigrid", 0);
+                    double Dmax_mg = args.GetDoubleValue("multigrid", 1);
+                    int nSizes = args.GetIntValue("multigrid", 2);
+                    if (nSizes < 2) nSizes = 2;
 
-                    cout << "Multigrid: " << x_sizes.size() << " sizes, x_ref=" << x_ref
-                         << " (current x=" << x_current << ")" << endl;
+                    // Generate x_sizes in log scale
+                    double D_current = particle->MaximalDimention();
+                    double x_ref = M_PI * D_current / wave;
+
+                    std::vector<double> x_sizes;
+                    double logMin = log(Dmin), logMax = log(Dmax_mg);
+                    for (int i = 0; i < nSizes; ++i) {
+                        double D = exp(logMin + (logMax - logMin) * i / (nSizes - 1));
+                        double x = M_PI * D / wave;
+                        x_sizes.push_back(x);
+                    }
+
+                    cout << "Multigrid: " << nSizes << " sizes, D=" << Dmin
+                         << ".." << Dmax_mg << " (log), x_ref=" << x_ref << endl;
+                    cout << "  x range: " << x_sizes.front() << " .. " << x_sizes.back() << endl;
+
+                    // Particle from -p is the reference (should be >= Dmax)
+                    if (D_current < Dmax_mg * 0.99)
+                        std::cerr << "WARNING: -p particle Dmax=" << D_current
+                                  << " < multigrid Dmax=" << Dmax_mg
+                                  << ". Use -p with largest size for best accuracy." << endl;
 
                     tracer->TraceSobolMultiSize(nSobol, betaSym, gammaSym, x_sizes, x_ref);
                 }
