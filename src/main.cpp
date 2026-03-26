@@ -90,6 +90,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("sobol", 1, true); // Sobol quasi-random orientations (number, power of 2)
     parser.AddRule("auto_tgrid", 1, true); // adaptive theta grid (arg: tolerance, e.g. 0.05)
     parser.AddRule("auto_phi", 0, true); // auto-select N_phi based on size parameter
+    parser.AddRule("nphi", 1, true); // override N_phi (takes priority over --grid and --auto_phi)
     parser.AddRule("adaptive", 1, true); // adaptive convergence (target relative accuracy)
     parser.AddRule("autofull", 1, true); // full 3D sequential: n → N_phi → N_orient
     parser.AddRule("auto", 1, true); // full auto: auto_tgrid + auto_phi + adaptive (one arg: eps)
@@ -98,6 +99,20 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("coh_orient", 0, true); // coherent across orientations (legacy mode)
     parser.AddRule("legacy_sign", 0, true); // use old (+) Fresnel sign for forward direction
     parser.AddRule("sym", 2, true); // symmetry override: beta_factor gamma_factor (e.g. --sym 2 6)
+}
+
+/// Apply --nphi override if present (highest priority for N_phi)
+void ApplyNphiOverride(ArgPP &parser, ScatteringRange &range)
+{
+    if (parser.IsCatched("nphi"))
+    {
+        int nphi = parser.GetIntValue("nphi", 0);
+        if (nphi > 0)
+        {
+            range.nAzimuth = nphi;
+            range.azinuthStep = 2.0 * M_PI / nphi;
+        }
+    }
 }
 
 ScatteringRange SetConus(ArgPP &parser)
@@ -556,6 +571,7 @@ int main(int argc, const char* argv[])
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             handler->outputJones = args.IsCatched("jones");
+            ApplyNphiOverride(args, bsCone);
             handler->SetScatteringSphere(bsCone);
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
@@ -656,6 +672,7 @@ int main(int argc, const char* argv[])
             handler->isCoh = !args.IsCatched("incoh");
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
+            ApplyNphiOverride(args, conus);
             handler->SetScatteringSphere(conus);
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
@@ -769,7 +786,8 @@ int main(int argc, const char* argv[])
                 handler->isCoh = !args.IsCatched("incoh");
             handler->m_legacySign = args.IsCatched("legacy_sign");
                 handler->useKarczewski = args.IsCatched("karczewski");
-                handler->SetScatteringSphere(conus);
+                ApplyNphiOverride(args, conus);
+            handler->SetScatteringSphere(conus);
                 handler->SetTracks(&trackGroups);
                 handler->SetAbsorptionAccounting(isAbs);
 
@@ -837,6 +855,7 @@ int main(int argc, const char* argv[])
 
             handler->isCoh = !args.IsCatched("incoh");
             handler->m_legacySign = args.IsCatched("legacy_sign");
+            ApplyNphiOverride(args, conus);
             handler->SetScatteringSphere(conus);
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
@@ -873,6 +892,7 @@ int main(int argc, const char* argv[])
             handler->isCoh = !args.IsCatched("incoh");
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
+            ApplyNphiOverride(args, conus);
             handler->SetScatteringSphere(conus);
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
@@ -944,6 +964,7 @@ int main(int argc, const char* argv[])
             handler->isCoh = !args.IsCatched("incoh");
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
+            ApplyNphiOverride(args, conus);
             handler->SetScatteringSphere(conus);
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
@@ -1124,6 +1145,7 @@ int main(int argc, const char* argv[])
         ScatteringRange grid = SetConus(args);
         handler->isCoh = !args.IsCatched("incoh");
             handler->m_legacySign = args.IsCatched("legacy_sign");
+        ApplyNphiOverride(args, grid);
         handler->SetScatteringSphere(grid);
         handler->SetAbsorptionAccounting(isAbs);
         tracer.SetHandler(handler);
