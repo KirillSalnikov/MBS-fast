@@ -9,6 +9,10 @@ public:
     ScatteringNonConvex(Particle *particle, Light *incidentLight,
                         bool isOpticalPath, int nActs);
 
+    Scattering* CloneFor(Particle *p, Light *l) override {
+        return new ScatteringNonConvex(p, l, true, m_nActs);
+    }
+
     bool ScatterLight(double beta, double gamma, std::vector<Beam> &scaterredBeams) override;
     bool ScatterLight(double beta, double gamma, const std::vector<std::vector<int>> &tracks,
                              std::vector<Beam> &scaterredBeams) override;

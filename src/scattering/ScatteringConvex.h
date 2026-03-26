@@ -6,7 +6,11 @@ class ScatteringConvex : public Scattering
 {
 public:
     ScatteringConvex(Particle *particle, Light *incidentLight,
-                     bool isOpticalPath, int nActs);
+                     bool isOptionalPath, int nActs);
+
+    Scattering* CloneFor(Particle *p, Light *l) override {
+        return new ScatteringConvex(p, l, true, m_nActs);
+    }
 
     bool ScatterLight(double beta, double gamma, std::vector<Beam> &outBeams) override;
     bool ScatterLight(double, double, const std::vector<std::vector<int>> &,

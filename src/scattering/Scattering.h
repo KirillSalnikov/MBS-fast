@@ -54,6 +54,12 @@ protected:
 public:
     Scattering(Particle *particle, Light *incidentLight, bool isOpticalPath,
                int nActs);
+
+    /// Create a clone that uses a different particle copy.
+    /// Caller owns the returned pointer.
+    virtual Scattering* CloneFor(Particle *newParticle, Light *light) {
+        return new Scattering(newParticle, light, true, m_nActs);
+    }
     void SetMaxReflections(int n) { m_nActs = n; }
 
     virtual bool ScatterLight(double /*beta*/, double /*gamma*/, std::vector<Beam> &/*scaterredBeams*/)

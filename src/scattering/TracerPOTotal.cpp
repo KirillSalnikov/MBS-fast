@@ -1214,22 +1214,41 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
         int iEnd = std::min(iStart + chunkSize, myEnd);
         int thisChunk = iEnd - iStart;
 
-        // Phase 1: trace this chunk
+        // Phase 1: trace this chunk (PARALLEL — each thread has own Particle+Scattering copy)
         auto tp1 = std::chrono::high_resolution_clock::now();
         std::vector<PreparedOrientation> chunkPrepared(thisChunk);
+        std::vector<double> chunkEnergies(thisChunk, 0);
 
-        for (int i = 0; i < thisChunk; ++i)
+        #pragma omp parallel
         {
-            int idx = iStart + i;
-            m_particle->Rotate(orientations[idx].first, orientations[idx].second, 0);
-            if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
-            bool ok = m_scattering->ScatterLight(0, 0, outBeams);
-            if (ok) handlerPO->PrepareBeams(outBeams, weight, chunkPrepared[i]);
-            else    chunkPrepared[i].sinZenith = weight;
-            m_incomingEnergy += m_scattering->GetIncedentEnergy() * weight;
-            if (m_mpiRank == 0) OutputProgress(nOrient, count, iStart + i, 0, timer, outBeams.size());
-            outBeams.clear();
-            ++count;
+            // Thread-local copies of Particle and Scattering
+            Particle localParticle = *m_particle; // default copy (fixed arrays)
+            Scattering *localScatter = m_scattering->CloneFor(&localParticle, &m_incidentLight);
+            localScatter->m_wave = m_scattering->m_wave;
+            localScatter->restriction = m_scattering->restriction;
+
+            std::vector<Beam> localBeams;
+
+            #pragma omp for schedule(dynamic, 4)
+            for (int i = 0; i < thisChunk; ++i)
+            {
+                int idx = iStart + i;
+                localParticle.Rotate(orientations[idx].first, orientations[idx].second, 0);
+                if (!shadowOff) localScatter->FormShadowBeam(localBeams);
+                bool ok = localScatter->ScatterLight(0, 0, localBeams);
+                if (ok) handlerPO->PrepareBeams(localBeams, weight, chunkPrepared[i]);
+                else    chunkPrepared[i].sinZenith = weight;
+                chunkEnergies[i] = localScatter->GetIncedentEnergy() * weight;
+                localBeams.clear();
+            }
+
+            delete localScatter;
+        }
+
+        // Accumulate energies (sequential, fast)
+        for (int i = 0; i < thisChunk; ++i) {
+            m_incomingEnergy += chunkEnergies[i];
+            count++;
         }
         phase1_total += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - tp1).count();
 
