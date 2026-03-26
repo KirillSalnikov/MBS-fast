@@ -964,18 +964,9 @@ void TracerPOTotal::TraceFromFileMultiSize(const std::string &orientFile,
 void TracerPOTotal::TraceSobolMultiSize(int nOrient, double betaSym, double gammaSym,
                                          const std::vector<double> &x_sizes, double x_ref)
 {
-    // Generate Sobol orientations (same as TraceFromSobol)
-    Sobol2D sobol(42);
-    std::vector<double> su, sv;
-    sobol.generate(nOrient, su, sv);
-
-    double cosBetaSym = cos(betaSym);
-    std::vector<std::pair<double,double>> orientations(nOrient);
-    for (int i = 0; i < nOrient; ++i) {
-        double beta  = acos(1.0 - (1.0 - cosBetaSym) * su[i]);
-        double gamma = gammaSym * sv[i];
-        orientations[i] = {beta, gamma};
-    }
+    // Simple approach: for each size, resize particle and run TraceFromSobol.
+    // Uses the fully optimized HandleBeamsToLocal path (batched sincos, OpenMP).
+    // Tracing is fast (<1s), dominated by diffraction which is already optimal.
 
     HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
     if (!handlerPO) {
@@ -984,7 +975,8 @@ void TracerPOTotal::TraceSobolMultiSize(int nOrient, double betaSym, double gamm
     }
 
     double D_ref = m_particle->MaximalDimention();
-    double weight = 1.0 / nOrient;
+    int nAz = handlerPO->m_sphere.nAzimuth;
+    int nZen = handlerPO->m_sphere.nZenith;
 
     std::string dir = CreateFolder(m_resultDirName);
 #ifdef _WIN32
@@ -992,123 +984,48 @@ void TracerPOTotal::TraceSobolMultiSize(int nOrient, double betaSym, double gamm
 #else
     m_resultDirName = dir + m_resultDirName;
 #endif
-
-    if (m_mpiRank == 0)
-        std::cout << "SobolMultiSize: " << nOrient << " orientations, "
-                  << x_sizes.size() << " sizes, x_ref=" << x_ref << std::endl;
-
-    CalcTimer timer;
-    timer.Start();
-    OutputStartTime(timer);
-
-    // Phase 1: Trace and cache beams
-    BeamCache cache;
-    cache.D_ref = D_ref;
-    cache.orientations.resize(nOrient);
-
-    auto t_cache_start = std::chrono::high_resolution_clock::now();
-
-    std::vector<Beam> outBeams;
-    long long count = 0;
-    for (int i = 0; i < nOrient; ++i) {
-        m_particle->Rotate(orientations[i].first, orientations[i].second, 0);
-        if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
-        bool ok = m_scattering->ScatterLight(0, 0, outBeams);
-        double incomingE = m_scattering->GetIncedentEnergy() * weight;
-        if (ok)
-            handlerPO->CacheBeams(outBeams, weight, D_ref, incomingE, cache.orientations[i]);
-        else {
-            cache.orientations[i].weight = weight;
-            cache.orientations[i].incomingEnergy = incomingE;
-        }
-        if (m_mpiRank == 0) OutputProgress(nOrient, count, i, 0, timer, outBeams.size());
-        outBeams.clear();
-        ++count;
-    }
-
-    auto t_cache_end = std::chrono::high_resolution_clock::now();
-    double cache_sec = std::chrono::duration<double>(t_cache_end - t_cache_start).count();
-
-    EraseConsoleLine(60);
-    if (m_mpiRank == 0) std::cout << "Phase 1 (tracing): 100%, "
-              << cache.totalBeams() << " beams cached in " << cache_sec << " s" << std::endl;
-
-    // Phase 2: Compute diffraction for all sizes
-    auto t_diff_start = std::chrono::high_resolution_clock::now();
-
-    std::vector<Arr2D> results_M;
-    std::vector<double> results_energy;
-    handlerPO->ComputeFromCache(cache, x_sizes, results_M, results_energy);
-
-    auto t_diff_end = std::chrono::high_resolution_clock::now();
-    double diff_sec = std::chrono::duration<double>(t_diff_end - t_diff_start).count();
-
-    if (m_mpiRank == 0)
-        std::cout << "Phase 2 (diffraction for " << x_sizes.size() << " sizes): "
-                  << diff_sec << " s" << std::endl
-                  << "Total: " << cache_sec + diff_sec << " s" << std::endl;
-
-    // Write results for each size
     std::string baseName = m_resultDirName;
-    Arr2D &origM = handlerPO->M;
-
-    for (size_t s = 0; s < x_sizes.size(); ++s) {
-        Arr2D savedM = origM;
-        origM = results_M[s];
-        m_incomingEnergy = results_energy[s];
-
-        std::string sizeName = baseName + "_x" + std::to_string((int)x_sizes[s]);
-        handlerPO->WriteMatricesToFile(sizeName, m_incomingEnergy);
-
-        // Phi-averaged output
-        {
-            std::ofstream outFile(sizeName + ".dat", std::ios::out);
-            outFile << std::setprecision(10);
-            outFile << "ScAngle 2pi*dcos "
-                    "M11 M12 M13 M14 "
-                    "M21 M22 M23 M24 "
-                    "M31 M32 M33 M34 "
-                    "M41 M42 M43 M44";
-
-            auto &sphere = handlerPO->m_sphere;
-            matrix *Lp = handlerPO->m_Lp;
-            int nZen = sphere.nZenith;
-            int nAz = sphere.nAzimuth;
-
-            for (int iZen = 0; iZen <= nZen; ++iZen) {
-                matrix Msum(4, 4); Msum.Fill(0.0);
-                double radZen = sphere.GetZenith(iZen);
-                for (int iAz = 0; iAz <= nAz; ++iAz) {
-                    double radAz = -iAz * sphere.azinuthStep;
-                    matrix m = origM(iAz, iZen);
-                    (*Lp)[1][1] = cos(2*radAz); (*Lp)[1][2] = sin(2*radAz);
-                    (*Lp)[2][1] = -(*Lp)[1][2]; (*Lp)[2][2] = (*Lp)[1][1];
-
-                    if (radZen > M_PI - __FLT_EPSILON__)
-                        Msum += (*Lp) * m * (*Lp);
-                    else if (radZen < __FLT_EPSILON__)
-                    {
-                        matrix Ln = *Lp;
-                        Ln[1][2] *= -1; Ln[2][1] *= -1;
-                        Msum += Ln * m * (*Lp);
-                    }
-                    else
-                        Msum += m * (*Lp);
-                }
-                Msum /= nAz;
-                double _2PiDcos = sphere.Compute2PiDcos(iZen);
-                outFile << std::endl << RadToDeg(radZen) << ' ' << _2PiDcos << ' ';
-                outFile << Msum;
-            }
-            outFile.close();
-        }
-        origM = savedM;
-    }
 
     if (m_mpiRank == 0)
-        std::cout << "Results written to " << baseName << "_x*.dat" << std::endl;
+        std::cout << "MultiSize: " << x_sizes.size() << " sizes, "
+                  << nOrient << " Sobol orientations each" << std::endl;
 
-    OutputStatisticsPO(timer, nOrient, m_resultDirName);
+    auto t_total_start = std::chrono::high_resolution_clock::now();
+
+    for (size_t s = 0; s < x_sizes.size(); ++s)
+    {
+        // Scale particle to this size
+        double D_target = x_sizes[s] / x_ref * D_ref;
+        m_particle->Resize(D_target);
+
+        if (m_mpiRank == 0)
+            std::cout << "  Size " << (s+1) << "/" << x_sizes.size()
+                      << ": x=" << (int)x_sizes[s]
+                      << " (D=" << m_particle->MaximalDimention() << ")" << std::endl;
+
+        // Reset Mueller arrays
+        handlerPO->M = Arr2D(nAz+1, nZen+1, 4, 4);
+        handlerPO->M_noshadow = Arr2D(nAz+1, nZen+1, 4, 4);
+        m_incomingEnergy = 0;
+
+        // Use fully optimized TraceFromSobol (batched sincos, parallel Phase 1+2)
+        // Save/restore m_resultDirName since TraceFromSobol writes output
+        std::string savedName = m_resultDirName;
+        std::string sizeName = baseName + "_x" + std::to_string((int)x_sizes[s]);
+        m_resultDirName = sizeName;
+        TraceFromSobol(nOrient, betaSym, gammaSym);
+        m_resultDirName = savedName;
+    }
+
+    // Restore particle to original size
+    m_particle->Resize(D_ref);
+
+    auto t_total_end = std::chrono::high_resolution_clock::now();
+    double total_sec = std::chrono::duration<double>(t_total_end - t_total_start).count();
+
+    if (m_mpiRank == 0)
+        std::cout << "MultiSize total: " << total_sec << " s for "
+                  << x_sizes.size() << " sizes" << std::endl;
 }
 
 void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
