@@ -668,12 +668,9 @@ int main(int argc, const char* argv[])
             int N_beta_full = (int)ceil(betaSym_deg / orient_step);
             int N_gamma_full = (int)ceil(gammaSym_deg / orient_step);
 
-            // Divide by div factor
-            int N_beta = N_beta_full / div;
-            int N_gamma = N_gamma_full / div;
-            // Make odd (from Excel ODD function)
-            if (N_beta % 2 == 0) N_beta++;
-            if (N_gamma % 2 == 0) N_gamma++;
+            // Divide by div factor, round UP
+            int N_beta = (N_beta_full + div - 1) / div;
+            int N_gamma = (N_gamma_full + div - 1) / div;
             if (N_beta < 3) N_beta = 3;
             if (N_gamma < 3) N_gamma = 3;
 
