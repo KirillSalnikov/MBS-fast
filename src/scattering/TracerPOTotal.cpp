@@ -1083,7 +1083,17 @@ void TracerPOTotal::TraceSobolMultiSize(int nOrient, double betaSym, double gamm
                     matrix m = origM(iAz, iZen);
                     (*Lp)[1][1] = cos(2*radAz); (*Lp)[1][2] = sin(2*radAz);
                     (*Lp)[2][1] = -(*Lp)[1][2]; (*Lp)[2][2] = (*Lp)[1][1];
-                    Msum += m * (*Lp);
+
+                    if (radZen > M_PI - __FLT_EPSILON__)
+                        Msum += (*Lp) * m * (*Lp);
+                    else if (radZen < __FLT_EPSILON__)
+                    {
+                        matrix Ln = *Lp;
+                        Ln[1][2] *= -1; Ln[2][1] *= -1;
+                        Msum += Ln * m * (*Lp);
+                    }
+                    else
+                        Msum += m * (*Lp);
                 }
                 Msum /= nAz;
                 double _2PiDcos = sphere.Compute2PiDcos(iZen);
