@@ -575,21 +575,31 @@ compares with linear interpolation. If relative error $> $ EPS, splits the inter
 
 Usage: \texttt{--auto\_tgrid 0.05} (5\% tolerance). Works with \texttt{--sobol}, \texttt{--random}, \texttt{--auto}.
 
-\subsection{Multi-size (\texttt{--multigrid FILE})}
+\subsection{Multi-size (\texttt{--multigrid Dmin Dmax N})}
 
-File with particle parameters (one per line, same \texttt{-p} format):
+Generates $N$ sizes from $D_\mathrm{min}$ to $D_\mathrm{max}$ in logarithmic scale.
+For each size: rescales particle via \texttt{Resize()}, runs full \texttt{TraceFromSobol}
+(same optimized path as standalone). Results bit-exact with separate runs.
+
 \begin{lstlisting}
-1 50 6.25
-1 100 12.5
-1 200 25
+# 10 sizes from D=50 to D=500, reference particle D=500
+bin/mbs_po --po --sobol 1024 --multigrid 50 500 10 \
+    -p 1 500 62.5 -w 0.532 --ri 1.31 0 -n 8 \
+    --grid 0 180 360 180 --close -o results
 \end{lstlisting}
 
-Traces the largest particle once, recomputes diffraction for all sizes via \texttt{ComputeFromCache} (OpenMP parallel).
+Output: \texttt{results\_x\{N\}.dat} for each size parameter $x = \pi D / \lambda$.
 
 \subsection{Per-beta save (\texttt{--save\_betas})}
 
 With \texttt{--random}: writes per-beta Mueller contribution and cumulative Mueller to \texttt{\_betas/} subfolder.
 Useful for convergence analysis and crash recovery.
+
+\subsection{Parallel Phase~1 (tracing)}
+
+Beam tracing (Phase~1) is now parallelized with OpenMP. Each thread gets its own copy of
+\texttt{Particle} + \texttt{Scattering} via \texttt{CloneFor()}. Phase~1 speedup: $5.4\times$
+on 12 threads.
 
 \subsection{Additional bugfixes}
 \begin{itemize}
@@ -599,8 +609,57 @@ Useful for convergence analysis and crash recovery.
 \item \texttt{rdtsc} inline asm incorrect on x86-64
 \item \texttt{malloc} leak in \texttt{Particle::SetFromFile}
 \item OOM in \texttt{TraceAdaptive}: sub-chunked to 4096 max
-\item \texttt{ComputeFromCache} parallelized with OpenMP
 \item \texttt{--grid} conflicts with auto theta/phi resolved
+\item \texttt{--oldauto} N rounding: ceil instead of ODD (smoother size scans)
+\item \texttt{--point} crash from uninitialized handler pointer
+\item MPI missing \texttt{\}} in \texttt{TraceAdaptive} convergence block
+\end{itemize}
+
+%======================================================================
+\section{Performance: MBS-fast vs MBS-raw (original)}
+
+All benchmarks: hex column $L=199.5$, $D=24.9375$~\textmu m, $\lambda=0.532$, $m=1.31$.
+
+\subsection{Speedup table}
+
+\begin{tabular}{llrrrl}
+\toprule
+Test & Params & Old & New & Speedup & Accuracy \\
+\midrule
+Forward $0$--$25^\circ$ & $n\!=\!4$, $64\!\times\!43$ orient & 17\,min & 16\,sec & $\mathbf{63\times}$ & 0.007\% \\
+Backward $160$--$180^\circ$ & $n\!=\!11$, $64\!\times\!43$ orient & 47\,min & 27\,sec & $\mathbf{105\times}$ & 0.8\% \\
+\texttt{--coh\_orient} & $32\!\times\!22$ orient & 30\,sec & 0.5\,sec & $\mathbf{60\times}$ & $10^{-7}$ \\
+Phase~1 only & $n\!=\!8$, 8192 orient & 5.2\,sec & 0.96\,sec & $\mathbf{5.4\times}$ & exact \\
+\bottomrule
+\end{tabular}
+
+\subsection{Sources of speedup}
+
+\begin{tabular}{lll}
+\toprule
+Optimization & Where & Effect \\
+\midrule
+Batched sincos (AVX-512/AVX2) & Phase~2 (diffraction) & $\sim$2$\times$ \\
+Precomputed edge data & Phase~2 & $\sim$1.5$\times$ \\
+Theta-coefficients (hoist A,B decomposition) & Phase~2 & $\sim$1.3$\times$ \\
+OpenMP Phase~2 (thread-local Mueller) & Phase~2 & $N_\mathrm{cores}\times$ \\
+OpenMP Phase~1 (CloneFor) & Phase~1 & $N_\mathrm{cores}\times$ \\
+Adaptive theta grid (bisection) & Grid & 2--3$\times$ fewer points \\
+Beam cutoff (two thresholds) & Phase~1+2 & skip 45--80\% beams \\
+DiffractControlPoints (4~angles) & Adaptive & $\sim$100$\times$ cheaper convergence check \\
+Incremental Sobol & Adaptive & $\sim$3.5$\times$ vs restart \\
+Sub-chunked batches & Memory & prevents OOM for large $N$ \\
+\bottomrule
+\end{tabular}
+
+\subsection{Accuracy notes}
+
+\begin{itemize}
+\item \texttt{--coh\_orient}: machine precision ($10^{-7}$) match with original code
+\item \texttt{--incoh}: exact per-beam $|J|^2$ match
+\item Default (incoherent averaging): $<0.01\%$ at convergence
+\item Forward ($\theta\!=\!0$): 0.39\% from \texttt{d\_param} initialization fix
+\item Backward ($n\!=\!11$): up to 0.8\% with 2860 orientations (converges with more)
 \end{itemize}
 
 \end{document}
