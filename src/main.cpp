@@ -99,6 +99,83 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("coh_orient", 0, true); // coherent across orientations (legacy mode)
     parser.AddRule("legacy_sign", 0, true); // use old (+) Fresnel sign for forward direction
     parser.AddRule("sym", 2, true); // symmetry override: beta_factor gamma_factor (e.g. --sym 2 6)
+    parser.AddRule("help", 0, true); // print help
+}
+
+void PrintHelp()
+{
+    using namespace std;
+    cout << "MBS-fast: Physical Optics for Ice Crystals\n"
+         << "Usage: mbs_po --po [orientation] [options] -p TYPE L D [-w LAMBDA] [--ri Re Im] [-n N]\n\n"
+
+         << "=== Particle ===\n"
+         << "  -p TYPE L D [extra]    Particle: 1=hex, 2=bullet, 3=rosette, 4=droxtal,\n"
+         << "                         10=concave hex, 12=hex aggregate\n"
+         << "  --pf FILE              Particle from .obj file\n"
+         << "  --rs SIZE              Resize particle to Dmax=SIZE (with --pf)\n"
+         << "  --ri Re Im             Refractive index (default 1.31 0)\n"
+         << "  -w LAMBDA              Wavelength in um (default 0.532)\n"
+         << "  -n N                   Max internal reflections (default 6)\n\n"
+
+         << "=== Method ===\n"
+         << "  --po                   Physical optics (default)\n"
+         << "  --go                   Geometric optics\n\n"
+
+         << "=== Orientation ===\n"
+         << "  --fixed BETA GAMMA     Single orientation (degrees)\n"
+         << "  --random Nb Ng         Regular beta x gamma grid\n"
+         << "  --sobol N              Sobol quasi-random (N orientations)\n"
+         << "  --montecarlo N         Monte Carlo random (N orientations)\n"
+         << "  --adaptive EPS         Adaptive Sobol (converge to EPS relative accuracy)\n"
+         << "  --auto EPS             Full auto: adaptive theta + phi + orientations\n"
+         << "  --autofull EPS         Full auto including n search\n"
+         << "  --oldauto DIV          Physics-based grid (div2/div4/div8 of diffraction limit)\n"
+         << "  --orientfile FILE      Orientations from file (beta gamma per line)\n"
+         << "  --maxorient N          Max orientations for adaptive (power of 2)\n"
+         << "  --coh_orient           Coherent across orientations (legacy)\n\n"
+
+         << "=== Scattering grid ===\n"
+         << "  --grid T1 T2 Nphi Nth  Theta range [T1,T2] deg, Nphi azimuth, Nth zenith\n"
+         << "  --tgrid FILE           Non-uniform theta grid from file (degrees, one per line)\n"
+         << "  --auto_tgrid EPS       Adaptive theta grid via bisection (tolerance EPS)\n"
+         << "  --auto_phi             Auto N_phi = x/5 + 48\n"
+         << "  --nphi N               Override N_phi (highest priority)\n\n"
+
+         << "=== Grid priority ===\n"
+         << "  Theta: --tgrid > --grid > --auto_tgrid > --auto > default\n"
+         << "  Phi:   --nphi  > --grid > --auto_phi   > --auto > default\n\n"
+
+         << "=== Optimization ===\n"
+         << "  --beam_cutoff EPS      Skip beams with |J|^2/max < EPS AND area/max < EPS\n"
+         << "  -r RATIO               Beam area restriction ratio (default 100)\n"
+         << "  --sym Sb Sg            Override symmetry: beta/Sb, 360/Sg degrees\n\n"
+
+         << "=== Multi-size ===\n"
+         << "  --multigrid Dmin Dmax N  N sizes from Dmin to Dmax (log scale)\n"
+         << "                           -p must specify largest particle\n\n"
+
+         << "=== Output ===\n"
+         << "  -o NAME                Output path/name\n"
+         << "  --close                Exit after computation\n"
+         << "  --save_betas           Save per-beta Mueller to _betas/ folder\n"
+         << "  --shadow_off           Disable shadow beam\n"
+         << "  --incoh                Incoherent per-beam Mueller (no Jones sum)\n"
+         << "  --jones                Output Jones matrices\n"
+         << "  --abs                  Enable absorption (requires Im(ri) > 0)\n"
+         << "  --karczewski           Use Karczewski polarization matrix\n"
+         << "  --legacy_sign          Use old (+) Fresnel sign\n"
+         << "  --log SEC              Progress output interval (seconds)\n\n"
+
+         << "=== Examples ===\n"
+         << "  # Full auto, hex column 100x70 um\n"
+         << "  mbs_po --po --auto 0.05 -p 1 100 70 -w 0.532 --ri 1.31 0 -n 8 --close\n\n"
+         << "  # Manual Sobol with adaptive theta\n"
+         << "  mbs_po --po --sobol 1024 --auto_tgrid 0.05 --auto_phi -p 1 100 70 ...\n\n"
+         << "  # Multi-size scan\n"
+         << "  mbs_po --po --sobol 1024 --multigrid 50 500 20 -p 1 500 62.5 ...\n\n"
+         << "  # Physics-based grid\n"
+         << "  mbs_po --po --oldauto 8 -p 1 200 25 -w 0.532 --ri 1.31 0 -n 4 ...\n"
+         << endl;
 }
 
 /// Apply --nphi override if present (highest priority for N_phi)
@@ -338,11 +415,16 @@ int main(int argc, const char* argv[])
 
     std::string additionalSummary;
 
-    if (argc <= 1) // no arguments
+    if (argc <= 1)
     {
-        cout << "No arguments. Press any key to exit..." << endl;
-        getchar();
-        return 1;
+        PrintHelp();
+        return 0;
+    }
+
+    // Check --help before full parse (avoids required arg errors)
+    for (int i = 1; i < argc; ++i) {
+        std::string a(argv[i]);
+        if (a == "--help" || a == "-h") { PrintHelp(); return 0; }
     }
 
     ArgPP args;

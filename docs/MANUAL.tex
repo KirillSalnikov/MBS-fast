@@ -575,6 +575,66 @@ compares with linear interpolation. If relative error $> $ EPS, splits the inter
 
 Usage: \texttt{--auto\_tgrid 0.05} (5\% tolerance). Works with \texttt{--sobol}, \texttt{--random}, \texttt{--auto}.
 
+%======================================================================
+\subsection{Flag priorities}
+
+Multiple flags can set the same parameter. Resolution order (highest priority first):
+
+\subsubsection*{Theta grid ($N_\theta$ and theta values)}
+
+\begin{enumerate}
+\item \texttt{--tgrid FILE} — explicit non-uniform grid from file
+\item \texttt{--grid T1 T2 Nphi Ntheta} — uniform grid from command line
+\item \texttt{--auto\_tgrid EPS} — adaptive bisection (probes M$_{11}$)
+\item \texttt{--auto} — implies \texttt{--auto\_tgrid 0.05} (bisection)
+\item \texttt{--oldauto DIV} — static zone grid from \texttt{ApplyAutoThetaGrid}
+\item Default: placeholder (1 theta point)
+\end{enumerate}
+
+\subsubsection*{Phi grid ($N_\varphi$)}
+
+\begin{enumerate}
+\item \texttt{--nphi N} — explicit override (highest priority)
+\item \texttt{--grid T1 T2 Nphi Ntheta} — \texttt{Nphi} is the 3rd argument
+\item \texttt{--auto\_phi} — formula $N_\varphi = \min(360,\; x/5 + 48)$
+\item \texttt{--auto} — implies \texttt{--auto\_phi}
+\item \texttt{--oldauto DIV} — same formula as \texttt{--auto\_phi}
+\item Default: 1 (useless without override)
+\end{enumerate}
+
+\subsubsection*{Orientation method}
+
+Mutually exclusive (first matched wins):
+\begin{enumerate}
+\item \texttt{--fixed BETA GAMMA} — single orientation
+\item \texttt{--oldauto DIV} — physics-based $\beta\times\gamma$ grid
+\item \texttt{--random Nb Ng} — regular grid
+\item \texttt{--montecarlo N} — random uniform
+\item \texttt{--orientfile FILE} — from file
+\item \texttt{--auto EPS} / \texttt{--autofull EPS} — adaptive Sobol
+\item \texttt{--adaptive EPS} — adaptive Sobol (manual grid)
+\item \texttt{--sobol N} — fixed-count Sobol
+\end{enumerate}
+
+\subsubsection*{Beam cutoff}
+
+\begin{enumerate}
+\item \texttt{--beam\_cutoff EPS} — explicit threshold
+\item \texttt{--auto}/\texttt{--adaptive} — uses their EPS as cutoff
+\item Default: 0 (no cutoff)
+\end{enumerate}
+
+\subsubsection*{Coherent/incoherent}
+
+\begin{enumerate}
+\item Default: coherent (Jones summed across beams per orientation)
+\item \texttt{--incoh}: incoherent (Mueller per beam)
+\item \texttt{--coh\_orient}: coherent across ALL orientations (legacy)
+\end{enumerate}
+
+\textbf{Note}: \texttt{--grid T1 T2 Nphi Ntheta} — the 3rd value is $N_\varphi$ (not $N_\theta$!).
+This is the original MBS convention. Use \texttt{--nphi} to avoid confusion.
+
 \subsection{Multi-size (\texttt{--multigrid Dmin Dmax N})}
 
 Generates $N$ sizes from $D_\mathrm{min}$ to $D_\mathrm{max}$ in logarithmic scale.
