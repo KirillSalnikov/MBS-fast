@@ -741,18 +741,19 @@ With adaptive theta ($2\times$): $\approx$ $\mathbf{156\times}$.
 
 \begin{tabular}{llrrrl}
 \toprule
-Test & Params & Old (1 thr) & New (4 thr) & Speedup & Accuracy \\
+Test & Params & Old (1 thr) & New & Speedup & Accuracy \\
 \midrule
-Forward $0$--$25^\circ$ & $n\!=\!4$, $64\!\times\!43$ & 17\,min & 16\,sec & $\mathbf{63\times}$ & 0.007\% \\
-Backward $160$--$180^\circ$ & $n\!=\!11$, $64\!\times\!43$ & 47\,min & 27\,sec & $\mathbf{105\times}$ & 0.8\% \\
-\texttt{--coh\_orient} & $32\!\times\!22$ & 30\,sec & 0.5\,sec & $\mathbf{60\times}$ & $10^{-7}$ \\
-Phase~1 only & $n\!=\!8$, 8192 orient & 5.2\,sec & 0.96\,sec & $\mathbf{5.4\times}$ & exact \\
+Forward $0$--$25^\circ$ & $n\!=\!4$, $64\!\times\!43$, 4\,thr & 17\,min & 16\,sec & $\mathbf{63\times}$ & 0.007\% \\
+Forward $0$--$25^\circ$ & $n\!=\!4$, $64\!\times\!43$, 12\,thr & 17\,min & 11.5\,sec & $\mathbf{89\times}$ & 0.007\% \\
+Backward $160$--$180^\circ$ & $n\!=\!11$, $64\!\times\!43$, 4\,thr & 47\,min & 27\,sec & $\mathbf{105\times}$ & 0.8\% \\
+Backward $160$--$180^\circ$ & $n\!=\!11$, $64\!\times\!43$, 12\,thr & 47\,min & 17\,sec & $\mathbf{168\times}$ & 0.8\% \\
+\texttt{--coh\_orient} & $32\!\times\!22$, 4\,thr & 30\,sec & 0.5\,sec & $\mathbf{60\times}$ & $10^{-7}$ \\
+Phase~1 only & $n\!=\!8$, 8192, 12\,thr & 5.2\,sec & 0.96\,sec & $\mathbf{5.4\times}$ & exact \\
 \bottomrule
 \end{tabular}
 
 \medskip
-On 12 cores expected speedup: $\sim$150--300$\times$ vs original single-threaded code.
-On 128-core EPYC cluster with MPI: $\sim$1000$\times$+.
+On 128-core EPYC cluster with MPI: $\sim$1000$\times$+ expected.
 
 \subsection{Accuracy}
 
