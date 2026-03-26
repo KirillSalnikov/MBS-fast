@@ -1865,6 +1865,7 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
                                   std::vector<Arr2D> &results_M,
                                   std::vector<double> &results_energy)
 {
+    bool coherent = isCoh;
     int nSizes = x_sizes.size();
     int nAz = m_sphere.nAzimuth;
     int nZen = m_sphere.nZenith;
@@ -1983,6 +1984,11 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
             localResults_M[s].ClearArr();
         }
         std::vector<double> localResults_energy(nSizes, 0.0);
+
+        // Coherent mode: thread-local Jones array [nSizes × (nAz+1) × (nZen+1) × 4]
+        std::vector<complex> localJ_coh;
+        if (coherent)
+            localJ_coh.resize(nSizes * (nAz+1) * (nZen+1) * 4, complex(0,0));
 
         #pragma omp for schedule(dynamic, 4)
         for (int iOr = 0; iOr < nOrient; ++iOr)
@@ -2291,43 +2297,72 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
                         double d11r=sr10r*jp.jp01r-sr10i*jp.jp01i+sr11r*jp.jp11r-sr11i*jp.jp11i;
                         double d11i=sr10r*jp.jp01i+sr10i*jp.jp01r+sr11r*jp.jp11i+sr11i*jp.jp11r;
 
-                        // Inline Mueller computation: avoid matrixC/matrix heap allocation
-                        double a11 = d00r*d00r+d00i*d00i, a12 = d01r*d01r+d01i*d01i;
-                        double a21 = d10r*d10r+d10i*d10i, a22 = d11r*d11r+d11i*d11i;
-                        double A1p = a11+a21, A2p = a12+a22;
-                        double A1m = a11-a21, A2m = a12-a22;
-                        // C1 = d00*conj(d01), C2 = d11*conj(d10)
-                        double c1r = d00r*d01r+d00i*d01i, c1i = d00i*d01r-d00r*d01i;
-                        double c2r = d11r*d10r+d11i*d10i, c2i = d11i*d10r-d11r*d10i;
-                        // C3 = d00*conj(d10), C4 = d11*conj(d01)
-                        double c3r = d00r*d10r+d00i*d10i, c3i = d00i*d10r-d00r*d10i;
-                        double c4r = d11r*d01r+d11i*d01i, c4i = d11i*d01r-d11r*d01i;
-                        // C5 = d00*conj(d11), C6 = d01*conj(d10)
-                        double c5r = d00r*d11r+d00i*d11i, c5i = d00i*d11r-d00r*d11i;
-                        double c6r = d01r*d10r+d01i*d10i, c6i = d01i*d10r-d01r*d10i;
-
-                        double w2 = weight * 0.5;
-                        // Accumulate into thread-local Mueller
-                        localResults_M[s](i, j, 0, 0) += (A1p+A2p)*w2;
-                        localResults_M[s](i, j, 0, 1) += (A1p-A2p)*w2;
-                        localResults_M[s](i, j, 0, 2) += (-c1r-c2r)*weight;
-                        localResults_M[s](i, j, 0, 3) += (c2i-c1i)*weight;
-                        localResults_M[s](i, j, 1, 0) += (A1m+A2m)*w2;
-                        localResults_M[s](i, j, 1, 1) += (A1m-A2m)*w2;
-                        localResults_M[s](i, j, 1, 2) += (c2r-c1r)*weight;
-                        localResults_M[s](i, j, 1, 3) += (-c1i-c2i)*weight;
-                        localResults_M[s](i, j, 2, 0) += (-c3r-c4r)*weight;
-                        localResults_M[s](i, j, 2, 1) += (c4r-c3r)*weight;
-                        localResults_M[s](i, j, 2, 2) += (c5r+c6r)*weight;
-                        localResults_M[s](i, j, 2, 3) += (c5i-c6i)*weight;
-                        localResults_M[s](i, j, 3, 0) += (c3i-c4i)*weight;
-                        localResults_M[s](i, j, 3, 1) += (c4i+c3i)*weight;
-                        localResults_M[s](i, j, 3, 2) += (-c5i-c6i)*weight;
-                        localResults_M[s](i, j, 3, 3) += (c5r-c6r)*weight;
+                        if (coherent) {
+                            // Coherent: accumulate Jones (sum across beams)
+                            int idx = ((s*(nAz+1) + i)*(nZen+1) + j)*4;
+                            localJ_coh[idx+0] += complex(d00r, d00i);
+                            localJ_coh[idx+1] += complex(d01r, d01i);
+                            localJ_coh[idx+2] += complex(d10r, d10i);
+                            localJ_coh[idx+3] += complex(d11r, d11i);
+                        } else {
+                            // Incoherent: inline Mueller per-beam
+                            double a11 = d00r*d00r+d00i*d00i, a12 = d01r*d01r+d01i*d01i;
+                            double a21 = d10r*d10r+d10i*d10i, a22 = d11r*d11r+d11i*d11i;
+                            double A1p = a11+a21, A2p = a12+a22;
+                            double A1m = a11-a21, A2m = a12-a22;
+                            double c1r = d00r*d01r+d00i*d01i, c1i = d00i*d01r-d00r*d01i;
+                            double c2r = d11r*d10r+d11i*d10i, c2i = d11i*d10r-d11r*d10i;
+                            double c3r = d00r*d10r+d00i*d10i, c3i = d00i*d10r-d00r*d10i;
+                            double c4r = d11r*d01r+d11i*d01i, c4i = d11i*d01r-d11r*d01i;
+                            double c5r = d00r*d11r+d00i*d11i, c5i = d00i*d11r-d00r*d11i;
+                            double c6r = d01r*d10r+d01i*d10i, c6i = d01i*d10r-d01r*d10i;
+                            double w2 = weight * 0.5;
+                            localResults_M[s](i,j,0,0)+=(A1p+A2p)*w2; localResults_M[s](i,j,0,1)+=(A1p-A2p)*w2;
+                            localResults_M[s](i,j,0,2)+=(-c1r-c2r)*weight; localResults_M[s](i,j,0,3)+=(c2i-c1i)*weight;
+                            localResults_M[s](i,j,1,0)+=(A1m+A2m)*w2; localResults_M[s](i,j,1,1)+=(A1m-A2m)*w2;
+                            localResults_M[s](i,j,1,2)+=(c2r-c1r)*weight; localResults_M[s](i,j,1,3)+=(-c1i-c2i)*weight;
+                            localResults_M[s](i,j,2,0)+=(-c3r-c4r)*weight; localResults_M[s](i,j,2,1)+=(c4r-c3r)*weight;
+                            localResults_M[s](i,j,2,2)+=(c5r+c6r)*weight; localResults_M[s](i,j,2,3)+=(c5i-c6i)*weight;
+                            localResults_M[s](i,j,3,0)+=(c3i-c4i)*weight; localResults_M[s](i,j,3,1)+=(c4i+c3i)*weight;
+                            localResults_M[s](i,j,3,2)+=(-c5i-c6i)*weight; localResults_M[s](i,j,3,3)+=(c5r-c6r)*weight;
+                        }
                     } // end size loop
                 } // end zenith
             } // end azimuth
         } // end beam
+
+        // Coherent: convert Jones → Mueller after all beams of this orientation
+        if (coherent) {
+            for (int s = 0; s < nSizes; ++s)
+                for (int ii = 0; ii <= nAz; ++ii)
+                    for (int jj = 0; jj <= nZen; ++jj) {
+                        int idx = ((s*(nAz+1)+ii)*(nZen+1)+jj)*4;
+                        complex j00=localJ_coh[idx], j01=localJ_coh[idx+1];
+                        complex j10=localJ_coh[idx+2], j11=localJ_coh[idx+3];
+                        double a11=norm(j00),a12=norm(j01),a21=norm(j10),a22=norm(j11);
+                        double A1p=a11+a21,A2p=a12+a22,A1m=a11-a21,A2m=a12-a22;
+                        complex C1=j00*conj(j01),C2=j11*conj(j10);
+                        complex C3=j00*conj(j10),C4=j11*conj(j01);
+                        complex C5=j00*conj(j11),C6=j01*conj(j10);
+                        double w2=weight*0.5;
+                        localResults_M[s](ii,jj,0,0)+=(A1p+A2p)*w2; localResults_M[s](ii,jj,0,1)+=(A1p-A2p)*w2;
+                        localResults_M[s](ii,jj,0,2)+=(-real(C1)-real(C2))*weight;
+                        localResults_M[s](ii,jj,0,3)+=(imag(C2)-imag(C1))*weight;
+                        localResults_M[s](ii,jj,1,0)+=(A1m+A2m)*w2; localResults_M[s](ii,jj,1,1)+=(A1m-A2m)*w2;
+                        localResults_M[s](ii,jj,1,2)+=(real(C2)-real(C1))*weight;
+                        localResults_M[s](ii,jj,1,3)+=(-imag(C1)-imag(C2))*weight;
+                        localResults_M[s](ii,jj,2,0)+=(-real(C3)-real(C4))*weight;
+                        localResults_M[s](ii,jj,2,1)+=(real(C4)-real(C3))*weight;
+                        localResults_M[s](ii,jj,2,2)+=(real(C5)+real(C6))*weight;
+                        localResults_M[s](ii,jj,2,3)+=(imag(C5)-imag(C6))*weight;
+                        localResults_M[s](ii,jj,3,0)+=(imag(C3)-imag(C4))*weight;
+                        localResults_M[s](ii,jj,3,1)+=(imag(C4)+imag(C3))*weight;
+                        localResults_M[s](ii,jj,3,2)+=(-imag(C5)-imag(C6))*weight;
+                        localResults_M[s](ii,jj,3,3)+=(real(C5)-real(C6))*weight;
+                        // Clear Jones for next orientation
+                        localJ_coh[idx]=localJ_coh[idx+1]=localJ_coh[idx+2]=localJ_coh[idx+3]=complex(0,0);
+                    }
+        }
     } // end orientation (omp for)
 
         // Merge thread-local results into global

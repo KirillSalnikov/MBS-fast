@@ -1033,12 +1033,6 @@ int main(int argc, const char* argv[])
 
                 if (args.IsCatched("multigrid"))
                 {
-                    // ComputeFromCache is always incoherent
-                    if (handler->isCoh) {
-                        handler->isCoh = false;
-                        if (!args.IsCatched("incoh"))
-                            std::cout << "Note: --multigrid forces incoherent mode" << std::endl;
-                    }
                     double Dmin = args.GetDoubleValue("multigrid", 0);
                     double Dmax_mg = args.GetDoubleValue("multigrid", 1);
                     int nSizes = args.GetIntValue("multigrid", 2);
