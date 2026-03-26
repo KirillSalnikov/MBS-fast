@@ -1039,26 +1039,35 @@ int main(int argc, const char* argv[])
                     if (nSizes < 2) nSizes = 2;
 
                     // Generate x_sizes in log scale
+                    // x_ref = x of the -p particle (reference, largest)
+                    // x_sizes are SCALED relative to x_ref:
+                    //   x(D) = x_ref * (D / Dmax_particle)
+                    // This ensures x_sizes[Dmax] == x_ref exactly.
                     double D_current = particle->MaximalDimention();
                     double x_ref = M_PI * D_current / wave;
 
+                    // Scale Dmin/Dmax to MaximalDimention scale
+                    // User gives "characteristic D" but particle Dmax may differ
+                    // Last size MUST equal x_ref for correctness
                     std::vector<double> x_sizes;
                     double logMin = log(Dmin), logMax = log(Dmax_mg);
                     for (int i = 0; i < nSizes; ++i) {
-                        double D = exp(logMin + (logMax - logMin) * i / (nSizes - 1));
-                        double x = M_PI * D / wave;
+                        double D_user = exp(logMin + (logMax - logMin) * i / (nSizes - 1));
+                        double x = x_ref * (D_user / Dmax_mg);
                         x_sizes.push_back(x);
                     }
+                    // Force last = x_ref
+                    x_sizes.back() = x_ref;
 
                     cout << "Multigrid: " << nSizes << " sizes, D=" << Dmin
-                         << ".." << Dmax_mg << " (log), x_ref=" << x_ref << endl;
+                         << ".." << Dmax_mg << " (log), Dmax_particle=" << D_current
+                         << ", x_ref=" << x_ref << endl;
                     cout << "  x range: " << x_sizes.front() << " .. " << x_sizes.back() << endl;
 
-                    // Particle from -p is the reference (should be >= Dmax)
                     if (D_current < Dmax_mg * 0.99)
                         std::cerr << "WARNING: -p particle Dmax=" << D_current
                                   << " < multigrid Dmax=" << Dmax_mg
-                                  << ". Use -p with largest size for best accuracy." << endl;
+                                  << ". Use -p with largest size." << endl;
 
                     tracer->TraceSobolMultiSize(nSobol, betaSym, gammaSym, x_sizes, x_ref);
                 }
