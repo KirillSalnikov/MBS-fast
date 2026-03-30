@@ -460,7 +460,7 @@ public:
     /// Set via --beam_cutoff CLI to override.
     double m_beamCutoff = 0;
     /// Target accuracy for auto beam cutoff (set from --auto eps)
-    double m_targetEps = 0.01;
+    double m_targetEps = 0; // was 0.01, set to 0 to match MBS-raw (no beam cutoff)
     bool m_legacySign = false; ///< Use old (+invComplWave) sign for forward direction
     void SetBeamCutoff(double val) { m_beamCutoff = val; }
     /// Set cutoff relative to geometric cross-section: threshold = eps × C_geo

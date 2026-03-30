@@ -172,7 +172,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
                                 const AngleRange &gammaRange)
 {
     int betaNorm = (m_symmetry.beta < M_PI_2+FLT_EPSILON && m_symmetry.beta > M_PI_2-FLT_EPSILON) ? 1 : 2;
-    double normGamma = gammaRange.number * betaNorm;
+    double normGamma = gammaRange.number * betaNorm; // MBS-raw: normalize by gammaRange.number
 
     // --coh_orient: legacy mode — HandleBeams accumulates Jones coherently
     // across ALL orientations, then single AddToMueller at end.
@@ -207,7 +207,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     // Default: incoherent per-orientation (physically correct)
     // Loop over beta explicitly — enables per-beta Mueller saving
 
-    int nGamma = gammaRange.number;
+    int nGamma = gammaRange.number; // MBS-raw: same as gammaRange.number
     int nBeta = betaRange.number + 1;
     int nOrientations = nBeta * nGamma;
 
@@ -268,16 +268,16 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         auto tp1 = std::chrono::high_resolution_clock::now();
         std::vector<PreparedOrientation> chunkPrepared(nGamma);
 
-        for (int j = 0; j < nGamma; ++j)
+        for (int jj = 0; jj < nGamma; ++jj)
         {
-            double gamma = gammaRange.min + j * gammaRange.step;
+            double gamma = gammaRange.min + jj * gammaRange.step;
             m_particle->Rotate(beta, gamma, 0);
             if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
             bool ok = m_scattering->ScatterLight(0, 0, outBeams);
-            if (ok) handlerPO->PrepareBeams(outBeams, dcos, chunkPrepared[j]);
-            else    chunkPrepared[j].sinZenith = dcos;
+            if (ok) handlerPO->PrepareBeams(outBeams, dcos, chunkPrepared[jj]);
+            else    chunkPrepared[jj].sinZenith = dcos;
             m_incomingEnergy += m_scattering->GetIncedentEnergy() * dcos;
-            if (m_mpiRank == 0) OutputProgress(nOrientations, count, ib*nGamma+j, 0, timer, outBeams.size());
+            if (m_mpiRank == 0) OutputProgress(nOrientations, count, ib*nGamma+jj, 0, timer, outBeams.size());
             outBeams.clear();
             ++count;
         }

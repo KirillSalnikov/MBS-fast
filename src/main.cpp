@@ -397,7 +397,7 @@ AngleRange GetRange(const ArgPP &parser, const std::string &key,
         throw std::exception();
     }
 
-    return AngleRange(min, max, number + 1);
+    return AngleRange(min, max, number);
 }
 
 int main(int argc, const char* argv[])
