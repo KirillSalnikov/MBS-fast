@@ -150,11 +150,11 @@ void HandlerPO::WriteGroupMatrices(Arr2D &matrices, const std::string &name)
 
             if (t == 0)
             {
-                sum += Lp*m*Lp;
+                sum += Lp*m*Lp;    // backward (theta ~ 180°)
             }
-            else if (t == m_sphere.nZenith-1)
+            else if (t == m_sphere.nZenith)
             {
-                sum += Ln*m*Lp; // OPT: вынести Ln в отдельный случай
+                sum += Ln*m*Lp;    // forward (theta ~ 0°)
             }
             else
             {
@@ -691,6 +691,7 @@ BeamInfo HandlerPO::ComputeBeamInfo(Beam &beam)
 //        info.normald = -info.normald;
     }
 
+    info.isBad = false;
     m_isBadBeam = false;
 
     ComputeCoordinateSystemAxes(info.normald, info.horAxis, info.verAxis);
@@ -1172,6 +1173,7 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
     int skippedBeams = 0;
 
     // Pass 2: prepare beams, skip negligible ones
+    double localEnergy = 0;
     for (Beam &beam : beams)
     {
         if (isBackScatteringConusEnabled && beam.direction.cz < backScatteringConus)
@@ -1181,10 +1183,9 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
                     -m_incidentLight->direction,
                     m_incidentLight->polarizationBasis);
 
-        m_isBadBeam = false;
         BeamInfo info = ComputeBeamInfo(beam);
 
-        if (m_isBadBeam)
+        if (info.isBad)
             continue;
 
         if (m_hasAbsorption && beam.lastFacetId != __INT_MAX__ && beam.lastFacetId != -1)
@@ -1193,7 +1194,7 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         if (beam.lastFacetId != __INT_MAX__)
         {
             matrix m_ = Mueller(beam.J);
-            m_outputEnergy += BeamCrossSection(beam)*m_[0][0]*sinZenith;
+            localEnergy += BeamCrossSection(beam)*m_[0][0]*sinZenith;
 
             // Skip beam only if BOTH |J|² and area are small
             // Protects: large-area beams (forward peak) and strong narrow beams
@@ -1243,6 +1244,8 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
 
         out.beams.push_back(pb);
     }
+
+    m_outputEnergy += localEnergy;
 
     // Log beam cutoff statistics (first call only)
     static bool logged = false;

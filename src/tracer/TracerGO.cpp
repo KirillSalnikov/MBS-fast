@@ -78,8 +78,9 @@ void TracerGO::TraceFixed(const double &beta, const double &gamma)
 	double g = DegToRad(gamma);
 
 	vector<Beam> outBeams;
+	m_particle->Rotate(b, g, 0);
 	m_scattering->ScatterLight(b, g, outBeams);
-    m_handler->HandleBeams(outBeams, 0);
+    m_handler->HandleBeams(outBeams, 1);
 	outBeams.clear();
 
 //	double D_tot = CalcTotalScatteringEnergy();
@@ -102,8 +103,9 @@ void TracerGO::TraceMonteCarlo(const AngleRange &betaRange, const AngleRange &ga
 
     string fulldir = m_resultDirName + "/";
 
-    long long nTacts;
-    asm("rdtsc" : "=A"(nTacts));
+    unsigned int lo, hi;
+    asm("rdtsc" : "=a"(lo), "=d"(hi));
+    unsigned long long nTacts = (unsigned long long)hi << 32 | lo;
     srand(nTacts);
     cout << endl << "NTacts = " << nTacts << endl;
 //    srand(static_cast<unsigned>(time(0)));

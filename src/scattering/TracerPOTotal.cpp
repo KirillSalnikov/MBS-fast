@@ -1515,15 +1515,22 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         totalOrient = batchEnd;
         nBatches++;
 
-        // MPI: reduce only 4 control points + energy (not full Mueller!)
+        // MPI: reduce only THIS BATCH's control points + energy, then accumulate.
+        // (Must not reduce ctrlAccum directly — it already contains prior batches,
+        //  which would be double-counted across ranks.)
 #ifdef USE_MPI
         if (m_mpiSize > 1)
         {
-            double sbuf5[5] = {ctrlAccum[0], ctrlAccum[1], ctrlAccum[2], ctrlAccum[3], m_incomingEnergy};
+            double sbuf5[5] = {batchCtrl[0], batchCtrl[1], batchCtrl[2], batchCtrl[3], batchEnergy};
             double rbuf5[5];
             MPI_Allreduce(sbuf5, rbuf5, 5, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-            ctrlAccum[0]=rbuf5[0]; ctrlAccum[1]=rbuf5[1]; ctrlAccum[2]=rbuf5[2]; ctrlAccum[3]=rbuf5[3];
-            m_incomingEnergy = rbuf5[4];
+            // Replace local batch values with global sums, then re-accumulate
+            for (int k = 0; k < 4; ++k) {
+                ctrlAccum[k] -= batchCtrl[k];   // undo local accumulation
+                ctrlAccum[k] += rbuf5[k];        // add global sum
+            }
+            m_incomingEnergy -= batchEnergy;
+            m_incomingEnergy += rbuf5[4];
         }
 #endif
 

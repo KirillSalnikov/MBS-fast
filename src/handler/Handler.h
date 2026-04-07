@@ -319,6 +319,7 @@ public:
 struct BeamInfo
 {
     bool order;
+    bool isBad = false;
     double area;
     double projLenght;
     double opticalLengths[3];

@@ -216,6 +216,7 @@ void Handler::ComputeLengthIndices(const Beam &beam, BeamInfo &info)
     }
     else
     {
+        info.isBad = true;
         m_isBadBeam = true;
         ++m_nBadBeams;
     }
@@ -252,7 +253,8 @@ complex Handler::DiffractInclineAbs(const BeamInfo &info, const Beam &beam,
 
     if (abs(A) < m_eps2 && abs(B) < m_eps2)
     {
-        return (m_legacySign ? m_invComplWave : -m_invComplWave) * info.area;
+        double absorp = exp(m_absMag*info.lenIndices.z);
+        return (m_legacySign ? m_invComplWave : -m_invComplWave) * info.area * absorp;
     }
 
     complex s(0, 0);
