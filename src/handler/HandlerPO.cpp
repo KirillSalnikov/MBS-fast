@@ -144,8 +144,9 @@ void HandlerPO::WriteGroupMatrices(Arr2D &matrices, const std::string &name)
             Lp[2][1] = -Lp[1][2];
             Lp[2][2] = Lp[1][1];
 
-            Ln[1][2] = -Lp[1][2];
-            Ln[2][1] = -Lp[2][1];
+            Ln = Lp;
+            Ln[1][2] *= -1;
+            Ln[2][1] *= -1;
 
             if (t == 0)
             {
@@ -612,11 +613,10 @@ matrixC HandlerPO::ApplyDiffraction(const Beam &beam, const BeamInfo &info,
         RotateJones(beam, info, vf, direction, jones_rot);
     auto t2 = std::chrono::high_resolution_clock::now();
 
-    complex fresnel = DiffractIncline(info, beam, direction);
+    complex fresnel = (m_hasAbsorption && beam.lastFacetId != __INT_MAX__ && beam.nActs > 0)
+            ? DiffractInclineAbs(info, beam, direction)
+            : DiffractIncline(info, beam, direction);
     auto t3 = std::chrono::high_resolution_clock::now();
-//	complex fresnel = (m_hasAbsorption && beam.lastFacetId != INT_MAX && beam.nActs > 0)
-//			? DiffractInclineAbs(info, beam, direction)
-//			: DiffractIncline(info, beam, direction);
 
     if (isnan(real(fresnel)))
     {
