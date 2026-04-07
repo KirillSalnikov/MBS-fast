@@ -259,13 +259,9 @@ complex Handler::DiffractInclineAbs(const BeamInfo &info, const Beam &beam,
 
     int begin, startIndex, endIndex;
 
-    if (info.order)
-    {
-        begin = 0;
-        startIndex = beam.nVertices-1;
-        endIndex = -1;
-    }
-    else
+    // Always iterate forward (order-dependent iteration was broken:
+    // infinite loop + buffer overflow when info.order==true).
+    // Same approach as DiffractIncline where order logic is commented out.
     {
         begin = beam.nVertices-1;
         startIndex = 0;

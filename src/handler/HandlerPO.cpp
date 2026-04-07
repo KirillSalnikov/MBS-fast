@@ -613,7 +613,7 @@ matrixC HandlerPO::ApplyDiffraction(const Beam &beam, const BeamInfo &info,
         RotateJones(beam, info, vf, direction, jones_rot);
     auto t2 = std::chrono::high_resolution_clock::now();
 
-    complex fresnel = (m_hasAbsorption && beam.lastFacetId != __INT_MAX__ && beam.nActs > 0)
+    complex fresnel = (m_hasAbsorption && beam.lastFacetId != __INT_MAX__ && beam.nActs > 1)
             ? DiffractInclineAbs(info, beam, direction)
             : DiffractIncline(info, beam, direction);
     auto t3 = std::chrono::high_resolution_clock::now();
