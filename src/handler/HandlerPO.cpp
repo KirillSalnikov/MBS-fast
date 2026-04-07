@@ -859,7 +859,11 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
             continue;
         }
 
-        if (m_hasAbsorption && beam.lastFacetId != __INT_MAX__ && beam.lastFacetId != -1)
+        // Apply absorption only for beams that use DiffractIncline (nActs <= 1).
+        // Beams with nActs > 1 use DiffractInclineAbs which already includes
+        // full absorption (uniform + spatially-varying parts across the aperture).
+        if (m_hasAbsorption && beam.lastFacetId != __INT_MAX__ && beam.lastFacetId != -1
+            && beam.nActs <= 1)
         {
             ApplyAbsorption(beam);
         }
@@ -1188,7 +1192,9 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         if (info.isBad)
             continue;
 
-        if (m_hasAbsorption && beam.lastFacetId != __INT_MAX__ && beam.lastFacetId != -1)
+        // Skip ApplyAbsorption for nActs > 1: DiffractInclineAbs handles full absorption
+        if (m_hasAbsorption && beam.lastFacetId != __INT_MAX__ && beam.lastFacetId != -1
+            && beam.nActs <= 1)
             ApplyAbsorption(beam);
 
         if (beam.lastFacetId != __INT_MAX__)
@@ -1800,7 +1806,9 @@ void HandlerPO::CacheBeams(std::vector<Beam> &beams, double weight,
         if (m_isBadBeam)
             continue;
 
-        if (m_hasAbsorption && beam.lastFacetId != __INT_MAX__ && beam.lastFacetId != -1)
+        // Skip ApplyAbsorption for nActs > 1: DiffractInclineAbs handles full absorption
+        if (m_hasAbsorption && beam.lastFacetId != __INT_MAX__ && beam.lastFacetId != -1
+            && beam.nActs <= 1)
             ApplyAbsorption(beam);
 
         // Precompute edge data
