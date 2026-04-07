@@ -13,8 +13,6 @@ void TracerPO::TraceRandom(const AngleRange &betaRange, const AngleRange &gammaR
 	CalcTimer timer;
 	long long count = 0;
 
-	ofstream outFile(m_resultDirName, ios::out);
-
 	vector<Beam> outBeams;
 	double beta, gamma;
 	int halfGammaNum = gammaRange.number/2;
@@ -44,12 +42,10 @@ void TracerPO::TraceRandom(const AngleRange &betaRange, const AngleRange &gammaR
 		++count;
 	}
 
-	outFile.close();
 }
 
 void TracerPO::TraceFixed(const double &beta, const double &gamma)
 {
-	ofstream outFile(m_resultDirName, ios::out);
 	vector<Beam> outBeams;
 
 	double b = DegToRad(beta);
@@ -66,6 +62,4 @@ void TracerPO::TraceFixed(const double &beta, const double &gamma)
     {
         poHandler->WriteJonesToFile(m_resultDirName);
     }
-
-	outFile.close();
 }

@@ -100,8 +100,7 @@ void TracerGO::TraceMonteCarlo(const AngleRange &betaRange, const AngleRange &ga
     CalcTimer timer;
     OutputStartTime(timer);
 
-    string dir = CreateFolder(m_resultDirName);
-    string fulldir = dir + m_resultDirName + '\\';
+    string fulldir = m_resultDirName + "/";
 
     long long nTacts;
     asm("rdtsc" : "=A"(nTacts));
@@ -138,7 +137,7 @@ void TracerGO::TraceMonteCarlo(const AngleRange &betaRange, const AngleRange &ga
 
     m_outcomingEnergy = ((HandlerGO*)m_handler)->ComputeTotalScatteringEnergy();
 
-    m_resultDirName = dir + m_resultDirName + '\\' + m_resultDirName;
+    // m_resultDirName already has full path (dir/basename) from main.cpp
 
     m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
     OutputSummary(nOrientations, timer);

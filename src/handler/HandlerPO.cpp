@@ -93,7 +93,7 @@ void HandlerPO::WriteMatricesToFile(std::string &destName, double nrg)
 {
 //    if (!m_tracks->shouldComputeTracksOnly)
     {
-        std::ofstream outFile(destName, std::ios::app);
+        std::ofstream outFile(destName + ".dat", std::ios::app);
 
         outFile /*<< std::to_string(m_sphere.radius) << ' '*/
                 << std::to_string(m_sphere.nZenith) << ' '

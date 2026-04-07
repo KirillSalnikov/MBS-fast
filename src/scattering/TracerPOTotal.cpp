@@ -179,8 +179,6 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     // No chunking, no OpenMP (matches old MBS-raw exactly).
     if (m_cohOrient) {
         m_handler->SetNormIndex(normGamma);
-        std::string dir = CreateFolder(m_resultDirName);
-        m_resultDirName = dir + m_resultDirName;
         vector<Beam> outBeams;
         for (int i = 0; i <= betaRange.number; ++i) {
             double beta = betaRange.min + i * betaRange.step;
@@ -220,22 +218,6 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     if (m_mpiRank == 0) OutputStartTime(timer);
 
     m_handler->SetNormIndex(normGamma);
-
-    std::string dir;
-    if (m_mpiRank == 0) dir = CreateFolder(m_resultDirName);
-#ifdef USE_MPI
-    if (m_mpiSize > 1) {
-        int dirLen = dir.size();
-        MPI_Bcast(&dirLen, 1, MPI_INT, 0, MPI_COMM_WORLD);
-        dir.resize(dirLen);
-        MPI_Bcast(&dir[0], dirLen, MPI_CHAR, 0, MPI_COMM_WORLD);
-    }
-#endif
-#ifdef _WIN32
-    m_resultDirName += '\\' + m_resultDirName;
-#else
-    m_resultDirName = dir + m_resultDirName;
-#endif
 
     HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
     if (!handlerPO) {
@@ -431,13 +413,6 @@ void TracerPOTotal::TraceMonteCarlo(const AngleRange &betaRange,
 
     m_handler->SetNormIndex(1);
 
-    std::string dir = CreateFolder(m_resultDirName);
-#ifdef _WIN32
-    m_resultDirName += '\\' + m_resultDirName;
-#else
-    m_resultDirName = dir + m_resultDirName;
-#endif
-
     HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
     if (!handlerPO) { std::cerr << "Error: not HandlerPO" << std::endl; return; }
 
@@ -529,13 +504,6 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
 
     double weight = 1.0 / nOrientations;
     m_handler->SetNormIndex(1);
-
-    std::string dir = CreateFolder(m_resultDirName);
-#ifdef _WIN32
-    m_resultDirName += '\\' + m_resultDirName;
-#else
-    m_resultDirName = dir + m_resultDirName;
-#endif
 
     HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
     if (!handlerPO)
@@ -880,12 +848,7 @@ void TracerPOTotal::TraceFromFileMultiSize(const std::string &orientFile,
     std::cout << "Total: " << cache_sec + diff_sec << " s" << std::endl;
 
     // Write results for each size
-    std::string dir = CreateFolder(m_resultDirName);
-#ifdef _WIN32
-    std::string baseName = m_resultDirName + '\\' + m_resultDirName;
-#else
-    std::string baseName = dir + m_resultDirName;
-#endif
+    std::string baseName = m_resultDirName;
 
     // Save original M, write each size's result
     Arr2D &origM = handlerPO->M;
@@ -978,12 +941,6 @@ void TracerPOTotal::TraceSobolMultiSize(int nOrient, double betaSym, double gamm
     int nAz = handlerPO->m_sphere.nAzimuth;
     int nZen = handlerPO->m_sphere.nZenith;
 
-    std::string dir = CreateFolder(m_resultDirName);
-#ifdef _WIN32
-    m_resultDirName += '\\' + m_resultDirName;
-#else
-    m_resultDirName = dir + m_resultDirName;
-#endif
     std::string baseName = m_resultDirName;
 
     if (m_mpiRank == 0)
@@ -1064,23 +1021,6 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
 
     double weight = 1.0 / nOrient;  // same weight regardless of MPI split
     m_handler->SetNormIndex(1);
-
-    std::string dir;
-    if (m_mpiRank == 0) dir = CreateFolder(m_resultDirName);
-#ifdef USE_MPI
-    if (m_mpiSize > 1) {
-        // Broadcast dir name to all ranks
-        int dirLen = dir.size();
-        MPI_Bcast(&dirLen, 1, MPI_INT, 0, MPI_COMM_WORLD);
-        dir.resize(dirLen);
-        MPI_Bcast(&dir[0], dirLen, MPI_CHAR, 0, MPI_COMM_WORLD);
-    }
-#endif
-#ifdef _WIN32
-    m_resultDirName += '\\' + m_resultDirName;
-#else
-    m_resultDirName = dir + m_resultDirName;
-#endif
 
     HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
     if (!handlerPO)

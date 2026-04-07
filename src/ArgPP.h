@@ -155,6 +155,13 @@ private: // methods
 			if (valueNum == 0) // read key
 			{
 				key = RetrieveKey(rawArg);
+				if (key.empty())
+				{
+					Error("unrecognized argument '" + rawArg + "'\n"
+						  "  Hint: flags use -X (single char) or --name (multi-char).\n"
+						  "  Negative numbers as values are not supported (use 0 instead).\n"
+						  "  Run with --help for usage.");
+				}
 				Rule rule = FindRule(key);
 				CheckDependency(key, rule);
 				m_args.insert(NamedArg(key, Arg()));
@@ -166,11 +173,19 @@ private: // methods
 			}
 		}
 
-		if (valueNum != 0)
+		if (valueNum != 0 && valueNum != '+' && valueNum != '*')
 		{
-			std::string msg = "not enough values for argument with key '"
-					+ key + "', must be " + std::to_string(valueNum) + " more";
+			std::string msg = "not enough values for --" + key
+					+ ": expected " + std::to_string(GetExpectedArgs(key))
+					+ " value(s), got " + std::to_string(m_args[key].size())
+					+ "\n  Run with --help for usage.";
 			Error(msg);
+		}
+		// '+' requires at least 1 value
+		if (valueNum == '+' && m_args.count(key) && m_args[key].empty())
+		{
+			Error("--" + key + " requires at least one value.\n"
+				  "  Run with --help for usage.");
 		}
 	}
 
@@ -217,8 +232,25 @@ private: // methods
 
 		if (it == m_rules.end())
 		{
-			std::string msg = "rule for the argument with key '" + key
-					+ "' not found";
+			std::string dash = (key.size() == 1) ? "-" : "--";
+			std::string msg = "unknown flag '" + dash + key + "'";
+			// Suggest similar flags (min 3 chars match, skip single-char keys)
+			std::string suggestions;
+			size_t minLen = std::min(key.size(), (size_t)3);
+			if (minLen >= 3)
+			{
+				std::string prefix = key.substr(0, minLen);
+				for (auto &r : m_rules)
+				{
+					if (r.first.size() < 2) continue;
+					if (r.first.find(prefix) != std::string::npos
+						|| prefix.find(r.first.substr(0, minLen)) != std::string::npos)
+						suggestions += "    --" + r.first + "\n";
+				}
+			}
+			if (!suggestions.empty())
+				msg += "\n  Did you mean:\n" + suggestions;
+			msg += "  Run with --help for the full list of flags.";
 			Error(msg);
 		}
 
@@ -255,8 +287,10 @@ private: // methods
 		}
 		else
 		{
-			std::string msg = "one argument of key '" + key + "' is incorrect";
-			Error(msg);
+			Error("unexpected '" + value + "' while reading values for --" + key + "\n"
+				  "  Values cannot start with '-'. If you meant a negative number,\n"
+				  "  this is not supported. Check the argument order.\n"
+				  "  Got so far: --" + key + " " + JoinArg(key));
 		}
 	}
 
@@ -270,18 +304,40 @@ private: // methods
 
 			if (it == m_args.end())
 			{
-				std::string msg = "the argument that argument '"
-						+ key + "' depends on is not found";
-				Error(msg);
+				Error("--" + key + " requires --" + dependsOn
+					  + " to be specified before it.");
 			}
 		}
 	}
 
+	std::string JoinArg(const std::string &key) const
+	{
+		std::string result;
+		auto it = m_args.find(key);
+		if (it != m_args.end())
+			for (size_t i = 0; i < it->second.size(); ++i)
+			{
+				if (i > 0) result += " ";
+				result += it->second[i];
+			}
+		return result;
+	}
+
+	size_t GetExpectedArgs(const std::string &key) const
+	{
+		auto it = m_rules.find(key);
+		if (it != m_rules.end())
+		{
+			char v = it->second.valueNum;
+			if (v == '+' || v == '*') return 0;
+			return (size_t)v;
+		}
+		return 0;
+	}
+
 	void Error(const std::string &msg) const
 	{
-		std::string errMsg = "ArgPP error: ";
-		errMsg += msg;
-		std::cerr << errMsg << std::endl;
+		std::cerr << "\nArgPP error: " << msg << std::endl;
 		throw std::exception();
 	}
 
@@ -337,9 +393,9 @@ private: // methods
 					&& m_args.find(nrule.first) == m_args.end()
 					&& m_args.find(rule.secondaryKey) == m_args.end())
 			{
-				std::string msg = "required argument with key '"
-						+ nrule.first + "' not found";
-				Error(msg);
+				std::string dash = (nrule.first.size() == 1) ? "-" : "--";
+				Error("required argument " + dash + nrule.first + " is missing.\n"
+					  "  Run with --help for usage.");
 			}
 		}
 	}

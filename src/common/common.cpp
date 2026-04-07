@@ -2,6 +2,9 @@
 #include <string>
 #include <iostream>
 #include <fstream>
+#include <sys/stat.h>
+#include <errno.h>
+#include <cstring>
 
 using namespace std;
 
@@ -36,11 +39,10 @@ string CreateUniqueFileName(const string &filename, const string &ext)
 
 string CreateFolder(string &name)
 {
-    char curDir[MAX_PATH] = ""; // current directory
 #ifdef _WIN32
-    char newDir[MAX_PATH]; // created directory
+    char curDir[MAX_PATH] = "";
+    char newDir[MAX_PATH];
 
-    // get the current directory, and store it
     if (!GetCurrentDirectoryA(MAX_PATH, curDir))
     {
         cerr << "Error getting current directory: #" << GetLastError();
@@ -64,7 +66,31 @@ string CreateFolder(string &name)
     name += num;
     return curDir;
 #else
-    return "";
+    // Extract basename from path (e.g. "results/run_123" -> "run_123")
+    string dirPath = name;
+    string baseName = name;
+    size_t slash = name.rfind('/');
+    if (slash != string::npos)
+        baseName = name.substr(slash + 1);
+
+    // Create directory, append (N) if already exists
+    string num = "";
+    int rc = mkdir(dirPath.c_str(), 0755);
+    if (rc != 0 && errno == EEXIST)
+    {
+        for (int i = 1; ; ++i)
+        {
+            num = "(" + to_string(i) + ")";
+            dirPath = name + num;
+            rc = mkdir(dirPath.c_str(), 0755);
+            if (rc == 0 || errno != EEXIST) break;
+        }
+    }
+    if (rc != 0)
+        cerr << "WARNING: could not create directory '" << dirPath
+             << "': " << strerror(errno) << endl;
+    name = baseName + num;
+    return dirPath + "/";
 #endif
 }
 

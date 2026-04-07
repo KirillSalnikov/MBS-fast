@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <float.h>
 #include <string>
+#include <sys/stat.h>
 
 #ifdef USE_MPI
 #include <mpi.h>
@@ -415,6 +416,14 @@ int main(int argc, const char* argv[])
 
     std::string additionalSummary;
 
+    // Build command line string for logging
+    std::string cmdLine;
+    for (int i = 0; i < argc; ++i) {
+        if (i > 0) cmdLine += " ";
+        cmdLine += argv[i];
+    }
+    additionalSummary = "Command: " + cmdLine + "\n";
+
     if (argc <= 1)
     {
         PrintHelp();
@@ -431,16 +440,12 @@ int main(int argc, const char* argv[])
     SetArgRules(args);
     args.Parse(argc, argv);
 
-    bool isAbs = args.IsCatched("abs");
-
     double re = args.GetDoubleValue("ri", 0);
     double im = args.GetDoubleValue("ri", 1);
-    complex refrIndex = complex(re, im);
 
-    if (!isAbs)
-    {
-        refrIndex = complex(re, 0);
-    }
+    // Enable absorption automatically when Im(ri) != 0
+    bool isAbs = args.IsCatched("abs") || (im != 0);
+    complex refrIndex = complex(re, isAbs ? im : 0);
 
     // TODO: AggregateBuilder
 
@@ -557,8 +562,23 @@ int main(int argc, const char* argv[])
     int reflNum = args.IsCatched("n") ? (int)args.GetDoubleValue("n") : 6; // default n=6
     additionalSummary += "Number of secondary reflections: " + to_string(reflNum) + "\n";
 
-    string dirName = (args.IsCatched("o")) ? args.GetStringValue("o")
-                                           : "M";
+    string dirName;
+    if (args.IsCatched("o"))
+    {
+        dirName = args.GetStringValue("o");
+    }
+    else
+    {
+        // Auto-generate unique output name: results/run_YYYYMMDD_HHMMSS
+        time_t now = time(nullptr);
+        struct tm *t = localtime(&now);
+        char ts[20];
+        strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", t);
+        string outDir = "results";
+        mkdir(outDir.c_str(), 0755);
+        dirName = outDir + "/run_" + ts;
+        cout << "Output: " << dirName << endl;
+    }
     size_t pos = 0;
 
     while ((pos = dirName.find('%', pos)) != string::npos)
@@ -588,6 +608,25 @@ int main(int argc, const char* argv[])
             dirName.replace(start, pos-start, val);
             pos = start + val.size();
         }
+    }
+
+    // Create output folder once, before any tracer runs
+    {
+        string dir;
+        if (mpi_rank == 0) dir = CreateFolder(dirName);
+#ifdef USE_MPI
+        if (mpi_size > 1) {
+            int dirLen = dir.size();
+            MPI_Bcast(&dirLen, 1, MPI_INT, 0, MPI_COMM_WORLD);
+            dir.resize(dirLen);
+            MPI_Bcast(&dir[0], dirLen, MPI_CHAR, 0, MPI_COMM_WORLD);
+            int nameLen = dirName.size();
+            MPI_Bcast(&nameLen, 1, MPI_INT, 0, MPI_COMM_WORLD);
+            dirName.resize(nameLen);
+            MPI_Bcast(&dirName[0], nameLen, MPI_CHAR, 0, MPI_COMM_WORLD);
+        }
+#endif
+        dirName = dir + dirName;
     }
 
     bool isOutputGroups = args.IsCatched("gr");
@@ -703,11 +742,13 @@ int main(int argc, const char* argv[])
             if (N_beta < 3) N_beta = 3;
             if (N_gamma < 3) N_gamma = 3;
 
-            // N_phi default 360, can override with --grid
-            int N_phi = args.IsCatched("grid") ? (int)args.GetDoubleValue("grid", 2) : 360;
+            // N_phi priority: --nphi > --grid > default 360
+            int N_phi = args.IsCatched("nphi") ? args.GetIntValue("nphi", 0)
+                      : args.IsCatched("grid") ? (int)args.GetDoubleValue("grid", 2)
+                      : 360;
 
             cout << "=== oldauto (physics-based) ===" << endl;
-            cout << "  L=" << L << " um, lambda=" << wave << " um" << endl;
+            cout << "  Dmax=" << L << " um, lambda=" << wave << " um" << endl;
             cout << "  Diffraction step: " << delta_theta_deg << " deg" << endl;
             cout << "  Orient step: " << orient_step << " deg (3 pts/ring)" << endl;
             cout << "  Full grid: " << N_beta_full << " x " << N_gamma_full
@@ -1269,7 +1310,23 @@ int main(int argc, const char* argv[])
     }
 
     if (mpi_rank == 0)
+    {
+        if (!args.IsCatched("po") && !args.IsCatched("fixed")
+            && !args.IsCatched("random") && !args.IsCatched("montecarlo")
+            && !args.IsCatched("oldauto") && !args.IsCatched("sobol")
+            && !args.IsCatched("auto"))
+        {
+            cerr << "\nWARNING: No computation mode specified. Nothing was computed.\n"
+                 << "  Use --po for Physical Optics, or specify orientation mode:\n"
+                 << "    --fixed BETA GAMMA    Fixed orientation\n"
+                 << "    --random B G          Random orientation grid\n"
+                 << "    --sobol N             Quasi-random orientations\n"
+                 << "    --oldauto DIV         Physics-based auto grid\n"
+                 << "    --auto EPS            Full auto mode\n"
+                 << "  Example: mbs_po --po -p 1 10 5 --ri 1.3 0 -w 1 -n 4 --oldauto 8\n";
+        }
         cout << endl << "done";
+    }
 
     if (!args.IsCatched("close") && mpi_rank == 0)
     {

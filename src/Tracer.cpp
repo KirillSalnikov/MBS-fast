@@ -147,7 +147,11 @@ void Tracer::OutputStatisticsPO(CalcTimer &timer, long long orNumber, const stri
     //		m_summary += "\n\nWARNING! NAN values occured. See 'log.txt'";
     //	}
 
+#ifdef _WIN32
     ofstream out(path + "\\out.txt", ios::out);
+#else
+    ofstream out(path + "_out.txt", ios::out);
+#endif
 
     out << m_summary;
     out.close();
