@@ -859,11 +859,10 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
             continue;
         }
 
-        // Apply absorption only for beams that use DiffractIncline (nActs <= 1).
-        // Beams with nActs > 1 use DiffractInclineAbs which already includes
-        // full absorption (uniform + spatially-varying parts across the aperture).
-        if (m_hasAbsorption && beam.lastFacetId != __INT_MAX__ && beam.lastFacetId != -1
-            && beam.nActs <= 1)
+        // HandleBeams uses inlined DiffractIncline (real A,B — no absorption).
+        // ApplyAbsorption is the ONLY absorption source in this code path.
+        // (PrepareBeams/CacheBeams use ApplyDiffraction→DiffractInclineAbs instead.)
+        if (m_hasAbsorption && beam.lastFacetId != __INT_MAX__ && beam.lastFacetId != -1)
         {
             ApplyAbsorption(beam);
         }
