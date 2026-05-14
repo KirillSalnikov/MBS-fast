@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -O3 -march=native -std=gnu++11 -funroll-loops -mavx512f -mavx512dq -fopenmp
+CXXFLAGS = -O3 -march=native -std=gnu++11 -funroll-loops -mavx2 -mfma -fopenmp
 LDFLAGS = -lm -lgomp
 
 SRC_DIR = src

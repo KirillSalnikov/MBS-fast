@@ -3,6 +3,9 @@
 #include "Mueller.hpp"
 #include <iostream>
 #include <iomanip>
+#include <string>
+#include <cmath>
+#include <algorithm>
 
 HandlerPOTotal::HandlerPOTotal(Particle *particle, Light *incidentLight, int nTheta,
                                double wavelength)
@@ -86,15 +89,38 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
 
     outFile.close();
 
-    // Compute Q_sca = C_sca / A_proj (where nrg = total incoming energy = A_proj averaged over orientations)
+    // Compute efficiencies. nrg is the orientation-averaged projected area.
     if (nrg > 0)
     {
-        double Q_sca = C_sca / nrg;
+        const double C_abs_raw = m_hasAbsorption ? (nrg - m_outputEnergy) : 0.0;
+        const double absTol = std::max(1.0, nrg) * 1e-10;
+        const double C_abs = (std::fabs(C_abs_raw) < absTol) ? 0.0 : C_abs_raw;
+        const double C_ext = C_sca + C_abs;
+        const double Q_sca = C_sca / nrg;
+        const double Q_abs = C_abs / nrg;
+        const double Q_ext = C_ext / nrg;
+        const std::string label =
+            (destName.find("noshadow") != std::string::npos) ? "no-shadow" : "full";
         std::cerr << std::fixed << std::setprecision(4);
-        std::cerr << "\n===== SCATTERING EFFICIENCY =====\n";
+        std::cerr << "\n===== SCATTERING EFFICIENCY: " << label << " =====\n";
         std::cerr << "C_sca = " << C_sca << "\n";
         std::cerr << "A_proj (incoming energy) = " << nrg << "\n";
-        std::cerr << "Q_sca = C_sca / A_proj = " << Q_sca << "\n";
+        std::cerr << "Q_sca (" << label << ") = C_sca / A_proj = " << Q_sca << "\n";
+        if (label == "full")
+        {
+            std::cerr << "Outcoming energy = " << m_outputEnergy << "\n";
+            std::cerr << "C_abs = A_proj - outcoming energy = " << C_abs << "\n";
+            std::cerr << "C_ext = C_sca + C_abs = " << C_ext << "\n";
+            std::cerr << "Q_abs = C_abs / A_proj = " << Q_abs << "\n";
+            std::cerr << "Q_ext = C_ext / A_proj = " << Q_ext << "\n";
+            std::cerr << "EFFICIENCY_SUMMARY "
+                      << "Qext=" << Q_ext << ' '
+                      << "Cext=" << C_ext << ' '
+                      << "Qabs=" << Q_abs << ' '
+                      << "Qsca=" << Q_sca << ' '
+                      << "Csca=" << C_sca << ' '
+                      << "Cabs=" << C_abs << "\n";
+        }
         if (Q_sca > 2.5)
         {
             std::cerr << "WARNING: Q_sca = " << Q_sca
@@ -102,7 +128,7 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
                       << "  Physical limit (extinction paradox): Q_ext -> 2 for large x.\n"
                       << "  This is a known PO limitation.\n";
         }
-        std::cerr << "=================================\n";
+        std::cerr << "=========================================\n";
     }
 }
 

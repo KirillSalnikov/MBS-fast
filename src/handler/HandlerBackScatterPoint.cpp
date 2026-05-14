@@ -58,11 +58,6 @@ void HandlerBackScatterPoint::HandleBeams(std::vector<Beam> &beams, double sinZe
             continue;
         }
 
-        if (beam.lastFacetId != __INT_MAX__)
-        {
-            ApplyAbsorption(beam);
-        }
-
         matrixC diffractedMatrix = ApplyDiffraction(beam, info, backDirection, vf);
         /* DEB */ {
 #ifdef _DEBUG

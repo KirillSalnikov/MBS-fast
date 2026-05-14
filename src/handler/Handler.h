@@ -367,7 +367,7 @@ public:
     Handler(Particle *particle, Light *incidentLight, int nTheta,
             double wavelength);
 
-    virtual double ComputeTotalScatteringEnergy() {}
+    virtual double ComputeTotalScatteringEnergy() { return 0.0; }
     virtual void HandleBeams(std::vector<Beam> &beams, double sinZenith);
     virtual void SetTracks(Tracks *tracks);
     Tracks *GetTracks() const;

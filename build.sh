@@ -2,7 +2,7 @@
 set -e
 
 CXX="g++"
-CXXFLAGS="-O3 -std=gnu++11 -march=native -mavx512f -mavx512dq -fopenmp -funroll-loops"
+CXXFLAGS="-O3 -std=gnu++11 -march=native -mavx2 -mfma -fopenmp -funroll-loops"
 INCLUDES="-Isrc -Isrc/math -Isrc/handler -Isrc/common -Isrc/geometry \
           -Isrc/geometry/intrinsic -Isrc/geometry/sse -Isrc/particle \
           -Isrc/scattering -Isrc/tracer -Isrc/splitting -Isrc/bigint"

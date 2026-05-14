@@ -44,7 +44,8 @@ extract_qsca_from_stdout() {
         echo "NaN"
         return
     fi
-    grep -oP 'Q_sca = C_sca / A_proj = \K[0-9.]+' "$stdoutfile" || echo "NaN"
+    { grep -oP 'Q_sca \(full\) = C_sca / A_proj = \K[0-9.]+' "$stdoutfile" \
+        || grep -oP 'Q_sca = C_sca / A_proj = \K[0-9.]+' "$stdoutfile"; } | head -1 || echo "NaN"
 }
 
 # Extract C_sca from .dat file: sum of M11 * 2pi*dcos
@@ -165,7 +166,7 @@ echo ""
 
 # =============================================================================
 # Test 2: Hex column with absorption m=1.31+0.1i
-# Expected: Q_sca ~ 1.09 +/- 0.15
+# Expected full M.dat Q_sca ~ 1.17 +/- 20%
 # =============================================================================
 echo "=== Test 2: Hex column with absorption ==="
 TEST2_DIR="$WORK_DIR/test2"
@@ -181,13 +182,19 @@ if [ $RET -ne 0 ]; then
     fail_test "Test 2" "mbs_po exited with code $RET"
 else
     Q2=$(extract_qsca_from_stdout "$TEST2_DIR/stdout.txt")
-    echo "  Q_sca = $Q2 (expected ~1.09)"
+    echo "  Q_sca = $Q2 (expected ~1.17)"
     if [ "$Q2" = "NaN" ]; then
         fail_test "Test 2" "Could not extract Q_sca from stdout"
-    elif check_relative "$Q2" "1.09" "0.20"; then
-        pass_test "Test 2: Q_sca with absorption within 20% of 1.09"
+    elif check_relative "$Q2" "1.17" "0.20"; then
+        pass_test "Test 2: Q_sca with absorption within 20% of 1.17"
     else
-        fail_test "Test 2" "Q_sca=$Q2, expected 1.09 +/- 20%"
+        fail_test "Test 2" "Q_sca=$Q2, expected 1.17 +/- 20%"
+    fi
+
+    if grep -Eq 'EFFICIENCY_SUMMARY .*Qext=.*Cext=.*Qabs=.*Qsca=.*Csca=.*Cabs=' "$TEST2_DIR/stdout.txt"; then
+        pass_test "Test 2: final efficiency summary contains Q/C ext, abs, sca"
+    else
+        fail_test "Test 2" "Missing EFFICIENCY_SUMMARY with Qext Cext Qabs Qsca Csca Cabs"
     fi
 fi
 echo ""
@@ -258,11 +265,161 @@ if [ $RET -ne 0 ]; then
     fail_test "Test 5" "Adaptive mode exited with code $RET (or timeout)"
 else
     # Check that "Converged" or "Max iterations" appears in output
-    if grep -qi "converged\|max iterations" "$TEST5_DIR/stdout.txt"; then
+    if grep -qi "converged\|max iterations\|max orientations" "$TEST5_DIR/stdout.txt"; then
         pass_test "Test 5: Adaptive mode converged"
     else
         fail_test "Test 5" "No convergence message in output"
     fi
+fi
+echo ""
+
+# =============================================================================
+# Test 6: PO absorption guard consistency
+# =============================================================================
+echo "=== Test 6: PO absorption guard consistency ==="
+if grep -Eq 'nActs[[:space:]]*(>|<=)[[:space:]]*1' "$PROJECT_DIR/src/handler/HandlerPO.cpp"; then
+    fail_test "Test 6" "Found legacy nActs > 1 or nActs <= 1 absorption guard in HandlerPO.cpp"
+elif ! grep -q 'HasInternalOpticalPath(beam)' "$PROJECT_DIR/src/handler/HandlerPO.cpp"; then
+    fail_test "Test 6" "Missing unified HasInternalOpticalPath absorption guard"
+elif ! grep -q 'ApplyDiffraction(.*false)' "$PROJECT_DIR/src/handler/HandlerPO.cpp"; then
+    fail_test "Test 6" "Prepared fallback does not disable duplicate absorption integral"
+else
+    pass_test "Test 6: PO absorption guards are consistent"
+fi
+echo ""
+
+# =============================================================================
+# Test 7: Checkpoint hash includes physical parameters
+# =============================================================================
+echo "=== Test 7: Checkpoint hash parameters ==="
+if ! grep -q 'GetMaxReflections()' "$PROJECT_DIR/src/scattering/TracerPOTotal.cpp"; then
+    fail_test "Test 7" "Checkpoint hash does not include current max reflection count"
+elif ! grep -q 'imag(ri)' "$PROJECT_DIR/src/scattering/TracerPOTotal.cpp"; then
+    fail_test "Test 7" "Checkpoint hash does not include imaginary refractive index"
+else
+    pass_test "Test 7: Checkpoint hash includes reflection count and complex RI"
+fi
+echo ""
+
+# =============================================================================
+# Test 8: Sobol OpenMP determinism and --auto smoke test
+# =============================================================================
+echo "=== Test 8: Sobol parallel determinism + auto smoke ==="
+TEST8_DIR="$WORK_DIR/test8"
+mkdir -p "$TEST8_DIR/t1" "$TEST8_DIR/t4" "$TEST8_DIR/auto"
+
+cd "$TEST8_DIR/t1"
+OMP_NUM_THREADS=1 $MBS --po --sobol 64 -p 1 10 10 -w 0.532 --ri 1.31 0 \
+    -n 4 --grid 0 180 12 24 --close -o M_t1 \
+    > "$TEST8_DIR/t1/stdout.txt" 2>&1
+RET1=$?
+
+cd "$TEST8_DIR/t4"
+OMP_NUM_THREADS=4 $MBS --po --sobol 64 -p 1 10 10 -w 0.532 --ri 1.31 0 \
+    -n 4 --grid 0 180 12 24 --close -o M_t4 \
+    > "$TEST8_DIR/t4/stdout.txt" 2>&1
+RET4=$?
+
+if [ $RET1 -ne 0 ] || [ $RET4 -ne 0 ]; then
+    fail_test "Test 8" "Sobol run failed for OMP_NUM_THREADS=1 or 4"
+else
+    T1_DAT="$TEST8_DIR/t1/M_t1/M_t1.dat"
+    T4_DAT="$TEST8_DIR/t4/M_t4/M_t4.dat"
+    MAX_DIFF=$(awk '
+        FNR==NR {
+            if (FNR > 1 && NF >= 3) {
+                key=$1+0; old[key]=$3+0; keys[++n]=key
+            }
+            next
+        }
+        FNR > 1 && NF >= 3 {
+            key=$1+0
+            d=($3+0)-old[key]; if (d < 0) d=-d
+            if (d > max) max=d
+        }
+        END { printf "%.12e", max }
+    ' "$T1_DAT" "$T4_DAT")
+    echo "  Sobol max |M11(thread1)-M11(thread4)| = $MAX_DIFF"
+    if awk -v d="$MAX_DIFF" 'BEGIN { exit (d <= 1e-9) ? 0 : 1 }'; then
+        pass_test "Test 8: Sobol OpenMP deterministic M11"
+    else
+        fail_test "Test 8" "Sobol M11 differs between 1 and 4 threads: $MAX_DIFF"
+    fi
+fi
+
+cd "$TEST8_DIR/auto"
+OMP_NUM_THREADS=4 timeout 120 $MBS --po --auto 0.10 -p 1 10 10 -w 0.532 --ri 1.31 0 \
+    -n 4 --maxorient 64 --close -o M_auto \
+    > "$TEST8_DIR/auto/stdout.txt" 2>&1
+RETA=$?
+
+if [ $RETA -ne 0 ]; then
+    fail_test "Test 8" "--auto exited with code $RETA"
+elif grep -q "Q_sca" "$TEST8_DIR/auto/stdout.txt" && [ -f "$TEST8_DIR/auto/M_auto/M_auto.dat" ]; then
+    pass_test "Test 8: --auto smoke run produced output"
+else
+    fail_test "Test 8" "--auto did not produce expected output"
+fi
+echo ""
+
+# =============================================================================
+# Test 9: Grid/random OpenMP determinism and oldauto smoke test
+# =============================================================================
+echo "=== Test 9: Grid/random determinism + oldauto smoke ==="
+TEST9_DIR="$WORK_DIR/test9"
+mkdir -p "$TEST9_DIR/t1" "$TEST9_DIR/t4" "$TEST9_DIR/oldauto"
+
+cd "$TEST9_DIR/t1"
+OMP_NUM_THREADS=1 $MBS --po --random 3 3 -p 1 10 10 -w 0.532 --ri 1.31 0 \
+    -n 4 --grid 0 180 12 24 --close -o M_t1 \
+    > "$TEST9_DIR/t1/stdout.txt" 2>&1
+RET1=$?
+
+cd "$TEST9_DIR/t4"
+OMP_NUM_THREADS=4 $MBS --po --random 3 3 -p 1 10 10 -w 0.532 --ri 1.31 0 \
+    -n 4 --grid 0 180 12 24 --close -o M_t4 \
+    > "$TEST9_DIR/t4/stdout.txt" 2>&1
+RET4=$?
+
+if [ $RET1 -ne 0 ] || [ $RET4 -ne 0 ]; then
+    fail_test "Test 9" "Grid/random run failed for OMP_NUM_THREADS=1 or 4"
+else
+    T1_DAT="$TEST9_DIR/t1/M_t1/M_t1.dat"
+    T4_DAT="$TEST9_DIR/t4/M_t4/M_t4.dat"
+    MAX_DIFF=$(awk '
+        FNR==NR {
+            if (FNR > 1 && NF >= 3) { key=$1+0; old[key]=$3+0 }
+            next
+        }
+        FNR > 1 && NF >= 3 {
+            key=$1+0
+            d=($3+0)-old[key]; if (d < 0) d=-d
+            if (d > max) max=d
+        }
+        END { printf "%.12e", max }
+    ' "$T1_DAT" "$T4_DAT")
+    echo "  Grid max |M11(thread1)-M11(thread4)| = $MAX_DIFF"
+    if awk -v d="$MAX_DIFF" 'BEGIN { exit (d <= 1e-9) ? 0 : 1 }'; then
+        pass_test "Test 9: Grid/random OpenMP deterministic M11"
+    else
+        fail_test "Test 9" "Grid/random M11 differs between 1 and 4 threads: $MAX_DIFF"
+    fi
+fi
+
+cd "$TEST9_DIR/oldauto"
+OMP_NUM_THREADS=4 timeout 120 $MBS --po --oldauto 64 -p 1 10 10 -w 0.532 --ri 1.31 0 \
+    -n 4 --grid 0 12 24 --close -o M_oldauto \
+    > "$TEST9_DIR/oldauto/stdout.txt" 2>&1
+RETO=$?
+
+if [ $RETO -ne 0 ]; then
+    fail_test "Test 9" "--oldauto exited with code $RETO"
+elif grep -q "N_phi=12" "$TEST9_DIR/oldauto/stdout.txt" \
+    && grep -q "Q_sca" "$TEST9_DIR/oldauto/stdout.txt" \
+    && [ -f "$TEST9_DIR/oldauto/M_oldauto/M_oldauto.dat" ]; then
+    pass_test "Test 9: --oldauto smoke run produced output and parsed grid N_phi"
+else
+    fail_test "Test 9" "--oldauto did not produce expected output"
 fi
 echo ""
 

@@ -26,8 +26,8 @@ Scattering::Scattering(Particle *particle, Light *incidentLight, bool isOpticalP
 
     complex ri = m_particle->GetRefractiveIndex();
     splitting.ComputeRiParams(ri);
-    double tmp = (real(ri)-1)/(real(ri)+1);
-    EPS_BEAM_ENERGY = (0.25*0.25*m_particle->Area())/M_PI*tmp*tmp*1e-7;
+    const double riContrast = abs((ri - complex(1.0, 0.0)) / (ri + complex(1.0, 0.0)));
+    EPS_BEAM_ENERGY = (0.25*0.25*m_particle->Area())/M_PI*riContrast*riContrast*1e-7;
 }
 
 IdType Scattering::Scattering::RecomputeTrackId(const IdType &oldId, int facetId)
@@ -158,6 +158,7 @@ bool Scattering::ScatterLight(double /*beta*/, double /*gamma*/, const std::vect
 
 //		outBeams.push_back(outBuff.back());
     //	}
+    return false;
 }
 
 void Scattering::OrderVertices2f(std::vector<Point2f> &vertices,

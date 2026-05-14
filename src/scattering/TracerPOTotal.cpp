@@ -18,17 +18,19 @@
 
 // ---- Checkpoint save/load for resume after crash ----
 static void SaveCheckpoint(const std::string &path, const Arr2D &M, const Arr2D &M_ns,
-                            double energy, int completedOrient, int totalOrient,
+                            double energy, double outputEnergy,
+                            int completedOrient, int totalOrient,
                             unsigned long paramHash, int nAz, int nZen)
 {
     std::ofstream f(path, std::ios::binary);
     if (!f.is_open()) return;
-    uint32_t magic = 0x4D425343; // "MBSC"
+    uint32_t magic = 0x4D425344; // "MBSD"
     f.write((char*)&magic, 4);
     f.write((char*)&paramHash, sizeof(paramHash));
     f.write((char*)&completedOrient, sizeof(completedOrient));
     f.write((char*)&totalOrient, sizeof(totalOrient));
     f.write((char*)&energy, sizeof(energy));
+    f.write((char*)&outputEnergy, sizeof(outputEnergy));
     f.write((char*)&nAz, 4);
     f.write((char*)&nZen, 4);
     // Dump M data
@@ -55,13 +57,14 @@ static void SaveCheckpoint(const std::string &path, const Arr2D &M, const Arr2D 
 }
 
 static bool LoadCheckpoint(const std::string &path, Arr2D &M, Arr2D &M_ns,
-                            double &energy, int &completedOrient, int totalOrient,
+                            double &energy, double &outputEnergy,
+                            int &completedOrient, int totalOrient,
                             unsigned long paramHash)
 {
     std::ifstream f(path, std::ios::binary);
     if (!f.is_open()) return false;
     uint32_t magic; f.read((char*)&magic, 4);
-    if (magic != 0x4D425343) return false;
+    if (magic != 0x4D425344) return false;
     unsigned long storedHash; f.read((char*)&storedHash, sizeof(storedHash));
     if (storedHash != paramHash) {
         std::cerr << "Checkpoint param mismatch, ignoring" << std::endl;
@@ -72,6 +75,7 @@ static bool LoadCheckpoint(const std::string &path, Arr2D &M, Arr2D &M_ns,
     f.read((char*)&storedTotal, sizeof(storedTotal));
     if (storedTotal != totalOrient) return false;
     f.read((char*)&energy, sizeof(energy));
+    f.read((char*)&outputEnergy, sizeof(outputEnergy));
     int nAz, nZen; f.read((char*)&nAz, 4); f.read((char*)&nZen, 4);
     // Load M
     for (int p = 0; p < nAz; ++p)
@@ -94,13 +98,13 @@ static bool LoadCheckpoint(const std::string &path, Arr2D &M, Arr2D &M_ns,
     return true;
 }
 
-static unsigned long HashParams(double wave, double ri_re, int nActs, int nOrient,
+static unsigned long HashParams(double wave, double ri_re, double ri_im, int nActs, int nOrient,
                                  double L, double D, int nAz, int nZen)
 {
     unsigned long h = 0;
     auto mix = [&](double v) { h ^= std::hash<double>{}(v) + 0x9e3779b9 + (h<<6) + (h>>2); };
     auto mixi = [&](int v) { h ^= std::hash<int>{}(v) + 0x9e3779b9 + (h<<6) + (h>>2); };
-    mix(wave); mix(ri_re); mixi(nActs); mixi(nOrient); mix(L); mix(D); mixi(nAz); mixi(nZen);
+    mix(wave); mix(ri_re); mix(ri_im); mixi(nActs); mixi(nOrient); mix(L); mix(D); mixi(nAz); mixi(nZen);
     return h;
 }
 #ifdef _OPENMP
@@ -137,7 +141,7 @@ static void FlatToArr2D(const double *buf, int N, int M, Arr2D &arr)
         }
 }
 
-// Helper: MPI reduce Arr2D + incomingEnergy, rank 0 gets result
+// Helper: MPI reduce Arr2D + energy counters, rank 0 gets result
 static void MPI_ReduceMueller(HandlerPO *hp, int nAz, int nZen,
                                double &incomingEnergy, int mpi_rank)
 {
@@ -159,6 +163,11 @@ static void MPI_ReduceMueller(HandlerPO *hp, int nAz, int nZen,
     double totalEnergy = 0;
     MPI_Reduce(&incomingEnergy, &totalEnergy, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     if (mpi_rank == 0) incomingEnergy = totalEnergy;
+
+    // Reduce output energy used for absorption/extinction accounting.
+    double totalOutputEnergy = 0;
+    MPI_Reduce(&hp->m_outputEnergy, &totalOutputEnergy, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (mpi_rank == 0) hp->m_outputEnergy = totalOutputEnergy;
 #endif
 }
 
@@ -581,14 +590,16 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
 
     // Checkpoint: resume from crash
     std::string ckptPath = m_resultDirName + "_checkpoint.bin";
+    const complex ri = m_particle->GetRefractiveIndex();
     unsigned long paramHash = HashParams(m_scattering->m_wave,
-        real(m_particle->GetRefractiveIndex()), 0,
+        real(ri), imag(ri), m_scattering->GetMaxReflections(),
         nOrientations, m_particle->MaximalDimention(), 0, nAz, nZen);
     int resumeChunk = 0;
     {
         int completedOrient = 0;
         if (LoadCheckpoint(ckptPath, handlerPO->M, handlerPO->M_noshadow,
-                           m_incomingEnergy, completedOrient, nOrientations, paramHash))
+                           m_incomingEnergy, handlerPO->m_outputEnergy,
+                           completedOrient, nOrientations, paramHash))
         {
             resumeChunk = completedOrient / chunkSize;
             count = completedOrient;
@@ -695,7 +706,8 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
         // Save checkpoint after each chunk
         if (m_mpiRank == 0) {
             SaveCheckpoint(ckptPath, handlerPO->M, handlerPO->M_noshadow,
-                           m_incomingEnergy, iEnd, nOrientations, paramHash, nAz+1, nZen+1);
+                           m_incomingEnergy, handlerPO->m_outputEnergy,
+                           iEnd, nOrientations, paramHash, nAz+1, nZen+1);
         }
     }
 
@@ -1081,10 +1093,14 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
         int iEnd = std::min(iStart + chunkSize, myEnd);
         int thisChunk = iEnd - iStart;
 
-        // Phase 1: trace this chunk (PARALLEL — each thread has own Particle+Scattering copy)
+        // Phase 1a: trace this chunk in parallel. Each thread has its own
+        // Particle/Scattering copy; HandlerPO preprocessing is intentionally
+        // kept out of this region because Handler keeps mutable scratch state.
         auto tp1 = std::chrono::high_resolution_clock::now();
         std::vector<PreparedOrientation> chunkPrepared(thisChunk);
         std::vector<double> chunkEnergies(thisChunk, 0);
+        std::vector<std::vector<Beam>> chunkBeams(thisChunk);
+        std::vector<char> chunkOk(thisChunk, 0);
 
         #pragma omp parallel
         {
@@ -1103,17 +1119,24 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
                 localParticle.Rotate(orientations[idx].first, orientations[idx].second, 0);
                 if (!shadowOff) localScatter->FormShadowBeam(localBeams);
                 bool ok = localScatter->ScatterLight(0, 0, localBeams);
-                if (ok) handlerPO->PrepareBeams(localBeams, weight, chunkPrepared[i]);
-                else    chunkPrepared[i].sinZenith = weight;
+                chunkOk[i] = ok ? 1 : 0;
+                if (ok)
+                    chunkBeams[i].swap(localBeams);
+                else
+                    localBeams.clear();
                 chunkEnergies[i] = localScatter->GetIncedentEnergy() * weight;
-                localBeams.clear();
             }
 
             delete localScatter;
         }
 
-        // Accumulate energies (sequential, fast)
+        // Phase 1b: preprocess beams sequentially on the shared Handler.
+        // PrepareBeams uses Handler scratch fields and updates output energy.
         for (int i = 0; i < thisChunk; ++i) {
+            if (chunkOk[i])
+                handlerPO->PrepareBeams(chunkBeams[i], weight, chunkPrepared[i]);
+            else
+                chunkPrepared[i].sinZenith = weight;
             m_incomingEnergy += chunkEnergies[i];
             count++;
         }

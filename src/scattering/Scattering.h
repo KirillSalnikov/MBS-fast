@@ -61,6 +61,7 @@ public:
         return new Scattering(newParticle, light, true, m_nActs);
     }
     void SetMaxReflections(int n) { m_nActs = n; }
+    int GetMaxReflections() const { return m_nActs; }
 
     virtual bool ScatterLight(double /*beta*/, double /*gamma*/, std::vector<Beam> &/*scaterredBeams*/)
     {

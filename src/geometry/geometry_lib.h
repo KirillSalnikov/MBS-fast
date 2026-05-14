@@ -119,13 +119,20 @@ struct Point3f
 {
 	float coordinates[4]; /// coordinates
 
-	Point3f() {}
+	Point3f()
+	{
+		coordinates[0] = 0;
+		coordinates[1] = 0;
+		coordinates[2] = 0;
+		coordinates[3] = 0;
+	}
 
 	Point3f(float x, float y, float z)
 	{
 		coordinates[0] = x;
 		coordinates[1] = y;
 		coordinates[2] = z;
+		coordinates[3] = 0;
 	}
 
 	Point3f(float x, float y, float z, float d)
@@ -141,6 +148,7 @@ struct Point3f
 		coordinates[0] = other.x;
 		coordinates[1] = other.y;
 		coordinates[2] = 0;
+		coordinates[3] = 0;
 	}
 
 	bool IsEqualTo(const Point3f &other, float eps) const
@@ -165,6 +173,7 @@ struct Point3f
 		coordinates[0] = other.coordinates[0];
 		coordinates[1] = other.coordinates[1];
 		coordinates[2] = other.coordinates[2];
+		coordinates[3] = other.coordinates[3];
 	}
 
 	Point3f & operator = (const Point3f &other)
@@ -172,6 +181,7 @@ struct Point3f
 		coordinates[0] = other.coordinates[0];
 		coordinates[1] = other.coordinates[1];
 		coordinates[2] = other.coordinates[2];
+		coordinates[3] = other.coordinates[3];
 
 		return *this;
 	}
@@ -277,7 +287,7 @@ typedef Point3d Vector3d;
  * Functions
  */
 
-float DotProduct(const Vector3f &v1, const Vector3f &v2);
+double DotProduct(const Vector3f &v1, const Vector3f &v2);
 double DotProductD(const Vector3d &v1, const Vector3d &v2);
 void CrossProduct(const Vector3f &v1, const Vector3f &v2, Vector3f &res);
 Point3f CrossProduct(const Point3f &v1, const Point3f &v2);
@@ -285,7 +295,7 @@ Point3f IntersectVectors(const Point3f &c1, const Point3f &c2,
 						 const Point3f &v1, const Point3f &v2,
 						 const Point3f &normalToFacet, bool &isOk);
 
-float Norm(const Vector3f &point);
+double Norm(const Vector3f &point);
 void Normalize(Vector3f &v);
 Vector3d NormalizeD(const Vector3d &v);
 double Length(const Vector3f &v);

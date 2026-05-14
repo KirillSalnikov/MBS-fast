@@ -14,7 +14,7 @@ OpenMP + MPI parallel. AVX-512/AVX2 SIMD. Adaptive grids. Auto beam cutoff.
 
 | Script | Target CPU | Binary |
 |--------|-----------|--------|
-| `bash build.sh` | Intel AVX-512 | `bin/mbs_po` |
+| `bash build.sh` | Native AVX2/FMA baseline | `bin/mbs_po` |
 | `bash build_epyc.sh` | AMD EPYC 7H12 (Zen 2) | `bin/mbs_po_epyc` |
 | `bash build_zen4.sh` | AMD Zen 4 (Ryzen 7000 / Genoa) | `bin/mbs_po_zen4` |
 | `bash build_epyc_clang.sh` | EPYC + Clang/AOCC | `bin/mbs_po_epyc_clang` |

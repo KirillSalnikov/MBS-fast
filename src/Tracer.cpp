@@ -16,7 +16,13 @@
 using namespace std;
 
 Tracer::Tracer(Particle *particle, int nActs, const string &resultFileName)
-    : m_resultDirName(resultFileName)
+    : m_handler(nullptr),
+      m_particle(nullptr),
+      m_incomingEnergy(0.0),
+      m_outcomingEnergy(0.0),
+      m_resultDirName(resultFileName),
+      m_wavelength(0.0),
+      m_startTime(0)
 {
     SetIncidentLight(particle);
 

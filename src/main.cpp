@@ -742,10 +742,20 @@ int main(int argc, const char* argv[])
             if (N_beta < 3) N_beta = 3;
             if (N_gamma < 3) N_gamma = 3;
 
-            // N_phi priority: --nphi > --grid > default 360
-            int N_phi = args.IsCatched("nphi") ? args.GetIntValue("nphi", 0)
-                      : args.IsCatched("grid") ? (int)args.GetDoubleValue("grid", 2)
-                      : 360;
+            // N_phi priority: --nphi > --grid > default 360.
+            // --grid has two forms: radius Nphi Ntheta, or theta1 theta2 Nphi Ntheta.
+            int N_phi = 360;
+            if (args.IsCatched("nphi"))
+            {
+                N_phi = args.GetIntValue("nphi", 0);
+            }
+            else if (args.IsCatched("grid"))
+            {
+                int gridArgs = args.GetArgNumber("grid");
+                N_phi = (gridArgs == 3)
+                    ? (int)args.GetDoubleValue("grid", 1)
+                    : (int)args.GetDoubleValue("grid", 2);
+            }
 
             cout << "=== oldauto (physics-based) ===" << endl;
             cout << "  Dmax=" << L << " um, lambda=" << wave << " um" << endl;

@@ -113,6 +113,9 @@ public:
 protected:
     virtual void AddToMueller();
 
+    static bool IsParticleBeam(const Beam &beam);
+    static bool HasInternalOpticalPath(const Beam &beam);
+
     void ComputeOpticalLengths(const Beam &beam, BeamInfo &info);
 
     virtual void RotateJones(const Beam &beam, const BeamInfo &info,
@@ -130,7 +133,8 @@ protected:
                            const Vector3d &direction);
 
     matrixC ApplyDiffraction(const Beam &beam, const BeamInfo &info,
-                         const Vector3d &direction, const Vector3d &vf);
+                         const Vector3d &direction, const Vector3d &vf,
+                         bool useAbsorptionIntegral = true);
     matrixC ApplyDiffractionFast(const Beam &beam, const BeamInfo &info,
                                  const BeamEdgeData &edgeData,
                                  const Point3d &beamDirD,
@@ -176,4 +180,3 @@ public:
 private:
     void WriteGroupMatrices(Arr2D &matrices, const std::string &name);
 };
-

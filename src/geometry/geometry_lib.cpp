@@ -3,12 +3,11 @@
 #include "Intersection.h"
 #include "intrinsic/intrinsics.h"
 
-float DotProduct(const Vector3f &v1, const Vector3f &v2)
+double DotProduct(const Vector3f &v1, const Vector3f &v2)
 {
-	__m128 _v1 = _mm_setr_ps(v1.cx, v1.cy, v1.cz, 0.0);
-	__m128 _v2 = _mm_setr_ps(v2.cx, v2.cy, v2.cz, 0.0);
-	__m128 _dp0 = _mm_dp_ps(_v1, _v2, MASK_FULL);
-	return _dp0[0];
+	return	  (double)v1.cx * (double)v2.cx
+			+ (double)v1.cy * (double)v2.cy
+			+ (double)v1.cz * (double)v2.cz;
 }
 
 double DotProductD(const Vector3d &v1, const Vector3d &v2)
@@ -18,11 +17,11 @@ double DotProductD(const Vector3d &v1, const Vector3d &v2)
 			+ v1.z * v2.z;
 }
 
-float Norm(const Vector3f &p)
+double Norm(const Vector3f &p)
 {
-	return	  p.cx * p.cx
-			+ p.cy * p.cy
-			+ p.cz * p.cz;
+	return	  (double)p.cx * (double)p.cx
+			+ (double)p.cy * (double)p.cy
+			+ (double)p.cz * (double)p.cz;
 }
 
 double NormD(const Vector3d &p)

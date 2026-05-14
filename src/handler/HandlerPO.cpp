@@ -9,6 +9,16 @@
 #include <cmath>
 #include <chrono>
 
+bool HandlerPO::IsParticleBeam(const Beam &beam)
+{
+    return beam.lastFacetId != __INT_MAX__ && beam.lastFacetId != -1;
+}
+
+bool HandlerPO::HasInternalOpticalPath(const Beam &beam)
+{
+    return IsParticleBeam(beam) && beam.nActs > 0;
+}
+
 // ---- Timing accumulators (static, printed at program exit) ----
 static double g_time_rotateJones_us    = 0;
 static double g_time_diffractFast_us   = 0;
@@ -598,7 +608,8 @@ matrixC HandlerPO::ApplyDiffractionFast3(const BeamPolData &polData,
 
 matrixC HandlerPO::ApplyDiffraction(const Beam &beam, const BeamInfo &info,
                                     const Vector3d &direction,
-                                    const Vector3d &vf)
+                                    const Vector3d &vf,
+                                    bool useAbsorptionIntegral)
 {
     auto t0 = std::chrono::high_resolution_clock::now();
     matrixC fnJones = (beam.lastFacetId != __INT_MAX__) ?
@@ -613,7 +624,7 @@ matrixC HandlerPO::ApplyDiffraction(const Beam &beam, const BeamInfo &info,
         RotateJones(beam, info, vf, direction, jones_rot);
     auto t2 = std::chrono::high_resolution_clock::now();
 
-    complex fresnel = (m_hasAbsorption && beam.lastFacetId != __INT_MAX__ && beam.nActs > 1)
+    complex fresnel = (useAbsorptionIntegral && m_hasAbsorption && HasInternalOpticalPath(beam))
             ? DiffractInclineAbs(info, beam, direction)
             : DiffractIncline(info, beam, direction);
     auto t3 = std::chrono::high_resolution_clock::now();
@@ -700,7 +711,7 @@ BeamInfo HandlerPO::ComputeBeamInfo(Beam &beam)
     info.projectedCenter = ChangeCoordinateSystem(info.horAxis, info.verAxis,
                                                   info.normald, info.center);
 
-    if (m_hasAbsorption && beam.lastFacetId != __INT_MAX__ && beam.nActs > 1)
+    if (m_hasAbsorption && HasInternalOpticalPath(beam))
     {
         ComputeOpticalLengths(beam, info);
         ComputeLengthIndices(beam, info);
@@ -859,10 +870,9 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
             continue;
         }
 
-        // HandleBeams uses inlined DiffractIncline (real A,B — no absorption).
-        // ApplyAbsorption is the ONLY absorption source in this code path.
-        // (PrepareBeams/CacheBeams use ApplyDiffraction→DiffractInclineAbs instead.)
-        if (m_hasAbsorption && beam.lastFacetId != __INT_MAX__ && beam.lastFacetId != -1)
+        // HandleBeams uses an inlined non-absorbing diffraction integral, so
+        // absorption is applied once to the beam amplitude before diffraction.
+        if (m_hasAbsorption && HasInternalOpticalPath(beam))
         {
             ApplyAbsorption(beam);
         }
@@ -1084,7 +1094,7 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                 {
                     Point3d &dir = m_sphere.directions[i][j];
                     Point3d &vf = m_sphere.vf[i][j];
-                    matrixC tmp = ApplyDiffraction(beam, info, dir, vf);
+                    matrixC tmp = ApplyDiffraction(beam, info, dir, vf, false);
                     d00 = tmp[0][0]; d01 = tmp[0][1];
                     d10 = tmp[1][0]; d11 = tmp[1][1];
                 }
@@ -1191,9 +1201,9 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         if (info.isBad)
             continue;
 
-        // Skip ApplyAbsorption for nActs > 1: DiffractInclineAbs handles full absorption
-        if (m_hasAbsorption && beam.lastFacetId != __INT_MAX__ && beam.lastFacetId != -1
-            && beam.nActs > 1)
+        // Apply absorption only to beams with an internal path. nActs == 0 is
+        // the primary external reflection, which never enters the particle.
+        if (m_hasAbsorption && HasInternalOpticalPath(beam))
             ApplyAbsorption(beam);
 
         if (beam.lastFacetId != __INT_MAX__)
@@ -1559,10 +1569,15 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
         double jp10r = pb.jp10r, jp10i = pb.jp10i;
         double jp11r = pb.jp11r, jp11i = pb.jp11i;
         bool isExternal = pb.isExternal;
+        int nZen = nZen_global;
+        int maxPhaseCount = edgeData.valid ? (nZen + 1) * edgeData.nVertices : 0;
+        std::vector<double> all_vc(maxPhaseCount), all_vs(maxPhaseCount);
+        std::vector<double> all_phases(maxPhaseCount);
+        std::vector<double> dir_dpr(nZen + 1), dir_dpi(nZen + 1);
+        std::vector<double> dp_phases(nZen + 1);
 
         for (int i = 0; i <= nAz_global; ++i)
         {
-            int nZen = nZen_global;
             double cp = cos_phi_arr[i], sp = sin_phi_arr[i];
 
             ThetaCoeffs tc;
@@ -1579,10 +1594,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
 
             // Pre-batch vertex sincos for ALL thetas at once (AVX-512/AVX2)
             int nv = edgeData.valid ? tc.nv : 0;
-            std::vector<double> all_vc((nZen+1)*nv), all_vs((nZen+1)*nv);
-            std::vector<double> dir_dpr(nZen+1), dir_dpi(nZen+1);
             if (edgeData.valid && nv > 0) {
-                std::vector<double> all_phases((nZen+1)*nv);
                 int total = 0;
                 for (int j = 0; j <= nZen; ++j) {
                     double sin_t = sin_theta_arr[j], cos_t = cos_theta_arr[j];
@@ -1599,7 +1611,6 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                 for (; pp < total; ++pp)
                     fast_sincos(all_phases[pp], all_vs[pp], all_vc[pp]);
                 if (!isExternal) {
-                    std::vector<double> dp_phases(nZen+1);
                     for (int j = 0; j <= nZen; ++j)
                         dp_phases[j] = -m_waveIndex*(sin_theta_arr[j]*tc.dp_sin + cos_theta_arr[j]*tc.dp_cos);
                     int jj = 0;
@@ -1730,7 +1741,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                     // Fallback path for beams without valid edge data
                     Point3d &dir = m_sphere.directions[i][j];
                     Point3d &vf = m_sphere.vf[i][j];
-                    matrixC tmp = ApplyDiffraction(pb.origBeam, pb.info, dir, vf);
+                    matrixC tmp = ApplyDiffraction(pb.origBeam, pb.info, dir, vf, false);
                     d00 = tmp[0][0]; d01 = tmp[0][1];
                     d10 = tmp[1][0]; d11 = tmp[1][1];
                 }
@@ -1805,9 +1816,9 @@ void HandlerPO::CacheBeams(std::vector<Beam> &beams, double weight,
         if (m_isBadBeam)
             continue;
 
-        // Skip ApplyAbsorption for nActs > 1: DiffractInclineAbs handles full absorption
-        if (m_hasAbsorption && beam.lastFacetId != __INT_MAX__ && beam.lastFacetId != -1
-            && beam.nActs <= 1)
+        // Apply absorption only to beams with an internal path. nActs == 0 is
+        // the primary external reflection, which never enters the particle.
+        if (m_hasAbsorption && HasInternalOpticalPath(beam))
             ApplyAbsorption(beam);
 
         // Precompute edge data

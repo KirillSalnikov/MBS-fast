@@ -461,13 +461,14 @@ theta  2pi*dcos  M11  M12  M13  M14  M21  M22  M23  M24  M31  M32  M33  M34  M41
 
 ## Build
 
-### Intel / AVX-512 (Skylake-X, Ice Lake, Sapphire Rapids, ...)
+### Native AVX2/FMA Baseline
 
 ```bash
 bash build.sh            # -> bin/mbs_po
 ```
 
-Uses `-O3 -march=native -mavx512f -mavx512dq -fopenmp`. Requires GCC >= 9.
+Uses `-O3 -march=native -mavx2 -mfma -fopenmp`. Requires GCC >= 9.
+Use the CPU-specific scripts below for AVX-512 or tuned EPYC builds.
 
 ### AMD EPYC 7H12 (Zen 2, SP3)
 
@@ -502,7 +503,8 @@ Zen 4 has AVX-512 with 256-bit execution units (ops decoded as 2x256-bit). Still
 ### Generic AVX2 (any x86-64 CPU with AVX2+FMA)
 
 ```bash
-# Remove -mavx512f -mavx512dq from build.sh, or:
+./build.sh
+# Or compile manually:
 g++ -O3 -march=haswell -std=gnu++11 -funroll-loops -fopenmp \
     $(find src -not -path '*/bigint/*' -name '*.cpp') \
     $(find src/bigint -name '*.cc') -Isrc -Isrc/math ... -lm -lgomp
