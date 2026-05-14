@@ -14,12 +14,17 @@ OpenMP + MPI parallel. AVX-512/AVX2 SIMD. Adaptive grids. Auto beam cutoff.
 
 | Script | Target CPU | Binary |
 |--------|-----------|--------|
-| `bash build.sh` | Native AVX2/FMA baseline | `bin/mbs_po` |
+| `make` | Auto CPU flags (EPYC 7H12 -> Zen 2, otherwise native) | `bin/mbs_po` |
+| `bash build.sh` | Auto CPU flags (EPYC 7H12 -> Zen 2, otherwise native) | `bin/mbs_po` |
 | `bash build_epyc.sh` | AMD EPYC 7H12 (Zen 2) | `bin/mbs_po_epyc` |
 | `bash build_zen4.sh` | AMD Zen 4 (Ryzen 7000 / Genoa) | `bin/mbs_po_zen4` |
 | `bash build_epyc_clang.sh` | EPYC + Clang/AOCC | `bin/mbs_po_epyc_clang` |
 | `bash build_mpi.sh` | MPI + OpenMP (cluster) | `bin/mbs_po_mpi` |
-| `make` | Intel (Makefile) | `bin/mbs_po` |
+
+Default `make`/`build.sh` intentionally avoid hard-coded AVX-512. On AMD EPYC
+7H12 they use `-march=znver2 -mtune=znver2`; elsewhere they use
+`-march=native -mtune=native`. Override with `ARCH_FLAGS=...` or
+`CXXFLAGS=...` if you need a portable binary.
 
 ## Quick Start
 

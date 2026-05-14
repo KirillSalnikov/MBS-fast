@@ -1,6 +1,15 @@
-CXX = g++
-CXXFLAGS = -O3 -march=native -std=gnu++11 -funroll-loops -mavx2 -mfma -fopenmp
-LDFLAGS = -lm -lgomp
+CXX ?= g++
+
+CPU_MODEL := $(shell lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -1)
+ifneq (,$(findstring EPYC 7H12,$(CPU_MODEL)))
+ARCH_FLAGS ?= -march=znver2 -mtune=znver2
+else
+ARCH_FLAGS ?= -march=native -mtune=native
+endif
+
+OPT_FLAGS ?= -O3 -funroll-loops
+CXXFLAGS ?= $(OPT_FLAGS) $(ARCH_FLAGS) -std=gnu++11 -fopenmp
+LDFLAGS ?= -lm -lgomp
 
 SRC_DIR = src
 INCLUDES = -I$(SRC_DIR) -I$(SRC_DIR)/math -I$(SRC_DIR)/handler \
@@ -21,6 +30,8 @@ all: $(TARGET)
 
 $(TARGET): $(OBJECTS)
 	@mkdir -p bin
+	@echo "CPU: $(CPU_MODEL)"
+	@echo "CXXFLAGS: $(CXXFLAGS)"
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
 %.o: %.cpp

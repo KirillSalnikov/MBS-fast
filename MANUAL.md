@@ -6,6 +6,11 @@ MBS-raw computes light scattering by non-spherical particles using the Physical 
 
 **Optimized version**: ~70x faster than original, AVX-512/AVX2 SIMD, OpenMP parallel, Sobol quasi-random orientations. Builds for Intel, AMD Zen 2 (EPYC 7H12), and AMD Zen 4 (Ryzen 7000 / EPYC Genoa).
 
+Default `make` and `bash build.sh` auto-select CPU flags. On AMD EPYC 7H12
+they use `-march=znver2 -mtune=znver2`; on other CPUs they use
+`-march=native -mtune=native`. For manual override, set `ARCH_FLAGS=...` or
+`CXXFLAGS=...`.
+
 ---
 
 ## Quick Start
