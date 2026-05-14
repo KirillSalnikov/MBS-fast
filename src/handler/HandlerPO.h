@@ -71,6 +71,11 @@ public:
     void PrepareBeams(std::vector<Beam> &beams, double sinZenith,
                       PreparedOrientation &out);
 
+    /// Copy immutable settings needed by PrepareBeams into a worker-local
+    /// handler. The worker gets its own Scattering/Particle state.
+    void ConfigureForThreadLocalPrepare(const HandlerPO &source,
+                                        Scattering *scattering);
+
     /// Process prepared beams into a LOCAL Mueller accumulator.
     /// Thread-safe: reads only from handler's immutable data (sphere, wave constants)
     /// and writes only to the provided localM.

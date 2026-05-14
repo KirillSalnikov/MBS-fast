@@ -236,6 +236,10 @@ mbs_po --po --fixed 45 30 \
 
 Read (beta, gamma) pairs in radians from text file (one pair per line). Comments with `#`.
 
+Use `--checkpoint` with very long orientation-file runs to save and resume
+chunked progress. Checkpointing is disabled by default to avoid extra I/O in
+ordinary runs.
+
 #### `--sym B G`
 
 Override particle symmetry for Sobol/adaptive orientation generation.
@@ -426,6 +430,12 @@ Close the program after calculation completes. Without this flag, the program wa
 Progress output interval in seconds. The program prints progress information (orientation count, elapsed time) to stderr at the specified interval.
 
 **Example**: `--log 10` prints progress every 10 seconds.
+
+#### `--checkpoint`
+
+Enable checkpoint save/resume for `--orientfile` runs. The checkpoint file is
+written after each completed orientation chunk and removed after successful
+completion. Disabled by default.
 
 #### `--tr FILENAME`
 
@@ -637,6 +647,7 @@ mbs_po --po --all --tr tracks.dat --gr \
 | `--montecarlo` | N | Orientations | Monte Carlo random orientations |
 | `--fixed` | BETA GAMMA | Orientations | Single orientation (degrees) |
 | `--orientfile` | FILENAME | Orientations | Orientations from file (radians) |
+| `--checkpoint` | (none) | Orientations | Save/resume long `--orientfile` runs |
 | `--sym` | B G | Orientations | Symmetry override: beta/B, gamma/(2pi/G) |
 | `-b` | MIN MAX | Orientations | Beta range override (degrees) |
 | `-g` | MIN MAX | Orientations | Gamma range override (degrees) |

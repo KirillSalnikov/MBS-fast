@@ -424,6 +424,44 @@ fi
 echo ""
 
 # =============================================================================
+# Test 10: Checkpoint is opt-in for orientation-file runs
+# =============================================================================
+echo "=== Test 10: Checkpoint opt-in smoke ==="
+TEST10_DIR="$WORK_DIR/test10"
+mkdir -p "$TEST10_DIR/no_ckpt" "$TEST10_DIR/ckpt"
+cat > "$TEST10_DIR/orient.txt" <<EOF
+0 0
+0.5 0
+1.0 0
+EOF
+
+cd "$TEST10_DIR/no_ckpt"
+OMP_NUM_THREADS=2 $MBS --po --orientfile "$TEST10_DIR/orient.txt" \
+    -p 1 10 10 -w 0.532 --ri 1.31 0 -n 4 --grid 0 180 12 24 \
+    --close -o M_no_ckpt > "$TEST10_DIR/no_ckpt/stdout.txt" 2>&1
+RETN=$?
+
+cd "$TEST10_DIR/ckpt"
+OMP_NUM_THREADS=2 $MBS --po --orientfile "$TEST10_DIR/orient.txt" --checkpoint \
+    -p 1 10 10 -w 0.532 --ri 1.31 0 -n 4 --grid 0 180 12 24 \
+    --close -o M_ckpt > "$TEST10_DIR/ckpt/stdout.txt" 2>&1
+RETC=$?
+
+if [ $RETN -ne 0 ] || [ $RETC -ne 0 ]; then
+    fail_test "Test 10" "orientfile checkpoint smoke run failed"
+elif [ -e "$TEST10_DIR/no_ckpt/M_no_ckpt_checkpoint.bin" ]; then
+    fail_test "Test 10" "checkpoint file was created without --checkpoint"
+elif [ -e "$TEST10_DIR/ckpt/M_ckpt_checkpoint.bin" ]; then
+    fail_test "Test 10" "checkpoint file was not removed after successful --checkpoint run"
+elif [ -f "$TEST10_DIR/no_ckpt/M_no_ckpt/M_no_ckpt.dat" ] \
+    && [ -f "$TEST10_DIR/ckpt/M_ckpt/M_ckpt.dat" ]; then
+    pass_test "Test 10: --checkpoint is opt-in and cleans up after success"
+else
+    fail_test "Test 10" "orientfile outputs missing"
+fi
+echo ""
+
+# =============================================================================
 # Summary
 # =============================================================================
 echo "=============================================="

@@ -47,6 +47,9 @@ public:
     /// Save intermediate Mueller per beta (--save_betas)
     bool m_saveBetas = false;
 
+    /// Enable checkpoint save/resume for long --orientfile runs.
+    bool m_enableCheckpoint = false;
+
     /// MPI rank and size (default: single process)
     int m_mpiRank = 0;
     int m_mpiSize = 1;

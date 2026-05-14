@@ -739,6 +739,25 @@ void HandlerPO::SetBackScatteringConus(double radAngle)
     backScatteringConus = cos(radAngle);
 }
 
+void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
+                                               Scattering *scattering)
+{
+    m_scattering = scattering;
+    m_sphere = source.m_sphere;
+    m_tracks = source.m_tracks;
+    m_hasAbsorption = source.m_hasAbsorption;
+    m_normIndex = source.m_normIndex;
+    m_cAbs = source.m_cAbs;
+    m_ri = source.m_ri;
+    m_riIm = source.m_riIm;
+    m_absMag = source.m_absMag;
+    m_beamCutoff = source.m_beamCutoff;
+    m_targetEps = source.m_targetEps;
+    m_legacySign = source.m_legacySign;
+    isBackScatteringConusEnabled = source.isBackScatteringConusEnabled;
+    backScatteringConus = source.backScatteringConus;
+}
+
 void HandlerPO::SetScatteringSphere(const ScatteringRange &grid)
 {
     m_sphere = grid;

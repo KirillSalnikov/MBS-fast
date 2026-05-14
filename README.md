@@ -135,6 +135,7 @@ See `tests/reference_test/RESULTS.md` and comparison plots in `tests/reference_t
 - **Auto beam cutoff**: two dimensionless thresholds (|J|²/max < eps AND area/max < eps). Protects forward peak and strong beams, skips 45-80% of negligible beams
 - **Multi-size**: `--multigrid` — trace once, recompute diffraction for all sizes
 - **Per-beta save**: `--save_betas` — write intermediate Mueller per beta (backup/resume)
+- **Opt-in checkpoint**: `--checkpoint` — save/resume long `--orientfile` runs; off by default to avoid extra I/O
 - **Dual output**: M.dat (with shadow) + M_noshadow.dat (without) at no extra cost
 - **Memory-aware chunking**: auto-sizes orientation batches to fit in RAM
 - **MPI + OpenMP hybrid**: distributed across nodes, threaded within node

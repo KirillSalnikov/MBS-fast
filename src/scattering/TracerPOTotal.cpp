@@ -588,13 +588,15 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
     std::vector<Beam> outBeams;
     long long count = 0;
 
-    // Checkpoint: resume from crash
+    // Checkpoint is opt-in because frequent binary dumps add avoidable I/O
+    // overhead to ordinary orientation-file runs.
     std::string ckptPath = m_resultDirName + "_checkpoint.bin";
     const complex ri = m_particle->GetRefractiveIndex();
     unsigned long paramHash = HashParams(m_scattering->m_wave,
         real(ri), imag(ri), m_scattering->GetMaxReflections(),
         nOrientations, m_particle->MaximalDimention(), 0, nAz, nZen);
     int resumeChunk = 0;
+    if (m_enableCheckpoint)
     {
         int completedOrient = 0;
         if (LoadCheckpoint(ckptPath, handlerPO->M, handlerPO->M_noshadow,
@@ -703,8 +705,8 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
         chunkPrepared.clear();
         chunkPrepared.shrink_to_fit();
 
-        // Save checkpoint after each chunk
-        if (m_mpiRank == 0) {
+        // Save checkpoint after each chunk.
+        if (m_enableCheckpoint && m_mpiRank == 0) {
             SaveCheckpoint(ckptPath, handlerPO->M, handlerPO->M_noshadow,
                            m_incomingEnergy, handlerPO->m_outputEnergy,
                            iEnd, nOrientations, paramHash, nAz+1, nZen+1);
@@ -740,8 +742,9 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
 
     OutputStatisticsPO(timer, nOrientations, m_resultDirName);
 
-    // Remove checkpoint on successful completion
-    std::remove(ckptPath.c_str());
+    // Remove checkpoint on successful completion.
+    if (m_enableCheckpoint)
+        std::remove(ckptPath.c_str());
 }
 
 void TracerPOTotal::TraceFromFileMultiSize(const std::string &orientFile,
@@ -1041,21 +1044,9 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
         throw std::exception();
     }
 
-    // =========================================================================
-    // Phase 1 (sequential): Trace beams for all orientations.
-    //
-    // WHY SEQUENTIAL: Particle::Rotate() modifies shared particle geometry
-    // (vertices, normals, facets) and ScatterLight() modifies shared
-    // Scattering state. Making these thread-safe would require either:
-    //   (a) Particle::Clone() — complex due to virtual hierarchy, or
-    //   (b) Critical sections around stateful parts — serializes the work.
-    //
-    // PERFORMANCE IMPACT: Phase 1 typically takes <5% of total time
-    // (e.g., ~0.5s out of ~30s for x=50, 512 orientations). The dominant
-    // cost is Phase 2 (diffraction integrals), which IS parallelized.
-    // Parallelizing Phase 1 would save <2% of total runtime — not worth
-    // the complexity (Amdahl's law).
-    // =========================================================================
+    // Phase 1 traces and preprocesses orientations in parallel using
+    // thread-local Particle/Scattering/HandlerPO state. Phase 2 then performs
+    // the diffraction loops in parallel with local Mueller accumulators.
     int nAz = handlerPO->m_sphere.nAzimuth;
     int nZen = handlerPO->m_sphere.nZenith;
 
@@ -1093,22 +1084,24 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
         int iEnd = std::min(iStart + chunkSize, myEnd);
         int thisChunk = iEnd - iStart;
 
-        // Phase 1a: trace this chunk in parallel. Each thread has its own
-        // Particle/Scattering copy; HandlerPO preprocessing is intentionally
-        // kept out of this region because Handler keeps mutable scratch state.
+        // Phase 1: trace and preprocess this chunk in parallel. Each thread
+        // has its own Particle, Scattering and HandlerPO scratch state.
         auto tp1 = std::chrono::high_resolution_clock::now();
         std::vector<PreparedOrientation> chunkPrepared(thisChunk);
         std::vector<double> chunkEnergies(thisChunk, 0);
-        std::vector<std::vector<Beam>> chunkBeams(thisChunk);
-        std::vector<char> chunkOk(thisChunk, 0);
+        std::vector<double> chunkOutputEnergies(thisChunk, 0);
 
         #pragma omp parallel
         {
-            // Thread-local copies of Particle and Scattering
-            Particle localParticle = *m_particle; // default copy (fixed arrays)
+            // Thread-local copies of all mutable tracing/preprocessing state.
+            Particle localParticle = *m_particle;
             Scattering *localScatter = m_scattering->CloneFor(&localParticle, &m_incidentLight);
             localScatter->m_wave = m_scattering->m_wave;
             localScatter->restriction = m_scattering->restriction;
+
+            HandlerPO localHandler(&localParticle, &m_incidentLight,
+                                   handlerPO->nTheta, m_scattering->m_wave);
+            localHandler.ConfigureForThreadLocalPrepare(*handlerPO, localScatter);
 
             std::vector<Beam> localBeams;
 
@@ -1119,25 +1112,27 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
                 localParticle.Rotate(orientations[idx].first, orientations[idx].second, 0);
                 if (!shadowOff) localScatter->FormShadowBeam(localBeams);
                 bool ok = localScatter->ScatterLight(0, 0, localBeams);
-                chunkOk[i] = ok ? 1 : 0;
                 if (ok)
-                    chunkBeams[i].swap(localBeams);
+                {
+                    double beforeOutput = localHandler.m_outputEnergy;
+                    localHandler.PrepareBeams(localBeams, weight, chunkPrepared[i]);
+                    chunkOutputEnergies[i] = localHandler.m_outputEnergy - beforeOutput;
+                }
                 else
-                    localBeams.clear();
+                {
+                    chunkPrepared[i].sinZenith = weight;
+                }
                 chunkEnergies[i] = localScatter->GetIncedentEnergy() * weight;
+                localBeams.clear();
             }
 
             delete localScatter;
         }
 
-        // Phase 1b: preprocess beams sequentially on the shared Handler.
-        // PrepareBeams uses Handler scratch fields and updates output energy.
+        // Accumulate scalar counters sequentially after the parallel region.
         for (int i = 0; i < thisChunk; ++i) {
-            if (chunkOk[i])
-                handlerPO->PrepareBeams(chunkBeams[i], weight, chunkPrepared[i]);
-            else
-                chunkPrepared[i].sinZenith = weight;
             m_incomingEnergy += chunkEnergies[i];
+            handlerPO->m_outputEnergy += chunkOutputEnergies[i];
             count++;
         }
         phase1_total += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - tp1).count();
