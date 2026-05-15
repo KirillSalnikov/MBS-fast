@@ -164,46 +164,64 @@ bool Scattering::ScatterLight(double /*beta*/, double /*gamma*/, const std::vect
 void Scattering::OrderVertices2f(std::vector<Point2f> &vertices,
                                  Polygon &orderedPolygon)
 {
-    // define base point
-    int baseIndex = 0;
-    double minX = vertices[baseIndex].x;
+    if (vertices.empty())
+        return;
 
-    for (int i = 1; i < vertices.size(); ++i)
+    std::sort(vertices.begin(), vertices.end(),
+              [](const Point2f &a, const Point2f &b)
+              {
+                  if (fabs(a.x - b.x) > 1e-7)
+                      return a.x < b.x;
+                  return a.y < b.y;
+              });
+
+    std::vector<Point2f> hull;
+    hull.reserve(vertices.size());
+
+    auto cross = [](const Point2f &o, const Point2f &a, const Point2f &b)
     {
-        if (vertices[i].x < minX)
+        return (a.x - o.x)*(b.y - o.y) - (a.y - o.y)*(b.x - o.x);
+    };
+
+    for (const Point2f &p : vertices)
+    {
+        while (hull.size() >= 2
+               && cross(hull[hull.size()-2], hull[hull.size()-1], p) <= 0)
         {
-            baseIndex = i;
-            minX = vertices[i].x;
+            hull.pop_back();
         }
+        hull.push_back(p);
     }
 
-    std::swap(vertices[baseIndex], vertices.back());
-    Point2f base = vertices.back();
-//	orderedPolygon.AddVertex(Point3f(base.x, base.y, 0));
-
-    int iBase = 0;
-
-    for (int i = 0; iBase != vertices.size()-1 && i < vertices.size(); ++i)
+    const size_t lowerSize = hull.size();
+    for (int i = (int)vertices.size() - 2; i >= 0; --i)
     {
-        iBase = i;
-        Point2f vBase = vertices[iBase] - base;
-
-        for (int j = i + 1; j <= vertices.size(); ++j)
+        const Point2f &p = vertices[i];
+        while (hull.size() > lowerSize
+               && cross(hull[hull.size()-2], hull[hull.size()-1], p) <= 0)
         {
-            int iNext = (j == vertices.size()) ? 0 : j;
-            Point2f vNext = vertices[iNext] - base;
-
-            if (vBase.CrossProduct(vNext) > 0)
-            {
-                iBase = iNext;
-                vBase = vNext;
-            }
+            hull.pop_back();
         }
-
-        std::swap(vertices[iBase], vertices[i]);
-        base = vertices[i];
-        orderedPolygon.AddVertex(Point3f(base.x, base.y, 10000));
+        hull.push_back(p);
     }
+
+    if (hull.size() > 1)
+        hull.pop_back();
+
+    double signedArea = 0.0;
+    for (size_t i = 0; i < hull.size(); ++i)
+    {
+        const Point2f &a = hull[i];
+        const Point2f &b = hull[(i + 1) % hull.size()];
+        signedArea += a.x*b.y - b.x*a.y;
+    }
+
+    // Keep the shadow aperture normal along -z, matching Natalia's N = -k.
+    if (signedArea > 0.0)
+        std::reverse(hull.begin(), hull.end());
+
+    for (const Point2f &p : hull)
+        orderedPolygon.AddVertex(Point3f(p.x, p.y, 10000));
 }
 
 void Scattering::ProjectParticleToXY(std::vector<Point2f> &projected)
