@@ -926,6 +926,10 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
         matrixC J_phased = isExternal
             ? beam.J * fast_exp_im(m_waveIndex * beam.opticalPath)
             : beam.J * fast_exp_im(m_waveIndex * info.projLenght);
+        if (isExternal)
+            J_phased *= -1.0;
+        if (!isExternal && (beam.nActs & 1))
+            J_phased *= -1.0;
 
         // Extract scalars for inlined computation
         double horAx = info.horAxis.x, horAy = info.horAxis.y, horAz = info.horAxis.z;
@@ -1252,6 +1256,10 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         matrixC J_phased = pb.isExternal
             ? beam.J * fast_exp_im(m_waveIndex * beam.opticalPath)
             : beam.J * fast_exp_im(m_waveIndex * info.projLenght);
+        if (pb.isExternal)
+            J_phased *= -1.0;
+        if (!pb.isExternal && (beam.nActs & 1))
+            J_phased *= -1.0;
 
         // Extract scalars
         pb.horAx = info.horAxis.x; pb.horAy = info.horAxis.y; pb.horAz = info.horAxis.z;
@@ -1865,8 +1873,10 @@ void HandlerPO::CacheBeams(std::vector<Beam> &beams, double weight,
             cb.edge_valid_y[i] = edgeData.edge_valid_y[i];
         }
 
-        // Store Jones matrix
+        // Match Natalia's Jones phase convention before coherent summation.
         cb.J = beam.J;
+        if (beam.lastFacetId == __INT_MAX__ || (beam.nActs & 1))
+            cb.J *= -1.0;
 
         // Normalized lengths
         cb.opticalPath_norm = beam.opticalPath * inv_D;
