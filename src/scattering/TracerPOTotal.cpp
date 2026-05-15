@@ -194,8 +194,11 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             double dcos;
             CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
             m_handler->SetSinZenith(dcos);
-            for (int j = 0; j < gammaRange.number; ++j) {
-                double gamma = gammaRange.min + j * gammaRange.step;
+            const bool pole = (fabs(beta) <= FLT_EPSILON
+                               || fabs(beta - M_PI) <= FLT_EPSILON);
+            const int gammaCount = pole ? 1 : gammaRange.number;
+            for (int j = 0; j < gammaCount; ++j) {
+                double gamma = gammaRange.min + (j + 0.5) * gammaRange.step;
                 m_particle->Rotate(beta, gamma, 0);
                 if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
                 m_scattering->ScatterLight(0, 0, outBeams);
@@ -254,14 +257,17 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         double beta = betaRange.min + ib * betaRange.step;
         double dcos;
         CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
+        const bool pole = (fabs(beta) <= FLT_EPSILON
+                           || fabs(beta - M_PI) <= FLT_EPSILON);
+        const int gammaCount = pole ? 1 : nGamma;
 
         // Phase 1: trace all gamma for this beta
         auto tp1 = std::chrono::high_resolution_clock::now();
-        std::vector<PreparedOrientation> chunkPrepared(nGamma);
+        std::vector<PreparedOrientation> chunkPrepared(gammaCount);
 
-        for (int jj = 0; jj < nGamma; ++jj)
+        for (int jj = 0; jj < gammaCount; ++jj)
         {
-            double gamma = gammaRange.min + jj * gammaRange.step;
+            double gamma = gammaRange.min + (jj + 0.5) * gammaRange.step;
             m_particle->Rotate(beta, gamma, 0);
             if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
             bool ok = m_scattering->ScatterLight(0, 0, outBeams);
@@ -289,7 +295,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
                 Arr2DC t2(nAz+1,nZen+1,2,2); t2.ClearArr(); localJ_ns.push_back(t2);
             }
             #pragma omp for schedule(dynamic, 1)
-            for (int i = 0; i < nGamma; ++i) {
+            for (int i = 0; i < gammaCount; ++i) {
                 if (!chunkPrepared[i].beams.empty())
                     handlerPO->HandleBeamsToLocal(chunkPrepared[i], localM, localJ,
                                                    handlerPO->isCoh ? &localJ_ns : nullptr);
@@ -301,7 +307,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
                 }
             }
             #pragma omp critical
-            { for (int p=0;p<=nAz;++p) for (int t=0;t<=nZen;++t) {
+            { for (int p=0;p<nAz;++p) for (int t=0;t<=nZen;++t) {
                 betaM.insert(p,t,localM(p,t));
                 betaM_ns.insert(p,t,localM_ns(p,t));
             } }
@@ -310,7 +316,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         chunkPrepared.clear(); chunkPrepared.shrink_to_fit();
 
         // Accumulate into global Mueller
-        for (int p=0;p<=nAz;++p) for (int t=0;t<=nZen;++t) {
+        for (int p=0;p<nAz;++p) for (int t=0;t<=nZen;++t) {
             handlerPO->M.insert(p,t,betaM(p,t));
             handlerPO->M_noshadow.insert(p,t,betaM_ns(p,t));
         }
@@ -332,7 +338,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             for (int iZen = 0; iZen <= nZen; ++iZen) {
                 matrix Msum(4,4); Msum.Fill(0.0);
                 double radZen = sphere.GetZenith(iZen);
-                for (int iAz = 0; iAz <= nAz; ++iAz) {
+                for (int iAz = 0; iAz < nAz; ++iAz) {
                     double radAz = -iAz * sphere.azinuthStep;
                     matrix m = betaM(iAz, iZen);
                     (*Lp)[1][1] = cos(2*radAz); (*Lp)[1][2] = sin(2*radAz);
@@ -357,7 +363,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             for (int iZen = 0; iZen <= nZen; ++iZen) {
                 matrix Msum(4,4); Msum.Fill(0.0);
                 double radZen = sphere.GetZenith(iZen);
-                for (int iAz = 0; iAz <= nAz; ++iAz) {
+                for (int iAz = 0; iAz < nAz; ++iAz) {
                     double radAz = -iAz * sphere.azinuthStep;
                     matrix m = handlerPO->M(iAz, iZen);
                     (*Lp)[1][1] = cos(2*radAz); (*Lp)[1][2] = sin(2*radAz);
@@ -689,7 +695,7 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
 
             #pragma omp critical
             {
-                for (int p = 0; p <= nAz; ++p)
+                for (int p = 0; p < nAz; ++p)
                     for (int t = 0; t <= nZen; ++t)
                     {
                         handlerPO->M.insert(p, t, localM(p, t));
@@ -901,7 +907,7 @@ void TracerPOTotal::TraceFromFileMultiSize(const std::string &orientFile,
                 Msum.Fill(0.0);
                 double radZen = sphere.GetZenith(iZen);
 
-                for (int iAz = 0; iAz <= nAz; ++iAz)
+                for (int iAz = 0; iAz < nAz; ++iAz)
                 {
                     double radAz = -iAz * sphere.azinuthStep;
                     matrix m = results_M[s](iAz, iZen);
@@ -1173,7 +1179,7 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
 
             #pragma omp critical
             {
-                for (int p = 0; p <= nAz; ++p)
+                for (int p = 0; p < nAz; ++p)
                     for (int t = 0; t <= nZen; ++t) {
                         handlerPO->M.insert(p, t, localM(p, t));
                         handlerPO->M_noshadow.insert(p, t, localM_ns(p, t));
@@ -1700,8 +1706,8 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
         double csca = 0;
         for (int j = 0; j <= nZen; ++j) {
             double m11_avg = 0;
-            for (int p = 0; p <= nAz; ++p) m11_avg += hp->M(p, j)[0][0];
-            m11_avg /= (nAz + 1);
+            for (int p = 0; p < nAz; ++p) m11_avg += hp->M(p, j)[0][0];
+            m11_avg /= nAz;
             csca += m11_avg * hp->m_sphere.Compute2PiDcos(j);
         }
         double qsca = (m_incomingEnergy > 0) ? csca / m_incomingEnergy : 0;
@@ -1772,8 +1778,8 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
         double csca = 0;
         for (int j = 0; j <= nZen2; ++j) {
             double m11_avg = 0;
-            for (int p = 0; p <= nAz2; ++p) m11_avg += hp->M(p, j)[0][0];
-            m11_avg /= (nAz2 + 1);
+            for (int p = 0; p < nAz2; ++p) m11_avg += hp->M(p, j)[0][0];
+            m11_avg /= nAz2;
             csca += m11_avg * hp->m_sphere.Compute2PiDcos(j);
         }
         double qsca = (m_incomingEnergy > 0) ? csca / m_incomingEnergy : 0;

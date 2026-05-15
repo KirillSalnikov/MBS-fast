@@ -586,12 +586,9 @@ double Scattering::ComputeInternalOpticalPath(const Beam &beam,
         p2 = ProjectPointToPlane(p1, dir, inNormal);
         double len = Length(p2 - p1);
 
-//        if (nextLoc == Location::In)
-//        {	// add internal path only
-//            splitting.ComputeCosA(dir, exNormal);
-//            double reRi = splitting.ComputeEffectiveReRi();
-//            len *= sqrt(reRi);
-//        }
+        // Natalia_PO uses the geometric internal segment length here. The
+        // effective-index scaling was tested, but it changes the back cone
+        // interference pattern and does not match Natalia's active code path.
 
 //#ifdef _DEBUG // DEB
 //        Point3f dddd = inNormal;

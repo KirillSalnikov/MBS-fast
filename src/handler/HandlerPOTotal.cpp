@@ -7,6 +7,41 @@
 #include <cmath>
 #include <algorithm>
 
+namespace
+{
+void ApplyForwardPoleSymmetry(matrix &m)
+{
+    const double M00 = m[0][0];
+    const double M11 = 0.5 * (m[1][1] + m[2][2]);
+    const double M33 = m[3][3];
+    const double M03 = m[0][3];
+
+    m.Fill(0.0);
+    m[0][0] = M00;
+    m[1][1] = M11;
+    m[2][2] = M11;
+    m[3][3] = M33;
+    m[0][3] = M03;
+    m[3][0] = M03;
+}
+
+void ApplyBackwardPoleSymmetry(matrix &m)
+{
+    const double M00 = m[0][0];
+    const double M11 = 0.5 * (m[1][1] - m[2][2]);
+    const double M33 = m[3][3];
+    const double M03 = m[0][3];
+
+    m.Fill(0.0);
+    m[0][0] = M00;
+    m[1][1] = M11;
+    m[2][2] = -M11;
+    m[3][3] = M33;
+    m[0][3] = M03;
+    m[3][0] = M03;
+}
+}
+
 HandlerPOTotal::HandlerPOTotal(Particle *particle, Light *incidentLight, int nTheta,
                                double wavelength)
     : HandlerPO(particle, incidentLight, nTheta, wavelength)
@@ -32,10 +67,8 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
     matrix Msum(4, 4);
 
     auto &Lp = *m_Lp;
-    auto &Ln = *m_Ln;
 
     int &nZen = m_sphere.nZenith;
-    double &dZen = m_sphere.zenithStep;
     int &nAz = m_sphere.nAzimuth;
 
     // Accumulate C_sca = integral of M11 * 2pi*dcos over zenith bins
@@ -46,9 +79,11 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
     {
         Msum.Fill(0.0);
         double radZen = m_sphere.GetZenith(iZen);
+        const bool isForwardPole = radZen < __FLT_EPSILON__;
+        const bool isBackwardPole = radZen > M_PI-__FLT_EPSILON__;
 //        double tt = RadToDeg(m_sphere.zenithEnd) - RadToDeg((t*dT));
 
-        for (int iAz = 0; iAz <= nAz; ++iAz)
+        for (int iAz = 0; iAz < nAz; ++iAz)
         {
             double radAz = -iAz*m_sphere.azinuthStep;
             matrix m = M(iAz, iZen);
@@ -58,17 +93,9 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
             Lp[2][1] = -Lp[1][2];
             Lp[2][2] = Lp[1][1];
 
-            Ln = Lp;
-            Ln[1][2] *= -1;
-            Ln[2][1] *= -1;
-
-            if (radZen > M_PI-__FLT_EPSILON__)
+            if (isForwardPole || isBackwardPole)
             {
-                Msum += Lp*m*Lp;
-            }
-            else if (radZen < __FLT_EPSILON__)
-            {
-                Msum += Ln*m*Lp;
+                Msum += m;
             }
             else
             {
@@ -79,6 +106,14 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
         double _2Pi_dcos = m_sphere.Compute2PiDcos(iZen);
 
         Msum /= m_sphere.nAzimuth;
+        if (isBackwardPole)
+        {
+            ApplyBackwardPoleSymmetry(Msum);
+        }
+        else if (isForwardPole)
+        {
+            ApplyForwardPoleSymmetry(Msum);
+        }
 
         // Accumulate C_sca from azimuth-averaged M11
         C_sca += Msum[0][0] * _2Pi_dcos;
@@ -143,7 +178,7 @@ void HandlerPOTotal::AddToMueller()
 
         for (int t = 0; t <= m_sphere.nZenith; ++t)
         {
-            for (int p = 0; p <= m_sphere.nAzimuth; ++p)
+            for (int p = 0; p < m_sphere.nAzimuth; ++p)
             {
                 matrix m = Mueller(diffM(p, t));
 #ifdef _DEBUG // DEB

@@ -107,13 +107,13 @@ void HandlerPO::WriteMatricesToFile(std::string &destName, double nrg)
 
         outFile /*<< std::to_string(m_sphere.radius) << ' '*/
                 << std::to_string(m_sphere.nZenith) << ' '
-                << std::to_string(m_sphere.nAzimuth+1);
+                << std::to_string(m_sphere.nAzimuth);
 
         for (int t = 0; t <= m_sphere.nZenith; ++t)
         {
             double tt = RadToDeg(m_sphere.GetZenith(t));
 
-            for (int p = 0; p <= m_sphere.nAzimuth; ++p)
+            for (int p = 0; p < m_sphere.nAzimuth; ++p)
             {
                 double fi = -((double)p)*m_sphere.azinuthStep;
                 double degPhi = RadToDeg(-fi);
@@ -135,7 +135,7 @@ void HandlerPO::WriteGroupMatrices(Arr2D &matrices, const std::string &name)
 
     outFile /*<< std::to_string(m_sphere.radius) << ' '*/
             << std::to_string(m_sphere.nZenith) << ' '
-            << std::to_string(m_sphere.nAzimuth+1);
+            << std::to_string(m_sphere.nAzimuth);
 
     matrix sum(4, 4);
 
@@ -144,7 +144,7 @@ void HandlerPO::WriteGroupMatrices(Arr2D &matrices, const std::string &name)
         sum.Fill(0.0);
         double tt = RadToDeg(m_sphere.zenithEnd - m_sphere.GetZenith(t));
 
-        for (int p = 0; p <= m_sphere.nAzimuth; ++p)
+        for (int p = 0; p < m_sphere.nAzimuth; ++p)
         {
             double fi = -((double)p)*m_sphere.azinuthStep;
             matrix m = matrices(p, t);
@@ -191,7 +191,7 @@ void HandlerPO::WriteJonesToFile(const std::string &destName)
     {
         double theta_deg = RadToDeg(m_sphere.GetZenith(t));
 
-        for (int p = 0; p <= m_sphere.nAzimuth; ++p)
+        for (int p = 0; p < m_sphere.nAzimuth; ++p)
         {
             double phi_deg = RadToDeg(p * m_sphere.azinuthStep);
 
@@ -677,7 +677,7 @@ void HandlerPO::AddToMueller()
     {
         for (int t = 0; t <= m_sphere.nZenith; ++t)
         {
-            for (int p = 0; p <= m_sphere.nAzimuth; ++p)
+            for (int p = 0; p < m_sphere.nAzimuth; ++p)
             {
                 matrix m = Mueller(m_diffractedMatrices[q](p, t));
                 m *= m_normIndex;
@@ -844,8 +844,8 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
     }
     // Precompute sin(phi), cos(phi) for all phi bins
     int nAz_global = m_sphere.nAzimuth;
-    std::vector<double> sin_phi_arr(nAz_global+1), cos_phi_arr(nAz_global+1);
-    for (int i = 0; i <= nAz_global; ++i) {
+    std::vector<double> sin_phi_arr(nAz_global), cos_phi_arr(nAz_global);
+    for (int i = 0; i < nAz_global; ++i) {
         double phi_rad = i * m_sphere.azinuthStep;
         fast_sincos(phi_rad, sin_phi_arr[i], cos_phi_arr[i]);
     }
@@ -947,7 +947,7 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
 
 #ifdef _DEBUG // DEB
         sum += beam.Area();
-        for (int i = 0; i <= m_sphere.nAzimuth; ++i)
+        for (int i = 0; i < m_sphere.nAzimuth; ++i)
         {
             for (int j = 0; j <= m_sphere.nZenith; ++j)
             {
@@ -959,7 +959,7 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
         int nAz_total = m_sphere.nAzimuth;
         int nZen_total = m_sphere.nZenith;
 
-        for (int i = 0; i <= nAz_total; ++i)
+        for (int i = 0; i < nAz_total; ++i)
         {
             int nZen = nZen_total;
 
@@ -1331,7 +1331,7 @@ void HandlerPO::DiffractControlPoints(const PreparedOrientation &prepared,
         int nv = edgeData.nVertices;
 
         // Loop over ALL phi bins (same as HandleBeamsToLocal)
-        for (int iPhi = 0; iPhi <= nAz; ++iPhi)
+        for (int iPhi = 0; iPhi < nAz; ++iPhi)
         {
             double cp = cos(iPhi * m_sphere.azinuthStep);
             double sp = sin(iPhi * m_sphere.azinuthStep);
@@ -1456,7 +1456,7 @@ void HandlerPO::DiffractAtThetas(const PreparedOrientation &prepared,
         bool isExternal=pb.isExternal;
         int nv=edgeData.nVertices;
 
-        for (int iPhi = 0; iPhi <= nAz; ++iPhi)
+        for (int iPhi = 0; iPhi < nAz; ++iPhi)
         {
             double phi_rad = iPhi * m_sphere.azinuthStep;
             double cp = cos(phi_rad), sp = sin(phi_rad);
@@ -1565,8 +1565,8 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
         double theta_rad = m_sphere.GetZenith(j);
         fast_sincos(theta_rad, sin_theta_arr[j], cos_theta_arr[j]);
     }
-    std::vector<double> sin_phi_arr(nAz_global+1), cos_phi_arr(nAz_global+1);
-    for (int i = 0; i <= nAz_global; ++i) {
+    std::vector<double> sin_phi_arr(nAz_global), cos_phi_arr(nAz_global);
+    for (int i = 0; i < nAz_global; ++i) {
         double phi_rad = i * m_sphere.azinuthStep;
         fast_sincos(phi_rad, sin_phi_arr[i], cos_phi_arr[i]);
     }
@@ -1595,7 +1595,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
         std::vector<double> dir_dpr(nZen + 1), dir_dpi(nZen + 1);
         std::vector<double> dp_phases(nZen + 1);
 
-        for (int i = 0; i <= nAz_global; ++i)
+        for (int i = 0; i < nAz_global; ++i)
         {
             double cp = cos_phi_arr[i], sp = sin_phi_arr[i];
 
@@ -1798,7 +1798,7 @@ void HandlerPO::AddToMuellerLocal(const std::vector<Arr2DC> &localJ,
     {
         for (int t = 0; t <= nZen; ++t)
         {
-            for (int p = 0; p <= nAz; ++p)
+            for (int p = 0; p < nAz; ++p)
             {
                 matrix m = Mueller(localJ[q](p, t));
                 m *= normIndex;
@@ -2005,8 +2005,8 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
         double theta_rad = m_sphere.GetZenith(j);
         fast_sincos(theta_rad, sin_theta_cache[j], cos_theta_cache[j]);
     }
-    std::vector<double> cos_phi_cache(nAz+1), sin_phi_cache(nAz+1);
-    for (int i = 0; i <= nAz; ++i) {
+    std::vector<double> cos_phi_cache(nAz), sin_phi_cache(nAz);
+    for (int i = 0; i < nAz; ++i) {
         double phi_rad = i * m_sphere.azinuthStep;
         fast_sincos(phi_rad, sin_phi_cache[i], cos_phi_cache[i]);
     }
@@ -2088,7 +2088,7 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
             }
 
             // Loop: direction → size (size loop is innermost)
-            for (int i = 0; i <= nAz; ++i)
+            for (int i = 0; i < nAz; ++i)
             {
                 double cp = cos_phi_cache[i], sp = sin_phi_cache[i];
 
@@ -2374,7 +2374,7 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
         // Coherent: convert Jones → Mueller after all beams of this orientation
         if (coherent) {
             for (int s = 0; s < nSizes; ++s)
-                for (int ii = 0; ii <= nAz; ++ii)
+                for (int ii = 0; ii < nAz; ++ii)
                     for (int jj = 0; jj <= nZen; ++jj) {
                         int idx = ((s*(nAz+1)+ii)*(nZen+1)+jj)*4;
                         complex j00=localJ_coh[idx], j01=localJ_coh[idx+1];
@@ -2410,7 +2410,7 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
         {
             for (int s = 0; s < nSizes; ++s)
             {
-                for (int ii = 0; ii <= nAz; ++ii)
+                for (int ii = 0; ii < nAz; ++ii)
                     for (int jj = 0; jj <= nZen; ++jj)
                         for (int r = 0; r < 4; ++r)
                             for (int c = 0; c < 4; ++c)
