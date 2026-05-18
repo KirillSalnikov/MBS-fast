@@ -156,6 +156,9 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
         const double Q_ext = C_ext / nrg;
         const std::string label =
             (destName.find("noshadow") != std::string::npos) ? "no-shadow" : "full";
+        if (label == "full")
+            m_integralSummary.clear();
+
         std::ostringstream log;
         log << std::fixed << std::setprecision(4);
         log << "\n===== SCATTERING EFFICIENCY: " << label << " =====\n";
@@ -186,6 +189,7 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
         }
         log << "=========================================\n";
         std::cerr << log.str();
+        m_integralSummary += log.str();
         AppendTextLog(destName, log.str());
     }
 }

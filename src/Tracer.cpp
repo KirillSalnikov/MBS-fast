@@ -179,6 +179,8 @@ void Tracer::OutputStatisticsPO(CalcTimer &timer, long long orNumber, const stri
 #endif
 
     out << m_summary;
+    if (!m_handler->m_integralSummary.empty())
+        out << "\n" << m_handler->m_integralSummary;
     out.close();
 
     AppendTextLog("\n===== RUN SUMMARY =====\n" + m_summary + "\n");

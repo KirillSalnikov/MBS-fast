@@ -394,6 +394,7 @@ public:
     ScatteringRange m_sphere;
     double normIndexGamma;
     double m_outputEnergy = 0;
+    std::string m_integralSummary;
 
     std::ofstream *betaFile;
     int m_fixedItr = -1;
