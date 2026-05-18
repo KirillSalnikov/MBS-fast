@@ -79,4 +79,3 @@ protected:
 private:
     PolygonArray m_polygonBuffer;
 };
-

@@ -30,6 +30,7 @@ bool ScatteringNonConvex::ScatterLight(double beta, double gamma,
                                        std::vector<Beam> &scaterredBeams)
 {
     // m_particle->Rotate(beta, gamma, 0);
+    scaterredBeams.reserve(scaterredBeams.size() + 4 * m_particle->nFacets);
     SplitLightToBeams();
     return SplitBeams(scaterredBeams);
 }
@@ -227,7 +228,7 @@ void ScatteringNonConvex::CutExternalBeam(const Beam &beam,
 
 void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir, IntArray &facetIDs)
 {
-    if (facetIDs.size == 0)
+    if (facetIDs.size < 2)
     {
         return;
     }
@@ -545,6 +546,9 @@ void ScatteringNonConvex::FindVisibleFacets(const Beam &beam, IntArray &facetIds
 
     for (int i = begin; i < end; ++i)
     {
+        if (i == beam.lastFacetId)
+            continue;
+
         const Point3f &facetNormal = m_facets[i].normal[!beam.location];
         double cosFB = DotProduct(beam.direction, facetNormal);
 
