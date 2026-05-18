@@ -1079,6 +1079,8 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
 #endif
     long long beamBudget = std::max(100LL, availMB / 2);
     int chunkSize = std::max(32, std::min(4096, std::min(myCount, (int)(beamBudget * 1024 / 350))));
+    if (m_sobolChunkSize > 0)
+        chunkSize = std::max(1, std::min(chunkSize, m_sobolChunkSize));
     int nChunks = (myCount + chunkSize - 1) / chunkSize;
 
     if (m_mpiRank == 0)

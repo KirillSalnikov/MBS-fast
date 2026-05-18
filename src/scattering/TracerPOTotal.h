@@ -54,6 +54,9 @@ public:
     /// Default false keeps honest averaging over all gamma values.
     bool m_fastPoleGamma = false;
 
+    /// Optional manual cap for Sobol streaming chunks. 0 means auto.
+    int m_sobolChunkSize = 0;
+
     /// MPI rank and size (default: single process)
     int m_mpiRank = 0;
     int m_mpiSize = 1;

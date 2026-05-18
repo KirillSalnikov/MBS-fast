@@ -99,6 +99,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("autofull", 1, true); // full 3D sequential: n → N_phi → N_orient
     parser.AddRule("auto", 1, true); // full auto: auto_tgrid + auto_phi + adaptive (one arg: eps)
     parser.AddRule("maxorient", 1, true); // max orientations for adaptive (power of 2)
+    parser.AddRule("chunk", 1, true); // max Sobol orientations per memory chunk
     parser.AddRule("oldauto", 1, true); // physics-based: div2/div4/div8 of diffraction-limited grid
     parser.AddRule("coh_orient", 0, true); // coherent across orientations (legacy mode)
     parser.AddRule("pole", 0, true); // fast pole averaging: one gamma with gamma weight
@@ -137,6 +138,7 @@ void PrintHelp()
          << "  --oldauto DIV          Physics-based grid (div2/div4/div8 of diffraction limit)\n"
          << "  --orientfile FILE      Orientations from file (beta gamma per line)\n"
          << "  --maxorient N          Max orientations for adaptive (power of 2)\n"
+         << "  --chunk N              Max Sobol orientations per memory chunk\n"
          << "  --coh_orient           Coherent across orientations (legacy)\n"
          << "  --pole                 Fast pole gamma: one gamma with full gamma weight\n"
 
@@ -830,7 +832,7 @@ int main(int argc, const char* argv[])
             }
 
             TracerPOTotal *tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); } }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; } }
             tracer->m_scattering->m_wave = wave;
             tracer->shadowOff = args.IsCatched("shadow_off");
             trackGroups.push_back(TrackGroup());
@@ -915,7 +917,7 @@ int main(int argc, const char* argv[])
                 if (args.IsCatched("all"))
                 {
                     tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); } }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; } }
                     tracer->m_scattering->m_wave = wave;
                     if (args.IsCatched("r"))
                     {
@@ -937,7 +939,7 @@ int main(int argc, const char* argv[])
                 {
                     // Use TracerPOTotal for OpenMP + batched sincos acceleration
                     tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); } }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; } }
                     tracer->m_scattering->m_wave = wave;
                     tracer->shadowOff = args.IsCatched("shadow_off");
                     if (args.IsCatched("r"))
@@ -1017,7 +1019,7 @@ int main(int argc, const char* argv[])
             ScatteringRange conus = SetConus(args);
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); } }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; } }
             tracer->m_scattering->m_wave = wave;
             tracer->shadowOff = args.IsCatched("shadow_off");
             if (args.IsCatched("r"))
@@ -1056,7 +1058,7 @@ int main(int argc, const char* argv[])
             ScatteringRange conus = SetConus(args);
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); } }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; } }
             tracer->m_scattering->m_wave = wave;
             tracer->shadowOff = args.IsCatched("shadow_off");
             trackGroups.push_back(TrackGroup());
@@ -1108,7 +1110,7 @@ int main(int argc, const char* argv[])
                 : ScatteringRange(0, M_PI, 1, 1);
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); } }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; } }
             tracer->m_scattering->m_wave = wave;
             tracer->shadowOff = args.IsCatched("shadow_off");
             trackGroups.push_back(TrackGroup());
