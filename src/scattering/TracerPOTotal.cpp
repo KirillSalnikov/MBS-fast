@@ -388,6 +388,12 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
 
     EraseConsoleLine(60);
     if (m_mpiRank == 0) {
+        std::ostringstream line;
+        line << "Sequential tracing completed: " << count << "/" << nOrientations
+             << " trace calls, phase1=" << std::fixed << std::setprecision(2)
+             << phase1_total << " s";
+        std::cout << line.str() << std::endl;
+        AppendTextLog(line.str() + "\n");
         std::cout << "Phase 1 (tracing): " << std::fixed << std::setprecision(2) << phase1_total << " s" << std::endl;
         std::cout << "Phase 2 (diffraction, OpenMP): " << phase2_total << " s" << std::endl;
         std::cout << "Total: " << phase1_total + phase2_total << " s" << std::endl;
@@ -725,6 +731,15 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
     }
 
     EraseConsoleLine(60);
+    if (m_mpiRank == 0)
+    {
+        std::ostringstream line;
+        line << "Sequential tracing completed: " << count << "/" << nOrientations
+             << " trace calls, phase1=" << std::fixed << std::setprecision(2)
+             << phase1_total << " s";
+        std::cout << line.str() << std::endl;
+        AppendTextLog(line.str() + "\n");
+    }
     std::cout << "Phase 1 (tracing + preprocessing): " << std::fixed
               << std::setprecision(2) << phase1_total << " s" << std::endl;
 
