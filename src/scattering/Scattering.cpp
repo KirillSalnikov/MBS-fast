@@ -25,9 +25,9 @@ Scattering::Scattering(Particle *particle, Light *incidentLight, bool isOpticalP
 
     m_polarBasis = m_incidentLight->polarizationBasis;
 
-    complex ri = m_particle->GetRefractiveIndex();
+    ::complex ri = m_particle->GetRefractiveIndex();
     splitting.ComputeRiParams(ri);
-    const double riContrast = abs((ri - complex(1.0, 0.0)) / (ri + complex(1.0, 0.0)));
+    const double riContrast = abs((ri - ::complex(1.0, 0.0)) / (ri + ::complex(1.0, 0.0)));
     EPS_BEAM_ENERGY = (0.25*0.25*m_particle->Area())/M_PI*riContrast*riContrast*1e-7;
 }
 

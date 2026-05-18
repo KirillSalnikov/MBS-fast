@@ -25,7 +25,7 @@ Handler::Handler(Particle *particle, Light *incidentLight, int nTheta,
     m_waveIndex = M_2PI/m_wavelength;
     m_wi2 = m_waveIndex*m_waveIndex;
 
-    complex one(0, -1);
+    ::complex one(0, -1);
     m_complWave = (one * m_wavelength) / SQR(M_2PI);
     m_invComplWave = -one/m_wavelength;
 
@@ -264,7 +264,7 @@ Point3d Handler::ChangeCoordinateSystem(const Point3d& normal,
     return ChangeCoordinateSystem(hor, ver, normal, point);
 }
 
-complex Handler::DiffractInclineAbs(const BeamInfo &info, const Beam &beam,
+::complex Handler::DiffractInclineAbs(const BeamInfo &info, const Beam &beam,
                              const Point3d &direction) const
 {
     const Point3f &dir = beam.direction;
@@ -276,8 +276,8 @@ complex Handler::DiffractInclineAbs(const BeamInfo &info, const Beam &beam,
     double pt_y = DotProductD(k_k0, info.verAxis)
                 - DotProductD(info.normald, k_k0) * DotProductD(info.normald, info.verAxis);
 
-    const complex A(pt_x, info.lenIndices.x*m_riIm);
-    const complex B(pt_y, info.lenIndices.y*m_riIm);
+    const ::complex A(pt_x, info.lenIndices.x*m_riIm);
+    const ::complex B(pt_y, info.lenIndices.y*m_riIm);
 
     if (abs(A) < m_eps2 && abs(B) < m_eps2)
     {
@@ -285,7 +285,7 @@ complex Handler::DiffractInclineAbs(const BeamInfo &info, const Beam &beam,
         return (m_legacySign ? m_invComplWave : -m_invComplWave) * info.area * absorp;
     }
 
-    complex s(0, 0);
+    ::complex s(0, 0);
 
     int begin, startIndex, endIndex;
 
@@ -329,15 +329,15 @@ complex Handler::DiffractInclineAbs(const BeamInfo &info, const Beam &beam,
                 continue;
             }
 
-            complex Ci = A + ai*B;
+            ::complex Ci = A + ai*B;
 
-            complex tmp;
+            ::complex tmp;
             double absCi = abs(Ci);
 
             if (absCi < m_eps1)
             {
                 double mul = p2x*p2x - p1x*p1x;
-                tmp = complex(-m_wi2*real(Ci)*mul/2.0,
+                tmp = ::complex(-m_wi2*real(Ci)*mul/2.0,
                               m_waveIndex*(p2x - p1x) + m_wi2*imag(Ci)*mul/2.0);
             }
             else if (absCi > m_eps3)
@@ -355,7 +355,7 @@ complex Handler::DiffractInclineAbs(const BeamInfo &info, const Beam &beam,
                 fast_sincos(kReCi*p1x, s1, c1);
                 double e2 = exp(kImCi*p2x);
                 double e1 = exp(kImCi*p1x);
-                tmp = complex(e2*c2 - e1*c1, e2*s2 - e1*s1)/Ci;
+                tmp = ::complex(e2*c2 - e1*c1, e2*s2 - e1*s1)/Ci;
             }
 
             const double bi = p1y - ai*p1x;
@@ -364,8 +364,8 @@ complex Handler::DiffractInclineAbs(const BeamInfo &info, const Beam &beam,
             double sb, cb;
             fast_sincos(kBi*reB, sb, cb);
             double eb = exp(-kBi*imB);
-            complex phase_b(eb*cb, eb*sb);
-            complex tmp2 = phase_b * tmp;
+            ::complex phase_b(eb*cb, eb*sb);
+            ::complex tmp2 = phase_b * tmp;
 
             if (isnan(real(tmp2)))
             {
@@ -404,15 +404,15 @@ complex Handler::DiffractInclineAbs(const BeamInfo &info, const Beam &beam,
                 continue;
             }
 
-            const complex Ei = A*ci + B;
+            const ::complex Ei = A*ci + B;
 
-            complex tmp;
+            ::complex tmp;
             double absEi = abs(Ei);
 
             if (absEi < m_eps1)
             {
                 double mul = p2y*p2y - p1y*p1y;
-                tmp = complex(-m_wi2*real(Ei)*mul/2.0,
+                tmp = ::complex(-m_wi2*real(Ei)*mul/2.0,
                               m_waveIndex*(p2y - p1y) + m_wi2*imag(Ei)*mul/2.0);
             }
             else if (absEi > m_eps3)
@@ -430,7 +430,7 @@ complex Handler::DiffractInclineAbs(const BeamInfo &info, const Beam &beam,
                 fast_sincos(kReEi*p1y, s1, c1);
                 double e2 = exp(kImEi*p2y);
                 double e1 = exp(kImEi*p1y);
-                tmp = complex(e2*c2 - e1*c1, e2*s2 - e1*s1)/Ei;
+                tmp = ::complex(e2*c2 - e1*c1, e2*s2 - e1*s1)/Ei;
             }
 
             const double di = p1x - ci*p1y;
@@ -439,8 +439,8 @@ complex Handler::DiffractInclineAbs(const BeamInfo &info, const Beam &beam,
             double sd, cd;
             fast_sincos(kDi*reA, sd, cd);
             double ed = exp(-kDi*imA);
-            complex phase_d(ed*cd, ed*sd);
-            complex tmp2 = phase_d * tmp;
+            ::complex phase_d(ed*cd, ed*sd);
+            ::complex tmp2 = phase_d * tmp;
 
             if (isnan(real(tmp2)))
             {
@@ -477,7 +477,7 @@ double Handler::BeamCrossSection(const Beam &beam) const
     return (e*area)/len;
 }
 
-complex Handler::DiffractIncline(const BeamInfo &info, const Beam &beam,
+::complex Handler::DiffractIncline(const BeamInfo &info, const Beam &beam,
                                  const Point3d &direction) const
 {
     const Point3f &dir = beam.direction;
@@ -499,7 +499,7 @@ complex Handler::DiffractIncline(const BeamInfo &info, const Beam &beam,
         return (m_legacySign ? m_invComplWave : -m_invComplWave) * info.area;
     }
 
-    complex s(0, 0);
+    ::complex s(0, 0);
 
     int begin, startIndex, endIndex;
 
@@ -536,11 +536,11 @@ complex Handler::DiffractIncline(const BeamInfo &info, const Beam &beam,
             const double ai = (p1.y - p2.y)/(p1.x - p2.x);
             const double Ci = A+ai*B;
 
-            complex tmp;
+            ::complex tmp;
 
             if (fabs(Ci) < m_eps1)
             {
-                tmp = complex(-m_wi2*Ci*(p2.x*p2.x - p1.x*p1.x)/2.0,
+                tmp = ::complex(-m_wi2*Ci*(p2.x*p2.x - p1.x*p1.x)/2.0,
                               m_waveIndex*(p2.x - p1.x));
             }
             else
@@ -573,11 +573,11 @@ complex Handler::DiffractIncline(const BeamInfo &info, const Beam &beam,
             const double ci = (p1.x - p2.x)/(p1.y - p2.y);
             const double Ei = A*ci+B;
 
-            complex tmp;
+            ::complex tmp;
 
             if (fabs(Ei) < m_eps1)
             {
-                tmp = complex(-m_wi2*Ei*(p2.y*p2.y - p1.y*p1.y)/2.0,
+                tmp = ::complex(-m_wi2*Ei*(p2.y*p2.y - p1.y*p1.y)/2.0,
                               m_waveIndex*(p2.y - p1.y));
             }
             else
@@ -648,7 +648,7 @@ void Handler::PrecomputeEdgeData(const BeamInfo &info, const Beam &beam,
     }
 }
 
-complex Handler::DiffractInclineFast(const BeamInfo &info, const BeamEdgeData &ed,
+::complex Handler::DiffractInclineFast(const BeamInfo &info, const BeamEdgeData &ed,
                                       const Point3d &beamDir,
                                       const Point3d &direction) const
 {
@@ -667,7 +667,7 @@ complex Handler::DiffractInclineFast(const BeamInfo &info, const BeamEdgeData &e
     if (absA < m_eps2 && absB < m_eps2)
         return (m_legacySign ? m_invComplWave : -m_invComplWave) * info.area;
 
-    complex s(0, 0);
+    ::complex s(0, 0);
     const int nv = ed.nVertices;
 
     // Use precomputed 2D vertices - no ChangeCoordinateSystem calls
@@ -684,9 +684,9 @@ complex Handler::DiffractInclineFast(const BeamInfo &info, const BeamEdgeData &e
             double ai = (p1y - p2y) / dx;
             double Ci = A + ai * B;
 
-            complex tmp;
+            ::complex tmp;
             if (fabs(Ci) < m_eps1)
-                tmp = complex(-m_wi2*Ci*(p2x*p2x - p1x*p1x)*0.5,
+                tmp = ::complex(-m_wi2*Ci*(p2x*p2x - p1x*p1x)*0.5,
                               m_waveIndex*(p2x - p1x));
             else
             {
@@ -714,9 +714,9 @@ complex Handler::DiffractInclineFast(const BeamInfo &info, const BeamEdgeData &e
             double ci = (p1x - p2x) / dy;
             double Ei = A * ci + B;
 
-            complex tmp;
+            ::complex tmp;
             if (fabs(Ei) < m_eps1)
-                tmp = complex(-m_wi2*Ei*(p2y*p2y - p1y*p1y)*0.5,
+                tmp = ::complex(-m_wi2*Ei*(p2y*p2y - p1y*p1y)*0.5,
                               m_waveIndex*(p2y - p1y));
             else
             {

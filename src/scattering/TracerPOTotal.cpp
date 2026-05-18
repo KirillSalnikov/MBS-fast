@@ -602,7 +602,7 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
     // Checkpoint is opt-in because frequent binary dumps add avoidable I/O
     // overhead to ordinary orientation-file runs.
     std::string ckptPath = m_resultDirName + "_checkpoint.bin";
-    const complex ri = m_particle->GetRefractiveIndex();
+    const ::complex ri = m_particle->GetRefractiveIndex();
     unsigned long paramHash = HashParams(m_scattering->m_wave,
         real(ri), imag(ri), m_scattering->GetMaxReflections(),
         nOrientations, m_particle->MaximalDimention(), 0, nAz, nZen);

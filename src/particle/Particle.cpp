@@ -113,7 +113,7 @@ void Particle::SetFromFile(const std::string &filename)
     }
 }
 
-void Particle::Init(int facetCount, const complex &refrIndex)
+void Particle::Init(int facetCount, const ::complex &refrIndex)
 {
     nFacets = facetCount;
     m_refractiveIndex = refrIndex;
@@ -510,7 +510,7 @@ double Particle::Volume()
     return volume;
 }
 
-const complex &Particle::GetRefractiveIndex() const
+const ::complex &Particle::GetRefractiveIndex() const
 {
     return m_refractiveIndex;
 }
@@ -575,7 +575,7 @@ void Particle::Output(std::string name)
     file.close();
 }
 
-void Particle::SetRefractiveIndex(const complex &value)
+void Particle::SetRefractiveIndex(const ::complex &value)
 {
     m_refractiveIndex = value;
 }

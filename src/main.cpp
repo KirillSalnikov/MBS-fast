@@ -485,7 +485,7 @@ int main(int argc, const char* argv[])
 
     // Enable absorption automatically when Im(ri) != 0
     bool isAbs = args.IsCatched("abs") || (im != 0);
-    complex refrIndex = complex(re, isAbs ? im : 0);
+    ::complex refrIndex = ::complex(re, isAbs ? im : 0);
 
     // TODO: AggregateBuilder
 
