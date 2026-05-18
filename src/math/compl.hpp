@@ -9,6 +9,12 @@
 #include "service.hpp"
 #endif
 
+// Some systems expose the C99 macro `complex` from <complex.h>.  This project
+// has its own legacy complex class, so make the name usable as a C++ type.
+#ifdef complex
+#undef complex
+#endif
+
 /** @addtogroup Tracer Beam splitting algorithm
  * @{
  */
