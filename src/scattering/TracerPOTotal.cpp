@@ -115,6 +115,7 @@ static unsigned long HashParams(double wave, double ri_re, double ri_im, int nAc
 #endif
 
 using namespace std;
+using ::complex;
 
 // Helper: pack Arr2D (N x M grid of n x m matrices) into flat double array
 static void Arr2DToFlat(const Arr2D &arr, int N, int M, double *buf)

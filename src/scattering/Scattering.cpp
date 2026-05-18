@@ -9,6 +9,7 @@
 #define NORM_CEIL	FLT_EPSILON + 1
 
 using namespace std;
+using ::complex;
 
 Scattering::Scattering(Particle *particle, Light *incidentLight, bool isOpticalPath,
                        int nActs)

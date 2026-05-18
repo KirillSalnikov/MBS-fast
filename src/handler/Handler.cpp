@@ -8,6 +8,7 @@
 #include <algorithm>
 
 using namespace std;
+using ::complex;
 
 Handler::Handler(Particle *particle, Light *incidentLight, int nTheta,
                  double wavelength)

@@ -5,6 +5,7 @@
 #include "global.h"
 
 using namespace std;
+using ::complex;
 
 Particle::Particle()
 {
