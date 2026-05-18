@@ -242,6 +242,32 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
 
     int nAz = handlerPO->m_sphere.nAzimuth;
     int nZen = handlerPO->m_sphere.nZenith;
+    int nThreads = 1;
+#ifdef _OPENMP
+    #pragma omp parallel
+    {
+        #pragma omp single
+        nThreads = omp_get_num_threads();
+    }
+#endif
+    const int parallelTraceMinGamma = std::max(128, 8 * nThreads);
+    if (m_mpiRank == 0)
+    {
+        std::ostringstream line;
+        line << "Oldauto/random Phase 1: ";
+        if (nThreads > 1)
+        {
+            line << "gamma blocks < " << parallelTraceMinGamma
+                 << " trace sequentially; larger blocks trace in parallel ("
+                 << nThreads << " threads)";
+        }
+        else
+        {
+            line << "sequential tracing (1 thread)";
+        }
+        std::cout << line.str() << std::endl;
+        AppendTextLog(line.str() + "\n");
+    }
 
     // --save_betas: create output directory
     std::string betaDir;
@@ -251,7 +277,6 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     }
 
     double phase1_total = 0, phase2_total = 0;
-    std::vector<Beam> outBeams;
     long long count = 0;
 
     // Process beta-by-beta: each beta = one chunk of nGamma orientations
@@ -269,19 +294,83 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         // Phase 1: trace all gamma for this beta
         auto tp1 = std::chrono::high_resolution_clock::now();
         std::vector<PreparedOrientation> chunkPrepared(gammaCount);
+        std::vector<double> chunkEnergies(gammaCount, 0.0);
+        std::vector<double> chunkOutputEnergies(gammaCount, 0.0);
+        std::vector<int> chunkBeamCounts(gammaCount, 0);
+
+        if (nThreads > 1 && gammaCount >= parallelTraceMinGamma)
+        {
+            #pragma omp parallel
+            {
+                Particle localParticle = *m_particle;
+                Scattering *localScatter = m_scattering->CloneFor(&localParticle, &m_incidentLight);
+                localScatter->m_wave = m_scattering->m_wave;
+                localScatter->restriction = m_scattering->restriction;
+
+                HandlerPO localHandler(&localParticle, &m_incidentLight,
+                                       handlerPO->nTheta, m_scattering->m_wave);
+                localHandler.ConfigureForThreadLocalPrepare(*handlerPO, localScatter);
+
+                std::vector<Beam> localBeams;
+
+                #pragma omp for schedule(dynamic, 1)
+                for (int jj = 0; jj < gammaCount; ++jj)
+                {
+                    double gamma = gammaRange.min + (jj + 0.5) * gammaRange.step;
+                    localParticle.Rotate(beta, gamma, 0);
+                    if (!shadowOff) localScatter->FormShadowBeam(localBeams);
+                    bool ok = localScatter->ScatterLight(0, 0, localBeams);
+                    chunkBeamCounts[jj] = (int)localBeams.size();
+                    if (ok)
+                    {
+                        double beforeOutput = localHandler.m_outputEnergy;
+                        localHandler.PrepareBeams(localBeams, gammaWeight, chunkPrepared[jj]);
+                        chunkOutputEnergies[jj] = localHandler.m_outputEnergy - beforeOutput;
+                    }
+                    else
+                    {
+                        chunkPrepared[jj].sinZenith = gammaWeight;
+                    }
+                    chunkEnergies[jj] = localScatter->GetIncedentEnergy() * gammaWeight;
+                    localBeams.clear();
+                }
+
+                delete localScatter;
+            }
+        }
+        else
+        {
+            std::vector<Beam> outBeams;
+            for (int jj = 0; jj < gammaCount; ++jj)
+            {
+                double gamma = gammaRange.min + (jj + 0.5) * gammaRange.step;
+                m_particle->Rotate(beta, gamma, 0);
+                if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
+                bool ok = m_scattering->ScatterLight(0, 0, outBeams);
+                chunkBeamCounts[jj] = (int)outBeams.size();
+                if (ok)
+                {
+                    double beforeOutput = handlerPO->m_outputEnergy;
+                    handlerPO->PrepareBeams(outBeams, gammaWeight, chunkPrepared[jj]);
+                    chunkOutputEnergies[jj] = handlerPO->m_outputEnergy - beforeOutput;
+                    handlerPO->m_outputEnergy = beforeOutput;
+                }
+                else
+                {
+                    chunkPrepared[jj].sinZenith = gammaWeight;
+                }
+                chunkEnergies[jj] = m_scattering->GetIncedentEnergy() * gammaWeight;
+                outBeams.clear();
+            }
+        }
 
         for (int jj = 0; jj < gammaCount; ++jj)
         {
-            double gamma = gammaRange.min + (jj + 0.5) * gammaRange.step;
-            m_particle->Rotate(beta, gamma, 0);
-            if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
-            bool ok = m_scattering->ScatterLight(0, 0, outBeams);
-            if (ok) handlerPO->PrepareBeams(outBeams, gammaWeight, chunkPrepared[jj]);
-            else    chunkPrepared[jj].sinZenith = gammaWeight;
-            m_incomingEnergy += m_scattering->GetIncedentEnergy() * gammaWeight;
-            if (m_mpiRank == 0) OutputProgress(nOrientations, count + 1, ib*nGamma+jj, 0, timer, outBeams.size());
-            outBeams.clear();
+            m_incomingEnergy += chunkEnergies[jj];
+            handlerPO->m_outputEnergy += chunkOutputEnergies[jj];
             ++count;
+            if (m_mpiRank == 0)
+                OutputProgress(nOrientations, count, ib*nGamma+jj, 0, timer, chunkBeamCounts[jj]);
         }
         phase1_total += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - tp1).count();
 
