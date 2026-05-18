@@ -63,8 +63,6 @@ void Tracer::CalcCsBeta(int betaNorm, double beta, const AngleRange &betaRange,
 
     cs_beta = cs_beta/normIndex;
 
-    if(fabs(beta)<=FLT_EPSILON || fabs(beta-M_PI)<=FLT_EPSILON)
-        cs_beta *= gammaRange.number;
 }
 
 void Tracer::SetIncidentLight(Particle *particle)
