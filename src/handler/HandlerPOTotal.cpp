@@ -3,12 +3,32 @@
 #include "Mueller.hpp"
 #include <iostream>
 #include <iomanip>
+#include <fstream>
 #include <string>
+#include <sstream>
 #include <cmath>
 #include <algorithm>
 
 namespace
 {
+std::string LogNameForResult(const std::string &destName)
+{
+    const std::string suffix = "_noshadow";
+    if (destName.size() >= suffix.size()
+            && destName.compare(destName.size() - suffix.size(), suffix.size(), suffix) == 0)
+    {
+        return destName.substr(0, destName.size() - suffix.size()) + "_log.txt";
+    }
+    return destName + "_log.txt";
+}
+
+void AppendTextLog(const std::string &destName, const std::string &text)
+{
+    std::ofstream out(LogNameForResult(destName), std::ios::app);
+    if (out.is_open())
+        out << text;
+}
+
 void ApplyForwardPoleSymmetry(matrix &m)
 {
     const double M00 = m[0][0];
@@ -136,34 +156,37 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
         const double Q_ext = C_ext / nrg;
         const std::string label =
             (destName.find("noshadow") != std::string::npos) ? "no-shadow" : "full";
-        std::cerr << std::fixed << std::setprecision(4);
-        std::cerr << "\n===== SCATTERING EFFICIENCY: " << label << " =====\n";
-        std::cerr << "C_sca = " << C_sca << "\n";
-        std::cerr << "A_proj (incoming energy) = " << nrg << "\n";
-        std::cerr << "Q_sca (" << label << ") = C_sca / A_proj = " << Q_sca << "\n";
+        std::ostringstream log;
+        log << std::fixed << std::setprecision(4);
+        log << "\n===== SCATTERING EFFICIENCY: " << label << " =====\n";
+        log << "C_sca = " << C_sca << "\n";
+        log << "A_proj (incoming energy) = " << nrg << "\n";
+        log << "Q_sca (" << label << ") = C_sca / A_proj = " << Q_sca << "\n";
         if (label == "full")
         {
-            std::cerr << "Outcoming energy = " << m_outputEnergy << "\n";
-            std::cerr << "C_abs = A_proj - outcoming energy = " << C_abs << "\n";
-            std::cerr << "C_ext = C_sca + C_abs = " << C_ext << "\n";
-            std::cerr << "Q_abs = C_abs / A_proj = " << Q_abs << "\n";
-            std::cerr << "Q_ext = C_ext / A_proj = " << Q_ext << "\n";
-            std::cerr << "EFFICIENCY_SUMMARY "
-                      << "Qext=" << Q_ext << ' '
-                      << "Cext=" << C_ext << ' '
-                      << "Qabs=" << Q_abs << ' '
-                      << "Qsca=" << Q_sca << ' '
-                      << "Csca=" << C_sca << ' '
-                      << "Cabs=" << C_abs << "\n";
+            log << "Outcoming energy = " << m_outputEnergy << "\n";
+            log << "C_abs = A_proj - outcoming energy = " << C_abs << "\n";
+            log << "C_ext = C_sca + C_abs = " << C_ext << "\n";
+            log << "Q_abs = C_abs / A_proj = " << Q_abs << "\n";
+            log << "Q_ext = C_ext / A_proj = " << Q_ext << "\n";
+            log << "EFFICIENCY_SUMMARY "
+                << "Qext=" << Q_ext << ' '
+                << "Cext=" << C_ext << ' '
+                << "Qabs=" << Q_abs << ' '
+                << "Qsca=" << Q_sca << ' '
+                << "Csca=" << C_sca << ' '
+                << "Cabs=" << C_abs << "\n";
         }
         if (Q_sca > 2.5)
         {
-            std::cerr << "WARNING: Q_sca = " << Q_sca
-                      << " > 2. PO overestimates scattering at this size parameter.\n"
-                      << "  Physical limit (extinction paradox): Q_ext -> 2 for large x.\n"
-                      << "  This is a known PO limitation.\n";
+            log << "WARNING: Q_sca = " << Q_sca
+                << " > 2. PO overestimates scattering at this size parameter.\n"
+                << "  Physical limit (extinction paradox): Q_ext -> 2 for large x.\n"
+                << "  This is a known PO limitation.\n";
         }
-        std::cerr << "=========================================\n";
+        log << "=========================================\n";
+        std::cerr << log.str();
+        AppendTextLog(destName, log.str());
     }
 }
 

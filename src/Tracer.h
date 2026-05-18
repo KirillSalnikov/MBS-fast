@@ -70,6 +70,7 @@ protected:
     void OutputProgress(int nOrientation, long long count,
                         int zenith, int azimuth, CalcTimer &timer, int nBeams);
     void OutputOrientationToLog(int i, int j, std::ostream &logfile);
+    void AppendTextLog(const std::string &text) const;
 
 private:
     void HandleBeamsPO2(std::vector<Beam> &outBeams, const ScatteringRange &bsCone, int groupID);

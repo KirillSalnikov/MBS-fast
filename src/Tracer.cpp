@@ -3,6 +3,7 @@
 #include <ostream>
 #include <string>
 #include <iostream>
+#include <fstream>
 #include <algorithm>
 #include <assert.h>
 #include "global.h"
@@ -118,7 +119,18 @@ void Tracer::OutputProgress(int nOrientation, long long count,
         cout << progressLine;
         RenameConsole(progressLine);
         cout << endl;
+        AppendTextLog(progressLine + "\n");
     }
+}
+
+void Tracer::AppendTextLog(const std::string &text) const
+{
+    if (m_resultDirName.empty())
+        return;
+
+    ofstream out(m_resultDirName + "_log.txt", ios::app);
+    if (out.is_open())
+        out << text;
 }
 
 
@@ -173,6 +185,8 @@ void Tracer::OutputStatisticsPO(CalcTimer &timer, long long orNumber, const stri
 
     out << m_summary;
     out.close();
+
+    AppendTextLog("\n===== RUN SUMMARY =====\n" + m_summary + "\n");
 
     cout << m_summary;
 }
@@ -238,6 +252,15 @@ void Tracer::OutputStartTime(CalcTimer &timer)
     m_startTime = timer.Start();
     cout << "Started at " << ctime(&m_startTime) << endl;
     cout << "Prog.\tDone/Total\tIndex\tTime\tName\tBeams"<< endl;
+
+    ofstream out(m_resultDirName + "_log.txt", ios::out);
+    if (out.is_open())
+    {
+        out << "MBS-fast log\n";
+        out << "Result: " << m_resultDirName << "\n";
+        out << "Started at " << ctime(&m_startTime);
+        out << "Prog.\tDone/Total\tIndex\tTime\tName\tBeams\n";
+    }
 }
 
 void Tracer::SetHandler(Handler *handler)
