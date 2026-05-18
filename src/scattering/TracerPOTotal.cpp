@@ -193,17 +193,19 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             double beta = betaRange.min + i * betaRange.step;
             double dcos;
             CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
-            m_handler->SetSinZenith(dcos);
             const bool pole = (fabs(beta) <= FLT_EPSILON
                                || fabs(beta - M_PI) <= FLT_EPSILON);
-            const int gammaCount = pole ? 1 : gammaRange.number;
+            const bool fastPole = pole && m_fastPoleGamma;
+            const int gammaCount = fastPole ? 1 : gammaRange.number;
+            const double gammaWeight = fastPole ? dcos * gammaRange.number : dcos;
+            m_handler->SetSinZenith(gammaWeight);
             for (int j = 0; j < gammaCount; ++j) {
                 double gamma = gammaRange.min + (j + 0.5) * gammaRange.step;
                 m_particle->Rotate(beta, gamma, 0);
                 if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
                 m_scattering->ScatterLight(0, 0, outBeams);
-                m_handler->HandleBeams(outBeams, dcos);
-                m_incomingEnergy += m_scattering->GetIncedentEnergy() * dcos;
+                m_handler->HandleBeams(outBeams, gammaWeight);
+                m_incomingEnergy += m_scattering->GetIncedentEnergy() * gammaWeight;
                 outBeams.clear();
             }
         }
@@ -259,7 +261,9 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
         const bool pole = (fabs(beta) <= FLT_EPSILON
                            || fabs(beta - M_PI) <= FLT_EPSILON);
-        const int gammaCount = pole ? 1 : nGamma;
+        const bool fastPole = pole && m_fastPoleGamma;
+        const int gammaCount = fastPole ? 1 : nGamma;
+        const double gammaWeight = fastPole ? dcos * nGamma : dcos;
 
         // Phase 1: trace all gamma for this beta
         auto tp1 = std::chrono::high_resolution_clock::now();
@@ -271,9 +275,9 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             m_particle->Rotate(beta, gamma, 0);
             if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
             bool ok = m_scattering->ScatterLight(0, 0, outBeams);
-            if (ok) handlerPO->PrepareBeams(outBeams, dcos, chunkPrepared[jj]);
-            else    chunkPrepared[jj].sinZenith = dcos;
-            m_incomingEnergy += m_scattering->GetIncedentEnergy() * dcos;
+            if (ok) handlerPO->PrepareBeams(outBeams, gammaWeight, chunkPrepared[jj]);
+            else    chunkPrepared[jj].sinZenith = gammaWeight;
+            m_incomingEnergy += m_scattering->GetIncedentEnergy() * gammaWeight;
             if (m_mpiRank == 0) OutputProgress(nOrientations, count, ib*nGamma+jj, 0, timer, outBeams.size());
             outBeams.clear();
             ++count;

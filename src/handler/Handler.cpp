@@ -5,6 +5,7 @@
 #include <iostream>
 #include <limits>
 #include <iomanip>
+#include <algorithm>
 
 using namespace std;
 
@@ -79,6 +80,11 @@ void Handler::SetAbsorptionAccounting(bool value)
     m_absMag = -m_waveIndex*m_riIm;
 }
 
+void Handler::SetAbsorptionPointCount(int value)
+{
+    m_absorptionPointCount = (value == -1 || value > 0) ? value : 1;
+}
+
 void Handler::SetScatteringSphere(const ScatteringRange &grid)
 {
 
@@ -133,21 +139,42 @@ void Handler::ApplyAbsorption(Beam &beam)
     vector<int> tr;
     Tracks::RecoverTrack(beam, m_particle->nFacets, tr);
 
-//	double opAbs = CalcOpticalPathAbsorption(beam);
-    double path = m_scattering->ComputeInternalOpticalPath(beam, beam.Center(), tr);
+    double absorption = 0.0;
+    int nSamples = 0;
+
+    auto addAbsorptionAt = [&](const Point3f &point)
+    {
+        double path = m_scattering->ComputeInternalOpticalPath(beam, point, tr);
+        absorption += (path > DBL_EPSILON) ? exp(m_cAbs*path) : 1.0;
+        ++nSamples;
 
 #ifdef _DEBUG // DEB
-    double ddd = fabs(path - beam.opticalPath);
+        double ddd = fabs(path - beam.opticalPath);
 //	m_logFile << ddd << endl;
-    if (fabs(path - beam.opticalPath) >= 10e-4)
-        int ggg = 0;
+        if (fabs(path - beam.opticalPath) >= 10e-4)
+            int ggg = 0;
 #endif
+    };
 
-    if (path > DBL_EPSILON)
+    if (m_absorptionPointCount == 1 || beam.nVertices <= 0)
     {
-        double abs = exp(m_cAbs*path);
-        beam.J *= abs;
+        addAbsorptionAt(beam.Center());
     }
+    else
+    {
+        int count = (m_absorptionPointCount == -1)
+            ? beam.nVertices
+            : std::min(m_absorptionPointCount, beam.nVertices);
+
+        for (int i = 0; i < count; ++i)
+        {
+            int idx = (i * beam.nVertices) / count;
+            addAbsorptionAt(beam.arr[idx]);
+        }
+    }
+
+    if (nSamples > 0)
+        beam.J *= absorption / nSamples;
 }
 
 Point3d Handler::ChangeCoordinateSystem(const Point3d& hor, const Point3d& ver,

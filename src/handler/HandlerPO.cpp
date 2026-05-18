@@ -751,6 +751,7 @@ void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
     m_ri = source.m_ri;
     m_riIm = source.m_riIm;
     m_absMag = source.m_absMag;
+    m_absorptionPointCount = source.m_absorptionPointCount;
     m_beamCutoff = source.m_beamCutoff;
     m_targetEps = source.m_targetEps;
     m_legacySign = source.m_legacySign;

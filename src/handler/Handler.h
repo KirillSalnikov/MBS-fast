@@ -375,6 +375,7 @@ public:
     virtual void WriteMatricesToFile(std::string &destName, double nrg);
     virtual void WriteTotalMatricesToFile(const std::string &destName);
     void SetAbsorptionAccounting(bool value);
+    void SetAbsorptionPointCount(int value);
     virtual void SetScatteringSphere(const ScatteringRange &grid);
 
     void SetNormIndex(double value);
@@ -384,6 +385,7 @@ public:
 
     double m_sinZenith;
     Tracks *m_tracks;
+    int m_absorptionPointCount = 1;
 
     int nTheta;
     int m_nBadBeams;

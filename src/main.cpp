@@ -72,6 +72,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("tr", 1, true); // file with trajectories
     parser.AddRule("all", 0, true); // calculate all trajectories
     parser.AddRule("abs", zero, true, "w"); // accounting of absorbtion
+    parser.AddRule("abs_points", 1, true); // absorption samples: 1=center, all=all polygon vertices
     parser.AddRule("close", 0, true); // closing of program after calculation
     parser.AddRule("o", 1, true); // output folder name
     parser.AddRule("gr", zero, true);
@@ -99,6 +100,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("maxorient", 1, true); // max orientations for adaptive (power of 2)
     parser.AddRule("oldauto", 1, true); // physics-based: div2/div4/div8 of diffraction-limited grid
     parser.AddRule("coh_orient", 0, true); // coherent across orientations (legacy mode)
+    parser.AddRule("pole", 0, true); // fast pole averaging: one gamma with gamma weight
     parser.AddRule("legacy_sign", 0, true); // use old (+) Fresnel sign for forward direction
     parser.AddRule("sym", 2, true); // symmetry override: beta_factor gamma_factor (e.g. --sym 2 6)
     parser.AddRule("help", 0, true); // print help
@@ -134,7 +136,8 @@ void PrintHelp()
          << "  --oldauto DIV          Physics-based grid (div2/div4/div8 of diffraction limit)\n"
          << "  --orientfile FILE      Orientations from file (beta gamma per line)\n"
          << "  --maxorient N          Max orientations for adaptive (power of 2)\n"
-         << "  --coh_orient           Coherent across orientations (legacy)\n\n"
+         << "  --coh_orient           Coherent across orientations (legacy)\n"
+         << "  --pole                 Fast pole gamma: one gamma with full gamma weight\n"
 
          << "=== Scattering grid ===\n"
          << "  --grid T1 T2 Nphi Nth  Theta range [T1,T2] deg, Nphi azimuth, Nth zenith\n"
@@ -165,6 +168,7 @@ void PrintHelp()
          << "  --incoh                Incoherent per-beam Mueller (no Jones sum)\n"
          << "  --jones                Output Jones matrices\n"
          << "  --abs                  Enable absorption (requires Im(ri) > 0)\n"
+         << "  --abs_points N|all     Absorption samples: 1=center (default), all=all polygon vertices\n"
          << "  --karczewski           Use Karczewski polarization matrix\n"
          << "  --legacy_sign          Use old (+) Fresnel sign\n"
          << "  --log SEC              Progress output interval (seconds)\n\n"
@@ -193,6 +197,39 @@ void ApplyNphiOverride(ArgPP &parser, ScatteringRange &range)
             range.azinuthStep = 2.0 * M_PI / nphi;
         }
     }
+}
+
+void ApplyAbsorptionPointOption(ArgPP &parser, Handler *handler)
+{
+    if (!parser.IsCatched("abs_points"))
+        return;
+
+    std::string value = parser.GetStringValue("abs_points", 0);
+    int n = 1;
+
+    if (value == "all")
+    {
+        n = -1;
+    }
+    else
+    {
+        try
+        {
+            n = std::stoi(value);
+        }
+        catch (...)
+        {
+            n = 0;
+        }
+    }
+
+    if (n == 0 || n < -1)
+    {
+        std::cerr << "WARNING: --abs_points must be positive or 'all'; using 1 (center)." << std::endl;
+        n = 1;
+    }
+
+    handler->SetAbsorptionPointCount(n);
 }
 
 ScatteringRange SetConus(ArgPP &parser)
@@ -698,6 +735,7 @@ int main(int argc, const char* argv[])
             handler->SetScatteringSphere(bsCone);
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
+            ApplyAbsorptionPointOption(args, handler);
 
             if (args.IsCatched("log"))
             {
@@ -791,7 +829,7 @@ int main(int argc, const char* argv[])
             }
 
             TracerPOTotal *tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); } }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); } }
             tracer->m_scattering->m_wave = wave;
             tracer->shadowOff = args.IsCatched("shadow_off");
             trackGroups.push_back(TrackGroup());
@@ -811,6 +849,7 @@ int main(int argc, const char* argv[])
             handler->SetScatteringSphere(conus);
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
+            ApplyAbsorptionPointOption(args, handler);
 
             tracer->SetIsOutputGroups(isOutputGroups);
             tracer->SetHandler(handler);
@@ -875,7 +914,7 @@ int main(int argc, const char* argv[])
                 if (args.IsCatched("all"))
                 {
                     tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); } }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); } }
                     tracer->m_scattering->m_wave = wave;
                     if (args.IsCatched("r"))
                     {
@@ -897,7 +936,7 @@ int main(int argc, const char* argv[])
                 {
                     // Use TracerPOTotal for OpenMP + batched sincos acceleration
                     tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); } }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); } }
                     tracer->m_scattering->m_wave = wave;
                     tracer->shadowOff = args.IsCatched("shadow_off");
                     if (args.IsCatched("r"))
@@ -925,6 +964,7 @@ int main(int argc, const char* argv[])
             handler->SetScatteringSphere(conus);
                 handler->SetTracks(&trackGroups);
                 handler->SetAbsorptionAccounting(isAbs);
+                ApplyAbsorptionPointOption(args, handler);
 
                 if (args.IsCatched("log"))
                 {
@@ -976,7 +1016,7 @@ int main(int argc, const char* argv[])
             ScatteringRange conus = SetConus(args);
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); } }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); } }
             tracer->m_scattering->m_wave = wave;
             tracer->shadowOff = args.IsCatched("shadow_off");
             if (args.IsCatched("r"))
@@ -994,6 +1034,7 @@ int main(int argc, const char* argv[])
             handler->SetScatteringSphere(conus);
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
+            ApplyAbsorptionPointOption(args, handler);
 
             if (args.GetArgNumber("n") == 3 &&
                 args.GetStringValue("n", 2) == "fixed")
@@ -1014,7 +1055,7 @@ int main(int argc, const char* argv[])
             ScatteringRange conus = SetConus(args);
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); } }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); } }
             tracer->m_scattering->m_wave = wave;
             tracer->shadowOff = args.IsCatched("shadow_off");
             trackGroups.push_back(TrackGroup());
@@ -1031,6 +1072,7 @@ int main(int argc, const char* argv[])
             handler->SetScatteringSphere(conus);
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
+            ApplyAbsorptionPointOption(args, handler);
 
             // Beam cutoff
             if (args.IsCatched("beam_cutoff"))
@@ -1065,7 +1107,7 @@ int main(int argc, const char* argv[])
                 : ScatteringRange(0, M_PI, 1, 1);
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); } }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); } }
             tracer->m_scattering->m_wave = wave;
             tracer->shadowOff = args.IsCatched("shadow_off");
             trackGroups.push_back(TrackGroup());
@@ -1103,6 +1145,7 @@ int main(int argc, const char* argv[])
             handler->SetScatteringSphere(conus);
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
+            ApplyAbsorptionPointOption(args, handler);
 
             // Beam importance cutoff
             // Beam cutoff: --beam_cutoff EPS sets relative accuracy for beam skipping
@@ -1283,6 +1326,7 @@ int main(int argc, const char* argv[])
         ApplyNphiOverride(args, grid);
         handler->SetScatteringSphere(grid);
         handler->SetAbsorptionAccounting(isAbs);
+        ApplyAbsorptionPointOption(args, handler);
         tracer.SetHandler(handler);
 
         if (args.IsCatched("fixed"))

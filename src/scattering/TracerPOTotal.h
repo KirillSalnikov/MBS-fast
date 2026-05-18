@@ -50,6 +50,10 @@ public:
     /// Enable checkpoint save/resume for long --orientfile runs.
     bool m_enableCheckpoint = false;
 
+    /// Fast pole handling: compute one gamma at beta poles with gamma weight.
+    /// Default false keeps honest averaging over all gamma values.
+    bool m_fastPoleGamma = false;
+
     /// MPI rank and size (default: single process)
     int m_mpiRank = 0;
     int m_mpiSize = 1;
