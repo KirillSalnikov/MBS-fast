@@ -3,19 +3,10 @@ set -e
 
 CXX="${CXX:-g++}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 1)}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 detect_arch_flags() {
-    local cpu_model
-    cpu_model="$(lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -1)"
-
-    case "$cpu_model" in
-        *"EPYC 7H12"*)
-            echo "-march=znver2 -mtune=znver2"
-            ;;
-        *)
-            echo "-march=native -mtune=native"
-            ;;
-    esac
+    bash "$SCRIPT_DIR/scripts/detect_arch_flags.sh" "$CXX"
 }
 
 ARCH_FLAGS="${ARCH_FLAGS:-$(detect_arch_flags)}"
@@ -24,7 +15,7 @@ INCLUDES="-Isrc -Isrc/math -Isrc/handler -Isrc/common -Isrc/geometry \
           -Isrc/geometry/intrinsic -Isrc/geometry/sse -Isrc/particle \
           -Isrc/scattering -Isrc/tracer -Isrc/splitting -Isrc/bigint"
 
-cd "$(dirname "$0")"
+cd "$SCRIPT_DIR"
 
 # Collect all source files (avoid bigint duplication)
 SOURCES=$(find src -not -path '*/bigint/*' -name '*.cpp')

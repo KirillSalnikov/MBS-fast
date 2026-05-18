@@ -1,11 +1,7 @@
 CXX ?= g++
 
 CPU_MODEL := $(shell lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -1)
-ifneq (,$(findstring EPYC 7H12,$(CPU_MODEL)))
-ARCH_FLAGS ?= -march=znver2 -mtune=znver2
-else
-ARCH_FLAGS ?= -march=native -mtune=native
-endif
+ARCH_FLAGS ?= $(shell bash scripts/detect_arch_flags.sh "$(CXX)")
 
 OPT_FLAGS ?= -O3 -funroll-loops
 CXXFLAGS ?= $(OPT_FLAGS) $(ARCH_FLAGS) -std=gnu++11 -fopenmp
