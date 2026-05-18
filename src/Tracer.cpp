@@ -105,7 +105,7 @@ void Tracer::OutputProgress(int nOrientation, long long count,
 
         string progressLine = to_string(percent) + "%" + split
                 + "orient " + to_string(done) + "/" + to_string(nOrientation)
-                + split + timer.Elapsed() + split + m_resultDirName;
+                + split + timer.Elapsed();
         if (nBeams >= 0)
         {
             progressLine += split + "beams=" + to_string(nBeams);
@@ -246,7 +246,7 @@ void Tracer::OutputStartTime(CalcTimer &timer)
 {
     m_startTime = timer.Start();
     cout << "Started at " << ctime(&m_startTime) << endl;
-    cout << "Prog.\tDone/Total\tTime\tName\tBeams"<< endl;
+    cout << "Prog.\tDone/Total\tTime\tBeams"<< endl;
 
     ofstream out(m_resultDirName + "_log.txt", ios::out);
     if (out.is_open())
@@ -254,7 +254,7 @@ void Tracer::OutputStartTime(CalcTimer &timer)
         out << "MBS-fast log\n";
         out << "Result: " << m_resultDirName << "\n";
         out << "Started at " << ctime(&m_startTime);
-        out << "Prog.\tDone/Total\tTime\tName\tBeams\n";
+        out << "Prog.\tDone/Total\tTime\tBeams\n";
     }
 }
 
