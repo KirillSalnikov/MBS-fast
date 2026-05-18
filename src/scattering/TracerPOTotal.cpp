@@ -279,7 +279,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             if (ok) handlerPO->PrepareBeams(outBeams, gammaWeight, chunkPrepared[jj]);
             else    chunkPrepared[jj].sinZenith = gammaWeight;
             m_incomingEnergy += m_scattering->GetIncedentEnergy() * gammaWeight;
-            if (m_mpiRank == 0) OutputProgress(nOrientations, count, ib*nGamma+jj, 0, timer, outBeams.size());
+            if (m_mpiRank == 0) OutputProgress(nOrientations, count + 1, ib*nGamma+jj, 0, timer, outBeams.size());
             outBeams.clear();
             ++count;
         }
@@ -650,7 +650,7 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
                 chunkPrepared[i].sinZenith = weight;
 
             m_incomingEnergy += m_scattering->GetIncedentEnergy() * weight;
-            if (m_mpiRank == 0) OutputProgress(nOrientations, count, iStart + i, 0, timer, outBeams.size());
+            if (m_mpiRank == 0) OutputProgress(nOrientations, count + 1, iStart + i, 0, timer, outBeams.size());
             outBeams.clear();
             ++count;
         }
@@ -846,7 +846,7 @@ void TracerPOTotal::TraceFromFileMultiSize(const std::string &orientFile,
                       << ") has been skipped!!!" << std::endl;
         }
 
-        OutputProgress(nOrientations, count, i, 0, timer, outBeams.size());
+        OutputProgress(nOrientations, count + 1, i, 0, timer, outBeams.size());
         outBeams.clear();
         ++count;
     }
@@ -1194,6 +1194,9 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
             }
         }
         phase2_total += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - tp2).count();
+
+        if (m_mpiRank == 0)
+            OutputProgress(nOrient, count, iEnd - 1, chunk + 1, timer, -1);
 
         chunkPrepared.clear();
         chunkPrepared.shrink_to_fit();

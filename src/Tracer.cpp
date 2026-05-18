@@ -3,6 +3,7 @@
 #include <ostream>
 #include <string>
 #include <iostream>
+#include <algorithm>
 #include <assert.h>
 #include "global.h"
 #include "macro.h"
@@ -98,10 +99,21 @@ void Tracer::OutputProgress(int nOrientation, long long count,
         m_timeElapsed = now;
 //        EraseConsoleLine(60);
 
-        string progressLine = to_string((count*100)/nOrientation) +
-                "%" + split + "(" + to_string(zenith) + ";" +
-                to_string(azimuth) + ")" + split + timer.Elapsed() + split +
-                m_resultDirName+split+split+to_string(nBeams);
+        long long done = std::min<long long>(count, nOrientation);
+        int percent = nOrientation > 0 ? (int)((done * 100) / nOrientation) : 0;
+
+        string progressLine = to_string(percent) + "%" + split
+                + "orient " + to_string(done) + "/" + to_string(nOrientation)
+                + split + "idx=" + to_string(zenith);
+        if (azimuth != 0)
+        {
+            progressLine += "; subidx=" + to_string(azimuth);
+        }
+        progressLine += split + timer.Elapsed() + split + m_resultDirName;
+        if (nBeams >= 0)
+        {
+            progressLine += split + "beams=" + to_string(nBeams);
+        }
 
         cout << progressLine;
         RenameConsole(progressLine);
@@ -225,7 +237,7 @@ void Tracer::OutputStartTime(CalcTimer &timer)
 {
     m_startTime = timer.Start();
     cout << "Started at " << ctime(&m_startTime) << endl;
-    cout << "Prog.\tOrient.(i,j)\tTime\tName\tNBeams"<< endl;
+    cout << "Prog.\tDone/Total\tIndex\tTime\tName\tBeams"<< endl;
 }
 
 void Tracer::SetHandler(Handler *handler)
