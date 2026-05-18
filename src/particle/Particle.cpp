@@ -1,4 +1,5 @@
 #include "Particle.h"
+#include <cfloat>
 #include <fstream>
 #include <iostream>
 #include <cstring>
@@ -220,9 +221,12 @@ void Particle::Scale(double ratio)
 
 void Particle::Resize(double size)
 {
-    double ratio = (isAggregated) ? size/MaximalDimentionPart() :
-                                    size/MaximalDimention();
+    double dmax = MaximalDimention();
+    double ratio = size / dmax;
     Scale(ratio);
+    double actual = MaximalDimention();
+    if (actual > DBL_EPSILON)
+        Scale(size / actual);
     Reset();
 }
 
