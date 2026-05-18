@@ -1369,9 +1369,20 @@ void TracerPOTotal::TraceAdaptiveTheta(int nOrient, double betaSym, double gamma
 void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, int maxOrientOverride)
 {
     std::cout << "Adaptive mode: target relative change = " << eps << std::endl;
-    std::cout << "  Convergence criterion: M11(180°) backscattering" << std::endl;
+    std::cout << "  Convergence criteria: incoming energy, M11(22/46/90/180°)" << std::endl;
     std::cout << "  beta_sym=" << RadToDeg(betaSym) << " deg, gamma_sym="
               << RadToDeg(gammaSym) << " deg" << std::endl;
+    std::vector<std::string> adaptiveLogLines;
+    if (m_mpiRank == 0)
+    {
+        std::ostringstream log;
+        log << "===== ADAPTIVE SOBOL =====\n";
+        log << "target relative change = " << eps << "\n";
+        log << "controls: incoming energy, M11(22), M11(46), M11(90), M11(180)\n";
+        log << "beta_sym=" << RadToDeg(betaSym) << " deg, gamma_sym="
+            << RadToDeg(gammaSym) << " deg\n";
+        adaptiveLogLines.push_back(log.str());
+    }
 
     HandlerPO *hp = dynamic_cast<HandlerPO*>(m_handler);
     if (!hp)
@@ -1413,6 +1424,13 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
     if (nOrient < 64) nOrient = 64;
     std::cout << "  Start estimate (div16): " << nb16 << " x " << ng16
               << " = " << nStartRaw << " -> " << nOrient << " (power of 2)" << std::endl;
+    if (m_mpiRank == 0)
+    {
+        std::ostringstream line;
+        line << "Start estimate (div16): " << nb16 << " x " << ng16
+             << " = " << nStartRaw << " -> " << nOrient << " (power of 2)\n";
+        adaptiveLogLines.push_back(line.str());
+    }
 
     long long availMB_ad = 2048;
 #ifdef __linux__
@@ -1454,6 +1472,15 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
               << " = " << maxFromPhysics << ", div2 cap -> " << maxOrient << std::endl;
     std::cerr << "Adaptive: max orientations = " << maxOrient
               << " (" << availMB_ad << " MB available)" << std::endl;
+    if (m_mpiRank == 0)
+    {
+        std::ostringstream line;
+        line << "Max estimate (div1): " << nb1 << " x " << ng1
+             << " = " << maxFromPhysics << ", div2 cap -> " << maxOrient << "\n";
+        line << "Adaptive: max orientations = " << maxOrient
+             << " (" << availMB_ad << " MB available)\n";
+        adaptiveLogLines.push_back(line.str());
+    }
 
     auto t_start = std::chrono::high_resolution_clock::now();
 
@@ -1462,7 +1489,9 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
     std::vector<double> su_all, sv_all;
     sobol_gen.generate(maxOrient, su_all, sv_all);
 
-    // Accumulator: M stores sum of ALL batches (not averaged yet)
+    // Accumulator: each batch is averaged internally and then combined by
+    // its orientation count. This keeps incremental Sobol identical to a
+    // single run over the same prefix of Sobol points.
     hp->M.ClearArr();
     hp->M_noshadow.ClearArr();
     hp->CleanJ();
@@ -1470,11 +1499,11 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
     hp->m_outputEnergy = 0;
 
     double prevM11_180 = 0, prevM11_90 = 0, prevM11_46 = 0, prevM11_22 = 0;
-    double prevCsca = 0;
+    double prevEnergy = 0;
     int totalOrient = 0;
-    int nBatches = 0;
     int convergedCount = 0;
-    double ctrlAccum[4] = {0,0,0,0}; // accumulated M11 at 4 control angles
+    double ctrlWeightedSum[4] = {0,0,0,0}; // sum(batch_average * batch_size)
+    double energyWeightedSum = 0.0;         // sum(batch_average * batch_size)
 
     for (int iter = 0; iter < 15; ++iter)
     {
@@ -1484,9 +1513,10 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
 
         if (batchSize <= 0) { nOrient *= 2; continue; }
 
-        // Trace and diffract only the NEW orientations [batchStart..batchEnd)
-        // Each batch uses weight = 1.0/batchSize (self-contained average)
-        // After all batches: M_total = sum(M_batch_i) / nBatches
+        // Trace and diffract only the NEW orientations [batchStart..batchEnd).
+        // Each batch is averaged with weight=1/batchSize, then accumulated
+        // with weight=batchSize/totalOrient. This is required because after
+        // the first doubling the added Sobol batches have different sizes.
 
         // MPI: each rank processes a subset of this batch
         int myBatchStart = m_mpiRank * batchSize / m_mpiSize;
@@ -1543,54 +1573,59 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
             }
         } // sub-chunks
 
-        for (int k = 0; k < 4; ++k) ctrlAccum[k] += batchCtrl[k];
-
-        m_incomingEnergy += batchEnergy;
-        totalOrient = batchEnd;
-        nBatches++;
-
-        // MPI: reduce only THIS BATCH's control points + energy, then accumulate.
-        // (Must not reduce ctrlAccum directly — it already contains prior batches,
-        //  which would be double-counted across ranks.)
+        // MPI: reduce only THIS BATCH's control points + energy.
 #ifdef USE_MPI
         if (m_mpiSize > 1)
         {
             double sbuf5[5] = {batchCtrl[0], batchCtrl[1], batchCtrl[2], batchCtrl[3], batchEnergy};
             double rbuf5[5];
             MPI_Allreduce(sbuf5, rbuf5, 5, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-            // Replace local batch values with global sums, then re-accumulate
-            for (int k = 0; k < 4; ++k) {
-                ctrlAccum[k] -= batchCtrl[k];   // undo local accumulation
-                ctrlAccum[k] += rbuf5[k];        // add global sum
-            }
-            m_incomingEnergy -= batchEnergy;
-            m_incomingEnergy += rbuf5[4];
+            for (int k = 0; k < 4; ++k)
+                batchCtrl[k] = rbuf5[k];
+            batchEnergy = rbuf5[4];
         }
 #endif
 
-        // Control points from fast DiffractControlPoints (not full grid)
-        double Csca = (nBatches > 0) ? m_incomingEnergy / nBatches : 0;
-        double M11_22  = ((nBatches > 0) ? ctrlAccum[0] / nBatches : 0);
-        double M11_46  = ((nBatches > 0) ? ctrlAccum[1] / nBatches : 0);
-        double M11_90  = ((nBatches > 0) ? ctrlAccum[2] / nBatches : 0);
-        double M11_180 = ((nBatches > 0) ? ctrlAccum[3] / nBatches : 0);
+        for (int k = 0; k < 4; ++k)
+            ctrlWeightedSum[k] += batchCtrl[k] * batchSize;
+        energyWeightedSum += batchEnergy * batchSize;
 
-        double dCsca  = (prevCsca > 0)    ? fabs(Csca - prevCsca) / prevCsca : 1.0;
-        double dM22   = (prevM11_22 > 0)  ? fabs(M11_22 - prevM11_22) / prevM11_22 : 1.0;
-        double dM46   = (prevM11_46 > 0)  ? fabs(M11_46 - prevM11_46) / prevM11_46 : 1.0;
-        double dM90   = (prevM11_90 > 0)  ? fabs(M11_90 - prevM11_90) / prevM11_90 : 1.0;
-        double dM180  = (prevM11_180 > 0) ? fabs(M11_180 - prevM11_180) / fabs(prevM11_180) : 1.0;
-        double dMax = std::max({dCsca, dM22, dM46, dM90, dM180});
+        totalOrient = batchEnd;
+
+        // Control points from fast DiffractControlPoints (not full grid).
+        double energyAvg = (totalOrient > 0) ? energyWeightedSum / totalOrient : 0;
+        double M11_22  = (totalOrient > 0) ? ctrlWeightedSum[0] / totalOrient : 0;
+        double M11_46  = (totalOrient > 0) ? ctrlWeightedSum[1] / totalOrient : 0;
+        double M11_90  = (totalOrient > 0) ? ctrlWeightedSum[2] / totalOrient : 0;
+        double M11_180 = (totalOrient > 0) ? ctrlWeightedSum[3] / totalOrient : 0;
+
+        auto relChange = [](double current, double previous) {
+            double denom = std::max(std::fabs(previous), 1e-30);
+            return std::fabs(current - previous) / denom;
+        };
+
+        double dEnergy = (iter > 0) ? relChange(energyAvg, prevEnergy) : 1.0;
+        double dM22    = (iter > 0) ? relChange(M11_22, prevM11_22) : 1.0;
+        double dM46    = (iter > 0) ? relChange(M11_46, prevM11_46) : 1.0;
+        double dM90    = (iter > 0) ? relChange(M11_90, prevM11_90) : 1.0;
+        double dM180   = (iter > 0) ? relChange(M11_180, prevM11_180) : 1.0;
+        double dMax = std::max({dEnergy, dM22, dM46, dM90, dM180});
 
         std::cout << std::fixed << std::setprecision(2);
-        if (m_mpiRank == 0) std::cout << "  N=" << totalOrient << " (+" << batchSize << ")"
-                  << "  dQ=" << dCsca*100 << "%"
-                  << "  d22=" << dM22*100 << "%"
-                  << "  d46=" << dM46*100 << "%"
-                  << "  d90=" << dM90*100 << "%"
-                  << "  d180=" << dM180*100 << "%"
-                  << "  max=" << dMax*100 << "%"
-                  << std::endl;
+        if (m_mpiRank == 0)
+        {
+            std::ostringstream line;
+            line << std::fixed << std::setprecision(2);
+            line << "  N=" << totalOrient << " (+" << batchSize << ")"
+                 << "  dE=" << dEnergy*100 << "%"
+                 << "  d22=" << dM22*100 << "%"
+                 << "  d46=" << dM46*100 << "%"
+                 << "  d90=" << dM90*100 << "%"
+                 << "  d180=" << dM180*100 << "%"
+                 << "  max=" << dMax*100 << "%";
+            std::cout << line.str() << std::endl;
+            adaptiveLogLines.push_back(line.str() + "\n");
+        }
 
         bool all_ok = (dMax < eps && iter > 0);
 
@@ -1601,13 +1636,19 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
 
         if (convergedCount >= 2)
         {
-            if (m_mpiRank == 0) std::cout << "Converged at N=" << totalOrient
-                      << " (all 5 controls within " << eps*100
-                      << "% for 2 consecutive steps)" << std::endl;
+            if (m_mpiRank == 0)
+            {
+                std::ostringstream line;
+                line << "Converged at N=" << totalOrient
+                     << " (all 5 controls within " << eps*100
+                     << "% for 2 consecutive steps)";
+                std::cout << line.str() << std::endl;
+                adaptiveLogLines.push_back(line.str() + "\n");
+            }
             break;
         }
 
-        prevCsca = Csca;
+        prevEnergy = energyAvg;
         prevM11_22 = M11_22;
         prevM11_46 = M11_46;
         prevM11_90 = M11_90;
@@ -1615,10 +1656,17 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         nOrient *= 2;
         if (nOrient > maxOrient)
         {
-            if (m_mpiRank == 0) std::cout << "WARNING: Max orientations reached (N=" << totalOrient
-                      << ", limit=" << maxOrient << "). Target accuracy "
-                      << eps*100 << "% may not be achieved." << std::endl;
-            std::cout << "  To improve: use --maxorient " << maxOrient*2 << std::endl;
+            if (m_mpiRank == 0)
+            {
+                std::ostringstream line;
+                line << "WARNING: Max orientations reached (N=" << totalOrient
+                     << ", limit=" << maxOrient << "). Target accuracy "
+                     << eps*100 << "% may not be achieved.";
+                std::cout << line.str() << std::endl;
+                std::cout << "  To improve: use --maxorient " << maxOrient*2 << std::endl;
+                adaptiveLogLines.push_back(line.str() + "\n");
+                adaptiveLogLines.push_back("  To improve: use --maxorient " + std::to_string(maxOrient*2) + "\n");
+            }
             break;
         }
     }
@@ -1648,6 +1696,13 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         double total_sec = std::chrono::duration<double>(t_end - t_start).count();
         std::cout << "Adaptive total time: " << std::fixed
                   << std::setprecision(1) << total_sec << " s" << std::endl;
+        std::ostringstream log;
+        log << "\n";
+        for (const std::string &line : adaptiveLogLines)
+            log << line;
+        log << "Adaptive total time: " << std::fixed << std::setprecision(1)
+            << total_sec << " s\n";
+        AppendTextLog(log.str());
     }
 }
 
