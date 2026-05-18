@@ -6,6 +6,7 @@ ARCH_FLAGS ?= $(shell bash scripts/detect_arch_flags.sh "$(CXX)")
 OPT_FLAGS ?= -O3 -funroll-loops
 CXXFLAGS ?= $(OPT_FLAGS) $(ARCH_FLAGS) -std=gnu++11 -fopenmp
 LDFLAGS ?= -lm -lgomp
+DEPFLAGS = -MMD -MP
 
 SRC_DIR = src
 INCLUDES = -I$(SRC_DIR) -I$(SRC_DIR)/math -I$(SRC_DIR)/handler \
@@ -19,6 +20,7 @@ SOURCES = $(shell find $(SRC_DIR) -name '*.cpp') \
           $(shell find src/bigint -name '*.cc' 2>/dev/null)
 OBJECTS = $(SOURCES:.cpp=.o)
 OBJECTS := $(OBJECTS:.cc=.o)
+DEPS = $(OBJECTS:.o=.d)
 
 TARGET = bin/mbs_po
 
@@ -31,14 +33,18 @@ $(TARGET): $(OBJECTS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
 %.o: %.cpp
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
 %.o: %.cc
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
 
 clean:
 	find $(SRC_DIR) -name '*.o' -delete
+	find $(SRC_DIR) -name '*.d' -delete
 	find src/bigint -name '*.o' -delete 2>/dev/null; true
+	find src/bigint -name '*.d' -delete 2>/dev/null; true
 	rm -f $(TARGET)
 
 .PHONY: all clean
+
+-include $(DEPS)

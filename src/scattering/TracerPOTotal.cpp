@@ -1082,10 +1082,19 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
     if (m_sobolChunkSize > 0)
         chunkSize = std::max(1, std::min(chunkSize, m_sobolChunkSize));
     int nChunks = (myCount + chunkSize - 1) / chunkSize;
+    int nThreads = 1;
+#ifdef _OPENMP
+    #pragma omp parallel
+    {
+        #pragma omp single
+        nThreads = omp_get_num_threads();
+    }
+#endif
 
     if (m_mpiRank == 0)
         std::cerr << "Memory: " << availMB << " MB available, chunk="
-                  << chunkSize << " orientations (" << nChunks << " chunks)" << std::endl;
+                  << chunkSize << " orientations (" << nChunks << " chunks), "
+                  << nThreads << " threads" << std::endl;
 
     double phase1_total = 0, phase2_total = 0;
     std::vector<Beam> outBeams;

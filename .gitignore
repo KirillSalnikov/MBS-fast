@@ -1,5 +1,6 @@
 # Build
 *.o
+*.d
 bin/
 build/
 
