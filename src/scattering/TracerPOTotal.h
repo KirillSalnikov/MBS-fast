@@ -51,8 +51,8 @@ public:
     bool m_enableCheckpoint = false;
 
     /// Fast pole handling: compute one gamma at beta poles with gamma weight.
-    /// Default true keeps the accelerated pole path; --pole disables it.
-    bool m_fastPoleGamma = true;
+    /// Default false uses honest all-gamma averaging; --pole enables this shortcut.
+    bool m_fastPoleGamma = false;
 
     /// Optional manual cap for Sobol streaming chunks. 0 means auto.
     int m_sobolChunkSize = 0;
