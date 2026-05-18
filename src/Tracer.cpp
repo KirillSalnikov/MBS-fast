@@ -6,6 +6,9 @@
 #include <fstream>
 #include <algorithm>
 #include <assert.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #include "global.h"
 #include "macro.h"
 //#ifdef _TRACK_ALLOW
@@ -245,7 +248,16 @@ void Tracer::TraceRandomPO2(int betaNumber, int gammaNumber, const ScatteringRan
 void Tracer::OutputStartTime(CalcTimer &timer)
 {
     m_startTime = timer.Start();
+    int nThreads = 1;
+#ifdef _OPENMP
+    #pragma omp parallel
+    {
+        #pragma omp single
+        nThreads = omp_get_num_threads();
+    }
+#endif
     cout << "Started at " << ctime(&m_startTime) << endl;
+    cout << "OpenMP threads: " << nThreads << endl;
     cout << "Prog.\tDone/Total\tTime\tBeams"<< endl;
 
     ofstream out(m_resultDirName + "_log.txt", ios::out);
@@ -254,6 +266,7 @@ void Tracer::OutputStartTime(CalcTimer &timer)
         out << "MBS-fast log\n";
         out << "Result: " << m_resultDirName << "\n";
         out << "Started at " << ctime(&m_startTime);
+        out << "OpenMP threads: " << nThreads << "\n";
         out << "Prog.\tDone/Total\tTime\tBeams\n";
     }
 }

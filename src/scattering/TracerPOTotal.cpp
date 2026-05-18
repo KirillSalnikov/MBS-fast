@@ -1092,9 +1092,14 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
 #endif
 
     if (m_mpiRank == 0)
-        std::cerr << "Memory: " << availMB << " MB available, chunk="
-                  << chunkSize << " orientations (" << nChunks << " chunks), "
-                  << nThreads << " threads" << std::endl;
+    {
+        std::ostringstream log;
+        log << "Memory: " << availMB << " MB available, chunk="
+            << chunkSize << " orientations (" << nChunks << " chunks), "
+            << nThreads << " threads";
+        std::cerr << log.str() << std::endl;
+        AppendTextLog(log.str() + "\n");
+    }
 
     double phase1_total = 0, phase2_total = 0;
     std::vector<Beam> outBeams;
