@@ -51,10 +51,10 @@ Tracks trackGroups;
 void SetArgRules(ArgPP &parser)
 {
     int zero = 0;
-    parser.AddRule("p", '+'); // particle (type, size, ...)
+    parser.AddRule("p", '+', true); // particle (type, size, ...)
     parser.AddRule("ri", 2); // refractive index (Re and Im parts)
     parser.AddRule("n", 1, true); // number of internal reflection (optional for --autofull)
-    parser.AddRule("pf", zero, true); // particle (filename)
+    parser.AddRule("pf", 1, true); // particle (filename)
     parser.AddRule("rs", 1, true, "pf"); // resize particle (new size)
     parser.AddRule("fixed", 2, true); // fixed orientarion (beta, gamma)
     parser.AddRule("random", 2, true); // random orientarion (beta number, gamma number)
@@ -482,6 +482,12 @@ int main(int argc, const char* argv[])
     SetArgRules(args);
     args.Parse(argc, argv);
 
+    if (args.IsCatched("p") == args.IsCatched("pf"))
+    {
+        std::cerr << "ERROR: specify exactly one particle source: -p ... or --pf FILE." << std::endl;
+        return 1;
+    }
+
     double re = args.GetDoubleValue("ri", 0);
     double im = args.GetDoubleValue("ri", 1);
 
@@ -498,7 +504,7 @@ int main(int argc, const char* argv[])
 
     if (args.IsCatched("pf"))
     {
-        std::string filename = args.GetStringValue("p");
+        std::string filename = args.GetStringValue("pf", 0);
         particle = new Particle();
         particle->SetFromFile(filename);
         particle->SetRefractiveIndex(refrIndex);
@@ -697,7 +703,14 @@ int main(int argc, const char* argv[])
 
     }
 
-    int nTheta = args.IsCatched("grid") ? (int)args.GetDoubleValue("grid", 2) : 1;
+    int nTheta = 1;
+    if (args.IsCatched("grid"))
+    {
+        int gridArgs = args.GetArgNumber("grid");
+        nTheta = (gridArgs == 3)
+            ? (int)args.GetDoubleValue("grid", 2)
+            : (int)args.GetDoubleValue("grid", 3);
+    }
 
     additionalSummary += "Method: ";
 
@@ -877,6 +890,9 @@ int main(int argc, const char* argv[])
 
             if (args.IsCatched("point"))
             {
+                std::cerr << "ERROR: --point is not supported in the optimized PO --random path. "
+                          << "Use --grid with a narrow backscatter cone or remove --point." << std::endl;
+                exit(1);
 //                 TracerBackScatterPoint tracer(particle, reflNum, dirName);
 //                 tracer.m_scattering->m_wave = wave;
 //                 if (args.IsCatched("r"))
