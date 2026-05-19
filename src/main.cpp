@@ -85,6 +85,17 @@ void ConfigureDefaultOpenMP()
 #endif
 }
 
+void ConfigureOpenMPThreads(int threads)
+{
+#ifdef _OPENMP
+    omp_set_num_threads(threads);
+    setenv("OMP_NUM_THREADS", std::to_string(threads).c_str(), 1);
+#else
+    (void)threads;
+    std::cerr << "WARNING: --threads ignored: OpenMP is not enabled in this build." << std::endl;
+#endif
+}
+
 enum class ParticleType : int
 {
     Hexagonal = 1,
@@ -154,6 +165,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("chunk", 1, true); // max Sobol orientations per memory chunk
     parser.AddRule("oldauto", 1, true); // physics-based: div2/div4/div8 of diffraction-limited grid
     parser.AddRule("ring_points", 1, true); // points per diffraction ring for orientation estimates
+    parser.AddRule("threads", 1, true); // OpenMP worker threads
     parser.AddRule("coh_orient", 0, true); // coherent across orientations (legacy mode)
     parser.AddRule("pole", 0, true); // fast pole shortcut: one gamma value at beta poles
     parser.AddRule("legacy_sign", 0, true); // use old (+) Fresnel sign for forward direction
@@ -209,6 +221,7 @@ void PrintHelp()
          << "  Phi:   --nphi  > --grid > --auto_phi   > --auto > default\n\n"
 
          << "=== Optimization ===\n"
+         << "  --threads N            OpenMP worker threads (default: physical cores)\n"
          << "  --beam_cutoff EPS      Skip beams with |J|^2/max < EPS AND area/max < EPS\n"
          << "  -r RATIO               Beam area restriction ratio (default 100)\n"
          << "  --sym Sb Sg            Override symmetry: beta/Sb, 360/Sg degrees\n\n"
@@ -538,6 +551,17 @@ int main(int argc, const char* argv[])
     ArgPP args;
     SetArgRules(args);
     args.Parse(argc, argv);
+
+    if (args.IsCatched("threads"))
+    {
+        int threads = args.GetIntValue("threads", 0);
+        if (threads < 1)
+        {
+            std::cerr << "ERROR: --threads must be >= 1." << std::endl;
+            return 1;
+        }
+        ConfigureOpenMPThreads(threads);
+    }
 
     if (args.IsCatched("p") == args.IsCatched("pf"))
     {
