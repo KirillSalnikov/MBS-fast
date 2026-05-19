@@ -993,7 +993,7 @@ int main(int argc, const char* argv[])
                         int nProbe = nb2 * ng2;
                         int p2 = 1; while (p2 * 2 <= nProbe) p2 *= 2;
                         nProbe = std::max(64, p2);
-                        tpt->TraceAdaptiveTheta(nProbe, betaSym2, gammaSym2, tgridEps, 8);
+                        tpt->TraceAdaptiveTheta(nProbe, betaSym2, gammaSym2, tgridEps, 8, true);
                         // Grid is now set in handler->m_sphere. TraceRandom will use it.
                     }
                 }

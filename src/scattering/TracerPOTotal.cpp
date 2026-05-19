@@ -181,6 +181,18 @@ TracerPOTotal::TracerPOTotal(Particle *particle, int nActs,
 void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
                                 const AngleRange &gammaRange)
 {
+    HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
+    if (!handlerPO) {
+        std::cerr << "Error: handler is not HandlerPO in TraceRandom" << std::endl;
+        return;
+    }
+
+    m_incomingEnergy = 0;
+    handlerPO->m_outputEnergy = 0;
+    handlerPO->M.ClearArr();
+    handlerPO->M_noshadow.ClearArr();
+    handlerPO->CleanJ();
+
     int betaNorm = (m_symmetry.beta < M_PI_2+FLT_EPSILON && m_symmetry.beta > M_PI_2-FLT_EPSILON) ? 1 : 2;
     double normGamma = gammaRange.number * betaNorm; // MBS-raw: normalize by gammaRange.number
 
@@ -233,12 +245,6 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     if (m_mpiRank == 0) OutputStartTime(timer);
 
     m_handler->SetNormIndex(normGamma);
-
-    HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
-    if (!handlerPO) {
-        std::cerr << "Error: handler is not HandlerPO in TraceRandom" << std::endl;
-        return;
-    }
 
     int nAz = handlerPO->m_sphere.nAzimuth;
     int nZen = handlerPO->m_sphere.nZenith;
@@ -512,12 +518,18 @@ void TracerPOTotal::TraceMonteCarlo(const AngleRange &betaRange,
     asm volatile("rdtsc" : "=a"(lo), "=d"(hi));
     srand(lo ^ hi);
 
+    const double betaSpan = betaRange.max - betaRange.min;
+    const double betaIntegral = cos(betaRange.min) - cos(betaRange.max);
+    const double betaWeightNorm = (fabs(betaIntegral) > DBL_EPSILON)
+        ? betaSpan / (betaIntegral * nOrientations)
+        : 0.0;
+
     for (int i = 0; i < nOrientations; ++i)
     {
-        double beta = RandomDouble(0, 1) * betaRange.max;
-        double gamma = RandomDouble(0, 1) * gammaRange.max;
+        double beta = betaRange.min + RandomDouble(0, 1) * betaSpan;
+        double gamma = gammaRange.min + RandomDouble(0, 1) * (gammaRange.max - gammaRange.min);
         orientations.push_back({beta, gamma});
-        weights.push_back(sin(beta));
+        weights.push_back(sin(beta) * betaWeightNorm);
     }
 
     std::cout << "Monte Carlo: " << nOrientations << " orientations" << std::endl;
@@ -530,6 +542,12 @@ void TracerPOTotal::TraceMonteCarlo(const AngleRange &betaRange,
 
     HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
     if (!handlerPO) { std::cerr << "Error: not HandlerPO" << std::endl; return; }
+
+    m_incomingEnergy = 0;
+    handlerPO->m_outputEnergy = 0;
+    handlerPO->M.ClearArr();
+    handlerPO->M_noshadow.ClearArr();
+    handlerPO->CleanJ();
 
     int nAz = handlerPO->m_sphere.nAzimuth;
     int nZen = handlerPO->m_sphere.nZenith;
@@ -627,6 +645,12 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
         throw std::exception();
     }
 
+    m_incomingEnergy = 0;
+    handlerPO->m_outputEnergy = 0;
+    handlerPO->M.ClearArr();
+    handlerPO->M_noshadow.ClearArr();
+    handlerPO->CleanJ();
+
     // =========================================================================
     // Phase 1 (sequential): Trace beams for all orientations, preprocess them.
     //
@@ -701,6 +725,13 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
     unsigned long paramHash = HashParams(m_scattering->m_wave,
         real(ri), imag(ri), m_scattering->GetMaxReflections(),
         nOrientations, m_particle->MaximalDimention(), 0, nAz, nZen);
+    for (const auto &bg : orientations)
+    {
+        paramHash ^= std::hash<double>{}(bg.first)
+            + 0x9e3779b9 + (paramHash << 6) + (paramHash >> 2);
+        paramHash ^= std::hash<double>{}(bg.second)
+            + 0x9e3779b9 + (paramHash << 6) + (paramHash >> 2);
+    }
     int resumeChunk = 0;
     if (m_enableCheckpoint)
     {
@@ -1158,6 +1189,12 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
         std::cerr << "Error! Handler is not HandlerPO in TraceFromSobol" << std::endl;
         throw std::exception();
     }
+
+    m_incomingEnergy = 0;
+    handlerPO->m_outputEnergy = 0;
+    handlerPO->M.ClearArr();
+    handlerPO->M_noshadow.ClearArr();
+    handlerPO->CleanJ();
 
     // Phase 1 traces and preprocesses orientations in parallel using
     // thread-local Particle/Scattering/HandlerPO state. Phase 2 then performs
