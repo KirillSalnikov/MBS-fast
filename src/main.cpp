@@ -4,9 +4,16 @@
 #include <float.h>
 #include <string>
 #include <sys/stat.h>
+#include <cstdlib>
+#include <thread>
+#include <set>
+#include <algorithm>
 
 #ifdef USE_MPI
 #include <mpi.h>
+#endif
+#ifdef _OPENMP
+#include <omp.h>
 #endif
 
 #include "HexagonalAggregate.h"
@@ -33,6 +40,50 @@ int bcount=0;
 using namespace std;
 using namespace chrono;
 using ::complex;
+
+int DefaultPhysicalCoreCount()
+{
+#ifdef __linux__
+    std::ifstream cpuinfo("/proc/cpuinfo");
+    std::string line;
+    std::set<std::string> cores;
+    std::string physicalId = "0";
+    std::string coreId;
+    while (std::getline(cpuinfo, line))
+    {
+        if (line.compare(0, 12, "physical id") == 0)
+        {
+            size_t pos = line.find(':');
+            if (pos != std::string::npos)
+                physicalId = line.substr(pos + 1);
+        }
+        else if (line.compare(0, 7, "core id") == 0)
+        {
+            size_t pos = line.find(':');
+            if (pos != std::string::npos)
+            {
+                coreId = line.substr(pos + 1);
+                cores.insert(physicalId + ":" + coreId);
+            }
+        }
+    }
+    if (!cores.empty())
+        return (int)cores.size();
+#endif
+    unsigned int n = std::thread::hardware_concurrency();
+    return n > 1 ? (int)((n + 1) / 2) : 1;
+}
+
+void ConfigureDefaultOpenMP()
+{
+#ifdef _OPENMP
+    if (std::getenv("OMP_NUM_THREADS") != nullptr)
+        return;
+    int cores = std::max(1, DefaultPhysicalCoreCount());
+    omp_set_num_threads(cores);
+    setenv("OMP_NUM_THREADS", std::to_string(cores).c_str(), 0);
+#endif
+}
 
 enum class ParticleType : int
 {
@@ -449,6 +500,8 @@ AngleRange GetRange(const ArgPP &parser, const std::string &key,
 
 int main(int argc, const char* argv[])
 {
+    ConfigureDefaultOpenMP();
+
     int mpi_rank = 0, mpi_size = 1;
 #ifdef USE_MPI
     MPI_Init(&argc, const_cast<char***>(&argv));
