@@ -739,6 +739,16 @@ void HandlerPO::SetBackScatteringConus(double radAngle)
     backScatteringConus = cos(radAngle);
 }
 
+void HandlerPO::SetGpuEnabled(bool value)
+{
+    m_gpuEnabled = value;
+}
+
+bool HandlerPO::IsGpuEnabled() const
+{
+    return m_gpuEnabled;
+}
+
 void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
                                                Scattering *scattering)
 {
@@ -755,6 +765,7 @@ void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
     m_beamCutoff = source.m_beamCutoff;
     m_targetEps = source.m_targetEps;
     m_legacySign = source.m_legacySign;
+    m_gpuEnabled = source.m_gpuEnabled;
     isBackScatteringConusEnabled = source.isBackScatteringConusEnabled;
     backScatteringConus = source.backScatteringConus;
 }
@@ -1795,6 +1806,29 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
         }
     }
 }
+
+#ifndef USE_CUDA
+bool HandlerPO::HandleBeamsToLocalGpu(const PreparedOrientation &/*prepared*/,
+                                       Arr2D &/*localM*/,
+                                       Arr2D &/*localM_noshadow*/)
+{
+    return false;
+}
+
+bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientation> &/*prepared*/,
+                                             Arr2D &/*localM*/,
+                                             Arr2D &/*localM_noshadow*/)
+{
+    return false;
+}
+
+int HandlerPO::SelectGpuOrientationBatchSize(const std::vector<PreparedOrientation> &/*prepared*/,
+                                             int /*start*/,
+                                             int maxCount) const
+{
+    return std::max(1, maxCount);
+}
+#endif
 
 // =============================================================================
 // AddToMuellerLocal: Convert Jones to Mueller for local arrays (static, thread-safe)

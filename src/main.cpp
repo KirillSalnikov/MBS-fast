@@ -30,6 +30,7 @@
 #include "HandlerTotalGO.h"
 #include "HandlerTracksGO.h"
 #include "Droxtal.h"
+#include "GpuSupport.h"
 
 #ifdef _OUTPUT_NRG_CONV
 ofstream energyFile("energy.dat", ios::out);
@@ -166,6 +167,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("oldauto", 1, true); // physics-based: div2/div4/div8 of diffraction-limited grid
     parser.AddRule("ring_points", 1, true); // points per diffraction ring for orientation estimates
     parser.AddRule("threads", 1, true); // OpenMP worker threads
+    parser.AddRule("gpu", 0, true); // enable CUDA GPU backend
     parser.AddRule("coh_orient", 0, true); // coherent across orientations (legacy mode)
     parser.AddRule("pole", 0, true); // fast pole shortcut: one gamma value at beta poles
     parser.AddRule("legacy_sign", 0, true); // use old (+) Fresnel sign for forward direction
@@ -225,6 +227,7 @@ void PrintHelp()
 
          << "=== Optimization ===\n"
          << "  --threads N            OpenMP worker threads (default: physical cores)\n"
+         << "  --gpu                  Use CUDA GPU backend for diffraction (requires USE_CUDA=1 build)\n"
          << "  --beam_cutoff EPS      Skip beams with |J|^2/max < EPS AND area/max < EPS\n"
          << "  -r RATIO               Beam area restriction ratio (default 100)\n"
          << "  --sym Sb Sg            Override symmetry: beta/Sb, 360/Sg degrees\n"
@@ -577,6 +580,22 @@ int main(int argc, const char* argv[])
         ConfigureOpenMPThreads(threads);
     }
 
+    if (args.IsCatched("gpu"))
+    {
+        GpuDeviceInfo gpuInfo;
+        std::string gpuError;
+        if (!CheckGpuRuntime(gpuInfo, gpuError))
+        {
+            std::cerr << "ERROR: --gpu requested but CUDA GPU is unavailable: "
+                      << gpuError << std::endl;
+            return 1;
+        }
+
+        std::cout << "GPU requested: " << FormatGpuInfo(gpuInfo) << std::endl;
+    }
+
+    const bool useGpu = args.IsCatched("gpu");
+
     if (args.IsCatched("p") == args.IsCatched("pf"))
     {
         std::cerr << "ERROR: specify exactly one particle source: -p ... or --pf FILE." << std::endl;
@@ -899,6 +918,7 @@ int main(int argc, const char* argv[])
             }
 
             handler->isCoh = !args.IsCatched("incoh");
+            handler->SetGpuEnabled(useGpu);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             handler->outputJones = args.IsCatched("jones");
@@ -1015,6 +1035,7 @@ int main(int argc, const char* argv[])
             tracer->m_summary = additionalSummary;
 
             handler->isCoh = !args.IsCatched("incoh");
+            handler->SetGpuEnabled(useGpu);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             ApplyNphiOverride(args, conus);
@@ -1133,10 +1154,11 @@ int main(int argc, const char* argv[])
                 tracer->m_summary = additionalSummary;
 
                 handler->isCoh = !args.IsCatched("incoh");
-            handler->m_legacySign = args.IsCatched("legacy_sign");
+                handler->SetGpuEnabled(useGpu);
+                handler->m_legacySign = args.IsCatched("legacy_sign");
                 handler->useKarczewski = args.IsCatched("karczewski");
                 ApplyNphiOverride(args, conus);
-            handler->SetScatteringSphere(conus);
+                handler->SetScatteringSphere(conus);
                 handler->SetTracks(&trackGroups);
                 handler->SetAbsorptionAccounting(isAbs);
                 ApplyAbsorptionPointOption(args, handler);
@@ -1204,6 +1226,7 @@ int main(int argc, const char* argv[])
             tracer->m_summary = additionalSummary;
 
             handler->isCoh = !args.IsCatched("incoh");
+            handler->SetGpuEnabled(useGpu);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             ApplyNphiOverride(args, conus);
             handler->SetScatteringSphere(conus);
@@ -1241,6 +1264,7 @@ int main(int argc, const char* argv[])
             tracer->m_summary = additionalSummary;
 
             handler->isCoh = !args.IsCatched("incoh");
+            handler->SetGpuEnabled(useGpu);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             ApplyNphiOverride(args, conus);
@@ -1314,6 +1338,7 @@ int main(int argc, const char* argv[])
             tracer->m_summary = additionalSummary;
 
             handler->isCoh = !args.IsCatched("incoh");
+            handler->SetGpuEnabled(useGpu);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             ApplyNphiOverride(args, conus);

@@ -14,6 +14,8 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <stdexcept>
+#include <future>
 #include <sys/stat.h>
 
 // ---- Checkpoint save/load for resume after crash ----
@@ -285,26 +287,37 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     double phase1_total = 0, phase2_total = 0;
     long long count = 0;
 
-    // Process beta-by-beta: each beta = one chunk of nGamma orientations
-    for (int ib = 0; ib < nBeta; ++ib)
+    struct BetaBlock
     {
-        double beta = betaRange.min + ib * betaRange.step;
-        double dcos;
-        CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
-        const bool pole = (fabs(beta) <= FLT_EPSILON
-                           || fabs(beta - M_PI) <= FLT_EPSILON);
+        int ib = 0;
+        int gammaCount = 0;
+        double beta = 0.0;
+        double dcos = 0.0;
+        double phase1 = 0.0;
+        std::vector<PreparedOrientation> prepared;
+        std::vector<double> energies;
+        std::vector<double> outputEnergies;
+        std::vector<int> beamCounts;
+    };
+
+    auto prepareBetaBlock = [&](int ib) {
+        BetaBlock block;
+        block.ib = ib;
+        block.beta = betaRange.min + ib * betaRange.step;
+        CalcCsBeta(betaNorm, block.beta, betaRange, gammaRange, normGamma, block.dcos);
+        const bool pole = (fabs(block.beta) <= FLT_EPSILON
+                           || fabs(block.beta - M_PI) <= FLT_EPSILON);
         const bool fastPole = pole && m_fastPoleGamma;
-        const int gammaCount = fastPole ? 1 : nGamma;
-        const double gammaWeight = fastPole ? dcos * nGamma : dcos;
+        block.gammaCount = fastPole ? 1 : nGamma;
+        const double gammaWeight = fastPole ? block.dcos * nGamma : block.dcos;
 
-        // Phase 1: trace all gamma for this beta
         auto tp1 = std::chrono::high_resolution_clock::now();
-        std::vector<PreparedOrientation> chunkPrepared(gammaCount);
-        std::vector<double> chunkEnergies(gammaCount, 0.0);
-        std::vector<double> chunkOutputEnergies(gammaCount, 0.0);
-        std::vector<int> chunkBeamCounts(gammaCount, 0);
+        block.prepared.assign(block.gammaCount, PreparedOrientation());
+        block.energies.assign(block.gammaCount, 0.0);
+        block.outputEnergies.assign(block.gammaCount, 0.0);
+        block.beamCounts.assign(block.gammaCount, 0);
 
-        if (nThreads > 1 && gammaCount >= parallelTraceMinGamma)
+        if (nThreads > 1 && block.gammaCount >= parallelTraceMinGamma)
         {
             #pragma omp parallel
             {
@@ -320,24 +333,24 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
                 std::vector<Beam> localBeams;
 
                 #pragma omp for schedule(dynamic, 1)
-                for (int jj = 0; jj < gammaCount; ++jj)
+                for (int jj = 0; jj < block.gammaCount; ++jj)
                 {
                     double gamma = gammaRange.min + (jj + 0.5) * gammaRange.step;
-                    localParticle.Rotate(beta, gamma, 0);
+                    localParticle.Rotate(block.beta, gamma, 0);
                     if (!shadowOff) localScatter->FormShadowBeam(localBeams);
                     bool ok = localScatter->ScatterLight(0, 0, localBeams);
-                    chunkBeamCounts[jj] = (int)localBeams.size();
+                    block.beamCounts[jj] = (int)localBeams.size();
                     if (ok)
                     {
                         double beforeOutput = localHandler.m_outputEnergy;
-                        localHandler.PrepareBeams(localBeams, gammaWeight, chunkPrepared[jj]);
-                        chunkOutputEnergies[jj] = localHandler.m_outputEnergy - beforeOutput;
+                        localHandler.PrepareBeams(localBeams, gammaWeight, block.prepared[jj]);
+                        block.outputEnergies[jj] = localHandler.m_outputEnergy - beforeOutput;
                     }
                     else
                     {
-                        chunkPrepared[jj].sinZenith = gammaWeight;
+                        block.prepared[jj].sinZenith = gammaWeight;
                     }
-                    chunkEnergies[jj] = localScatter->GetIncedentEnergy() * gammaWeight;
+                    block.energies[jj] = localScatter->GetIncedentEnergy() * gammaWeight;
                     localBeams.clear();
                 }
 
@@ -346,71 +359,138 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         }
         else
         {
-            std::vector<Beam> outBeams;
-            for (int jj = 0; jj < gammaCount; ++jj)
+            Particle localParticle = *m_particle;
+            Scattering *localScatter = m_scattering->CloneFor(&localParticle, &m_incidentLight);
+            localScatter->m_wave = m_scattering->m_wave;
+            localScatter->restriction = m_scattering->restriction;
+
+            HandlerPO localHandler(&localParticle, &m_incidentLight,
+                                   handlerPO->nTheta, m_scattering->m_wave);
+            localHandler.ConfigureForThreadLocalPrepare(*handlerPO, localScatter);
+
+            std::vector<Beam> localBeams;
+            for (int jj = 0; jj < block.gammaCount; ++jj)
             {
                 double gamma = gammaRange.min + (jj + 0.5) * gammaRange.step;
-                m_particle->Rotate(beta, gamma, 0);
-                if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
-                bool ok = m_scattering->ScatterLight(0, 0, outBeams);
-                chunkBeamCounts[jj] = (int)outBeams.size();
+                localParticle.Rotate(block.beta, gamma, 0);
+                if (!shadowOff) localScatter->FormShadowBeam(localBeams);
+                bool ok = localScatter->ScatterLight(0, 0, localBeams);
+                block.beamCounts[jj] = (int)localBeams.size();
                 if (ok)
                 {
-                    double beforeOutput = handlerPO->m_outputEnergy;
-                    handlerPO->PrepareBeams(outBeams, gammaWeight, chunkPrepared[jj]);
-                    chunkOutputEnergies[jj] = handlerPO->m_outputEnergy - beforeOutput;
-                    handlerPO->m_outputEnergy = beforeOutput;
+                    double beforeOutput = localHandler.m_outputEnergy;
+                    localHandler.PrepareBeams(localBeams, gammaWeight, block.prepared[jj]);
+                    block.outputEnergies[jj] = localHandler.m_outputEnergy - beforeOutput;
                 }
                 else
                 {
-                    chunkPrepared[jj].sinZenith = gammaWeight;
+                    block.prepared[jj].sinZenith = gammaWeight;
                 }
-                chunkEnergies[jj] = m_scattering->GetIncedentEnergy() * gammaWeight;
-                outBeams.clear();
+                block.energies[jj] = localScatter->GetIncedentEnergy() * gammaWeight;
+                localBeams.clear();
             }
+
+            delete localScatter;
         }
+
+        block.phase1 = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now() - tp1).count();
+        return block;
+    };
+
+    const bool overlapCpuGpu = handlerPO->IsGpuEnabled();
+    std::future<BetaBlock> nextBeta;
+    if (overlapCpuGpu && nBeta > 0)
+        nextBeta = std::async(std::launch::async, prepareBetaBlock, 0);
+
+    // Process beta-by-beta: each beta = one chunk of nGamma orientations
+    for (int ib = 0; ib < nBeta; ++ib)
+    {
+        BetaBlock block;
+        if (overlapCpuGpu)
+        {
+            block = nextBeta.get();
+            if (ib + 1 < nBeta)
+                nextBeta = std::async(std::launch::async, prepareBetaBlock, ib + 1);
+        }
+        else
+        {
+            block = prepareBetaBlock(ib);
+        }
+
+        const int gammaCount = block.gammaCount;
+        std::vector<PreparedOrientation> &chunkPrepared = block.prepared;
+        const double beta = block.beta;
+        const double dcos = block.dcos;
 
         for (int jj = 0; jj < gammaCount; ++jj)
         {
-            m_incomingEnergy += chunkEnergies[jj];
-            handlerPO->m_outputEnergy += chunkOutputEnergies[jj];
+            m_incomingEnergy += block.energies[jj];
+            handlerPO->m_outputEnergy += block.outputEnergies[jj];
             ++count;
             if (m_mpiRank == 0)
-                OutputProgress(nOrientations, count, ib*nGamma+jj, 0, timer, chunkBeamCounts[jj]);
+                OutputProgress(nOrientations, count, ib*nGamma+jj, 0, timer, block.beamCounts[jj]);
         }
-        phase1_total += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - tp1).count();
+        phase1_total += block.phase1;
 
         // Phase 2: diffraction (OpenMP parallel over gamma orientations)
         auto tp2 = std::chrono::high_resolution_clock::now();
         Arr2D betaM(nAz+1, nZen+1, 4, 4); betaM.ClearArr();
         Arr2D betaM_ns(nAz+1, nZen+1, 4, 4); betaM_ns.ClearArr();
 
-        #pragma omp parallel
+        if (handlerPO->IsGpuEnabled())
         {
             Arr2D localM(nAz+1, nZen+1, 4, 4); localM.ClearArr();
             Arr2D localM_ns(nAz+1, nZen+1, 4, 4); localM_ns.ClearArr();
-            std::vector<Arr2DC> localJ, localJ_ns;
-            if (handlerPO->isCoh) {
-                Arr2DC t1(nAz+1,nZen+1,2,2); t1.ClearArr(); localJ.push_back(t1);
-                Arr2DC t2(nAz+1,nZen+1,2,2); t2.ClearArr(); localJ_ns.push_back(t2);
-            }
-            #pragma omp for schedule(dynamic, 1)
-            for (int i = 0; i < gammaCount; ++i) {
-                if (!chunkPrepared[i].beams.empty())
-                    handlerPO->HandleBeamsToLocal(chunkPrepared[i], localM, localJ,
-                                                   handlerPO->isCoh ? &localJ_ns : nullptr);
-                if (handlerPO->isCoh && !localJ.empty()) {
-                    double w = chunkPrepared[i].sinZenith;
-                    HandlerPO::AddToMuellerLocal(localJ, w, localM, nAz, nZen);
-                    HandlerPO::AddToMuellerLocal(localJ_ns, w, localM_ns, nAz, nZen);
-                    localJ[0].ClearArr(); localJ_ns[0].ClearArr();
+            for (int gpuStart = 0; gpuStart < gammaCount; )
+            {
+                int gpuBatchSize = handlerPO->SelectGpuOrientationBatchSize(
+                    chunkPrepared, gpuStart, gammaCount - gpuStart);
+                int gpuEnd = std::min(gpuStart + gpuBatchSize, gammaCount);
+                std::vector<PreparedOrientation> gpuBatch(chunkPrepared.begin() + gpuStart,
+                                                          chunkPrepared.begin() + gpuEnd);
+                if (!handlerPO->HandleOrientationsToLocalGpu(gpuBatch, localM, localM_ns))
+                {
+                    std::cerr << "ERROR: --gpu requested but GPU diffraction backend "
+                              << "could not process oldauto/random beta block." << std::endl;
+                    throw std::runtime_error("GPU diffraction backend failed");
                 }
+                gpuStart = gpuEnd;
             }
-            #pragma omp critical
-            { for (int p=0;p<nAz;++p) for (int t=0;t<=nZen;++t) {
+            for (int p=0;p<nAz;++p) for (int t=0;t<=nZen;++t) {
                 betaM.insert(p,t,localM(p,t));
                 betaM_ns.insert(p,t,localM_ns(p,t));
-            } }
+            }
+        }
+        else
+        {
+            #pragma omp parallel
+            {
+                Arr2D localM(nAz+1, nZen+1, 4, 4); localM.ClearArr();
+                Arr2D localM_ns(nAz+1, nZen+1, 4, 4); localM_ns.ClearArr();
+                std::vector<Arr2DC> localJ, localJ_ns;
+                if (handlerPO->isCoh) {
+                    Arr2DC t1(nAz+1,nZen+1,2,2); t1.ClearArr(); localJ.push_back(t1);
+                    Arr2DC t2(nAz+1,nZen+1,2,2); t2.ClearArr(); localJ_ns.push_back(t2);
+                }
+                #pragma omp for schedule(dynamic, 1)
+                for (int i = 0; i < gammaCount; ++i) {
+                    if (!chunkPrepared[i].beams.empty())
+                        handlerPO->HandleBeamsToLocal(chunkPrepared[i], localM, localJ,
+                                                       handlerPO->isCoh ? &localJ_ns : nullptr);
+                    if (handlerPO->isCoh && !localJ.empty()) {
+                        double w = chunkPrepared[i].sinZenith;
+                        HandlerPO::AddToMuellerLocal(localJ, w, localM, nAz, nZen);
+                        HandlerPO::AddToMuellerLocal(localJ_ns, w, localM_ns, nAz, nZen);
+                        localJ[0].ClearArr(); localJ_ns[0].ClearArr();
+                    }
+                }
+                #pragma omp critical
+                { for (int p=0;p<nAz;++p) for (int t=0;t<=nZen;++t) {
+                    betaM.insert(p,t,localM(p,t));
+                    betaM_ns.insert(p,t,localM_ns(p,t));
+                } }
+            }
         }
         phase2_total += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - tp2).count();
         chunkPrepared.clear(); chunkPrepared.shrink_to_fit();
@@ -490,7 +570,9 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         std::cout << line.str() << std::endl;
         AppendTextLog(line.str() + "\n");
         std::cout << "Phase 1 (tracing): " << std::fixed << std::setprecision(2) << phase1_total << " s" << std::endl;
-        std::cout << "Phase 2 (diffraction, OpenMP): " << phase2_total << " s" << std::endl;
+        std::cout << "Phase 2 (diffraction, "
+                  << (handlerPO->IsGpuEnabled() ? "CUDA" : "OpenMP")
+                  << "): " << phase2_total << " s" << std::endl;
         std::cout << "Total: " << phase1_total + phase2_total << " s" << std::endl;
         if (m_saveBetas)
             std::cout << "Saved " << nBeta << " beta files to " << betaDir << "/" << std::endl;
@@ -1308,44 +1390,77 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
         // Phase 2: parallel diffraction for this chunk
         auto tp2 = std::chrono::high_resolution_clock::now();
 
-        #pragma omp parallel
+        if (handlerPO->IsGpuEnabled())
         {
             Arr2D localM(nAz + 1, nZen + 1, 4, 4);
             localM.ClearArr();
             Arr2D localM_ns(nAz + 1, nZen + 1, 4, 4);
             localM_ns.ClearArr();
-            std::vector<Arr2DC> localJ, localJ_ns;
-            if (handlerPO->isCoh) {
-                Arr2DC tmp(nAz + 1, nZen + 1, 2, 2);
-                tmp.ClearArr();
-                localJ.push_back(tmp);
-                Arr2DC tmp2(nAz + 1, nZen + 1, 2, 2);
-                tmp2.ClearArr();
-                localJ_ns.push_back(tmp2);
-            }
 
-            #pragma omp for schedule(dynamic, 1)
-            for (int i = 0; i < thisChunk; ++i)
+            for (int gpuStart = 0; gpuStart < thisChunk; )
             {
-                if (!chunkPrepared[i].beams.empty())
-                    handlerPO->HandleBeamsToLocal(chunkPrepared[i], localM, localJ,
-                                                   handlerPO->isCoh ? &localJ_ns : nullptr);
-                if (handlerPO->isCoh && !localJ.empty()) {
-                    double w = chunkPrepared[i].sinZenith;
-                    HandlerPO::AddToMuellerLocal(localJ, w, localM, nAz, nZen);
-                    HandlerPO::AddToMuellerLocal(localJ_ns, w, localM_ns, nAz, nZen);
-                    localJ[0].ClearArr();
-                    localJ_ns[0].ClearArr();
+                int gpuBatchSize = handlerPO->SelectGpuOrientationBatchSize(
+                    chunkPrepared, gpuStart, thisChunk - gpuStart);
+                int gpuEnd = std::min(gpuStart + gpuBatchSize, thisChunk);
+                std::vector<PreparedOrientation> gpuBatch(chunkPrepared.begin() + gpuStart,
+                                                          chunkPrepared.begin() + gpuEnd);
+                if (!handlerPO->HandleOrientationsToLocalGpu(gpuBatch, localM, localM_ns))
+                {
+                    std::cerr << "ERROR: --gpu requested but GPU diffraction backend "
+                              << "could not process this chunk." << std::endl;
+                    throw std::runtime_error("GPU diffraction backend failed");
                 }
+                gpuStart = gpuEnd;
             }
 
-            #pragma omp critical
+            for (int p = 0; p < nAz; ++p)
+                for (int t = 0; t <= nZen; ++t)
+                {
+                    handlerPO->M.insert(p, t, localM(p, t));
+                    handlerPO->M_noshadow.insert(p, t, localM_ns(p, t));
+                }
+        }
+        else
+        {
+            #pragma omp parallel
             {
-                for (int p = 0; p < nAz; ++p)
-                    for (int t = 0; t <= nZen; ++t) {
-                        handlerPO->M.insert(p, t, localM(p, t));
-                        handlerPO->M_noshadow.insert(p, t, localM_ns(p, t));
+                Arr2D localM(nAz + 1, nZen + 1, 4, 4);
+                localM.ClearArr();
+                Arr2D localM_ns(nAz + 1, nZen + 1, 4, 4);
+                localM_ns.ClearArr();
+                std::vector<Arr2DC> localJ, localJ_ns;
+                if (handlerPO->isCoh) {
+                    Arr2DC tmp(nAz + 1, nZen + 1, 2, 2);
+                    tmp.ClearArr();
+                    localJ.push_back(tmp);
+                    Arr2DC tmp2(nAz + 1, nZen + 1, 2, 2);
+                    tmp2.ClearArr();
+                    localJ_ns.push_back(tmp2);
+                }
+
+                #pragma omp for schedule(dynamic, 1)
+                for (int i = 0; i < thisChunk; ++i)
+                {
+                    if (!chunkPrepared[i].beams.empty())
+                        handlerPO->HandleBeamsToLocal(chunkPrepared[i], localM, localJ,
+                                                       handlerPO->isCoh ? &localJ_ns : nullptr);
+                    if (handlerPO->isCoh && !localJ.empty()) {
+                        double w = chunkPrepared[i].sinZenith;
+                        HandlerPO::AddToMuellerLocal(localJ, w, localM, nAz, nZen);
+                        HandlerPO::AddToMuellerLocal(localJ_ns, w, localM_ns, nAz, nZen);
+                        localJ[0].ClearArr();
+                        localJ_ns[0].ClearArr();
                     }
+                }
+
+                #pragma omp critical
+                {
+                    for (int p = 0; p < nAz; ++p)
+                        for (int t = 0; t <= nZen; ++t) {
+                            handlerPO->M.insert(p, t, localM(p, t));
+                            handlerPO->M_noshadow.insert(p, t, localM_ns(p, t));
+                        }
+                }
             }
         }
         phase2_total += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - tp2).count();
@@ -1364,7 +1479,9 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
     if (m_mpiRank == 0) {
         std::cout << "Phase 1 (tracing): " << std::fixed
                   << std::setprecision(2) << phase1_total << " s" << std::endl;
-        std::cout << "Phase 2 (diffraction, OpenMP): " << phase2_total << " s" << std::endl;
+        std::cout << "Phase 2 (diffraction, "
+                  << (handlerPO->IsGpuEnabled() ? "CUDA" : "OpenMP")
+                  << "): " << phase2_total << " s" << std::endl;
         std::cout << "Total: " << phase1_total + phase2_total << " s" << std::endl;
 
         m_handler->WriteTotalMatricesToFile(m_resultDirName);

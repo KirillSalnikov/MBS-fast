@@ -83,6 +83,15 @@ public:
                             Arr2D &localM,
                             std::vector<Arr2DC> &localJ,
                             std::vector<Arr2DC> *localJ_noshadow = nullptr);
+    bool HandleBeamsToLocalGpu(const PreparedOrientation &prepared,
+                               Arr2D &localM,
+                               Arr2D &localM_noshadow);
+    bool HandleOrientationsToLocalGpu(const std::vector<PreparedOrientation> &prepared,
+                                      Arr2D &localM,
+                                      Arr2D &localM_noshadow);
+    int SelectGpuOrientationBatchSize(const std::vector<PreparedOrientation> &prepared,
+                                      int start,
+                                      int maxCount) const;
 
     /// Fast diffraction for control points only (4 theta indices, phi=0).
     /// Returns M11 at each control angle. ~40000× faster than full grid.
@@ -109,6 +118,8 @@ public:
     void SetScatteringSphere(const ScatteringRange &grid) override;
 
     void SetBackScatteringConus(double radAngle);
+    void SetGpuEnabled(bool value);
+    bool IsGpuEnabled() const;
 
     matrix *m_Lp;
     matrix *m_Ln;
@@ -167,6 +178,7 @@ protected:
     std::vector<Arr2DC> m_diffractedMatrices;	// Jones matrices
 public:
     bool outputJones = false;
+    bool m_gpuEnabled = false;
 protected:
     bool isNanOccured = false;
     bool isNan = false;

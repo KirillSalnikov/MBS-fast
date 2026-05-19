@@ -1,4 +1,9 @@
 CXX ?= g++
+CUDA_PATH ?= /usr/local/cuda
+
+ifeq ($(USE_MPI),1)
+CXX := mpicxx
+endif
 
 CPU_MODEL := $(shell lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -1)
 ARCH_FLAGS ?= $(shell bash scripts/detect_arch_flags.sh "$(CXX)")
@@ -8,18 +13,32 @@ CXXFLAGS ?= $(OPT_FLAGS) $(ARCH_FLAGS) -std=gnu++11 -fopenmp
 LDFLAGS ?= -lm -lgomp
 DEPFLAGS = -MMD -MP
 
+ifeq ($(USE_CUDA),1)
+CXXFLAGS += -DUSE_CUDA -I$(CUDA_PATH)/include
+LDFLAGS += -L$(CUDA_PATH)/lib64 -lcudart
+endif
+ifeq ($(USE_MPI),1)
+CXXFLAGS += -DUSE_MPI
+endif
+
 SRC_DIR = src
 INCLUDES = -I$(SRC_DIR) -I$(SRC_DIR)/math -I$(SRC_DIR)/handler \
            -I$(SRC_DIR)/common -I$(SRC_DIR)/geometry \
            -I$(SRC_DIR)/geometry/intrinsic -I$(SRC_DIR)/geometry/sse \
            -I$(SRC_DIR)/particle -I$(SRC_DIR)/scattering \
            -I$(SRC_DIR)/tracer -I$(SRC_DIR)/splitting \
-           -Isrc/bigint
+           -I$(SRC_DIR)/cuda -Isrc/bigint
 
 SOURCES = $(shell find $(SRC_DIR) -name '*.cpp') \
           $(shell find src/bigint -name '*.cc' 2>/dev/null)
+ifeq ($(USE_CUDA),1)
+NVCC ?= nvcc
+NVCCFLAGS ?= -O3 -std=c++11 -U_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700
+SOURCES += $(shell find $(SRC_DIR) -name '*.cu')
+endif
 OBJECTS = $(SOURCES:.cpp=.o)
 OBJECTS := $(OBJECTS:.cc=.o)
+OBJECTS := $(OBJECTS:.cu=.o)
 DEPS = $(OBJECTS:.o=.d)
 
 TARGET = bin/mbs_po
@@ -30,6 +49,8 @@ $(TARGET): $(OBJECTS)
 	@mkdir -p bin
 	@echo "CPU: $(CPU_MODEL)"
 	@echo "CXXFLAGS: $(CXXFLAGS)"
+	@echo "USE_CUDA: $(USE_CUDA)"
+	@echo "USE_MPI: $(USE_MPI)"
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
 %.o: %.cpp
@@ -37,6 +58,9 @@ $(TARGET): $(OBJECTS)
 
 %.o: %.cc
 	$(CXX) $(CXXFLAGS) $(DEPFLAGS) $(INCLUDES) -c $< -o $@
+
+%.o: %.cu
+	$(NVCC) $(NVCCFLAGS) -DUSE_CUDA -I$(CUDA_PATH)/include $(INCLUDES) -c $< -o $@
 
 clean:
 	find $(SRC_DIR) -name '*.o' -delete
