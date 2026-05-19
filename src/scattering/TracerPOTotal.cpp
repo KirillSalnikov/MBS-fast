@@ -1565,12 +1565,12 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
     // Speedup vs restart: ~3.5× for convergence at the same N.
     // =========================================================================
     // Physics-based starting N: oldauto div16 formula
-    // Δθ = 0.69 * λ / Dmax * (180/π), orient_step = Δθ / 3
+    // Δθ = 0.69 * λ / Dmax * (180/π), orient_step = Δθ / m_ringPoints
     // N_beta = betaSym / orient_step / 16, N_gamma = gammaSym / orient_step / 16
     // N_start = N_beta × N_gamma rounded down to power of 2
     double Dmax = m_particle->MaximalDimention();
     double delta_deg = 0.69 * m_scattering->m_wave / Dmax * (180.0 / M_PI);
-    double orient_step = delta_deg / 3.0;
+    double orient_step = delta_deg / std::max(1, m_ringPoints);
     int nb16 = std::max(1, (int)(RadToDeg(betaSym) / orient_step / 16));
     int ng16 = std::max(1, (int)(RadToDeg(gammaSym) / orient_step / 16));
     int nStartRaw = nb16 * ng16;

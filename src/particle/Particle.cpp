@@ -499,19 +499,22 @@ Point3f Particle::Center() const
 double Particle::Volume()
 {
     double volume = 0;
-    Point3f center = Center();
 
     for (int i = 0; i < nFacets; ++i)
     {
         const Facet &facet = defaultFacets[i];
+        if (facet.nVertices < 3)
+            continue;
 
-        Point3f p = ProjectPointToPlane(center, facet.ex_normal,
-                                                  facet.in_normal);
-        double h = Length(p - center);
-        volume += (facet.Area()*h)/3;
+        const Point3f &p0 = facet.arr[0];
+        for (int j = 1; j + 1 < facet.nVertices; ++j)
+        {
+            Point3f cross = CrossProduct(facet.arr[j], facet.arr[j + 1]);
+            volume += DotProduct(p0, cross) / 6.0;
+        }
     }
 
-    return volume;
+    return fabs(volume);
 }
 
 const ::complex &Particle::GetRefractiveIndex() const

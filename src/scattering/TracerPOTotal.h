@@ -57,6 +57,9 @@ public:
     /// Optional manual cap for Sobol streaming chunks. 0 means auto.
     int m_sobolChunkSize = 0;
 
+    /// Points per diffraction ring used by physics-based orientation estimates.
+    int m_ringPoints = 3;
+
     /// MPI rank and size (default: single process)
     int m_mpiRank = 0;
     int m_mpiSize = 1;
