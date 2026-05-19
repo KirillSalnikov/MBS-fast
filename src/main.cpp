@@ -168,6 +168,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("ring_points", 1, true); // points per diffraction ring for orientation estimates
     parser.AddRule("threads", 1, true); // OpenMP worker threads
     parser.AddRule("gpu", 0, true); // enable CUDA GPU backend
+    parser.AddRule("fft", 0, true); // enable experimental FFT angular interpolation backend
     parser.AddRule("coh_orient", 0, true); // coherent across orientations (legacy mode)
     parser.AddRule("pole", 0, true); // fast pole shortcut: one gamma value at beta poles
     parser.AddRule("legacy_sign", 0, true); // use old (+) Fresnel sign for forward direction
@@ -228,6 +229,8 @@ void PrintHelp()
          << "=== Optimization ===\n"
          << "  --threads N            OpenMP worker threads (default: physical cores)\n"
          << "  --gpu                  Use CUDA GPU backend for diffraction (requires USE_CUDA=1 build)\n"
+         << "  --fft                  With --gpu, use experimental cuFFT phi interpolation backend\n"
+         << "                         Env: MBS_FFT_PHI_FACTOR=auto|N (default auto), MBS_FFT_CHECK=1\n"
          << "  --beam_cutoff EPS      Skip beams with |J|^2/max < EPS AND area/max < EPS\n"
          << "  -r RATIO               Beam area restriction ratio (default 100)\n"
          << "  --sym Sb Sg            Override symmetry: beta/Sb, 360/Sg degrees\n"
@@ -595,6 +598,12 @@ int main(int argc, const char* argv[])
     }
 
     const bool useGpu = args.IsCatched("gpu");
+    const bool useFft = args.IsCatched("fft");
+    if (useFft && !useGpu)
+    {
+        std::cerr << "ERROR: --fft currently requires --gpu." << std::endl;
+        return 1;
+    }
 
     if (args.IsCatched("p") == args.IsCatched("pf"))
     {
@@ -919,6 +928,7 @@ int main(int argc, const char* argv[])
 
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
+            handler->SetFftEnabled(useFft);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             handler->outputJones = args.IsCatched("jones");
@@ -1036,6 +1046,7 @@ int main(int argc, const char* argv[])
 
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
+            handler->SetFftEnabled(useFft);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             ApplyNphiOverride(args, conus);
@@ -1155,6 +1166,7 @@ int main(int argc, const char* argv[])
 
                 handler->isCoh = !args.IsCatched("incoh");
                 handler->SetGpuEnabled(useGpu);
+                handler->SetFftEnabled(useFft);
                 handler->m_legacySign = args.IsCatched("legacy_sign");
                 handler->useKarczewski = args.IsCatched("karczewski");
                 ApplyNphiOverride(args, conus);
@@ -1227,6 +1239,7 @@ int main(int argc, const char* argv[])
 
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
+            handler->SetFftEnabled(useFft);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             ApplyNphiOverride(args, conus);
             handler->SetScatteringSphere(conus);
@@ -1265,6 +1278,7 @@ int main(int argc, const char* argv[])
 
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
+            handler->SetFftEnabled(useFft);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             ApplyNphiOverride(args, conus);
@@ -1339,6 +1353,7 @@ int main(int argc, const char* argv[])
 
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
+            handler->SetFftEnabled(useFft);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             ApplyNphiOverride(args, conus);

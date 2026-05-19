@@ -13,6 +13,7 @@
 #include <iomanip>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <stdexcept>
 #include <future>
@@ -258,7 +259,15 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         nThreads = omp_get_num_threads();
     }
 #endif
-    const int parallelTraceMinGamma = std::max(128, 8 * nThreads);
+    int parallelTraceMinGamma = std::max(128, 8 * nThreads);
+    const char *traceMinEnv = std::getenv("MBS_TRACE_MIN_GAMMA");
+    if (traceMinEnv && *traceMinEnv)
+    {
+        char *end = nullptr;
+        long value = std::strtol(traceMinEnv, &end, 10);
+        if (end && *end == '\0' && value > 0)
+            parallelTraceMinGamma = (int)value;
+    }
     if (m_mpiRank == 0)
     {
         std::ostringstream line;
@@ -447,9 +456,14 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
                 int gpuBatchSize = handlerPO->SelectGpuOrientationBatchSize(
                     chunkPrepared, gpuStart, gammaCount - gpuStart);
                 int gpuEnd = std::min(gpuStart + gpuBatchSize, gammaCount);
-                std::vector<PreparedOrientation> gpuBatch(chunkPrepared.begin() + gpuStart,
-                                                          chunkPrepared.begin() + gpuEnd);
-                if (!handlerPO->HandleOrientationsToLocalGpu(gpuBatch, localM, localM_ns))
+                bool ok = handlerPO->IsFftEnabled()
+                    ? handlerPO->HandleOrientationsToLocalGpuFftPhi(
+                        chunkPrepared, gpuStart, gpuEnd - gpuStart,
+                        localM, localM_ns)
+                    : handlerPO->HandleOrientationsToLocalGpu(
+                        chunkPrepared, gpuStart, gpuEnd - gpuStart,
+                        localM, localM_ns);
+                if (!ok)
                 {
                     std::cerr << "ERROR: --gpu requested but GPU diffraction backend "
                               << "could not process oldauto/random beta block." << std::endl;
@@ -1402,9 +1416,14 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
                 int gpuBatchSize = handlerPO->SelectGpuOrientationBatchSize(
                     chunkPrepared, gpuStart, thisChunk - gpuStart);
                 int gpuEnd = std::min(gpuStart + gpuBatchSize, thisChunk);
-                std::vector<PreparedOrientation> gpuBatch(chunkPrepared.begin() + gpuStart,
-                                                          chunkPrepared.begin() + gpuEnd);
-                if (!handlerPO->HandleOrientationsToLocalGpu(gpuBatch, localM, localM_ns))
+                bool ok = handlerPO->IsFftEnabled()
+                    ? handlerPO->HandleOrientationsToLocalGpuFftPhi(
+                        chunkPrepared, gpuStart, gpuEnd - gpuStart,
+                        localM, localM_ns)
+                    : handlerPO->HandleOrientationsToLocalGpu(
+                        chunkPrepared, gpuStart, gpuEnd - gpuStart,
+                        localM, localM_ns);
+                if (!ok)
                 {
                     std::cerr << "ERROR: --gpu requested but GPU diffraction backend "
                               << "could not process this chunk." << std::endl;
@@ -1535,17 +1554,63 @@ void TracerPOTotal::TraceAdaptiveTheta(int nOrient, double betaSym, double gamma
     auto t_trace_end = std::chrono::high_resolution_clock::now();
     if (m_mpiRank == 0) std::cout << "Tracing done." << std::endl;
 
-    // Step 2: Compute M11 at arbitrary theta (summed over all orientations, phi-averaged)
-    auto computeM11 = [&](double theta_rad) -> double {
-        double m11_total = 0;
-        double theta_arr[1] = {theta_rad};
+    // Step 2: Compute M11 at arbitrary theta values (summed over all
+    // orientations, phi-averaged). Batch theta candidates so each
+    // orientation/beam/phi coefficient setup is reused across all candidates.
+    double theta_eval_seconds = 0.0;
+    bool thetaEvalUsedGpu = false;
+    auto computeM11Batch = [&](const std::vector<double> &theta_rads) {
+        auto t0 = std::chrono::high_resolution_clock::now();
+        std::vector<double> totals(theta_rads.size(), 0.0);
+        if (theta_rads.empty())
+            return totals;
+
+        const char *gpuAdaptiveThetaOff = std::getenv("MBS_GPU_ADAPTIVE_THETA_OFF");
+        if (hp->IsGpuEnabled()
+            && !(gpuAdaptiveThetaOff && gpuAdaptiveThetaOff[0] == '1' && gpuAdaptiveThetaOff[1] == '\0')
+            && hp->DiffractThetasGpu(allPrepared, theta_rads.data(),
+                                     (int)theta_rads.size(), totals))
+        {
+            thetaEvalUsedGpu = true;
+            theta_eval_seconds += std::chrono::duration<double>(
+                std::chrono::high_resolution_clock::now() - t0).count();
+            return totals;
+        }
+
+#ifdef _OPENMP
+        #pragma omp parallel
+        {
+            std::vector<double> localTotals(theta_rads.size(), 0.0);
+            std::vector<double> m11_one(theta_rads.size(), 0.0);
+            #pragma omp for schedule(dynamic, 1)
+            for (int i = 0; i < nOrient; ++i) {
+                if (allPrepared[i].beams.empty()) continue;
+                std::fill(m11_one.begin(), m11_one.end(), 0.0);
+                hp->DiffractAtThetas(allPrepared[i], theta_rads.data(),
+                                     (int)theta_rads.size(), m11_one.data());
+                for (size_t k = 0; k < localTotals.size(); ++k)
+                    localTotals[k] += m11_one[k];
+            }
+            #pragma omp critical
+            {
+                for (size_t k = 0; k < totals.size(); ++k)
+                    totals[k] += localTotals[k];
+            }
+        }
+#else
+        std::vector<double> m11_one(theta_rads.size(), 0.0);
         for (int i = 0; i < nOrient; ++i) {
             if (allPrepared[i].beams.empty()) continue;
-            double m11_one[1] = {0};
-            hp->DiffractAtThetas(allPrepared[i], theta_arr, 1, m11_one);
-            m11_total += m11_one[0];
+            std::fill(m11_one.begin(), m11_one.end(), 0.0);
+            hp->DiffractAtThetas(allPrepared[i], theta_rads.data(),
+                                 (int)theta_rads.size(), m11_one.data());
+            for (size_t k = 0; k < totals.size(); ++k)
+                totals[k] += m11_one[k];
         }
-        return m11_total;
+#endif
+        theta_eval_seconds += std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now() - t0).count();
+        return totals;
     };
 
     // Step 3: Adaptive bisection
@@ -1556,17 +1621,27 @@ void TracerPOTotal::TraceAdaptiveTheta(int nOrient, double betaSym, double gamma
     // Initial points (30 uniform)
     int nInitial = 30;
     std::map<double, double> thetaM11; // theta_rad -> M11
+    std::vector<double> initialThetas;
+    initialThetas.reserve(nInitial + 1);
     for (int i = 0; i <= nInitial; ++i) {
         double t = minTheta + i * (maxTheta - minTheta) / nInitial;
-        thetaM11[t] = computeM11(t);
+        initialThetas.push_back(t);
     }
+    std::vector<double> initialM11 = computeM11Batch(initialThetas);
+    for (size_t i = 0; i < initialThetas.size(); ++i)
+        thetaM11[initialThetas[i]] = initialM11[i];
     if (m_mpiRank == 0)
         std::cout << "Initial grid: " << thetaM11.size() << " points" << std::endl;
 
     // Recursive bisection
     int totalAdded = 0;
     for (int depth = 0; depth < maxDepth; ++depth) {
-        std::vector<double> toAdd;
+        struct ThetaCandidate
+        {
+            double theta;
+            double interp;
+        };
+        std::vector<ThetaCandidate> candidates;
         auto it = thetaM11.begin();
         auto prev = it; ++it;
         while (it != thetaM11.end()) {
@@ -1577,25 +1652,42 @@ void TracerPOTotal::TraceAdaptiveTheta(int nOrient, double betaSym, double gamma
 
             double tmid = (t1 + t2) * 0.5;
             double m_interp = (m1 + m2) * 0.5;
-            double m_actual = computeM11(tmid);
-            double denom = std::max(fabs(m_actual), fabs(m_interp));
-            double relErr = (denom > 1e-30) ? fabs(m_actual - m_interp) / denom : 0;
-
-            if (relErr > eps) {
-                toAdd.push_back(tmid);
-                thetaM11[tmid] = m_actual;
-            }
+            candidates.push_back({tmid, m_interp});
             prev = it; ++it;
         }
-        totalAdded += toAdd.size();
+
+        std::vector<double> toEval;
+        toEval.reserve(candidates.size());
+        for (const ThetaCandidate &candidate : candidates)
+            toEval.push_back(candidate.theta);
+        std::vector<double> actual = computeM11Batch(toEval);
+
+        size_t addedThisDepth = 0;
+        for (size_t ci = 0; ci < candidates.size(); ++ci) {
+            double tmid = candidates[ci].theta;
+            double m_interp = candidates[ci].interp;
+            double m_actual = actual[ci];
+            double denom = std::max(fabs(m_actual), fabs(m_interp));
+            double relErr = (denom > 1e-30) ? fabs(m_actual - m_interp) / denom : 0;
+            if (relErr > eps) {
+                thetaM11[tmid] = m_actual;
+                ++addedThisDepth;
+            }
+        }
+        totalAdded += (int)addedThisDepth;
         if (m_mpiRank == 0)
-            std::cout << "  Depth " << depth << ": +" << toAdd.size()
+            std::cout << "  Depth " << depth << ": +" << addedThisDepth
                       << " points (total " << thetaM11.size() << ")" << std::endl;
-        if (toAdd.empty()) break;
+        if (addedThisDepth == 0) break;
     }
 
     if (m_mpiRank == 0)
-        std::cout << "Final adaptive grid: " << thetaM11.size() << " theta points" << std::endl;
+        std::cout << "Final adaptive grid: " << thetaM11.size()
+                  << " theta points (theta eval "
+                  << std::fixed << std::setprecision(2)
+                  << theta_eval_seconds << " s"
+                  << (thetaEvalUsedGpu ? ", GPU" : "")
+                  << ")" << std::endl;
 
     // Step 4: Set the adaptive theta grid and re-run full TraceFromSobol
     // Free cached beams (we'll re-trace with new grid)

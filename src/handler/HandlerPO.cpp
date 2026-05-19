@@ -749,6 +749,16 @@ bool HandlerPO::IsGpuEnabled() const
     return m_gpuEnabled;
 }
 
+void HandlerPO::SetFftEnabled(bool value)
+{
+    m_fftEnabled = value;
+}
+
+bool HandlerPO::IsFftEnabled() const
+{
+    return m_fftEnabled;
+}
+
 void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
                                                Scattering *scattering)
 {
@@ -766,6 +776,7 @@ void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
     m_targetEps = source.m_targetEps;
     m_legacySign = source.m_legacySign;
     m_gpuEnabled = source.m_gpuEnabled;
+    m_fftEnabled = source.m_fftEnabled;
     isBackScatteringConusEnabled = source.isBackScatteringConusEnabled;
     backScatteringConus = source.backScatteringConus;
 }
@@ -1457,6 +1468,17 @@ void HandlerPO::DiffractAtThetas(const PreparedOrientation &prepared,
     for (int k = 0; k < nPoints; ++k) m11_out[k] = 0;
     int nAz = m_sphere.nAzimuth;
 
+    std::vector<double> sinTheta(nPoints), cosTheta(nPoints);
+    for (int k = 0; k < nPoints; ++k)
+        fast_sincos(theta_rads[k], sinTheta[k], cosTheta[k]);
+
+    std::vector<double> sinPhi(nAz), cosPhi(nAz);
+    for (int iPhi = 0; iPhi < nAz; ++iPhi)
+    {
+        double phi_rad = iPhi * m_sphere.azinuthStep;
+        fast_sincos(phi_rad, sinPhi[iPhi], cosPhi[iPhi]);
+    }
+
     for (const PreparedBeam &pb : prepared.beams)
     {
         const BeamEdgeData &edgeData = pb.edgeData;
@@ -1478,8 +1500,7 @@ void HandlerPO::DiffractAtThetas(const PreparedOrientation &prepared,
 
         for (int iPhi = 0; iPhi < nAz; ++iPhi)
         {
-            double phi_rad = iPhi * m_sphere.azinuthStep;
-            double cp = cos(phi_rad), sp = sin(phi_rad);
+            double cp = cosPhi[iPhi], sp = sinPhi[iPhi];
 
             ThetaCoeffs tc;
             precompute_theta_coeffs(
@@ -1493,8 +1514,7 @@ void HandlerPO::DiffractAtThetas(const PreparedOrientation &prepared,
 
             for (int k = 0; k < nPoints; ++k)
             {
-                double sin_t, cos_t;
-                fast_sincos(theta_rads[k], sin_t, cos_t);
+                double sin_t = sinTheta[k], cos_t = cosTheta[k];
                 double dx=sin_t*cp, dy=sin_t*sp, dz=-cos_t;
 
                 // vf: compute on the fly (same logic as ComputeSphereDirections)
@@ -1818,6 +1838,32 @@ bool HandlerPO::HandleBeamsToLocalGpu(const PreparedOrientation &/*prepared*/,
 bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientation> &/*prepared*/,
                                              Arr2D &/*localM*/,
                                              Arr2D &/*localM_noshadow*/)
+{
+    return false;
+}
+
+bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientation> &/*prepared*/,
+                                             int /*start*/,
+                                             int /*count*/,
+                                             Arr2D &/*localM*/,
+                                             Arr2D &/*localM_noshadow*/)
+{
+    return false;
+}
+
+bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOrientation> &/*prepared*/,
+                                                   int /*start*/,
+                                                   int /*count*/,
+                                                   Arr2D &/*localM*/,
+                                                   Arr2D &/*localM_noshadow*/)
+{
+    return false;
+}
+
+bool HandlerPO::DiffractThetasGpu(const std::vector<PreparedOrientation> &/*prepared*/,
+                                   const double */*theta_rads*/,
+                                   int /*nPoints*/,
+                                   std::vector<double> &/*m11_out*/)
 {
     return false;
 }

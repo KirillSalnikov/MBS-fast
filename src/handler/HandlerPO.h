@@ -89,6 +89,16 @@ public:
     bool HandleOrientationsToLocalGpu(const std::vector<PreparedOrientation> &prepared,
                                       Arr2D &localM,
                                       Arr2D &localM_noshadow);
+    bool HandleOrientationsToLocalGpu(const std::vector<PreparedOrientation> &prepared,
+                                      int start,
+                                      int count,
+                                      Arr2D &localM,
+                                      Arr2D &localM_noshadow);
+    bool HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOrientation> &prepared,
+                                            int start,
+                                            int count,
+                                            Arr2D &localM,
+                                            Arr2D &localM_noshadow);
     int SelectGpuOrientationBatchSize(const std::vector<PreparedOrientation> &prepared,
                                       int start,
                                       int maxCount) const;
@@ -104,6 +114,10 @@ public:
     void DiffractAtThetas(const PreparedOrientation &prepared,
                            const double *theta_rads, int nPoints,
                            double *m11_out);
+    bool DiffractThetasGpu(const std::vector<PreparedOrientation> &prepared,
+                           const double *theta_rads,
+                           int nPoints,
+                           std::vector<double> &m11_out);
 
     /// Convert coherent Jones (localJ) to Mueller and add to localM.
     static void AddToMuellerLocal(const std::vector<Arr2DC> &localJ,
@@ -120,6 +134,8 @@ public:
     void SetBackScatteringConus(double radAngle);
     void SetGpuEnabled(bool value);
     bool IsGpuEnabled() const;
+    void SetFftEnabled(bool value);
+    bool IsFftEnabled() const;
 
     matrix *m_Lp;
     matrix *m_Ln;
@@ -179,6 +195,7 @@ protected:
 public:
     bool outputJones = false;
     bool m_gpuEnabled = false;
+    bool m_fftEnabled = false;
 protected:
     bool isNanOccured = false;
     bool isNan = false;

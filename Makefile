@@ -15,7 +15,7 @@ DEPFLAGS = -MMD -MP
 
 ifeq ($(USE_CUDA),1)
 CXXFLAGS += -DUSE_CUDA -I$(CUDA_PATH)/include
-LDFLAGS += -L$(CUDA_PATH)/lib64 -lcudart
+LDFLAGS += -L$(CUDA_PATH)/lib64 -lcufft -lcudart
 endif
 ifeq ($(USE_MPI),1)
 CXXFLAGS += -DUSE_MPI
@@ -42,6 +42,7 @@ OBJECTS := $(OBJECTS:.cu=.o)
 DEPS = $(OBJECTS:.o=.d)
 
 TARGET = bin/mbs_po
+FFT_PROBE = bin/fft_aperture_probe
 
 all: $(TARGET)
 
@@ -67,8 +68,20 @@ clean:
 	find $(SRC_DIR) -name '*.d' -delete
 	find src/bigint -name '*.o' -delete 2>/dev/null; true
 	find src/bigint -name '*.d' -delete 2>/dev/null; true
-	rm -f $(TARGET)
+	rm -f $(TARGET) $(FFT_PROBE)
 
-.PHONY: all clean
+ifeq ($(USE_CUDA),1)
+fft_probe: $(FFT_PROBE)
+
+$(FFT_PROBE): tools/fft_aperture_probe.cu
+	@mkdir -p bin
+	$(NVCC) $(NVCCFLAGS) -I$(CUDA_PATH)/include $< -o $@ -L$(CUDA_PATH)/lib64 -lcufft -lcudart
+else
+fft_probe:
+	@echo "fft_probe requires USE_CUDA=1"
+	@false
+endif
+
+.PHONY: all clean fft_probe
 
 -include $(DEPS)

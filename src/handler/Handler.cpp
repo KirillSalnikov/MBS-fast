@@ -3,8 +3,6 @@
 
 #include "Mueller.hpp"
 #include <iostream>
-#include <limits>
-#include <iomanip>
 #include <algorithm>
 #ifdef _OPENMP
 #include <omp.h>
@@ -37,13 +35,6 @@ Handler::Handler(Particle *particle, Light *incidentLight, int nTheta,
     m_eps2 = __FLT_EPSILON__*2;
     m_eps3 = 1e1;
 
-#ifdef _OPENMP
-    if (!omp_in_parallel())
-#endif
-    {
-        m_logFile.open("log1.txt", std::ios::out);
-        m_logFile << std::setprecision(std::numeric_limits<long double>::digits10 + 1);
-    }
 }
 
 void Handler::HandleBeams(std::vector<Beam> &/*beams*/, double sinZenith)

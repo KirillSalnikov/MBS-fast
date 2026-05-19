@@ -10,6 +10,8 @@ HandlerGO::HandlerGO(Particle *particle, Light *incidentLight, int nTheta,
                      double wavelength)
     : Handler(particle, incidentLight, nTheta, wavelength)
 {
+    m_logFile.open("log1.txt", std::ios::out);
+    m_logFile << std::setprecision(std::numeric_limits<long double>::digits10 + 1);
 }
 
 void HandlerGO::SetTracks(Tracks *tracks)

@@ -1,9 +1,11 @@
 #include "HandlerPO.h"
 
 #include <cuda_runtime.h>
+#include <cufft.h>
 #include <cmath>
 #include <algorithm>
 #include <cstdlib>
+#include <cstdio>
 #include <vector>
 
 struct GpuBeam
@@ -44,6 +46,11 @@ struct GpuWorkspace
     size_t vfCap = 0, jCap = 0, jNoShadowCap = 0;
     size_t weightsCap = 0, beamOffsetsCap = 0, mCap = 0, mNoShadowCap = 0;
     int gridNAz = -1, gridNZen = -1;
+    std::vector<GpuBeam> hBeams;
+    std::vector<double> hWeights;
+    std::vector<int> hBeamOffsets;
+    std::vector<double> hM;
+    std::vector<double> hMNoShadow;
 };
 
 static GpuWorkspace g_gpuWorkspace;
@@ -64,6 +71,46 @@ static bool gpu_no_atomics_enabled()
 {
     const char *value = std::getenv("MBS_GPU_NO_ATOMICS");
     return value && value[0] == '1' && value[1] == '\0';
+}
+
+static int gpu_fft_phi_factor()
+{
+    const char *value = std::getenv("MBS_FFT_PHI_FACTOR");
+    if (!value || !*value)
+        return 0;
+    if ((value[0] == 'a' || value[0] == 'A') &&
+        (value[1] == 'u' || value[1] == 'U') &&
+        (value[2] == 't' || value[2] == 'T') &&
+        (value[3] == 'o' || value[3] == 'O') &&
+        value[4] == '\0')
+        return 0;
+    char *end = nullptr;
+    long parsed = std::strtol(value, &end, 10);
+    if (!end || *end != '\0' || parsed < 1 || parsed > 64)
+        return 0;
+    return (int)parsed;
+}
+
+static bool gpu_fft_check_enabled()
+{
+    const char *value = std::getenv("MBS_FFT_CHECK");
+    return value && value[0] == '1' && value[1] == '\0';
+}
+
+static int choose_fft_phi_factor(int nFull)
+{
+    int requested = gpu_fft_phi_factor();
+    if (requested > 0)
+        return requested;
+    if (nFull >= 2400)
+        return 8;
+    if (nFull >= 1200)
+        return 6;
+    if (nFull >= 600)
+        return 4;
+    if (nFull >= 240)
+        return 3;
+    return 2;
 }
 
 template <typename T>
@@ -87,6 +134,28 @@ __device__ inline void cmul(double ar, double ai, double br, double bi,
 {
     cr = ar * br - ai * bi;
     ci = ar * bi + ai * br;
+}
+
+__global__ void fft_phi_pad_kernel(const cufftDoubleComplex *low,
+                                   cufftDoubleComplex *full,
+                                   int nLow,
+                                   int nFull,
+                                   int batch,
+                                   double scale)
+{
+    int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
+    int total = nLow * batch;
+    if (idx >= total) return;
+
+    int k = idx % nLow;
+    int b = idx / nLow;
+    int freq = (k <= nLow / 2) ? k : k - nLow;
+    int dstK = (freq >= 0) ? freq : nFull + freq;
+    if (dstK < 0 || dstK >= nFull) return;
+
+    cufftDoubleComplex v = low[(size_t)b * nLow + k];
+    full[(size_t)b * nFull + dstK].x = v.x * scale;
+    full[(size_t)b * nFull + dstK].y = v.y * scale;
 }
 
 __device__ inline void rotate_jones_gpu(
@@ -141,6 +210,7 @@ __device__ inline bool compute_beam_jones_gpu(const GpuBeam &b,
                                               double invComplWaveR,
                                               double invComplWaveI,
                                               int legacySign,
+                                              int singularCorrection,
                                               double &d00r, double &d00i,
                                               double &d01r, double &d01i,
                                               double &d10r, double &d10i,
@@ -200,7 +270,7 @@ __device__ inline bool compute_beam_jones_gpu(const GpuBeam &b,
                 double inv = (absCi > eps1) ? (1.0 / Ci) : 0.0;
                 sr += (vc[en] - vc[e]) * inv;
                 si += (vs[en] - vs[e]) * inv;
-                if (absCi <= eps1)
+                if (singularCorrection && absCi <= eps1)
                 {
                     double p1x = b.x[e], p2x = b.x[en];
                     double tr = -wi2 * Ci * (p2x * p2x - p1x * p1x) * 0.5;
@@ -222,7 +292,7 @@ __device__ inline bool compute_beam_jones_gpu(const GpuBeam &b,
                 double inv = (absEi > eps1) ? (1.0 / Ei) : 0.0;
                 sr += (vc[en] - vc[e]) * inv;
                 si += (vs[en] - vs[e]) * inv;
-                if (absEi <= eps1)
+                if (singularCorrection && absEi <= eps1)
                 {
                     double p1y = b.y[e], p2y = b.y[en];
                     double tr = -wi2 * Ei * (p2y * p2y - p1y * p1y) * 0.5;
@@ -441,6 +511,55 @@ __global__ void diffraction_kernel(const GpuBeam *beams, int nBeams,
     }
 }
 
+__global__ void theta_m11_kernel(const GpuBeam *beams,
+                                 int nBeams,
+                                 const double *weights,
+                                 const double *sinTheta,
+                                 const double *cosTheta,
+                                 const double *sinPhi,
+                                 const double *cosPhi,
+                                 const double *vf,
+                                 int nAz,
+                                 int nTheta,
+                                 double waveIndex,
+                                 double wi2,
+                                 double eps1,
+                                 double eps2,
+                                 double complWaveR,
+                                 double complWaveI,
+                                 double invComplWaveR,
+                                 double invComplWaveI,
+                                 int legacySign,
+                                 double *m11)
+{
+    int gridCount = nAz * nTheta;
+    long long total = (long long)nBeams * gridCount;
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= total) return;
+
+    int grid = (int)(idx % gridCount);
+    int thetaIdx = grid % nTheta;
+    int beamIdx = (int)(idx / gridCount);
+
+    double d00r, d00i, d01r, d01i, d10r, d10i, d11r, d11i;
+    const GpuBeam &b = beams[beamIdx];
+    if (!compute_beam_jones_gpu(b, grid, nTheta - 1, sinTheta, cosTheta,
+                                sinPhi, cosPhi, vf, waveIndex, wi2,
+                                eps1, eps2, complWaveR, complWaveI,
+                                invComplWaveR, invComplWaveI, legacySign,
+                                0,
+                                d00r, d00i, d01r, d01i, d10r, d10i,
+                                d11r, d11i))
+        return;
+
+    double value = 0.5 * (d00r*d00r + d00i*d00i
+                        + d01r*d01r + d01i*d01i
+                        + d10r*d10r + d10i*d10i
+                        + d11r*d11r + d11i*d11i)
+                 * weights[b.orientation] / (nAz + 1);
+    atomicAdd(&m11[thetaIdx], value);
+}
+
 __global__ void diffraction_grid_kernel(const GpuBeam *beams,
                                         const int *beamOffsets,
                                         const double *sinTheta,
@@ -489,6 +608,7 @@ __global__ void diffraction_grid_kernel(const GpuBeam *beams,
                                     sinPhi, cosPhi, vf, waveIndex, wi2,
                                     eps1, eps2, complWaveR, complWaveI,
                                     invComplWaveR, invComplWaveI, legacySign,
+                                    1,
                                     d00r, d00i, d01r, d01i, d10r, d10i,
                                     d11r, d11i))
             continue;
@@ -851,14 +971,257 @@ int HandlerPO::SelectGpuOrientationBatchSize(const std::vector<PreparedOrientati
     return std::max(1, count);
 }
 
+static void add_arr2d_inplace(const Arr2D &src, int nAz, int nZen, Arr2D &dst)
+{
+    for (int p = 0; p < nAz; ++p)
+        for (int t = 0; t <= nZen; ++t)
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c)
+                    dst(p, t, r, c) += src(p, t, r, c);
+}
+
+static void report_fft_check(const Arr2D &fftM, const Arr2D &refM,
+                             int nAz, int nZen, const char *name)
+{
+    double refMax = 0.0;
+    for (int p = 0; p < nAz; ++p)
+        for (int t = 0; t <= nZen; ++t)
+            refMax = std::max(refMax, fabs(refM(p, t, 0, 0)));
+    double significant = 1e-3 * refMax;
+    double maxAbs = 0.0;
+    double maxRel = 0.0;
+    double sigMaxRel = 0.0;
+    double rmsRel = 0.0;
+    int count = 0;
+    int sigCount = 0;
+    for (int p = 0; p < nAz; ++p)
+        for (int t = 0; t <= nZen; ++t)
+        {
+            double a = refM(p, t, 0, 0);
+            double b = fftM(p, t, 0, 0);
+            double absErr = fabs(b - a);
+            double relErr = absErr / std::max(fabs(a), 1e-12);
+            maxAbs = std::max(maxAbs, absErr);
+            maxRel = std::max(maxRel, relErr);
+            if (fabs(a) >= significant)
+            {
+                sigMaxRel = std::max(sigMaxRel, relErr);
+                ++sigCount;
+            }
+            rmsRel += relErr * relErr;
+            ++count;
+        }
+    rmsRel = sqrt(rmsRel / std::max(1, count));
+    std::fprintf(stderr,
+                 "GPU FFT check %s M11: max_abs=%.6g max_rel=%.6g sig_max_rel=%.6g rms_rel=%.6g samples=%d sig_samples=%d\n",
+                 name, maxAbs, maxRel, sigMaxRel, rmsRel, count, sigCount);
+}
+
+static bool fft_upsample_phi_arr2d(const Arr2D &low,
+                                   int nLow,
+                                   int nFull,
+                                   int nZen,
+                                   Arr2D &dst)
+{
+    if (nLow <= 0 || nFull <= 0 || nZen < 0)
+        return false;
+
+    const int nElem = 16;
+    const int batch = (nZen + 1) * nElem;
+    const size_t lowCount = (size_t)batch * nLow;
+    const size_t fullCount = (size_t)batch * nFull;
+
+    std::vector<cufftDoubleComplex> hLow(lowCount);
+    for (int t = 0; t <= nZen; ++t)
+        for (int r = 0; r < 4; ++r)
+            for (int c = 0; c < 4; ++c)
+            {
+                int b = (t * nElem) + r * 4 + c;
+                for (int p = 0; p < nLow; ++p)
+                {
+                    cufftDoubleComplex z;
+                    z.x = low(p, t, r, c);
+                    z.y = 0.0;
+                    hLow[(size_t)b * nLow + p] = z;
+                }
+            }
+
+    cufftDoubleComplex *dLow = nullptr;
+    cufftDoubleComplex *dFull = nullptr;
+    cufftHandle planLow = 0;
+    cufftHandle planFull = 0;
+    bool ok = false;
+
+    do
+    {
+        if (cudaMalloc(&dLow, lowCount * sizeof(cufftDoubleComplex)) != cudaSuccess) break;
+        if (cudaMalloc(&dFull, fullCount * sizeof(cufftDoubleComplex)) != cudaSuccess) break;
+        if (cudaMemcpy(dLow, hLow.data(), lowCount * sizeof(cufftDoubleComplex),
+                       cudaMemcpyHostToDevice) != cudaSuccess) break;
+
+        int nLowArr[1] = { nLow };
+        int nFullArr[1] = { nFull };
+        if (cufftPlanMany(&planLow, 1, nLowArr,
+                          nullptr, 1, nLow,
+                          nullptr, 1, nLow,
+                          CUFFT_Z2Z, batch) != CUFFT_SUCCESS) break;
+        if (cufftPlanMany(&planFull, 1, nFullArr,
+                          nullptr, 1, nFull,
+                          nullptr, 1, nFull,
+                          CUFFT_Z2Z, batch) != CUFFT_SUCCESS) break;
+        if (cufftExecZ2Z(planLow, dLow, dLow, CUFFT_FORWARD) != CUFFT_SUCCESS) break;
+        if (cudaMemset(dFull, 0, fullCount * sizeof(cufftDoubleComplex)) != cudaSuccess) break;
+
+        int block = 256;
+        int grid = (int)((lowCount + block - 1) / block);
+        double scale = 1.0 / (double)nLow;
+        fft_phi_pad_kernel<<<grid, block>>>(dLow, dFull, nLow, nFull, batch, scale);
+        if (cudaGetLastError() != cudaSuccess) break;
+        if (cufftExecZ2Z(planFull, dFull, dFull, CUFFT_INVERSE) != CUFFT_SUCCESS) break;
+
+        std::vector<cufftDoubleComplex> hFull(fullCount);
+        if (cudaMemcpy(hFull.data(), dFull, fullCount * sizeof(cufftDoubleComplex),
+                       cudaMemcpyDeviceToHost) != cudaSuccess) break;
+
+        for (int t = 0; t <= nZen; ++t)
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c)
+                {
+                    int b = (t * nElem) + r * 4 + c;
+                    for (int p = 0; p < nFull; ++p)
+                        dst(p, t, r, c) += hFull[(size_t)b * nFull + p].x;
+                }
+
+        ok = true;
+    } while (false);
+
+    if (planLow) cufftDestroy(planLow);
+    if (planFull) cufftDestroy(planFull);
+    cudaFree(dLow);
+    cudaFree(dFull);
+    return ok;
+}
+
 bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientation> &prepared,
+                                             Arr2D &localM,
+                                             Arr2D &localM_noshadow)
+{
+    return HandleOrientationsToLocalGpu(prepared, 0, (int)prepared.size(),
+                                        localM, localM_noshadow);
+}
+
+bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOrientation> &prepared,
+                                                   int start,
+                                                   int count,
+                                                   Arr2D &localM,
+                                                   Arr2D &localM_noshadow)
+{
+    if (!isCoh)
+        return false;
+
+    const int nFull = m_sphere.nAzimuth;
+    const int nZen = m_sphere.nZenith;
+    int factor = choose_fft_phi_factor(nFull);
+    if (factor <= 1 || nFull < 32)
+        return HandleOrientationsToLocalGpu(prepared, start, count,
+                                            localM, localM_noshadow);
+
+    int nLow = nFull / factor;
+    if (nLow < 16) nLow = std::min(nFull, 16);
+    if (nLow >= nFull)
+        return HandleOrientationsToLocalGpu(prepared, start, count,
+                                            localM, localM_noshadow);
+
+    static bool printed = false;
+    if (!printed)
+    {
+        std::fprintf(stderr,
+                     "GPU FFT phi interpolation: direct Nphi=%d, output Nphi=%d (factor=%d). "
+                     "This is angular Fourier interpolation, not aperture pFFT/FMM.\n",
+                     nLow, nFull, factor);
+        printed = true;
+    }
+
+    ScatteringRange fullSphere = m_sphere;
+    ScatteringRange lowSphere = fullSphere;
+    lowSphere.nAzimuth = nLow;
+    lowSphere.azinuthStep = M_2PI / nLow;
+    lowSphere.ComputeSphereDirections(*m_incidentLight);
+
+    Arr2D lowM(nLow + 1, nZen + 1, 4, 4); lowM.ClearArr();
+    Arr2D lowMns(nLow + 1, nZen + 1, 4, 4); lowMns.ClearArr();
+
+    bool savedFft = m_fftEnabled;
+    m_fftEnabled = false;
+    m_sphere = lowSphere;
+    bool ok = HandleOrientationsToLocalGpu(prepared, start, count, lowM, lowMns);
+    m_sphere = fullSphere;
+    m_fftEnabled = savedFft;
+    if (!ok)
+        return false;
+
+    bool doCheck = gpu_fft_check_enabled() && factor > 2;
+    if (!doCheck)
+    {
+        if (!fft_upsample_phi_arr2d(lowM, nLow, nFull, nZen, localM))
+            return false;
+        if (!fft_upsample_phi_arr2d(lowMns, nLow, nFull, nZen, localM_noshadow))
+            return false;
+        return true;
+    }
+
+    Arr2D fftM(nFull + 1, nZen + 1, 4, 4); fftM.ClearArr();
+    Arr2D fftMns(nFull + 1, nZen + 1, 4, 4); fftMns.ClearArr();
+    if (!fft_upsample_phi_arr2d(lowM, nLow, nFull, nZen, fftM))
+        return false;
+    if (!fft_upsample_phi_arr2d(lowMns, nLow, nFull, nZen, fftMns))
+        return false;
+
+    if (doCheck)
+    {
+        int nCheck = std::min(nFull, nLow * 2);
+        ScatteringRange checkSphere = fullSphere;
+        checkSphere.nAzimuth = nCheck;
+        checkSphere.azinuthStep = M_2PI / nCheck;
+        checkSphere.ComputeSphereDirections(*m_incidentLight);
+
+        Arr2D checkLowM(nCheck + 1, nZen + 1, 4, 4); checkLowM.ClearArr();
+        Arr2D checkLowMns(nCheck + 1, nZen + 1, 4, 4); checkLowMns.ClearArr();
+        m_sphere = checkSphere;
+        bool checkOk = HandleOrientationsToLocalGpu(prepared, start, count,
+                                                    checkLowM, checkLowMns);
+        m_sphere = fullSphere;
+        if (!checkOk)
+            return false;
+
+        Arr2D checkM(nFull + 1, nZen + 1, 4, 4); checkM.ClearArr();
+        Arr2D checkMns(nFull + 1, nZen + 1, 4, 4); checkMns.ClearArr();
+        if (!fft_upsample_phi_arr2d(checkLowM, nCheck, nFull, nZen, checkM))
+            return false;
+        if (!fft_upsample_phi_arr2d(checkLowMns, nCheck, nFull, nZen, checkMns))
+            return false;
+        report_fft_check(fftM, checkM, nFull, nZen, "full");
+        report_fft_check(fftMns, checkMns, nFull, nZen, "no-shadow");
+    }
+
+    add_arr2d_inplace(fftM, nFull, nZen, localM);
+    add_arr2d_inplace(fftMns, nFull, nZen, localM_noshadow);
+
+    return true;
+}
+
+bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientation> &prepared,
+                                             int start,
+                                             int count,
                                              Arr2D &localM,
                                              Arr2D &localM_noshadow)
 {
     if (!isCoh)
         return false;
 
-    const int nOrient = (int)prepared.size();
+    if (start < 0 || count < 0 || start > (int)prepared.size())
+        return false;
+    const int nOrient = std::min(count, (int)prepared.size() - start);
     const int nAz = m_sphere.nAzimuth;
     const int nZen = m_sphere.nZenith;
     const int gridCount = nAz * (nZen + 1);
@@ -868,7 +1231,8 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     size_t nBeams = 0;
     for (int oi = 0; oi < nOrient; ++oi)
     {
-        for (const PreparedBeam &pb : prepared[oi].beams)
+        const PreparedOrientation &po = prepared[start + oi];
+        for (const PreparedBeam &pb : po.beams)
         {
             if (!pb.edgeData.valid || pb.edgeData.nVertices <= 0 || pb.edgeData.nVertices > 32)
                 return false;
@@ -878,15 +1242,20 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     if (nBeams == 0)
         return true;
 
-    std::vector<GpuBeam> hBeams(nBeams);
-    std::vector<double> hWeights(nOrient, 0.0);
-    std::vector<int> hBeamOffsets(nOrient + 1, 0);
+    GpuWorkspace &ws = g_gpuWorkspace;
+    ws.hBeams.resize(nBeams);
+    ws.hWeights.assign(nOrient, 0.0);
+    ws.hBeamOffsets.assign(nOrient + 1, 0);
+    std::vector<GpuBeam> &hBeams = ws.hBeams;
+    std::vector<double> &hWeights = ws.hWeights;
+    std::vector<int> &hBeamOffsets = ws.hBeamOffsets;
     size_t bi = 0;
     for (int oi = 0; oi < nOrient; ++oi)
     {
         hBeamOffsets[oi] = (int)bi;
-        hWeights[oi] = prepared[oi].sinZenith;
-        for (const PreparedBeam &pb : prepared[oi].beams)
+        const PreparedOrientation &po = prepared[start + oi];
+        hWeights[oi] = po.sinZenith;
+        for (const PreparedBeam &pb : po.beams)
         {
             GpuBeam &b = hBeams[bi++];
             b.nVertices = pb.edgeData.nVertices;
@@ -918,7 +1287,6 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     }
     hBeamOffsets[nOrient] = (int)bi;
 
-    GpuWorkspace &ws = g_gpuWorkspace;
     const size_t jCount = (size_t)nOrient * gridCount * 8;
     const size_t mCount = (size_t)gridCount * 16;
 
@@ -1012,7 +1380,10 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess)
         return false;
 
-    std::vector<double> hM(mCount), hMns(mCount);
+    ws.hM.resize(mCount);
+    ws.hMNoShadow.resize(mCount);
+    std::vector<double> &hM = ws.hM;
+    std::vector<double> &hMns = ws.hMNoShadow;
     if (cudaMemcpy(hM.data(), ws.m, mCount * sizeof(double), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
     if (cudaMemcpy(hMns.data(), ws.mNoShadow, mCount * sizeof(double), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
 
@@ -1030,5 +1401,146 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                 }
         }
 
+    return true;
+}
+
+bool HandlerPO::DiffractThetasGpu(const std::vector<PreparedOrientation> &prepared,
+                                  const double *theta_rads,
+                                  int nPoints,
+                                  std::vector<double> &m11_out)
+{
+    if (nPoints <= 0)
+        return true;
+
+    const int nOrient = (int)prepared.size();
+    const int nAz = m_sphere.nAzimuth;
+    if (nOrient == 0 || nAz <= 0)
+        return true;
+
+    size_t nBeams = 0;
+    for (int oi = 0; oi < nOrient; ++oi)
+    {
+        for (const PreparedBeam &pb : prepared[oi].beams)
+        {
+            if (!pb.edgeData.valid || pb.edgeData.nVertices <= 0 || pb.edgeData.nVertices > 32)
+                return false;
+            ++nBeams;
+        }
+    }
+
+    m11_out.assign(nPoints, 0.0);
+    if (nBeams == 0)
+        return true;
+
+    GpuWorkspace &ws = g_gpuWorkspace;
+    ws.hBeams.resize(nBeams);
+    ws.hWeights.assign(nOrient, 0.0);
+
+    size_t bi = 0;
+    for (int oi = 0; oi < nOrient; ++oi)
+    {
+        ws.hWeights[oi] = prepared[oi].sinZenith;
+        for (const PreparedBeam &pb : prepared[oi].beams)
+        {
+            GpuBeam &b = ws.hBeams[bi++];
+            b.nVertices = pb.edgeData.nVertices;
+            b.isExternal = pb.isExternal ? 1 : 0;
+            b.orientation = oi;
+            for (int e = 0; e < 32; ++e)
+            {
+                b.x[e] = pb.edgeData.x[e];
+                b.y[e] = pb.edgeData.y[e];
+                b.slope_yx[e] = pb.edgeData.slope_yx[e];
+                b.slope_xy[e] = pb.edgeData.slope_xy[e];
+                b.edge_valid_x[e] = pb.edgeData.edge_valid_x[e] ? 1 : 0;
+                b.edge_valid_y[e] = pb.edgeData.edge_valid_y[e] ? 1 : 0;
+            }
+            b.bdx = pb.bdx; b.bdy = pb.bdy; b.bdz = pb.bdz;
+            b.horAx = pb.horAx; b.horAy = pb.horAy; b.horAz = pb.horAz;
+            b.verAx = pb.verAx; b.verAy = pb.verAy; b.verAz = pb.verAz;
+            b.cenx = pb.cenx; b.ceny = pb.ceny; b.cenz = pb.cenz;
+            b.beam_area = pb.beam_area;
+            b.pNTx = pb.pNTx; b.pNTy = pb.pNTy; b.pNTz = pb.pNTz;
+            b.pNPx = pb.pNPx; b.pNPy = pb.pNPy; b.pNPz = pb.pNPz;
+            b.pnxDTx = pb.pnxDTx; b.pnxDTy = pb.pnxDTy; b.pnxDTz = pb.pnxDTz;
+            b.pnxDPx = pb.pnxDPx; b.pnxDPy = pb.pnxDPy; b.pnxDPz = pb.pnxDPz;
+            b.jp00r = pb.jp00r; b.jp00i = pb.jp00i;
+            b.jp01r = pb.jp01r; b.jp01i = pb.jp01i;
+            b.jp10r = pb.jp10r; b.jp10i = pb.jp10i;
+            b.jp11r = pb.jp11r; b.jp11i = pb.jp11i;
+        }
+    }
+
+    std::vector<double> hSinTheta(nPoints), hCosTheta(nPoints);
+    for (int t = 0; t < nPoints; ++t)
+    {
+        hSinTheta[t] = sin(theta_rads[t]);
+        hCosTheta[t] = cos(theta_rads[t]);
+    }
+
+    std::vector<double> hSinPhi(nAz), hCosPhi(nAz);
+    for (int p = 0; p < nAz; ++p)
+    {
+        double phi = p * m_sphere.azinuthStep;
+        hSinPhi[p] = sin(phi);
+        hCosPhi[p] = cos(phi);
+    }
+
+    const int gridCount = nAz * nPoints;
+    std::vector<double> hVf((size_t)gridCount * 3);
+    for (int p = 0; p < nAz; ++p)
+    {
+        double cp = hCosPhi[p], sp = hSinPhi[p];
+        for (int t = 0; t < nPoints; ++t)
+        {
+            double dz = -hCosTheta[t];
+            double vfx, vfy, vfz;
+            if (dz >= 1.0 - 1e-15) { vfx = 0.0; vfy = -1.0; vfz = 0.0; }
+            else if (dz <= -1.0 + 1e-15) { vfx = 0.0; vfy = 1.0; vfz = 0.0; }
+            else { vfx = -sp; vfy = cp; vfz = 0.0; }
+            int grid = p * nPoints + t;
+            hVf[grid * 3 + 0] = vfx;
+            hVf[grid * 3 + 1] = vfy;
+            hVf[grid * 3 + 2] = vfz;
+        }
+    }
+
+    if (!ensure_device_capacity(ws.beams, ws.beamCap, ws.hBeams.size())) return false;
+    if (!ensure_device_capacity(ws.weights, ws.weightsCap, ws.hWeights.size())) return false;
+    if (!ensure_device_capacity(ws.sinTheta, ws.sinThetaCap, (size_t)nPoints)) return false;
+    if (!ensure_device_capacity(ws.cosTheta, ws.cosThetaCap, (size_t)nPoints)) return false;
+    if (!ensure_device_capacity(ws.sinPhi, ws.sinPhiCap, (size_t)nAz)) return false;
+    if (!ensure_device_capacity(ws.cosPhi, ws.cosPhiCap, (size_t)nAz)) return false;
+    if (!ensure_device_capacity(ws.vf, ws.vfCap, hVf.size())) return false;
+    if (!ensure_device_capacity(ws.m, ws.mCap, (size_t)nPoints)) return false;
+
+    if (cudaMemcpy(ws.beams, ws.hBeams.data(), ws.hBeams.size() * sizeof(GpuBeam), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+    if (cudaMemcpy(ws.weights, ws.hWeights.data(), ws.hWeights.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+    if (cudaMemcpy(ws.sinTheta, hSinTheta.data(), hSinTheta.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+    if (cudaMemcpy(ws.cosTheta, hCosTheta.data(), hCosTheta.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+    if (cudaMemcpy(ws.sinPhi, hSinPhi.data(), hSinPhi.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+    if (cudaMemcpy(ws.cosPhi, hCosPhi.data(), hCosPhi.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+    if (cudaMemcpy(ws.vf, hVf.data(), hVf.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+    if (cudaMemset(ws.m, 0, (size_t)nPoints * sizeof(double)) != cudaSuccess) return false;
+
+    int block = 256;
+    long long total = (long long)nBeams * gridCount;
+    int launchGrid = (int)((total + block - 1) / block);
+    theta_m11_kernel<<<launchGrid, block>>>(
+        ws.beams, (int)nBeams, ws.weights,
+        ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi, ws.vf,
+        nAz, nPoints, m_waveIndex, m_wi2, m_eps1, m_eps2,
+        real(m_complWave), imag(m_complWave),
+        real(m_invComplWave), imag(m_invComplWave),
+        m_legacySign ? 1 : 0, ws.m);
+
+    if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess)
+        return false;
+
+    if (cudaMemcpy(m11_out.data(), ws.m, (size_t)nPoints * sizeof(double), cudaMemcpyDeviceToHost) != cudaSuccess)
+        return false;
+
+    ws.gridNAz = -1;
+    ws.gridNZen = -1;
     return true;
 }
