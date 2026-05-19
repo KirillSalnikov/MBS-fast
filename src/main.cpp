@@ -56,6 +56,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("n", 1, true); // number of internal reflection (optional for --autofull)
     parser.AddRule("pf", 1, true); // particle (filename)
     parser.AddRule("rs", 1, true, "pf"); // resize particle (new size)
+    parser.AddRule("k_eq", 1, true); // resize particle to equivalent-volume size parameter
     parser.AddRule("fixed", 2, true); // fixed orientarion (beta, gamma)
     parser.AddRule("random", 2, true); // random orientarion (beta number, gamma number)
     parser.AddRule("montecarlo", 1, true); // random orientarion (beta number, gamma number)
@@ -120,6 +121,7 @@ void PrintHelp()
          << "                         10=concave hex, 12=hex aggregate\n"
          << "  --pf FILE              Particle from .obj file\n"
          << "  --rs SIZE              Resize particle to Dmax=SIZE (with --pf)\n"
+         << "  --k_eq X               Resize particle so 2*pi*r_eq/lambda = X\n"
          << "  --ri Re Im             Refractive index (default 1.31 0)\n"
          << "  -w LAMBDA              Wavelength in um (default 0.532)\n"
          << "  -n N                   Max internal reflections (default 6)\n\n"
@@ -489,6 +491,11 @@ int main(int argc, const char* argv[])
         std::cerr << "ERROR: specify exactly one particle source: -p ... or --pf FILE." << std::endl;
         return 1;
     }
+    if (args.IsCatched("rs") && args.IsCatched("k_eq"))
+    {
+        std::cerr << "ERROR: --rs and --k_eq are both size controls; use only one." << std::endl;
+        return 1;
+    }
 
     double re = args.GetDoubleValue("ri", 0);
     double im = args.GetDoubleValue("ri", 1);
@@ -607,6 +614,40 @@ int main(int argc, const char* argv[])
             assert(false && "ERROR! Incorrect type of particle.");
             break;
         }
+    }
+
+    if (args.IsCatched("k_eq"))
+    {
+        double targetKEq = args.GetDoubleValue("k_eq", 0);
+        if (targetKEq <= 0)
+        {
+            std::cerr << "ERROR: --k_eq must be positive." << std::endl;
+            return 1;
+        }
+        if (wave <= 0)
+        {
+            std::cerr << "ERROR: --k_eq requires positive wavelength (-w)." << std::endl;
+            return 1;
+        }
+
+        double currentVolume = particle->Volume();
+        double currentReq = (currentVolume > 0)
+            ? pow(3.0 * currentVolume / (4.0 * M_PI), 1.0 / 3.0)
+            : 0.0;
+        if (currentReq <= DBL_EPSILON)
+        {
+            std::cerr << "ERROR: cannot apply --k_eq because current equivalent radius is zero." << std::endl;
+            return 1;
+        }
+
+        double targetReq = targetKEq * wave / (2.0 * M_PI);
+        double ratio = targetReq / currentReq;
+        double oldDMax = particle->MaximalDimention();
+        particle->Resize(oldDMax * ratio);
+        additionalSummary += "\tResized by k_eq: target " + std::to_string(targetKEq)
+                + ", old r_eq: " + std::to_string(currentReq)
+                + ", new Dmax: " + std::to_string(particle->MaximalDimention())
+                + ", resize factor: " + std::to_string(ratio) + "\n";
     }
 
     additionalSummary += "\tRefractive index: " + to_string(re);

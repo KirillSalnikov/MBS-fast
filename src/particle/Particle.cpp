@@ -167,6 +167,11 @@ void Particle::Scale(double ratio)
             defaultFacets[i].arr[j].cy *= ratio;
             defaultFacets[i].arr[j].cz *= ratio;
         }
+        defaultFacets[i].center.cx *= ratio;
+        defaultFacets[i].center.cy *= ratio;
+        defaultFacets[i].center.cz *= ratio;
+        defaultFacets[i].in_normal.d_param *= ratio;
+        defaultFacets[i].ex_normal.d_param *= ratio;
     }
 }
 
