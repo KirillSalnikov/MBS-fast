@@ -1809,9 +1809,46 @@ void HandlerPO::AddToMuellerLocal(const std::vector<Arr2DC> &localJ,
         {
             for (int p = 0; p < nAz; ++p)
             {
-                matrix m = Mueller(localJ[q](p, t));
-                m *= normIndex;
-                localM.insert(p, t, m);
+                const complex j00 = localJ[q](p, t, 0, 0);
+                const complex j01 = localJ[q](p, t, 0, 1);
+                const complex j10 = localJ[q](p, t, 1, 0);
+                const complex j11 = localJ[q](p, t, 1, 1);
+
+                const double a11 = norm(j00);
+                const double a12 = norm(j01);
+                const double a21 = norm(j10);
+                const double a22 = norm(j11);
+
+                double A1 = a11 + a21;
+                double A2 = a12 + a22;
+                localM(p, t, 0, 0) += ((A1 + A2) * 0.5) * normIndex;
+                localM(p, t, 0, 1) += ((A1 - A2) * 0.5) * normIndex;
+
+                A1 = a11 - a21;
+                A2 = a12 - a22;
+                localM(p, t, 1, 0) += ((A1 + A2) * 0.5) * normIndex;
+                localM(p, t, 1, 1) += ((A1 - A2) * 0.5) * normIndex;
+
+                complex C1 = j00 * conj(j01);
+                complex C2 = j11 * conj(j10);
+                localM(p, t, 0, 2) += (-real(C1) - real(C2)) * normIndex;
+                localM(p, t, 0, 3) += ( imag(C2) - imag(C1)) * normIndex;
+                localM(p, t, 1, 2) += ( real(C2) - real(C1)) * normIndex;
+                localM(p, t, 1, 3) += (-imag(C1) - imag(C2)) * normIndex;
+
+                C1 = j00 * conj(j10);
+                C2 = j11 * conj(j01);
+                localM(p, t, 2, 0) += (-real(C1) - real(C2)) * normIndex;
+                localM(p, t, 2, 1) += ( real(C2) - real(C1)) * normIndex;
+                localM(p, t, 3, 0) += ( imag(C1) - imag(C2)) * normIndex;
+                localM(p, t, 3, 1) += ( imag(C2) + imag(C1)) * normIndex;
+
+                C1 = j00 * conj(j11);
+                C2 = j01 * conj(j10);
+                localM(p, t, 2, 2) += ( real(C1) + real(C2)) * normIndex;
+                localM(p, t, 2, 3) += ( imag(C1) - imag(C2)) * normIndex;
+                localM(p, t, 3, 2) += (-imag(C1) - imag(C2)) * normIndex;
+                localM(p, t, 3, 3) += ( real(C1) - real(C2)) * normIndex;
             }
         }
     }
