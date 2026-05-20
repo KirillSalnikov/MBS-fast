@@ -93,12 +93,16 @@ public:
                                       int start,
                                       int count,
                                       Arr2D &localM,
-                                      Arr2D &localM_noshadow);
+                                      Arr2D &localM_noshadow,
+                                      double scale = 1.0,
+                                      double waveIndex = 0.0);
     bool HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOrientation> &prepared,
                                             int start,
                                             int count,
                                             Arr2D &localM,
-                                            Arr2D &localM_noshadow);
+                                            Arr2D &localM_noshadow,
+                                            double scale = 1.0,
+                                            double waveIndex = 0.0);
     int SelectGpuOrientationBatchSize(const std::vector<PreparedOrientation> &prepared,
                                       int start,
                                       int maxCount) const;

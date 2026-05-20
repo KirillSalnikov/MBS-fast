@@ -1150,7 +1150,9 @@ bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOri
                                                    int start,
                                                    int count,
                                                    Arr2D &localM,
-                                                   Arr2D &localM_noshadow)
+                                                   Arr2D &localM_noshadow,
+                                                   double scale,
+                                                   double waveIndex)
 {
     if (!isCoh)
         return false;
@@ -1160,13 +1162,15 @@ bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOri
     int factor = choose_fft_phi_factor(nFull);
     if (factor <= 1 || nFull < 32)
         return HandleOrientationsToLocalGpu(prepared, start, count,
-                                            localM, localM_noshadow);
+                                            localM, localM_noshadow,
+                                            scale, waveIndex);
 
     int nLow = nFull / factor;
     if (nLow < 16) nLow = std::min(nFull, 16);
     if (nLow >= nFull)
         return HandleOrientationsToLocalGpu(prepared, start, count,
-                                            localM, localM_noshadow);
+                                            localM, localM_noshadow,
+                                            scale, waveIndex);
 
     static bool printed = false;
     if (!printed)
@@ -1190,7 +1194,8 @@ bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOri
     bool savedFft = m_fftEnabled;
     m_fftEnabled = false;
     m_sphere = lowSphere;
-    bool ok = HandleOrientationsToLocalGpu(prepared, start, count, lowM, lowMns);
+    bool ok = HandleOrientationsToLocalGpu(prepared, start, count, lowM, lowMns,
+                                           scale, waveIndex);
     m_sphere = fullSphere;
     m_fftEnabled = savedFft;
     if (!ok)
@@ -1225,7 +1230,8 @@ bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOri
         Arr2D checkLowMns(nCheck + 1, nZen + 1, 4, 4); checkLowMns.ClearArr();
         m_sphere = checkSphere;
         bool checkOk = HandleOrientationsToLocalGpu(prepared, start, count,
-                                                    checkLowM, checkLowMns);
+                                                    checkLowM, checkLowMns,
+                                                    scale, waveIndex);
         m_sphere = fullSphere;
         if (!checkOk)
             return false;
@@ -1250,7 +1256,9 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                                              int start,
                                              int count,
                                              Arr2D &localM,
-                                             Arr2D &localM_noshadow)
+                                             Arr2D &localM_noshadow,
+                                             double scale,
+                                             double waveIndex)
 {
     if (!isCoh)
         return false;
@@ -1279,6 +1287,8 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         return true;
 
     GpuWorkspace &ws = g_gpuWorkspace;
+    const bool scaleOnPack = (fabs(scale - 1.0) > 1e-15);
+    const double scale2 = scale * scale;
     ws.hBeams.resize(nBeams);
     ws.hWeights.assign(nOrient, 0.0);
     ws.hBeamOffsets.assign(nOrient + 1, 0);
@@ -1299,8 +1309,8 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
             b.orientation = oi;
             for (int e = 0; e < 32; ++e)
             {
-                b.x[e] = pb.edgeData.x[e];
-                b.y[e] = pb.edgeData.y[e];
+                b.x[e] = pb.edgeData.x[e] * scale;
+                b.y[e] = pb.edgeData.y[e] * scale;
                 b.slope_yx[e] = pb.edgeData.slope_yx[e];
                 b.slope_xy[e] = pb.edgeData.slope_xy[e];
                 b.edge_valid_x[e] = pb.edgeData.edge_valid_x[e] ? 1 : 0;
@@ -1309,16 +1319,44 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
             b.bdx = pb.bdx; b.bdy = pb.bdy; b.bdz = pb.bdz;
             b.horAx = pb.horAx; b.horAy = pb.horAy; b.horAz = pb.horAz;
             b.verAx = pb.verAx; b.verAy = pb.verAy; b.verAz = pb.verAz;
-            b.cenx = pb.cenx; b.ceny = pb.ceny; b.cenz = pb.cenz;
-            b.beam_area = pb.beam_area;
+            b.cenx = pb.cenx * scale; b.ceny = pb.ceny * scale; b.cenz = pb.cenz * scale;
+            b.beam_area = pb.beam_area * scale2;
             b.pNTx = pb.pNTx; b.pNTy = pb.pNTy; b.pNTz = pb.pNTz;
             b.pNPx = pb.pNPx; b.pNPy = pb.pNPy; b.pNPz = pb.pNPz;
             b.pnxDTx = pb.pnxDTx; b.pnxDTy = pb.pnxDTy; b.pnxDTz = pb.pnxDTz;
             b.pnxDPx = pb.pnxDPx; b.pnxDPy = pb.pnxDPy; b.pnxDPz = pb.pnxDPz;
-            b.jp00r = pb.jp00r; b.jp00i = pb.jp00i;
-            b.jp01r = pb.jp01r; b.jp01i = pb.jp01i;
-            b.jp10r = pb.jp10r; b.jp10i = pb.jp10i;
-            b.jp11r = pb.jp11r; b.jp11i = pb.jp11i;
+            if (scaleOnPack)
+            {
+                const double path = pb.isExternal
+                    ? pb.origBeam.opticalPath * scale
+                    : pb.info.projLenght * scale;
+                const double arg = waveIndex * path;
+                double sn = std::sin(arg);
+                double cs = std::cos(arg);
+                double sign = 1.0;
+                if (pb.isExternal)
+                    sign = -sign;
+                if (!pb.isExternal && (pb.origBeam.nActs & 1))
+                    sign = -sign;
+                auto set_j = [&](const ::complex &jc, GpuReal &reOut, GpuReal &imOut)
+                {
+                    const double jr = real(jc);
+                    const double ji = imag(jc);
+                    reOut = (GpuReal)(sign * (jr * cs - ji * sn));
+                    imOut = (GpuReal)(sign * (jr * sn + ji * cs));
+                };
+                set_j(pb.origBeam.J.m11, b.jp00r, b.jp00i);
+                set_j(pb.origBeam.J.m12, b.jp01r, b.jp01i);
+                set_j(pb.origBeam.J.m21, b.jp10r, b.jp10i);
+                set_j(pb.origBeam.J.m22, b.jp11r, b.jp11i);
+            }
+            else
+            {
+                b.jp00r = pb.jp00r; b.jp00i = pb.jp00i;
+                b.jp01r = pb.jp01r; b.jp01i = pb.jp01i;
+                b.jp10r = pb.jp10r; b.jp10i = pb.jp10i;
+                b.jp11r = pb.jp11r; b.jp11i = pb.jp11i;
+            }
         }
     }
     hBeamOffsets[nOrient] = (int)bi;

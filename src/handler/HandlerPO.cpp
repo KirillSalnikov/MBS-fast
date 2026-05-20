@@ -1875,7 +1875,9 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                                              int /*start*/,
                                              int /*count*/,
                                              Arr2D &/*localM*/,
-                                             Arr2D &/*localM_noshadow*/)
+                                             Arr2D &/*localM_noshadow*/,
+                                             double /*scale*/,
+                                             double /*waveIndex*/)
 {
     return false;
 }
@@ -1884,7 +1886,9 @@ bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOri
                                                    int /*start*/,
                                                    int /*count*/,
                                                    Arr2D &/*localM*/,
-                                                   Arr2D &/*localM_noshadow*/)
+                                                   Arr2D &/*localM_noshadow*/,
+                                                   double /*scale*/,
+                                                   double /*waveIndex*/)
 {
     return false;
 }

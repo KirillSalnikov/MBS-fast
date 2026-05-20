@@ -1392,19 +1392,44 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
         std::cout << "Shared multikeq beta grouping: " << sharedBetaGroup
                   << " beta blocks per diffraction pass" << std::endl;
 
-    for (int ib0 = 0; ib0 < nBeta; ib0 += sharedBetaGroup)
+    bool sharedPipeline = false;
+    if (const char *env = std::getenv("MBS_SHARED_PIPELINE"))
+        sharedPipeline = (std::atoi(env) != 0);
+    if (m_mpiRank == 0 && sharedPipeline)
+        std::cout << "Shared multikeq pipeline: CPU tracing of the next beta group "
+                  << "overlaps current GPU diffraction" << std::endl;
+
+    HandlerPO prepareTemplate(m_particle, &m_incidentLight,
+                              handlerPO->nTheta, m_scattering->m_wave);
+    prepareTemplate.ConfigureForThreadLocalPrepare(*handlerPO, m_scattering);
+
+    struct SharedGroupData
     {
-        const int ibEnd = std::min(nBeta, ib0 + sharedBetaGroup);
-        const int groupBetas = ibEnd - ib0;
-        const int groupOrient = groupBetas * nGamma;
+        int ib0 = 0;
+        int ibEnd = 0;
+        int groupOrient = 0;
+        std::vector<PreparedOrientation> prepared;
+        std::vector<double> energies;
+        std::vector<double> outputEnergies;
+        std::vector<int> beamCounts;
+        double traceSeconds = 0.0;
+    };
+
+    auto traceGroup = [&](int ib0) -> SharedGroupData
+    {
+        SharedGroupData group;
+        group.ib0 = ib0;
+        group.ibEnd = std::min(nBeta, ib0 + sharedBetaGroup);
+        const int groupBetas = group.ibEnd - group.ib0;
+        group.groupOrient = groupBetas * nGamma;
+        group.prepared.resize(group.groupOrient);
+        group.energies.assign(group.groupOrient, 0.0);
+        group.outputEnergies.assign(group.groupOrient, 0.0);
+        group.beamCounts.assign(group.groupOrient, 0);
 
         auto groupTraceStart = std::chrono::high_resolution_clock::now();
-        std::vector<PreparedOrientation> prepared(groupOrient);
-        std::vector<double> energies(groupOrient, 0.0);
-        std::vector<double> outputEnergies(groupOrient, 0.0);
-        std::vector<int> beamCounts(groupOrient, 0);
 
-        for (int ib = ib0; ib < ibEnd; ++ib)
+        for (int ib = group.ib0; ib < group.ibEnd; ++ib)
         {
             double beta = betaRange.min + ib * betaRange.step;
             double dcos = 0.0;
@@ -1419,7 +1444,7 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
                 else
                     traceBeta = beta - 0.5 * betaRange.step;
             }
-            const int groupOffset = (ib - ib0) * nGamma;
+            const int groupOffset = (ib - group.ib0) * nGamma;
 
             #pragma omp parallel
             {
@@ -1427,7 +1452,7 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
                 Scattering *localScatter = m_scattering->CloneFor(&localParticle, &m_incidentLight);
                 HandlerPO localHandler(&localParticle, &m_incidentLight,
                                        handlerPO->nTheta, m_scattering->m_wave);
-                localHandler.ConfigureForThreadLocalPrepare(*handlerPO, localScatter);
+                localHandler.ConfigureForThreadLocalPrepare(prepareTemplate, localScatter);
                 std::vector<Beam> localBeams;
 
                 #pragma omp for schedule(dynamic, 1)
@@ -1439,35 +1464,40 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
                     if (!shadowOff)
                         localScatter->FormShadowBeam(localBeams);
                     bool ok = localScatter->ScatterLight(0, 0, localBeams);
-                    beamCounts[gi] = (int)localBeams.size();
-                    energies[gi] = localScatter->GetIncedentEnergy() * dcos;
+                    group.beamCounts[gi] = (int)localBeams.size();
+                    group.energies[gi] = localScatter->GetIncedentEnergy() * dcos;
                     if (ok)
                     {
                         double beforeOutput = localHandler.m_outputEnergy;
-                        localHandler.PrepareBeams(localBeams, dcos, prepared[gi]);
-                        outputEnergies[gi] = localHandler.m_outputEnergy - beforeOutput;
+                        localHandler.PrepareBeams(localBeams, dcos, group.prepared[gi]);
+                        group.outputEnergies[gi] = localHandler.m_outputEnergy - beforeOutput;
                     }
                     else
                     {
-                        prepared[gi].sinZenith = dcos;
+                        group.prepared[gi].sinZenith = dcos;
                     }
                     localBeams.clear();
                 }
                 delete localScatter;
             }
         }
-        phase1 += std::chrono::duration<double>(
+        group.traceSeconds = std::chrono::duration<double>(
             std::chrono::high_resolution_clock::now() - groupTraceStart).count();
+        return group;
+    };
 
-        for (int ib = ib0; ib < ibEnd; ++ib)
+    auto processGroup = [&](const SharedGroupData &group)
+    {
+        phase1 += group.traceSeconds;
+        for (int ib = group.ib0; ib < group.ibEnd; ++ib)
         {
-            const int groupOffset = (ib - ib0) * nGamma;
+            const int groupOffset = (ib - group.ib0) * nGamma;
             for (int jg = 0; jg < nGamma; ++jg)
             {
                 int idx = ib * nGamma + jg;
                 ++count;
                 OutputProgress(nOrientations, count, idx, 0, timer,
-                               beamCounts[groupOffset + jg]);
+                               group.beamCounts[groupOffset + jg]);
             }
         }
 
@@ -1476,27 +1506,24 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
         {
             double scale = x_sizes[s] / x_ref;
             double scale2 = scale * scale;
-            std::vector<PreparedOrientation> scaled;
-            scaled.reserve(prepared.size());
-            for (const PreparedOrientation &po : prepared)
-                scaled.push_back(ScalePreparedOrientation(
-                    po, scale, 2.0 * M_PI / m_scattering->m_wave));
 
             Arr2D localM(nAz + 1, nZen + 1, 4, 4); localM.ClearArr();
             Arr2D localM_ns(nAz + 1, nZen + 1, 4, 4); localM_ns.ClearArr();
 
             if (handlerPO->IsGpuEnabled())
             {
-                for (int gpuStart = 0; gpuStart < groupOrient; )
+                for (int gpuStart = 0; gpuStart < group.groupOrient; )
                 {
                     int gpuBatchSize = handlerPO->SelectGpuOrientationBatchSize(
-                        scaled, gpuStart, groupOrient - gpuStart);
-                    int gpuEnd = std::min(gpuStart + gpuBatchSize, groupOrient);
+                        group.prepared, gpuStart, group.groupOrient - gpuStart);
+                    int gpuEnd = std::min(gpuStart + gpuBatchSize, group.groupOrient);
                     bool ok = handlerPO->IsFftEnabled()
                         ? handlerPO->HandleOrientationsToLocalGpuFftPhi(
-                            scaled, gpuStart, gpuEnd - gpuStart, localM, localM_ns)
+                            group.prepared, gpuStart, gpuEnd - gpuStart,
+                            localM, localM_ns, scale, 2.0 * M_PI / m_scattering->m_wave)
                         : handlerPO->HandleOrientationsToLocalGpu(
-                            scaled, gpuStart, gpuEnd - gpuStart, localM, localM_ns);
+                            group.prepared, gpuStart, gpuEnd - gpuStart,
+                            localM, localM_ns, scale, 2.0 * M_PI / m_scattering->m_wave);
                     if (!ok)
                     {
                         std::cerr << "ERROR: shared multikeq GPU backend failed." << std::endl;
@@ -1507,6 +1534,12 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
             }
             else
             {
+                std::vector<PreparedOrientation> scaled;
+                scaled.reserve(group.prepared.size());
+                for (const PreparedOrientation &po : group.prepared)
+                    scaled.push_back(ScalePreparedOrientation(
+                        po, scale, 2.0 * M_PI / m_scattering->m_wave));
+
                 #pragma omp parallel
                 {
                     Arr2D threadM(nAz + 1, nZen + 1, 4, 4); threadM.ClearArr();
@@ -1517,7 +1550,7 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
                         Arr2DC t2(nAz+1,nZen+1,2,2); t2.ClearArr(); localJns.push_back(t2);
                     }
                     #pragma omp for schedule(dynamic, 1)
-                    for (int i = 0; i < groupOrient; ++i) {
+                    for (int i = 0; i < group.groupOrient; ++i) {
                         if (!scaled[i].beams.empty())
                             handlerPO->HandleBeamsToLocal(scaled[i], threadM, localJ,
                                                            handlerPO->isCoh ? &localJns : nullptr);
@@ -1542,13 +1575,34 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
                 results_M[s].insert(p, t, localM(p, t));
                 results_M_ns[s].insert(p, t, localM_ns(p, t));
             }
-            for (int i = 0; i < groupOrient; ++i) {
-                results_energy[s] += energies[i] * scale2;
-                results_output_energy[s] += outputEnergies[i] * scale2;
+            for (int i = 0; i < group.groupOrient; ++i) {
+                results_energy[s] += group.energies[i] * scale2;
+                results_output_energy[s] += group.outputEnergies[i] * scale2;
             }
         }
         phase2 += std::chrono::duration<double>(
             std::chrono::high_resolution_clock::now() - betaDiffStart).count();
+    };
+
+    if (sharedPipeline && nBeta > sharedBetaGroup)
+    {
+        int ib0 = 0;
+        std::future<SharedGroupData> current =
+            std::async(std::launch::async, traceGroup, ib0);
+        ib0 += sharedBetaGroup;
+        while (ib0 < nBeta)
+        {
+            SharedGroupData group = current.get();
+            current = std::async(std::launch::async, traceGroup, ib0);
+            ib0 += sharedBetaGroup;
+            processGroup(group);
+        }
+        processGroup(current.get());
+    }
+    else
+    {
+        for (int ib0 = 0; ib0 < nBeta; ib0 += sharedBetaGroup)
+            processGroup(traceGroup(ib0));
     }
 
     EraseConsoleLine(60);
