@@ -50,6 +50,8 @@ protected:
     int m_treeSize;
     double m_incidentEnergy;
     double EPS_BEAM_ENERGY;
+    double m_traceRefJNorm = 0;
+    double m_traceRefArea = 0;
 
 public:
     Scattering(Particle *particle, Light *incidentLight, bool isOpticalPath,
@@ -58,10 +60,16 @@ public:
     /// Create a clone that uses a different particle copy.
     /// Caller owns the returned pointer.
     virtual Scattering* CloneFor(Particle *newParticle, Light *light) {
-        return new Scattering(newParticle, light, true, m_nActs);
+        Scattering *copy = new Scattering(newParticle, light, true, m_nActs);
+        copy->CopyRuntimeOptionsFrom(*this);
+        return copy;
     }
     void SetMaxReflections(int n) { m_nActs = n; }
     int GetMaxReflections() const { return m_nActs; }
+    double m_traceCutoffJRel = 0;
+    double m_traceCutoffAreaRel = 0;
+    int m_traceMaxBeams = 0;
+    void CopyRuntimeOptionsFrom(const Scattering &source);
 
     virtual bool ScatterLight(double /*beta*/, double /*gamma*/, std::vector<Beam> &/*scaterredBeams*/)
     {
@@ -91,6 +99,9 @@ protected:
     void SetPolygonByFacet(int facetId, Polygon &polygon) const;
 
     bool IsTerminalAct(const Beam &beam);
+    bool IsTracePruned(const Beam &beam) const;
+    void ResetTraceReference();
+    void UpdateTraceReference(const Beam &beam);
 
     void SplitLightToBeams(int facetId, Beam &inBeam, Beam &outBeam);
 

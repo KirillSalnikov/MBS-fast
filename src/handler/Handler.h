@@ -459,12 +459,17 @@ protected:
     double m_eps3;
 
 public:
-    /// Beam importance cutoff: skip diffraction if |J|²×area < this threshold.
-    /// Default 0 = auto (eps² × totalBeamEnergy per orientation).
-    /// Set via --beam_cutoff CLI to override.
+    /// Legacy absolute beam importance cutoff used by the non-prepared path.
     double m_beamCutoff = 0;
-    /// Target accuracy for auto beam cutoff (set from --auto eps)
+    /// Common relative cutoff for prepared PO path. 0 disables cutoff.
     double m_targetEps = 0; // was 0.01, set to 0 to match MBS-raw (no beam cutoff)
+    /// Optional separate relative cutoffs for prepared PO path.
+    /// Negative means use m_targetEps; zero disables that individual test.
+    double m_beamCutoffJRel = -1;
+    double m_beamCutoffAreaRel = -1;
+    /// Optional relative cutoff by |J|^2*area/max(|J|^2*area).
+    /// Negative disables this test.
+    double m_beamCutoffImportanceRel = -1;
     bool m_legacySign = false; ///< Use old (+invComplWave) sign for forward direction
     void SetBeamCutoff(double val) { m_beamCutoff = val; }
     /// Set cutoff relative to geometric cross-section: threshold = eps × C_geo

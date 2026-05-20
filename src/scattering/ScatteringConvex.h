@@ -9,7 +9,9 @@ public:
                      bool isOptionalPath, int nActs);
 
     Scattering* CloneFor(Particle *p, Light *l) override {
-        return new ScatteringConvex(p, l, true, m_nActs);
+        ScatteringConvex *copy = new ScatteringConvex(p, l, true, m_nActs);
+        copy->CopyRuntimeOptionsFrom(*this);
+        return copy;
     }
 
     bool ScatterLight(double beta, double gamma, std::vector<Beam> &outBeams) override;

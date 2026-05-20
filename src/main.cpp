@@ -8,6 +8,15 @@
 #include <thread>
 #include <set>
 #include <algorithm>
+#include <sstream>
+#include <iomanip>
+#include <cerrno>
+#include <cstring>
+#include <stdexcept>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #ifdef USE_MPI
 #include <mpi.h>
@@ -97,6 +106,34 @@ void ConfigureOpenMPThreads(int threads)
 #endif
 }
 
+void ApplyBeamCutoffOptions(const ArgPP &args, Handler *handler)
+{
+    if (args.IsCatched("beam_cutoff"))
+        handler->m_targetEps = args.GetDoubleValue("beam_cutoff", 0);
+    if (args.IsCatched("beam_cutoff_j"))
+        handler->m_beamCutoffJRel = args.GetDoubleValue("beam_cutoff_j", 0);
+    if (args.IsCatched("beam_cutoff_area"))
+        handler->m_beamCutoffAreaRel = args.GetDoubleValue("beam_cutoff_area", 0);
+    if (args.IsCatched("beam_cutoff_importance"))
+        handler->m_beamCutoffImportanceRel = args.GetDoubleValue("beam_cutoff_importance", 0);
+}
+
+void ApplyTraceCutoffOptions(const ArgPP &args, Scattering *scattering)
+{
+    if (args.IsCatched("trace_cutoff"))
+    {
+        double eps = args.GetDoubleValue("trace_cutoff", 0);
+        scattering->m_traceCutoffJRel = eps;
+        scattering->m_traceCutoffAreaRel = eps;
+    }
+    if (args.IsCatched("trace_cutoff_j"))
+        scattering->m_traceCutoffJRel = args.GetDoubleValue("trace_cutoff_j", 0);
+    if (args.IsCatched("trace_cutoff_area"))
+        scattering->m_traceCutoffAreaRel = args.GetDoubleValue("trace_cutoff_area", 0);
+    if (args.IsCatched("trace_max_beams"))
+        scattering->m_traceMaxBeams = args.GetIntValue("trace_max_beams", 0);
+}
+
 enum class ParticleType : int
 {
     Hexagonal = 1,
@@ -151,10 +188,21 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("r", 1, true); // restriction ratio for small beams when intersection (100 by default)
     parser.AddRule("log", 1, true); // time of writing progress (in seconds)
     parser.AddRule("multigrid", 3, true); // multi-size: Dmin Dmax Nsizes (log scale)
+    parser.AddRule("multikeq", 3, true); // multi-size by k_eq: Kmin Kmax Nsizes (log scale)
+    parser.AddRule("multikeq_list", 1, true); // multi-size by exact k_eq values from file
+    parser.AddRule("multigrid_parallel", 1, true); // run multigrid sizes as child processes
+    parser.AddRule("multigrid_threads", 1, true); // per-child OpenMP threads for multigrid_parallel
     parser.AddRule("save_betas", 0, true); // save intermediate Mueller for each beta to betas/ subfolder
     parser.AddRule("checkpoint", 0, true); // enable checkpoint save/resume for long orientfile runs
     parser.AddRule("tgrid", 1, true); // non-uniform theta grid file
-    parser.AddRule("beam_cutoff", 1, true); // beam importance cutoff (relative to C_geo)
+    parser.AddRule("beam_cutoff", 1, true); // common relative beam cutoff
+    parser.AddRule("beam_cutoff_j", 1, true); // relative |J|^2 beam cutoff
+    parser.AddRule("beam_cutoff_area", 1, true); // relative area beam cutoff
+    parser.AddRule("beam_cutoff_importance", 1, true); // relative |J|^2*area beam cutoff
+    parser.AddRule("trace_cutoff", 1, true); // common relative tracing prune cutoff
+    parser.AddRule("trace_cutoff_j", 1, true); // relative |J|^2 tracing prune cutoff
+    parser.AddRule("trace_cutoff_area", 1, true); // relative area tracing prune cutoff
+    parser.AddRule("trace_max_beams", 1, true); // max traced beam nodes per orientation
     parser.AddRule("sobol", 1, true); // Sobol quasi-random orientations (number, power of 2)
     parser.AddRule("auto_tgrid", 1, true); // adaptive theta grid (arg: tolerance, e.g. 0.05)
     parser.AddRule("auto_phi", 0, true); // auto-select N_phi based on size parameter
@@ -210,7 +258,7 @@ void PrintHelp()
          << "  --b B1 B2              Beta range in degrees for --random\n"
          << "  --g G1 G2              Gamma range in degrees for --random\n"
          << "  --maxorient N          Max orientations for adaptive (power of 2)\n"
-         << "  --chunk N              Max Sobol orientations per memory chunk\n"
+         << "  --chunk N              Max orientations/gamma values per memory chunk\n"
          << "  --coh_orient           Coherent across orientations (legacy)\n"
          << "  --pole                 Fast pole gamma: use one gamma value at beta poles\n\n"
 
@@ -231,7 +279,14 @@ void PrintHelp()
          << "  --gpu                  Use CUDA GPU backend for diffraction (requires USE_CUDA=1 build)\n"
          << "  --fft                  With --gpu, use experimental cuFFT phi interpolation backend\n"
          << "                         Env: MBS_FFT_PHI_FACTOR=auto|N (default auto), MBS_FFT_CHECK=1\n"
-         << "  --beam_cutoff EPS      Skip beams with |J|^2/max < EPS AND area/max < EPS\n"
+         << "  --beam_cutoff EPS      Set both relative beam cutoffs below; skip if either matches\n"
+         << "  --beam_cutoff_j EPS    Skip beams with |J|^2/max < EPS (0 disables J test)\n"
+         << "  --beam_cutoff_area EPS Skip beams with area/max < EPS (0 disables area test)\n"
+         << "  --beam_cutoff_importance EPS Skip beams with |J|^2*area/max < EPS\n"
+         << "  --trace_cutoff EPS     Stop tracing internal beams if either relative test matches\n"
+         << "  --trace_cutoff_j EPS   Trace prune by |J|^2/initial-max < EPS\n"
+         << "  --trace_cutoff_area EPS Trace prune by area/initial-max < EPS\n"
+         << "  --trace_max_beams N    Abort one orientation after N traced beam nodes (0 disables)\n"
          << "  -r RATIO               Beam area restriction ratio (default 100)\n"
          << "  --sym Sb Sg            Override symmetry: beta/Sb, 360/Sg degrees\n"
          << "  --filter DEG           Restrict output to backscattering cone\n"
@@ -249,6 +304,12 @@ void PrintHelp()
          << "=== Multi-size ===\n"
          << "  --multigrid Dmin Dmax N  N sizes from Dmin to Dmax (log scale)\n"
          << "                           -p must specify largest particle\n\n"
+         << "  --multikeq Kmin Kmax N   N equivalent-size parameters k_eq from Kmin to Kmax (log scale)\n"
+         << "  --multikeq_list FILE     Exact k_eq values, one per line; --oldauto traces max once\n"
+         << "  --multigrid_parallel N   Run multigrid/multikeq as N child processes\n"
+         << "                           Useful with --gpu; default child threads is 1 unless overridden\n"
+         << "  --multigrid_threads N    OpenMP threads per child in --multigrid_parallel\n\n"
+
 
          << "=== Output ===\n"
          << "  -o NAME                Output path/name\n"
@@ -486,6 +547,270 @@ void ApplyAutoThetaGrid(ScatteringRange &range, double D, double wave)
               << " deg, " << range.thetaValues.size() << " points" << std::endl;
 }
 
+std::vector<double> GenerateLogSizes(double minValue, double maxValue, int count)
+{
+    if (count < 2)
+        count = 2;
+    std::vector<double> values;
+    values.reserve(count);
+    double logMin = std::log(minValue);
+    double logMax = std::log(maxValue);
+    for (int i = 0; i < count; ++i)
+    {
+        double v = std::exp(logMin + (logMax - logMin) * i / (count - 1));
+        values.push_back(v);
+    }
+    values.back() = maxValue;
+    return values;
+}
+
+std::vector<double> ReadSizeList(const std::string &fileName)
+{
+    std::ifstream in(fileName.c_str());
+    if (!in)
+        throw std::runtime_error("cannot open size list: " + fileName);
+
+    std::vector<double> values;
+    std::string line;
+    int lineNo = 0;
+    while (std::getline(in, line))
+    {
+        ++lineNo;
+        std::istringstream ss(line);
+        std::string first;
+        if (!(ss >> first))
+            continue;
+        if (!first.empty() && first[0] == '#')
+            continue;
+
+        char *end = nullptr;
+        errno = 0;
+        double value = std::strtod(first.c_str(), &end);
+        if (errno != 0 || end == first.c_str() || (end && *end != '\0') || value <= 0.0)
+        {
+            std::ostringstream msg;
+            msg << "bad positive size in " << fileName << ":" << lineNo;
+            throw std::runtime_error(msg.str());
+        }
+        values.push_back(value);
+    }
+
+    if (values.empty())
+        throw std::runtime_error("empty size list: " + fileName);
+    return values;
+}
+
+std::string SizeLabel(double value)
+{
+    std::ostringstream ss;
+    ss << std::fixed << std::setprecision(6) << value;
+    std::string s = ss.str();
+    while (!s.empty() && s.back() == '0')
+        s.pop_back();
+    if (!s.empty() && s.back() == '.')
+        s.pop_back();
+    for (char &c : s)
+    {
+        if (c == '.')
+            c = 'p';
+        else if (c == '-')
+            c = 'm';
+    }
+    return s.empty() ? "0" : s;
+}
+
+std::string ShellQuote(const std::string &s)
+{
+    std::string out = "'";
+    for (char c : s)
+    {
+        if (c == '\'')
+            out += "'\\''";
+        else
+            out += c;
+    }
+    out += "'";
+    return out;
+}
+
+bool FlagMatches(const std::string &arg, const std::string &name)
+{
+    return arg == "--" + name || (name.size() == 1 && arg == "-" + name);
+}
+
+int ParallelMultigridRemoveCount(const std::string &arg)
+{
+    struct Item { const char *name; int values; };
+    static const Item items[] = {
+        {"multigrid", 3}, {"multikeq", 3}, {"multikeq_list", 1}, {"multigrid_parallel", 1},
+        {"multigrid_threads", 1}, {"rs", 1}, {"k_eq", 1},
+        {"threads", 1}, {"o", 1}
+    };
+    for (const Item &item : items)
+    {
+        if (FlagMatches(arg, item.name))
+            return item.values;
+    }
+    return -1;
+}
+
+int RunParallelMultigrid(int argc, const char *argv[], const ArgPP &args, bool useGpu)
+{
+    bool byD = args.IsCatched("multigrid");
+    bool byKEq = args.IsCatched("multikeq");
+    if (byD == byKEq)
+    {
+        std::cerr << "ERROR: --multigrid_parallel requires exactly one of --multigrid or --multikeq." << std::endl;
+        return 1;
+    }
+    if (byD && !args.IsCatched("pf"))
+    {
+        std::cerr << "ERROR: parallel --multigrid currently requires --pf, because it resizes file particles with --rs." << std::endl;
+        return 1;
+    }
+
+    int jobs = args.GetIntValue("multigrid_parallel", 0);
+    if (jobs < 1)
+    {
+        std::cerr << "ERROR: --multigrid_parallel must be >= 1." << std::endl;
+        return 1;
+    }
+    int childThreads = args.IsCatched("multigrid_threads")
+        ? args.GetIntValue("multigrid_threads", 0)
+        : (useGpu ? 1 : std::max(1, DefaultPhysicalCoreCount() / jobs));
+    if (childThreads < 1)
+    {
+        std::cerr << "ERROR: --multigrid_threads must be >= 1." << std::endl;
+        return 1;
+    }
+
+    std::string key = byKEq ? "multikeq" : "multigrid";
+    double minValue = args.GetDoubleValue(key, 0);
+    double maxValue = args.GetDoubleValue(key, 1);
+    int count = args.GetIntValue(key, 2);
+    if (minValue <= 0 || maxValue <= 0)
+    {
+        std::cerr << "ERROR: multigrid sizes must be positive." << std::endl;
+        return 1;
+    }
+    std::vector<double> sizes = GenerateLogSizes(minValue, maxValue, count);
+
+    std::string baseOut = args.IsCatched("o") ? args.GetStringValue("o", 0) : "multigrid_parallel";
+    mkdir(baseOut.c_str(), 0755);
+
+    std::vector<std::string> baseArgs;
+    baseArgs.reserve(argc + 8);
+    baseArgs.push_back(argv[0]);
+    for (int i = 1; i < argc; ++i)
+    {
+        std::string a(argv[i]);
+        int skip = ParallelMultigridRemoveCount(a);
+        if (skip >= 0)
+        {
+            i += skip;
+            continue;
+        }
+        baseArgs.push_back(a);
+    }
+
+    std::cout << "Parallel multigrid: " << sizes.size() << " "
+              << (byKEq ? "k_eq" : "Dmax") << " sizes, jobs=" << jobs
+              << ", child_threads=" << childThreads
+              << (useGpu ? " (--gpu)" : "") << std::endl;
+    std::cout << "Output root: " << baseOut << std::endl;
+
+    struct RunningChild { pid_t pid; std::string label; };
+    std::vector<RunningChild> running;
+    int failures = 0;
+
+    auto waitOne = [&]() {
+        int status = 0;
+        pid_t pid = wait(&status);
+        if (pid <= 0)
+            return;
+        auto it = std::find_if(running.begin(), running.end(),
+            [pid](const RunningChild &c) { return c.pid == pid; });
+        std::string label = (it == running.end()) ? std::to_string(pid) : it->label;
+        if (it != running.end())
+            running.erase(it);
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+        {
+            ++failures;
+            std::cerr << "Parallel multigrid child failed: " << label
+                      << " status=" << status << std::endl;
+        }
+        else
+        {
+            std::cout << "Parallel multigrid child done: " << label << std::endl;
+        }
+    };
+
+    for (double value : sizes)
+    {
+        while ((int)running.size() >= jobs)
+            waitOne();
+
+        std::string label = std::string(byKEq ? "keq" : "D") + SizeLabel(value);
+        std::vector<std::string> child = baseArgs;
+        child.push_back("--threads");
+        child.push_back(std::to_string(childThreads));
+        if (byKEq)
+        {
+            child.push_back("--k_eq");
+            child.push_back(std::to_string(value));
+        }
+        else
+        {
+            child.push_back("--rs");
+            child.push_back(std::to_string(value));
+        }
+        child.push_back("-o");
+        child.push_back(baseOut + "/" + label);
+
+        std::cout << "Starting " << label << ":";
+        for (const std::string &s : child)
+            std::cout << " " << ShellQuote(s);
+        std::cout << std::endl;
+
+        pid_t pid = fork();
+        if (pid < 0)
+        {
+            std::cerr << "ERROR: fork failed: " << std::strerror(errno) << std::endl;
+            ++failures;
+            continue;
+        }
+        if (pid == 0)
+        {
+            std::string logPath = baseOut + "/" + label + ".run.log";
+            int fd = open(logPath.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
+            if (fd >= 0)
+            {
+                dup2(fd, STDOUT_FILENO);
+                dup2(fd, STDERR_FILENO);
+                close(fd);
+            }
+            std::vector<char*> execArgs;
+            execArgs.reserve(child.size() + 1);
+            for (std::string &s : child)
+                execArgs.push_back(const_cast<char*>(s.c_str()));
+            execArgs.push_back(nullptr);
+            execvp(execArgs[0], execArgs.data());
+            std::cerr << "ERROR: exec failed: " << std::strerror(errno) << std::endl;
+            _exit(127);
+        }
+        running.push_back({pid, label});
+    }
+
+    while (!running.empty())
+        waitOne();
+
+    if (failures)
+        std::cerr << "Parallel multigrid finished with " << failures << " failed child process(es)." << std::endl;
+    else
+        std::cout << "Parallel multigrid finished successfully." << std::endl;
+    return failures ? 1 : 0;
+}
+
 AngleRange GetRange(const ArgPP &parser, const std::string &key,
                     Particle *particle)
 {
@@ -614,6 +939,10 @@ int main(int argc, const char* argv[])
     {
         std::cerr << "ERROR: --rs and --k_eq are both size controls; use only one." << std::endl;
         return 1;
+    }
+    if (args.IsCatched("multigrid_parallel"))
+    {
+        return RunParallelMultigrid(argc, argv, args, useGpu);
     }
 
     double re = args.GetDoubleValue("ri", 0);
@@ -918,6 +1247,7 @@ int main(int argc, const char* argv[])
 
             TracerPO tracer(particle, reflNum, dirName);
             tracer.m_summary = additionalSummary;
+            ApplyTraceCutoffOptions(args, tracer.m_scattering);
 
             HandlerPO *handler = new HandlerPO(particle, &tracer.m_incidentLight,
                                                nTheta, wave);
@@ -937,6 +1267,7 @@ int main(int argc, const char* argv[])
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
             ApplyAbsorptionPointOption(args, handler);
+            ApplyBeamCutoffOptions(args, handler);
 
             if (args.IsCatched("log"))
             {
@@ -950,6 +1281,54 @@ int main(int argc, const char* argv[])
         }
         else if (args.IsCatched("oldauto"))
         {
+            if (args.IsCatched("multikeq") || args.IsCatched("multikeq_list"))
+            {
+                double KmaxRef = 0.0;
+                if (args.IsCatched("multikeq_list"))
+                {
+                    std::vector<double> listed = ReadSizeList(args.GetStringValue("multikeq_list", 0));
+                    KmaxRef = *std::max_element(listed.begin(), listed.end());
+                }
+                else
+                {
+                    KmaxRef = args.GetDoubleValue("multikeq", 1);
+                }
+                if (KmaxRef <= 0 || wave <= 0)
+                {
+                    std::cerr << "ERROR: --multikeq requires positive Kmax/list max and wavelength." << std::endl;
+                    return 1;
+                }
+                double v = particle->Volume();
+                double req = (v > 0) ? pow(3.0 * v / (4.0 * M_PI), 1.0 / 3.0) : 0.0;
+                if (req <= DBL_EPSILON)
+                {
+                    std::cerr << "ERROR: cannot apply --multikeq because current equivalent radius is zero." << std::endl;
+                    return 1;
+                }
+                double targetReq = KmaxRef * wave / (2.0 * M_PI);
+                double ratio = targetReq / req;
+                particle->Resize(particle->MaximalDimention() * ratio);
+                additionalSummary += "\tShared multikeq reference resize: k_eq="
+                    + std::to_string(KmaxRef)
+                    + ", Dmax=" + std::to_string(particle->MaximalDimention())
+                    + ", resize factor=" + std::to_string(ratio) + "\n";
+            }
+            else if (args.IsCatched("multigrid"))
+            {
+                double DmaxRef = args.GetDoubleValue("multigrid", 1);
+                if (DmaxRef <= 0)
+                {
+                    std::cerr << "ERROR: --multigrid requires positive Dmax." << std::endl;
+                    return 1;
+                }
+                double oldD = particle->MaximalDimention();
+                particle->Resize(DmaxRef);
+                additionalSummary += "\tShared multigrid reference resize: Dmax="
+                    + std::to_string(DmaxRef)
+                    + ", resize factor=" + std::to_string(particle->MaximalDimention() / oldD)
+                    + "\n";
+            }
+
             // Physics-based orientation grid from diffraction angular step
             // --oldauto DIV: DIV = 2,4,8 (divisor for full diffraction-limited grid)
             int div = args.GetIntValue("oldauto", 0);
@@ -1033,13 +1412,11 @@ int main(int argc, const char* argv[])
             TracerPOTotal *tracer = new TracerPOTotal(particle, reflNum, dirName);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
             tracer->m_scattering->m_wave = wave;
+            ApplyTraceCutoffOptions(args, tracer->m_scattering);
             tracer->shadowOff = args.IsCatched("shadow_off");
             trackGroups.push_back(TrackGroup());
             HandlerPOTotal *handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
                                          nTheta, wave);
-
-            if (args.IsCatched("beam_cutoff"))
-                handler->m_targetEps = args.GetDoubleValue("beam_cutoff", 0);
 
             cout << additionalSummary;
             tracer->m_summary = additionalSummary;
@@ -1054,6 +1431,7 @@ int main(int argc, const char* argv[])
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
             ApplyAbsorptionPointOption(args, handler);
+            ApplyBeamCutoffOptions(args, handler);
 
             tracer->SetIsOutputGroups(isOutputGroups);
             tracer->SetHandler(handler);
@@ -1062,7 +1440,94 @@ int main(int argc, const char* argv[])
             AngleRange betaRange(0, particle->GetSymmetry().beta, N_beta);
             AngleRange gammaRange(0, particle->GetSymmetry().gamma, N_gamma);
 
-            tracer->TraceRandom(betaRange, gammaRange);
+            if (args.IsCatched("multikeq") || args.IsCatched("multikeq_list"))
+            {
+                std::vector<double> kSizes;
+                std::string rangeText;
+                if (args.IsCatched("multikeq_list"))
+                {
+                    std::string listFile = args.GetStringValue("multikeq_list", 0);
+                    kSizes = ReadSizeList(listFile);
+                    double Kmin = *std::min_element(kSizes.begin(), kSizes.end());
+                    double Kmax = *std::max_element(kSizes.begin(), kSizes.end());
+                    rangeText = std::to_string(Kmin) + ".." + std::to_string(Kmax)
+                        + " from " + listFile;
+                }
+                else
+                {
+                    double Kmin = args.GetDoubleValue("multikeq", 0);
+                    double Kmax = args.GetDoubleValue("multikeq", 1);
+                    int nSizes = args.GetIntValue("multikeq", 2);
+                    if (Kmin <= 0 || Kmax <= 0)
+                    {
+                        std::cerr << "ERROR: --multikeq values must be positive." << std::endl;
+                        return 1;
+                    }
+                    kSizes = GenerateLogSizes(Kmin, Kmax, nSizes);
+                    rangeText = std::to_string(Kmin) + ".." + std::to_string(Kmax);
+                }
+                if (kSizes.empty())
+                {
+                    std::cerr << "ERROR: --multikeq has no sizes." << std::endl;
+                    return 1;
+                }
+                double currentVolumeForMulti = particle->Volume();
+                double currentReqForMulti = (currentVolumeForMulti > 0)
+                    ? pow(3.0 * currentVolumeForMulti / (4.0 * M_PI), 1.0 / 3.0)
+                    : 0.0;
+                double kRef = (wave > 0 && currentReqForMulti > 0)
+                    ? (2.0 * M_PI * currentReqForMulti / wave) : 0.0;
+                double xRef = M_PI * particle->MaximalDimention() / wave;
+                if (kRef <= 0 || xRef <= 0)
+                {
+                    std::cerr << "ERROR: --multikeq requires positive wavelength and particle volume." << std::endl;
+                    return 1;
+                }
+                std::vector<double> xSizes;
+                std::vector<std::string> labels;
+                xSizes.reserve(kSizes.size());
+                labels.reserve(kSizes.size());
+                for (double k : kSizes)
+                {
+                    xSizes.push_back(xRef * (k / kRef));
+                    labels.push_back("keq" + SizeLabel(k));
+                }
+                std::cout << "Shared oldauto multikeq: k_eq " << rangeText
+                          << " (" << kSizes.size() << " sizes), reference k_eq="
+                          << kRef << std::endl;
+                tracer->TraceRandomMultiSize(betaRange, gammaRange, xSizes, labels);
+            }
+            else if (args.IsCatched("multigrid"))
+            {
+                double Dmin = args.GetDoubleValue("multigrid", 0);
+                double Dmax_mg = args.GetDoubleValue("multigrid", 1);
+                int nSizes = args.GetIntValue("multigrid", 2);
+                if (Dmin <= 0 || Dmax_mg <= 0)
+                {
+                    std::cerr << "ERROR: --multigrid values must be positive." << std::endl;
+                    return 1;
+                }
+                std::vector<double> dSizes = GenerateLogSizes(Dmin, Dmax_mg, nSizes);
+                double Dref = particle->MaximalDimention();
+                double xRef = M_PI * Dref / wave;
+                std::vector<double> xSizes;
+                std::vector<std::string> labels;
+                xSizes.reserve(dSizes.size());
+                labels.reserve(dSizes.size());
+                for (double d : dSizes)
+                {
+                    xSizes.push_back(xRef * (d / Dref));
+                    labels.push_back("D" + SizeLabel(d));
+                }
+                std::cout << "Shared oldauto multigrid: D " << Dmin << ".." << Dmax_mg
+                          << " (" << dSizes.size() << " log sizes), reference Dmax="
+                          << Dref << std::endl;
+                tracer->TraceRandomMultiSize(betaRange, gammaRange, xSizes, labels);
+            }
+            else
+            {
+                tracer->TraceRandom(betaRange, gammaRange);
+            }
             delete handler;
         }
         else if (args.IsCatched("random"))
@@ -1083,6 +1548,7 @@ int main(int argc, const char* argv[])
                 exit(1);
 //                 TracerBackScatterPoint tracer(particle, reflNum, dirName);
 //                 tracer.m_scattering->m_wave = wave;
+//                 ApplyTraceCutoffOptions(args, tracer.m_scattering);
 //                 if (args.IsCatched("r"))
 //                 {
 //                     tracer.m_scattering->restriction = args.GetDoubleValue("r", 0);
@@ -1123,6 +1589,7 @@ int main(int argc, const char* argv[])
                     tracer = new TracerPOTotal(particle, reflNum, dirName);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
                     tracer->m_scattering->m_wave = wave;
+            ApplyTraceCutoffOptions(args, tracer->m_scattering);
                     if (args.IsCatched("r"))
                     {
                         tracer->m_scattering->restriction = args.GetDoubleValue("r", 0);
@@ -1145,6 +1612,7 @@ int main(int argc, const char* argv[])
                     tracer = new TracerPOTotal(particle, reflNum, dirName);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
                     tracer->m_scattering->m_wave = wave;
+            ApplyTraceCutoffOptions(args, tracer->m_scattering);
                     tracer->shadowOff = args.IsCatched("shadow_off");
                     if (args.IsCatched("r"))
                     {
@@ -1174,6 +1642,7 @@ int main(int argc, const char* argv[])
                 handler->SetTracks(&trackGroups);
                 handler->SetAbsorptionAccounting(isAbs);
                 ApplyAbsorptionPointOption(args, handler);
+                ApplyBeamCutoffOptions(args, handler);
 
                 if (args.IsCatched("log"))
                 {
@@ -1227,6 +1696,7 @@ int main(int argc, const char* argv[])
             tracer = new TracerPOTotal(particle, reflNum, dirName);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
             tracer->m_scattering->m_wave = wave;
+            ApplyTraceCutoffOptions(args, tracer->m_scattering);
             tracer->shadowOff = args.IsCatched("shadow_off");
             if (args.IsCatched("r"))
                 tracer->m_scattering->restriction = args.GetDoubleValue("r", 0);
@@ -1246,6 +1716,7 @@ int main(int argc, const char* argv[])
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
             ApplyAbsorptionPointOption(args, handler);
+            ApplyBeamCutoffOptions(args, handler);
 
             if (args.GetArgNumber("n") == 3 &&
                 args.GetStringValue("n", 2) == "fixed")
@@ -1268,6 +1739,7 @@ int main(int argc, const char* argv[])
             tracer = new TracerPOTotal(particle, reflNum, dirName);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
             tracer->m_scattering->m_wave = wave;
+            ApplyTraceCutoffOptions(args, tracer->m_scattering);
             tracer->shadowOff = args.IsCatched("shadow_off");
             trackGroups.push_back(TrackGroup());
             HandlerPOTotal *handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
@@ -1286,12 +1758,7 @@ int main(int argc, const char* argv[])
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
             ApplyAbsorptionPointOption(args, handler);
-
-            // Beam cutoff
-            if (args.IsCatched("beam_cutoff"))
-            {
-                handler->m_targetEps = args.GetDoubleValue("beam_cutoff", 0);
-            }
+            ApplyBeamCutoffOptions(args, handler);
 
             tracer->SetIsOutputGroups(isOutputGroups);
             tracer->SetHandler(handler);
@@ -1322,6 +1789,7 @@ int main(int argc, const char* argv[])
             tracer = new TracerPOTotal(particle, reflNum, dirName);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
             tracer->m_scattering->m_wave = wave;
+            ApplyTraceCutoffOptions(args, tracer->m_scattering);
             tracer->shadowOff = args.IsCatched("shadow_off");
             trackGroups.push_back(TrackGroup());
             HandlerPOTotal *handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
@@ -1361,14 +1829,7 @@ int main(int argc, const char* argv[])
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
             ApplyAbsorptionPointOption(args, handler);
-
-            // Beam importance cutoff
-            // Beam cutoff: --beam_cutoff EPS sets relative accuracy for beam skipping
-            // cutoff = EPS³ × totalBeamEnergy (computed per orientation in PrepareBeams)
-            if (args.IsCatched("beam_cutoff"))
-            {
-                handler->m_targetEps = args.GetDoubleValue("beam_cutoff", 0);
-            }
+            ApplyBeamCutoffOptions(args, handler);
 
             tracer->SetIsOutputGroups(isOutputGroups);
             tracer->SetHandler(handler);
@@ -1394,9 +1855,12 @@ int main(int argc, const char* argv[])
                               << std::endl;
             }
 
-            // Pass target accuracy to handler for beam cutoff
-            // --beam_cutoff has priority over --auto/--adaptive eps
-            if (!args.IsCatched("beam_cutoff") && isAdaptive) {
+            // Pass target accuracy to handler for beam cutoff.
+            // Explicit beam cutoff flags have priority over --auto/--adaptive eps.
+            bool explicitBeamCutoff = args.IsCatched("beam_cutoff")
+                || args.IsCatched("beam_cutoff_j")
+                || args.IsCatched("beam_cutoff_area");
+            if (!explicitBeamCutoff && isAdaptive) {
                 double epsForCutoff = args.IsCatched("autofull")
                     ? args.GetDoubleValue("autofull", 0)
                     : (args.IsCatched("auto") ? args.GetDoubleValue("auto", 0)
@@ -1510,6 +1974,7 @@ int main(int argc, const char* argv[])
 
         TracerGO tracer(particle, reflNum, dirName);
         tracer.m_scattering->m_wave = wave;
+        ApplyTraceCutoffOptions(args, tracer.m_scattering);
         if (args.IsCatched("r"))
         {
             tracer.m_scattering->restriction = args.GetDoubleValue("r", 0);
@@ -1542,6 +2007,7 @@ int main(int argc, const char* argv[])
         handler->SetScatteringSphere(grid);
         handler->SetAbsorptionAccounting(isAbs);
         ApplyAbsorptionPointOption(args, handler);
+        ApplyBeamCutoffOptions(args, handler);
         tracer.SetHandler(handler);
 
         if (args.IsCatched("fixed"))

@@ -34,6 +34,10 @@ SOURCES = $(shell find $(SRC_DIR) -name '*.cpp') \
 ifeq ($(USE_CUDA),1)
 NVCC ?= nvcc
 NVCCFLAGS ?= -O3 -std=c++11 -U_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700
+GPU_PRECISION ?= double
+ifeq ($(GPU_PRECISION),float)
+NVCCFLAGS += -DMBS_GPU_FLOAT
+endif
 SOURCES += $(shell find $(SRC_DIR) -name '*.cu')
 endif
 OBJECTS = $(SOURCES:.cpp=.o)
@@ -52,6 +56,9 @@ $(TARGET): $(OBJECTS)
 	@echo "CXXFLAGS: $(CXXFLAGS)"
 	@echo "USE_CUDA: $(USE_CUDA)"
 	@echo "USE_MPI: $(USE_MPI)"
+ifeq ($(USE_CUDA),1)
+	@echo "GPU_PRECISION: $(GPU_PRECISION)"
+endif
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
 %.o: %.cpp

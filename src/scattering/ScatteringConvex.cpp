@@ -13,6 +13,7 @@ bool ScatteringConvex::ScatterLight(double beta, double gamma,
 
     m_incidentEnergy = 0;
     m_treeSize = 0;
+    ResetTraceReference();
 
     /// first extermal beam
     for (int facetID = 0; facetID < m_particle->nFacets; ++facetID)
@@ -33,6 +34,8 @@ bool ScatteringConvex::ScatterLight(double beta, double gamma,
         outBeam.id = newId;
         outBeam.lastFacetId = facetID;
         outBeam.nActs = 0;
+        UpdateTraceReference(outBeam);
+        UpdateTraceReference(inBeam);
         outBeams.push_back(outBeam);
 
         inBeam.id = newId;
@@ -80,7 +83,8 @@ void ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
 
             inBeam.id = RecomputeTrackId(beam.id, id);
             inBeam.locations = beam.locations;
-            PushBeamToTree(inBeam, id, beam.nActs+1, Location::In);
+            if (!IsTracePruned(inBeam))
+                PushBeamToTree(inBeam, id, beam.nActs+1, Location::In);
         }
     }
 }

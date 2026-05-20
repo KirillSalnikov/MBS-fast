@@ -774,6 +774,9 @@ void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
     m_absorptionPointCount = source.m_absorptionPointCount;
     m_beamCutoff = source.m_beamCutoff;
     m_targetEps = source.m_targetEps;
+    m_beamCutoffJRel = source.m_beamCutoffJRel;
+    m_beamCutoffAreaRel = source.m_beamCutoffAreaRel;
+    m_beamCutoffImportanceRel = source.m_beamCutoffImportanceRel;
     m_legacySign = source.m_legacySign;
     m_gpuEnabled = source.m_gpuEnabled;
     m_fftEnabled = source.m_fftEnabled;
@@ -1210,26 +1213,38 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
                               PreparedOrientation &out)
 {
     out.beams.clear();
+    out.beams.reserve(beams.size());
     out.sinZenith = sinZenith;
 
-    // Pass 1: compute max |J|² and max area for two-threshold cutoff
-    double maxJnorm = 0, maxArea = 0;
+    // Pass 1: compute max |J|^2 and max area for relative cutoffs.
+    double maxJnorm = 0, maxArea = 0, maxImportance = 0;
     for (Beam &beam : beams)
     {
         if (beam.lastFacetId != __INT_MAX__)
         {
-            double jn = beam.J.Norm();  // |J|² (Frobenius norm²)
+            double jn = beam.J.Norm();  // |J|^2 (Frobenius norm^2)
             double ar = beam.Area();
+            double importance = jn * ar;
             if (jn > maxJnorm) maxJnorm = jn;
             if (ar > maxArea) maxArea = ar;
+            if (importance > maxImportance) maxImportance = importance;
         }
     }
-    // Two-threshold cutoff: skip beam only if BOTH |J|²/max AND area/max < eps.
-    // Protects: large-area beams (forward peak) and strong narrow beams.
-    // Both ratios are dimensionless (0..1), independent of particle size.
-    double jThreshold = maxJnorm * m_targetEps;
-    double areaThreshold = maxArea * m_targetEps;
+    // Two independent relative tests. A beam is skipped if either enabled
+    // ratio is small. Ratios are dimensionless and independent of size scale.
+    double jRel = (m_beamCutoffJRel >= 0) ? m_beamCutoffJRel : m_targetEps;
+    double areaRel = (m_beamCutoffAreaRel >= 0) ? m_beamCutoffAreaRel : m_targetEps;
+    double importanceRel = m_beamCutoffImportanceRel;
+    double jThreshold = maxJnorm * jRel;
+    double areaThreshold = maxArea * areaRel;
+    double importanceThreshold = maxImportance * importanceRel;
     int skippedBeams = 0;
+    int skippedJ = 0;
+    int skippedArea = 0;
+    int skippedImportanceCount = 0;
+    int skippedBoth = 0;
+    double totalImportance = 0;
+    double skippedImportance = 0;
 
     // Pass 2: prepare beams, skip negligible ones
     double localEnergy = 0;
@@ -1257,13 +1272,21 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
             matrix m_ = Mueller(beam.J);
             localEnergy += BeamCrossSection(beam)*m_[0][0]*sinZenith;
 
-            // Skip beam only if BOTH |J|² and area are small
-            // Protects: large-area beams (forward peak) and strong narrow beams
             double jn = beam.J.Norm();
             double ar = info.area;
-            if (jn < jThreshold && ar < areaThreshold)
+            double importance = jn * ar;
+            totalImportance += importance;
+            bool smallJ = (jRel > 0 && jn < jThreshold);
+            bool smallArea = (areaRel > 0 && ar < areaThreshold);
+            bool smallImportance = (importanceRel > 0 && importance < importanceThreshold);
+            if (smallJ || smallArea || smallImportance)
             {
                 skippedBeams++;
+                skippedImportance += importance;
+                if (smallJ) skippedJ++;
+                if (smallArea) skippedArea++;
+                if (smallImportance) skippedImportanceCount++;
+                if (smallJ && smallArea) skippedBoth++;
                 continue;
             }
         }
@@ -1316,8 +1339,14 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
     static bool logged = false;
     if (!logged && skippedBeams > 0) {
         std::cerr << "Beam cutoff: " << skippedBeams << "/" << (skippedBeams + (int)out.beams.size())
-                  << " beams skipped (|J|²<" << std::scientific << std::setprecision(1)
-                  << jThreshold << " AND area<" << areaThreshold << ")" << std::endl;
+                  << " beams skipped (relative OR: |J|^2<" << std::scientific << std::setprecision(1)
+                  << jThreshold << " [eps=" << jRel << "], area<" << areaThreshold
+                  << " [eps=" << areaRel << "]; J=" << skippedJ
+                  << ", area=" << skippedArea << ", importance=" << skippedImportanceCount
+                  << " [thr=" << importanceThreshold << ", eps=" << importanceRel
+                  << "], bothJA=" << skippedBoth
+                  << ", skipped |J|^2*area=" << (totalImportance > 0 ? skippedImportance / totalImportance : 0)
+                  << ")" << std::endl;
         logged = true;
     }
 }

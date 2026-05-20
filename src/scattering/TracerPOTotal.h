@@ -24,6 +24,13 @@ public:
     void TraceSobolMultiSize(int nOrient, double betaSym, double gammaSym,
                               const std::vector<double> &x_sizes, double x_ref);
 
+    /// Multi-size with regular beta/gamma grid: trace once at reference size,
+    /// cache scale-invariant beam geometry, recompute diffraction for all sizes.
+    void TraceRandomMultiSize(const AngleRange &betaRange,
+                              const AngleRange &gammaRange,
+                              const std::vector<double> &x_sizes,
+                              const std::vector<std::string> &labels);
+
     /// Sobol quasi-random orientation averaging with particle symmetry
     void TraceFromSobol(int nOrient, double betaSym, double gammaSym);
 

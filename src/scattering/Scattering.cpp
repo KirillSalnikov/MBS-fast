@@ -31,6 +31,15 @@ Scattering::Scattering(Particle *particle, Light *incidentLight, bool isOpticalP
     EPS_BEAM_ENERGY = (0.25*0.25*m_particle->Area())/M_PI*riContrast*riContrast*1e-7;
 }
 
+void Scattering::CopyRuntimeOptionsFrom(const Scattering &source)
+{
+    m_wave = source.m_wave;
+    restriction = source.restriction;
+    m_traceCutoffJRel = source.m_traceCutoffJRel;
+    m_traceCutoffAreaRel = source.m_traceCutoffAreaRel;
+    m_traceMaxBeams = source.m_traceMaxBeams;
+}
+
 IdType Scattering::Scattering::RecomputeTrackId(const IdType &oldId, int facetId)
 {
     return (oldId + (facetId + 1)) * (m_particle->nFacets + 1);
@@ -42,6 +51,10 @@ bool Scattering::PushBeamToTree(Beam &beam, int facetId, int level, Location loc
 #ifdef _DEBUG // DEB
     beam.dirs.push_back(beam.direction);
 #endif
+    if (location == Location::In && IsTracePruned(beam))
+    {
+        return true;
+    }
     if (m_treeSize >= MAX_BEAM_REFL_NUM)
     {
         return false;
@@ -296,6 +309,31 @@ void Scattering::FormShadowBeam(std::vector<Beam> &scaterredBeams)
 bool Scattering::IsTerminalAct(const Beam &beam)
 {
     return (beam.nActs >= m_nActs) || (beam.J.Norm() < EPS_BEAM_ENERGY);
+}
+
+void Scattering::ResetTraceReference()
+{
+    m_traceRefJNorm = 0;
+    m_traceRefArea = 0;
+}
+
+void Scattering::UpdateTraceReference(const Beam &beam)
+{
+    double jn = beam.J.Norm();
+    double ar = beam.Area();
+    if (jn > m_traceRefJNorm) m_traceRefJNorm = jn;
+    if (ar > m_traceRefArea) m_traceRefArea = ar;
+}
+
+bool Scattering::IsTracePruned(const Beam &beam) const
+{
+    if (beam.nActs == 0)
+        return false;
+    bool smallJ = (m_traceCutoffJRel > 0 && m_traceRefJNorm > 0
+                   && beam.J.Norm() < m_traceCutoffJRel * m_traceRefJNorm);
+    bool smallArea = (m_traceCutoffAreaRel > 0 && m_traceRefArea > 0
+                      && beam.Area() < m_traceCutoffAreaRel * m_traceRefArea);
+    return smallJ || smallArea;
 }
 
 void Scattering::Difference(const Polygon &subject, const Vector3f &subjNormal,

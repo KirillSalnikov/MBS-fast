@@ -8,38 +8,67 @@
 #include <cstdio>
 #include <vector>
 
+#ifdef MBS_GPU_FLOAT
+using GpuReal = float;
+using GpuComplex = cufftComplex;
+static const cufftType GpuCufftType = CUFFT_C2C;
+static inline cufftResult gpu_cufft_exec(cufftHandle plan, GpuComplex *in,
+                                         GpuComplex *out, int direction)
+{
+    return cufftExecC2C(plan, in, out, direction);
+}
+#else
+using GpuReal = double;
+using GpuComplex = cufftDoubleComplex;
+static const cufftType GpuCufftType = CUFFT_Z2Z;
+static inline cufftResult gpu_cufft_exec(cufftHandle plan, GpuComplex *in,
+                                         GpuComplex *out, int direction)
+{
+    return cufftExecZ2Z(plan, in, out, direction);
+}
+#endif
+
+__device__ inline void gpu_sincos(GpuReal x, GpuReal *s, GpuReal *c)
+{
+#ifdef MBS_GPU_FLOAT
+    sincosf(x, s, c);
+#else
+    sincos(x, s, c);
+#endif
+}
+
 struct GpuBeam
 {
-    double x[32], y[32];
-    double slope_yx[32], slope_xy[32];
+    GpuReal x[32], y[32];
+    GpuReal slope_yx[32], slope_xy[32];
     unsigned char edge_valid_x[32], edge_valid_y[32];
     int nVertices;
     int isExternal;
 
-    double bdx, bdy, bdz;
-    double horAx, horAy, horAz;
-    double verAx, verAy, verAz;
-    double cenx, ceny, cenz;
-    double beam_area;
-    double pNTx, pNTy, pNTz;
-    double pNPx, pNPy, pNPz;
-    double pnxDTx, pnxDTy, pnxDTz;
-    double pnxDPx, pnxDPy, pnxDPz;
-    double jp00r, jp00i, jp01r, jp01i;
-    double jp10r, jp10i, jp11r, jp11i;
+    GpuReal bdx, bdy, bdz;
+    GpuReal horAx, horAy, horAz;
+    GpuReal verAx, verAy, verAz;
+    GpuReal cenx, ceny, cenz;
+    GpuReal beam_area;
+    GpuReal pNTx, pNTy, pNTz;
+    GpuReal pNPx, pNPy, pNPz;
+    GpuReal pnxDTx, pnxDTy, pnxDTz;
+    GpuReal pnxDPx, pnxDPy, pnxDPz;
+    GpuReal jp00r, jp00i, jp01r, jp01i;
+    GpuReal jp10r, jp10i, jp11r, jp11i;
     int orientation;
 };
 
 struct GpuWorkspace
 {
     GpuBeam *beams = nullptr;
-    double *sinTheta = nullptr, *cosTheta = nullptr;
-    double *sinPhi = nullptr, *cosPhi = nullptr;
-    double *vf = nullptr;
-    double *j = nullptr, *jNoShadow = nullptr;
-    double *weights = nullptr;
+    GpuReal *sinTheta = nullptr, *cosTheta = nullptr;
+    GpuReal *sinPhi = nullptr, *cosPhi = nullptr;
+    GpuReal *vf = nullptr;
+    GpuReal *j = nullptr, *jNoShadow = nullptr;
+    GpuReal *weights = nullptr;
     int *beamOffsets = nullptr;
-    double *m = nullptr, *mNoShadow = nullptr;
+    GpuReal *m = nullptr, *mNoShadow = nullptr;
     size_t beamCap = 0;
     size_t sinThetaCap = 0, cosThetaCap = 0;
     size_t sinPhiCap = 0, cosPhiCap = 0;
@@ -47,21 +76,21 @@ struct GpuWorkspace
     size_t weightsCap = 0, beamOffsetsCap = 0, mCap = 0, mNoShadowCap = 0;
     int gridNAz = -1, gridNZen = -1;
     std::vector<GpuBeam> hBeams;
-    std::vector<double> hWeights;
+    std::vector<GpuReal> hWeights;
     std::vector<int> hBeamOffsets;
-    std::vector<double> hM;
-    std::vector<double> hMNoShadow;
+    std::vector<GpuReal> hM;
+    std::vector<GpuReal> hMNoShadow;
 };
 
 static GpuWorkspace g_gpuWorkspace;
 
-static double gpu_memory_fraction()
+static GpuReal gpu_memory_fraction()
 {
     const char *value = std::getenv("MBS_GPU_MEM_FRACTION");
     if (!value || !*value)
         return 0.88;
     char *end = nullptr;
-    double parsed = std::strtod(value, &end);
+    GpuReal parsed = std::strtod(value, &end);
     if (!end || *end != '\0' || parsed <= 0.1 || parsed > 0.98)
         return 0.88;
     return parsed;
@@ -97,6 +126,15 @@ static bool gpu_fft_check_enabled()
     return value && value[0] == '1' && value[1] == '\0';
 }
 
+static bool gpu_report_cuda_error(cudaError_t err, const char *where)
+{
+    if (err == cudaSuccess)
+        return true;
+    std::fprintf(stderr, "CUDA backend error at %s: %s\n",
+                 where, cudaGetErrorString(err));
+    return false;
+}
+
 static int choose_fft_phi_factor(int nFull)
 {
     int requested = gpu_fft_phi_factor();
@@ -104,10 +142,8 @@ static int choose_fft_phi_factor(int nFull)
         return requested;
     if (nFull >= 2400)
         return 8;
-    if (nFull >= 1200)
-        return 6;
     if (nFull >= 600)
-        return 4;
+        return 10;
     if (nFull >= 240)
         return 3;
     return 2;
@@ -129,19 +165,19 @@ static bool ensure_device_capacity(T *&ptr, size_t &cap, size_t count)
     return true;
 }
 
-__device__ inline void cmul(double ar, double ai, double br, double bi,
-                            double &cr, double &ci)
+__device__ inline void cmul(GpuReal ar, GpuReal ai, GpuReal br, GpuReal bi,
+                            GpuReal &cr, GpuReal &ci)
 {
     cr = ar * br - ai * bi;
     ci = ar * bi + ai * br;
 }
 
-__global__ void fft_phi_pad_kernel(const cufftDoubleComplex *low,
-                                   cufftDoubleComplex *full,
+__global__ void fft_phi_pad_kernel(const GpuComplex *low,
+                                   GpuComplex *full,
                                    int nLow,
                                    int nFull,
                                    int batch,
-                                   double scale)
+                                   GpuReal scale)
 {
     int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
     int total = nLow * batch;
@@ -153,39 +189,39 @@ __global__ void fft_phi_pad_kernel(const cufftDoubleComplex *low,
     int dstK = (freq >= 0) ? freq : nFull + freq;
     if (dstK < 0 || dstK >= nFull) return;
 
-    cufftDoubleComplex v = low[(size_t)b * nLow + k];
+    GpuComplex v = low[(size_t)b * nLow + k];
     full[(size_t)b * nFull + dstK].x = v.x * scale;
     full[(size_t)b * nFull + dstK].y = v.y * scale;
 }
 
 __device__ inline void rotate_jones_gpu(
-    double NTx, double NTy, double NTz,
-    double NPx, double NPy, double NPz,
-    double nxDTx, double nxDTy, double nxDTz,
-    double nxDPx, double nxDPy, double nxDPz,
-    double vfx, double vfy, double vfz,
-    double dirx, double diry, double dirz,
-    double &r00, double &r01, double &r10, double &r11)
+    GpuReal NTx, GpuReal NTy, GpuReal NTz,
+    GpuReal NPx, GpuReal NPy, GpuReal NPz,
+    GpuReal nxDTx, GpuReal nxDTy, GpuReal nxDTz,
+    GpuReal nxDPx, GpuReal nxDPy, GpuReal nxDPz,
+    GpuReal vfx, GpuReal vfy, GpuReal vfz,
+    GpuReal dirx, GpuReal diry, GpuReal dirz,
+    GpuReal &r00, GpuReal &r01, GpuReal &r10, GpuReal &r11)
 {
-    double vtx = vfy * dirz - vfz * diry;
-    double vty = vfz * dirx - vfx * dirz;
-    double vtz = vfx * diry - vfy * dirx;
-    double vtLen2 = vtx * vtx + vty * vty + vtz * vtz;
+    GpuReal vtx = vfy * dirz - vfz * diry;
+    GpuReal vty = vfz * dirx - vfx * dirz;
+    GpuReal vtz = vfx * diry - vfy * dirx;
+    GpuReal vtLen2 = vtx * vtx + vty * vty + vtz * vtz;
     if (vtLen2 > 1e-30)
     {
-        double invLen = rsqrt(vtLen2);
+        GpuReal invLen = rsqrt(vtLen2);
         vtx *= invLen; vty *= invLen; vtz *= invLen;
     }
 
-    double dot_dir_nxDT = dirx * nxDTx + diry * nxDTy + dirz * nxDTz;
-    double cpTx = (diry * NTz - dirz * NTy) + nxDTx - dirx * dot_dir_nxDT;
-    double cpTy = (dirz * NTx - dirx * NTz) + nxDTy - diry * dot_dir_nxDT;
-    double cpTz = (dirx * NTy - diry * NTx) + nxDTz - dirz * dot_dir_nxDT;
+    GpuReal dot_dir_nxDT = dirx * nxDTx + diry * nxDTy + dirz * nxDTz;
+    GpuReal cpTx = (diry * NTz - dirz * NTy) + nxDTx - dirx * dot_dir_nxDT;
+    GpuReal cpTy = (dirz * NTx - dirx * NTz) + nxDTy - diry * dot_dir_nxDT;
+    GpuReal cpTz = (dirx * NTy - diry * NTx) + nxDTz - dirz * dot_dir_nxDT;
 
-    double dot_dir_nxDP = dirx * nxDPx + diry * nxDPy + dirz * nxDPz;
-    double cpPx = (diry * NPz - dirz * NPy) + nxDPx - dirx * dot_dir_nxDP;
-    double cpPy = (dirz * NPx - dirx * NPz) + nxDPy - diry * dot_dir_nxDP;
-    double cpPz = (dirx * NPy - diry * NPx) + nxDPz - dirz * dot_dir_nxDP;
+    GpuReal dot_dir_nxDP = dirx * nxDPx + diry * nxDPy + dirz * nxDPz;
+    GpuReal cpPx = (diry * NPz - dirz * NPy) + nxDPx - dirx * dot_dir_nxDP;
+    GpuReal cpPy = (dirz * NPx - dirx * NPz) + nxDPy - diry * dot_dir_nxDP;
+    GpuReal cpPz = (dirx * NPy - diry * NPx) + nxDPz - dirz * dot_dir_nxDP;
 
     r00 = cpTx * vtx + cpTy * vty + cpTz * vtz;
     r01 = cpPx * vtx + cpPy * vty + cpPz * vtz;
@@ -196,85 +232,85 @@ __device__ inline void rotate_jones_gpu(
 __device__ inline bool compute_beam_jones_gpu(const GpuBeam &b,
                                               int grid,
                                               int nZen,
-                                              const double *sinTheta,
-                                              const double *cosTheta,
-                                              const double *sinPhi,
-                                              const double *cosPhi,
-                                              const double *vf,
-                                              double waveIndex,
-                                              double wi2,
-                                              double eps1,
-                                              double eps2,
-                                              double complWaveR,
-                                              double complWaveI,
-                                              double invComplWaveR,
-                                              double invComplWaveI,
+                                              const GpuReal *sinTheta,
+                                              const GpuReal *cosTheta,
+                                              const GpuReal *sinPhi,
+                                              const GpuReal *cosPhi,
+                                              const GpuReal *vf,
+                                              GpuReal waveIndex,
+                                              GpuReal wi2,
+                                              GpuReal eps1,
+                                              GpuReal eps2,
+                                              GpuReal complWaveR,
+                                              GpuReal complWaveI,
+                                              GpuReal invComplWaveR,
+                                              GpuReal invComplWaveI,
                                               int legacySign,
                                               int singularCorrection,
-                                              double &d00r, double &d00i,
-                                              double &d01r, double &d01i,
-                                              double &d10r, double &d10i,
-                                              double &d11r, double &d11i)
+                                              GpuReal &d00r, GpuReal &d00i,
+                                              GpuReal &d01r, GpuReal &d01i,
+                                              GpuReal &d10r, GpuReal &d10i,
+                                              GpuReal &d11r, GpuReal &d11i)
 {
     int nv = b.nVertices;
     if (nv <= 0) return false;
 
     int p = grid / (nZen + 1);
     int t = grid - p * (nZen + 1);
-    double cp = cosPhi[p], sp = sinPhi[p];
-    double sin_t = sinTheta[t], cos_t = cosTheta[t];
-    double dx = sin_t * cp;
-    double dy = sin_t * sp;
-    double dz = -cos_t;
+    GpuReal cp = cosPhi[p], sp = sinPhi[p];
+    GpuReal sin_t = sinTheta[t], cos_t = cosTheta[t];
+    GpuReal dx = sin_t * cp;
+    GpuReal dy = sin_t * sp;
+    GpuReal dz = -cos_t;
 
-    double neg_cp = -cp, neg_sp = -sp;
-    double a_sin = neg_cp * b.horAx + neg_sp * b.horAy;
-    double a_cos = b.horAz;
-    double a0 = b.bdx * b.horAx + b.bdy * b.horAy + b.bdz * b.horAz;
-    double b_sin = neg_cp * b.verAx + neg_sp * b.verAy;
-    double b_cos = b.verAz;
-    double b0 = b.bdx * b.verAx + b.bdy * b.verAy + b.bdz * b.verAz;
+    GpuReal neg_cp = -cp, neg_sp = -sp;
+    GpuReal a_sin = neg_cp * b.horAx + neg_sp * b.horAy;
+    GpuReal a_cos = b.horAz;
+    GpuReal a0 = b.bdx * b.horAx + b.bdy * b.horAy + b.bdz * b.horAz;
+    GpuReal b_sin = neg_cp * b.verAx + neg_sp * b.verAy;
+    GpuReal b_cos = b.verAz;
+    GpuReal b0 = b.bdx * b.verAx + b.bdy * b.verAy + b.bdz * b.verAz;
 
-    double A = sin_t * a_sin + cos_t * a_cos + a0;
-    double B = sin_t * b_sin + cos_t * b_cos + b0;
-    double absA = fabs(A);
-    double absB = fabs(B);
+    GpuReal A = sin_t * a_sin + cos_t * a_cos + a0;
+    GpuReal B = sin_t * b_sin + cos_t * b_cos + b0;
+    GpuReal absA = fabs(A);
+    GpuReal absB = fabs(B);
 
-    double fr, fi;
+    GpuReal fr, fi;
     if (absA < eps2 && absB < eps2)
     {
-        double sign = legacySign ? 1.0 : -1.0;
+        GpuReal sign = legacySign ? 1.0 : -1.0;
         fr = sign * invComplWaveR * b.beam_area;
         fi = sign * invComplWaveI * b.beam_area;
     }
     else
     {
-        double vc[32], vs[32];
+        GpuReal vc[32], vs[32];
         for (int v = 0; v < nv; ++v)
         {
-            double psin = waveIndex * (a_sin * b.x[v] + b_sin * b.y[v]);
-            double pcos = waveIndex * (a_cos * b.x[v] + b_cos * b.y[v]);
-            double p0 = waveIndex * (a0 * b.x[v] + b0 * b.y[v]);
-            sincos(sin_t * psin + cos_t * pcos + p0, &vs[v], &vc[v]);
+            GpuReal psin = waveIndex * (a_sin * b.x[v] + b_sin * b.y[v]);
+            GpuReal pcos = waveIndex * (a_cos * b.x[v] + b_cos * b.y[v]);
+            GpuReal p0 = waveIndex * (a0 * b.x[v] + b0 * b.y[v]);
+            gpu_sincos(sin_t * psin + cos_t * pcos + p0, &vs[v], &vc[v]);
         }
 
-        double sr = 0.0, si = 0.0;
+        GpuReal sr = 0.0, si = 0.0;
         if (absB > absA)
         {
             for (int e = 0; e < nv; ++e)
             {
                 if (!b.edge_valid_x[e]) continue;
                 int en = (e + 1 < nv) ? e + 1 : 0;
-                double Ci = A + b.slope_yx[e] * B;
-                double absCi = fabs(Ci);
-                double inv = (absCi > eps1) ? (1.0 / Ci) : 0.0;
+                GpuReal Ci = A + b.slope_yx[e] * B;
+                GpuReal absCi = fabs(Ci);
+                GpuReal inv = (absCi > eps1) ? (1.0 / Ci) : 0.0;
                 sr += (vc[en] - vc[e]) * inv;
                 si += (vs[en] - vs[e]) * inv;
                 if (singularCorrection && absCi <= eps1)
                 {
-                    double p1x = b.x[e], p2x = b.x[en];
-                    double tr = -wi2 * Ci * (p2x * p2x - p1x * p1x) * 0.5;
-                    double ti = waveIndex * (p2x - p1x);
+                    GpuReal p1x = b.x[e], p2x = b.x[en];
+                    GpuReal tr = -wi2 * Ci * (p2x * p2x - p1x * p1x) * 0.5;
+                    GpuReal ti = waveIndex * (p2x - p1x);
                     sr += vc[e] * tr - vs[e] * ti;
                     si += vc[e] * ti + vs[e] * tr;
                 }
@@ -287,51 +323,51 @@ __device__ inline bool compute_beam_jones_gpu(const GpuBeam &b,
             {
                 if (!b.edge_valid_y[e]) continue;
                 int en = (e + 1 < nv) ? e + 1 : 0;
-                double Ei = A * b.slope_xy[e] + B;
-                double absEi = fabs(Ei);
-                double inv = (absEi > eps1) ? (1.0 / Ei) : 0.0;
+                GpuReal Ei = A * b.slope_xy[e] + B;
+                GpuReal absEi = fabs(Ei);
+                GpuReal inv = (absEi > eps1) ? (1.0 / Ei) : 0.0;
                 sr += (vc[en] - vc[e]) * inv;
                 si += (vs[en] - vs[e]) * inv;
                 if (singularCorrection && absEi <= eps1)
                 {
-                    double p1y = b.y[e], p2y = b.y[en];
-                    double tr = -wi2 * Ei * (p2y * p2y - p1y * p1y) * 0.5;
-                    double ti = waveIndex * (p2y - p1y);
+                    GpuReal p1y = b.y[e], p2y = b.y[en];
+                    GpuReal tr = -wi2 * Ei * (p2y * p2y - p1y * p1y) * 0.5;
+                    GpuReal ti = waveIndex * (p2y - p1y);
                     sr += vc[e] * tr - vs[e] * ti;
                     si += vc[e] * ti + vs[e] * tr;
                 }
             }
-            double inv_nA = -1.0 / A;
+            GpuReal inv_nA = -1.0 / A;
             sr *= inv_nA; si *= inv_nA;
         }
         cmul(complWaveR, complWaveI, sr, si, fr, fi);
     }
     if (isnan(fr)) return false;
 
-    double dpr = 1.0, dpi = 0.0;
+    GpuReal dpr = 1.0, dpi = 0.0;
     if (!b.isExternal)
     {
-        double dp_sin = cp * b.cenx + sp * b.ceny;
-        double dp_cos = -b.cenz;
-        sincos(-waveIndex * (sin_t * dp_sin + cos_t * dp_cos), &dpi, &dpr);
+        GpuReal dp_sin = cp * b.cenx + sp * b.ceny;
+        GpuReal dp_cos = -b.cenz;
+        gpu_sincos(-waveIndex * (sin_t * dp_sin + cos_t * dp_cos), &dpi, &dpr);
     }
 
-    double vfx = vf[(grid * 3) + 0];
-    double vfy = vf[(grid * 3) + 1];
-    double vfz = vf[(grid * 3) + 2];
-    double r00, r01, r10, r11;
+    GpuReal vfx = vf[(grid * 3) + 0];
+    GpuReal vfy = vf[(grid * 3) + 1];
+    GpuReal vfz = vf[(grid * 3) + 2];
+    GpuReal r00, r01, r10, r11;
     rotate_jones_gpu(b.pNTx, b.pNTy, b.pNTz, b.pNPx, b.pNPy, b.pNPz,
                      b.pnxDTx, b.pnxDTy, b.pnxDTz,
                      b.pnxDPx, b.pnxDPy, b.pnxDPz,
                      vfx, vfy, vfz, dx, dy, dz,
                      r00, r01, r10, r11);
 
-    double cpr, cpi;
+    GpuReal cpr, cpi;
     cmul(fr, fi, dpr, dpi, cpr, cpi);
-    double sr00r = cpr * r00, sr00i = cpi * r00;
-    double sr01r = cpr * r01, sr01i = cpi * r01;
-    double sr10r = cpr * r10, sr10i = cpi * r10;
-    double sr11r = cpr * r11, sr11i = cpi * r11;
+    GpuReal sr00r = cpr * r00, sr00i = cpi * r00;
+    GpuReal sr01r = cpr * r01, sr01i = cpi * r01;
+    GpuReal sr10r = cpr * r10, sr10i = cpi * r10;
+    GpuReal sr11r = cpr * r11, sr11i = cpi * r11;
 
     d00r = sr00r * b.jp00r - sr00i * b.jp00i + sr01r * b.jp10r - sr01i * b.jp10i;
     d00i = sr00r * b.jp00i + sr00i * b.jp00r + sr01r * b.jp10i + sr01i * b.jp10r;
@@ -345,23 +381,23 @@ __device__ inline bool compute_beam_jones_gpu(const GpuBeam &b,
 }
 
 __global__ void diffraction_kernel(const GpuBeam *beams, int nBeams,
-                                   const double *sinTheta,
-                                   const double *cosTheta,
-                                   const double *sinPhi,
-                                   const double *cosPhi,
-                                   const double *vf,
+                                   const GpuReal *sinTheta,
+                                   const GpuReal *cosTheta,
+                                   const GpuReal *sinPhi,
+                                   const GpuReal *cosPhi,
+                                   const GpuReal *vf,
                                    int nAz, int nZen,
-                                   double waveIndex,
-                                   double wi2,
-                                   double eps1,
-                                   double eps2,
-                                   double complWaveR,
-                                   double complWaveI,
-                                   double invComplWaveR,
-                                   double invComplWaveI,
+                                   GpuReal waveIndex,
+                                   GpuReal wi2,
+                                   GpuReal eps1,
+                                   GpuReal eps2,
+                                   GpuReal complWaveR,
+                                   GpuReal complWaveI,
+                                   GpuReal invComplWaveR,
+                                   GpuReal invComplWaveI,
                                    int legacySign,
-                                   double *jFull,
-                                   double *jNoShadow)
+                                   GpuReal *jFull,
+                                   GpuReal *jNoShadow)
 {
     int gridCount = nAz * (nZen + 1);
     long long total = (long long)nBeams * gridCount;
@@ -376,60 +412,60 @@ __global__ void diffraction_kernel(const GpuBeam *beams, int nBeams,
     int nv = b.nVertices;
     if (nv <= 0) return;
 
-    double cp = cosPhi[p], sp = sinPhi[p];
-    double sin_t = sinTheta[t], cos_t = cosTheta[t];
-    double dx = sin_t * cp;
-    double dy = sin_t * sp;
-    double dz = -cos_t;
+    GpuReal cp = cosPhi[p], sp = sinPhi[p];
+    GpuReal sin_t = sinTheta[t], cos_t = cosTheta[t];
+    GpuReal dx = sin_t * cp;
+    GpuReal dy = sin_t * sp;
+    GpuReal dz = -cos_t;
 
-    double neg_cp = -cp, neg_sp = -sp;
-    double a_sin = neg_cp * b.horAx + neg_sp * b.horAy;
-    double a_cos = b.horAz;
-    double a0 = b.bdx * b.horAx + b.bdy * b.horAy + b.bdz * b.horAz;
-    double b_sin = neg_cp * b.verAx + neg_sp * b.verAy;
-    double b_cos = b.verAz;
-    double b0 = b.bdx * b.verAx + b.bdy * b.verAy + b.bdz * b.verAz;
+    GpuReal neg_cp = -cp, neg_sp = -sp;
+    GpuReal a_sin = neg_cp * b.horAx + neg_sp * b.horAy;
+    GpuReal a_cos = b.horAz;
+    GpuReal a0 = b.bdx * b.horAx + b.bdy * b.horAy + b.bdz * b.horAz;
+    GpuReal b_sin = neg_cp * b.verAx + neg_sp * b.verAy;
+    GpuReal b_cos = b.verAz;
+    GpuReal b0 = b.bdx * b.verAx + b.bdy * b.verAy + b.bdz * b.verAz;
 
-    double A = sin_t * a_sin + cos_t * a_cos + a0;
-    double B = sin_t * b_sin + cos_t * b_cos + b0;
-    double absA = fabs(A);
-    double absB = fabs(B);
+    GpuReal A = sin_t * a_sin + cos_t * a_cos + a0;
+    GpuReal B = sin_t * b_sin + cos_t * b_cos + b0;
+    GpuReal absA = fabs(A);
+    GpuReal absB = fabs(B);
 
-    double fr, fi;
+    GpuReal fr, fi;
     if (absA < eps2 && absB < eps2)
     {
-        double sign = legacySign ? 1.0 : -1.0;
+        GpuReal sign = legacySign ? 1.0 : -1.0;
         fr = sign * invComplWaveR * b.beam_area;
         fi = sign * invComplWaveI * b.beam_area;
     }
     else
     {
-        double vc[32], vs[32];
+        GpuReal vc[32], vs[32];
         for (int v = 0; v < nv; ++v)
         {
-            double psin = waveIndex * (a_sin * b.x[v] + b_sin * b.y[v]);
-            double pcos = waveIndex * (a_cos * b.x[v] + b_cos * b.y[v]);
-            double p0 = waveIndex * (a0 * b.x[v] + b0 * b.y[v]);
-            sincos(sin_t * psin + cos_t * pcos + p0, &vs[v], &vc[v]);
+            GpuReal psin = waveIndex * (a_sin * b.x[v] + b_sin * b.y[v]);
+            GpuReal pcos = waveIndex * (a_cos * b.x[v] + b_cos * b.y[v]);
+            GpuReal p0 = waveIndex * (a0 * b.x[v] + b0 * b.y[v]);
+            gpu_sincos(sin_t * psin + cos_t * pcos + p0, &vs[v], &vc[v]);
         }
 
-        double sr = 0.0, si = 0.0;
+        GpuReal sr = 0.0, si = 0.0;
         if (absB > absA)
         {
             for (int e = 0; e < nv; ++e)
             {
                 if (!b.edge_valid_x[e]) continue;
                 int en = (e + 1 < nv) ? e + 1 : 0;
-                double Ci = A + b.slope_yx[e] * B;
-                double absCi = fabs(Ci);
-                double inv = (absCi > eps1) ? (1.0 / Ci) : 0.0;
+                GpuReal Ci = A + b.slope_yx[e] * B;
+                GpuReal absCi = fabs(Ci);
+                GpuReal inv = (absCi > eps1) ? (1.0 / Ci) : 0.0;
                 sr += (vc[en] - vc[e]) * inv;
                 si += (vs[en] - vs[e]) * inv;
                 if (absCi <= eps1)
                 {
-                    double p1x = b.x[e], p2x = b.x[en];
-                    double tr = -wi2 * Ci * (p2x * p2x - p1x * p1x) * 0.5;
-                    double ti = waveIndex * (p2x - p1x);
+                    GpuReal p1x = b.x[e], p2x = b.x[en];
+                    GpuReal tr = -wi2 * Ci * (p2x * p2x - p1x * p1x) * 0.5;
+                    GpuReal ti = waveIndex * (p2x - p1x);
                     sr += vc[e] * tr - vs[e] * ti;
                     si += vc[e] * ti + vs[e] * tr;
                 }
@@ -442,60 +478,60 @@ __global__ void diffraction_kernel(const GpuBeam *beams, int nBeams,
             {
                 if (!b.edge_valid_y[e]) continue;
                 int en = (e + 1 < nv) ? e + 1 : 0;
-                double Ei = A * b.slope_xy[e] + B;
-                double absEi = fabs(Ei);
-                double inv = (absEi > eps1) ? (1.0 / Ei) : 0.0;
+                GpuReal Ei = A * b.slope_xy[e] + B;
+                GpuReal absEi = fabs(Ei);
+                GpuReal inv = (absEi > eps1) ? (1.0 / Ei) : 0.0;
                 sr += (vc[en] - vc[e]) * inv;
                 si += (vs[en] - vs[e]) * inv;
                 if (absEi <= eps1)
                 {
-                    double p1y = b.y[e], p2y = b.y[en];
-                    double tr = -wi2 * Ei * (p2y * p2y - p1y * p1y) * 0.5;
-                    double ti = waveIndex * (p2y - p1y);
+                    GpuReal p1y = b.y[e], p2y = b.y[en];
+                    GpuReal tr = -wi2 * Ei * (p2y * p2y - p1y * p1y) * 0.5;
+                    GpuReal ti = waveIndex * (p2y - p1y);
                     sr += vc[e] * tr - vs[e] * ti;
                     si += vc[e] * ti + vs[e] * tr;
                 }
             }
-            double inv_nA = -1.0 / A;
+            GpuReal inv_nA = -1.0 / A;
             sr *= inv_nA; si *= inv_nA;
         }
         cmul(complWaveR, complWaveI, sr, si, fr, fi);
     }
     if (isnan(fr)) return;
 
-    double dpr = 1.0, dpi = 0.0;
+    GpuReal dpr = 1.0, dpi = 0.0;
     if (!b.isExternal)
     {
-        double dp_sin = cp * b.cenx + sp * b.ceny;
-        double dp_cos = -b.cenz;
-        sincos(-waveIndex * (sin_t * dp_sin + cos_t * dp_cos), &dpi, &dpr);
+        GpuReal dp_sin = cp * b.cenx + sp * b.ceny;
+        GpuReal dp_cos = -b.cenz;
+        gpu_sincos(-waveIndex * (sin_t * dp_sin + cos_t * dp_cos), &dpi, &dpr);
     }
 
-    double vfx = vf[(grid * 3) + 0];
-    double vfy = vf[(grid * 3) + 1];
-    double vfz = vf[(grid * 3) + 2];
-    double r00, r01, r10, r11;
+    GpuReal vfx = vf[(grid * 3) + 0];
+    GpuReal vfy = vf[(grid * 3) + 1];
+    GpuReal vfz = vf[(grid * 3) + 2];
+    GpuReal r00, r01, r10, r11;
     rotate_jones_gpu(b.pNTx, b.pNTy, b.pNTz, b.pNPx, b.pNPy, b.pNPz,
                      b.pnxDTx, b.pnxDTy, b.pnxDTz,
                      b.pnxDPx, b.pnxDPy, b.pnxDPz,
                      vfx, vfy, vfz, dx, dy, dz,
                      r00, r01, r10, r11);
 
-    double cpr, cpi;
+    GpuReal cpr, cpi;
     cmul(fr, fi, dpr, dpi, cpr, cpi);
-    double sr00r = cpr * r00, sr00i = cpi * r00;
-    double sr01r = cpr * r01, sr01i = cpi * r01;
-    double sr10r = cpr * r10, sr10i = cpi * r10;
-    double sr11r = cpr * r11, sr11i = cpi * r11;
+    GpuReal sr00r = cpr * r00, sr00i = cpi * r00;
+    GpuReal sr01r = cpr * r01, sr01i = cpi * r01;
+    GpuReal sr10r = cpr * r10, sr10i = cpi * r10;
+    GpuReal sr11r = cpr * r11, sr11i = cpi * r11;
 
-    double d00r = sr00r * b.jp00r - sr00i * b.jp00i + sr01r * b.jp10r - sr01i * b.jp10i;
-    double d00i = sr00r * b.jp00i + sr00i * b.jp00r + sr01r * b.jp10i + sr01i * b.jp10r;
-    double d01r = sr00r * b.jp01r - sr00i * b.jp01i + sr01r * b.jp11r - sr01i * b.jp11i;
-    double d01i = sr00r * b.jp01i + sr00i * b.jp01r + sr01r * b.jp11i + sr01i * b.jp11r;
-    double d10r = sr10r * b.jp00r - sr10i * b.jp00i + sr11r * b.jp10r - sr11i * b.jp10i;
-    double d10i = sr10r * b.jp00i + sr10i * b.jp00r + sr11r * b.jp10i + sr11i * b.jp10r;
-    double d11r = sr10r * b.jp01r - sr10i * b.jp01i + sr11r * b.jp11r - sr11i * b.jp11i;
-    double d11i = sr10r * b.jp01i + sr10i * b.jp01r + sr11r * b.jp11i + sr11i * b.jp11r;
+    GpuReal d00r = sr00r * b.jp00r - sr00i * b.jp00i + sr01r * b.jp10r - sr01i * b.jp10i;
+    GpuReal d00i = sr00r * b.jp00i + sr00i * b.jp00r + sr01r * b.jp10i + sr01i * b.jp10r;
+    GpuReal d01r = sr00r * b.jp01r - sr00i * b.jp01i + sr01r * b.jp11r - sr01i * b.jp11i;
+    GpuReal d01i = sr00r * b.jp01i + sr00i * b.jp01r + sr01r * b.jp11i + sr01i * b.jp11r;
+    GpuReal d10r = sr10r * b.jp00r - sr10i * b.jp00i + sr11r * b.jp10r - sr11i * b.jp10i;
+    GpuReal d10i = sr10r * b.jp00i + sr10i * b.jp00r + sr11r * b.jp10i + sr11i * b.jp10r;
+    GpuReal d11r = sr10r * b.jp01r - sr10i * b.jp01i + sr11r * b.jp11r - sr11i * b.jp11i;
+    GpuReal d11i = sr10r * b.jp01i + sr10i * b.jp01r + sr11r * b.jp11i + sr11i * b.jp11r;
 
     int off = (b.orientation * gridCount + grid) * 8;
     atomicAdd(&jFull[off + 0], d00r); atomicAdd(&jFull[off + 1], d00i);
@@ -513,24 +549,24 @@ __global__ void diffraction_kernel(const GpuBeam *beams, int nBeams,
 
 __global__ void theta_m11_kernel(const GpuBeam *beams,
                                  int nBeams,
-                                 const double *weights,
-                                 const double *sinTheta,
-                                 const double *cosTheta,
-                                 const double *sinPhi,
-                                 const double *cosPhi,
-                                 const double *vf,
+                                 const GpuReal *weights,
+                                 const GpuReal *sinTheta,
+                                 const GpuReal *cosTheta,
+                                 const GpuReal *sinPhi,
+                                 const GpuReal *cosPhi,
+                                 const GpuReal *vf,
                                  int nAz,
                                  int nTheta,
-                                 double waveIndex,
-                                 double wi2,
-                                 double eps1,
-                                 double eps2,
-                                 double complWaveR,
-                                 double complWaveI,
-                                 double invComplWaveR,
-                                 double invComplWaveI,
+                                 GpuReal waveIndex,
+                                 GpuReal wi2,
+                                 GpuReal eps1,
+                                 GpuReal eps2,
+                                 GpuReal complWaveR,
+                                 GpuReal complWaveI,
+                                 GpuReal invComplWaveR,
+                                 GpuReal invComplWaveI,
                                  int legacySign,
-                                 double *m11)
+                                 GpuReal *m11)
 {
     int gridCount = nAz * nTheta;
     long long total = (long long)nBeams * gridCount;
@@ -541,7 +577,7 @@ __global__ void theta_m11_kernel(const GpuBeam *beams,
     int thetaIdx = grid % nTheta;
     int beamIdx = (int)(idx / gridCount);
 
-    double d00r, d00i, d01r, d01i, d10r, d10i, d11r, d11i;
+    GpuReal d00r, d00i, d01r, d01i, d10r, d10i, d11r, d11i;
     const GpuBeam &b = beams[beamIdx];
     if (!compute_beam_jones_gpu(b, grid, nTheta - 1, sinTheta, cosTheta,
                                 sinPhi, cosPhi, vf, waveIndex, wi2,
@@ -552,7 +588,7 @@ __global__ void theta_m11_kernel(const GpuBeam *beams,
                                 d11r, d11i))
         return;
 
-    double value = 0.5 * (d00r*d00r + d00i*d00i
+    GpuReal value = 0.5 * (d00r*d00r + d00i*d00i
                         + d01r*d01r + d01i*d01i
                         + d10r*d10r + d10i*d10i
                         + d11r*d11r + d11i*d11i)
@@ -562,24 +598,24 @@ __global__ void theta_m11_kernel(const GpuBeam *beams,
 
 __global__ void diffraction_grid_kernel(const GpuBeam *beams,
                                         const int *beamOffsets,
-                                        const double *sinTheta,
-                                        const double *cosTheta,
-                                        const double *sinPhi,
-                                        const double *cosPhi,
-                                        const double *vf,
+                                        const GpuReal *sinTheta,
+                                        const GpuReal *cosTheta,
+                                        const GpuReal *sinPhi,
+                                        const GpuReal *cosPhi,
+                                        const GpuReal *vf,
                                         int nAz, int nZen,
                                         int nOrient,
-                                        double waveIndex,
-                                        double wi2,
-                                        double eps1,
-                                        double eps2,
-                                        double complWaveR,
-                                        double complWaveI,
-                                        double invComplWaveR,
-                                        double invComplWaveI,
+                                        GpuReal waveIndex,
+                                        GpuReal wi2,
+                                        GpuReal eps1,
+                                        GpuReal eps2,
+                                        GpuReal complWaveR,
+                                        GpuReal complWaveI,
+                                        GpuReal invComplWaveR,
+                                        GpuReal invComplWaveI,
                                         int legacySign,
-                                        double *jFull,
-                                        double *jNoShadow)
+                                        GpuReal *jFull,
+                                        GpuReal *jNoShadow)
 {
     int gridCount = nAz * (nZen + 1);
     long long total = (long long)nOrient * gridCount;
@@ -591,18 +627,18 @@ __global__ void diffraction_grid_kernel(const GpuBeam *beams,
     int begin = beamOffsets[orient];
     int end = beamOffsets[orient + 1];
 
-    double j00r = 0.0, j00i = 0.0;
-    double j01r = 0.0, j01i = 0.0;
-    double j10r = 0.0, j10i = 0.0;
-    double j11r = 0.0, j11i = 0.0;
-    double n00r = 0.0, n00i = 0.0;
-    double n01r = 0.0, n01i = 0.0;
-    double n10r = 0.0, n10i = 0.0;
-    double n11r = 0.0, n11i = 0.0;
+    GpuReal j00r = 0.0, j00i = 0.0;
+    GpuReal j01r = 0.0, j01i = 0.0;
+    GpuReal j10r = 0.0, j10i = 0.0;
+    GpuReal j11r = 0.0, j11i = 0.0;
+    GpuReal n00r = 0.0, n00i = 0.0;
+    GpuReal n01r = 0.0, n01i = 0.0;
+    GpuReal n10r = 0.0, n10i = 0.0;
+    GpuReal n11r = 0.0, n11i = 0.0;
 
     for (int bi = begin; bi < end; ++bi)
     {
-        double d00r, d00i, d01r, d01i, d10r, d10i, d11r, d11i;
+        GpuReal d00r, d00i, d01r, d01i, d10r, d10i, d11r, d11i;
         const GpuBeam &b = beams[bi];
         if (!compute_beam_jones_gpu(b, grid, nZen, sinTheta, cosTheta,
                                     sinPhi, cosPhi, vf, waveIndex, wi2,
@@ -637,13 +673,13 @@ __global__ void diffraction_grid_kernel(const GpuBeam *beams,
     jNoShadow[off + 6] = n11r; jNoShadow[off + 7] = n11i;
 }
 
-__global__ void mueller_batch_kernel(const double *jFull,
-                                     const double *jNoShadow,
-                                     const double *weights,
+__global__ void mueller_batch_kernel(const GpuReal *jFull,
+                                     const GpuReal *jNoShadow,
+                                     const GpuReal *weights,
                                      int nOrient,
                                      int gridCount,
-                                     double *mFull,
-                                     double *mNoShadow)
+                                     GpuReal *mFull,
+                                     GpuReal *mNoShadow)
 {
     long long total = (long long)nOrient * gridCount;
     long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
@@ -651,31 +687,31 @@ __global__ void mueller_batch_kernel(const double *jFull,
 
     int orient = (int)(idx / gridCount);
     int grid = (int)(idx - (long long)orient * gridCount);
-    double weight = weights[orient] * 0.25;
-    const double *j = &jFull[idx * 8];
-    double *out = &mFull[grid * 16];
+    GpuReal weight = weights[orient] * 0.25;
+    const GpuReal *j = &jFull[idx * 8];
+    GpuReal *out = &mFull[grid * 16];
 
-    double j00r = j[0], j00i = j[1];
-    double j01r = j[2], j01i = j[3];
-    double j10r = j[4], j10i = j[5];
-    double j11r = j[6], j11i = j[7];
+    GpuReal j00r = j[0], j00i = j[1];
+    GpuReal j01r = j[2], j01i = j[3];
+    GpuReal j10r = j[4], j10i = j[5];
+    GpuReal j11r = j[6], j11i = j[7];
 
-    double a11 = j00r*j00r + j00i*j00i;
-    double a12 = j01r*j01r + j01i*j01i;
-    double a21 = j10r*j10r + j10i*j10i;
-    double a22 = j11r*j11r + j11i*j11i;
+    GpuReal a11 = j00r*j00r + j00i*j00i;
+    GpuReal a12 = j01r*j01r + j01i*j01i;
+    GpuReal a21 = j10r*j10r + j10i*j10i;
+    GpuReal a22 = j11r*j11r + j11i*j11i;
 
-    double A1 = a11 + a21, A2 = a12 + a22;
+    GpuReal A1 = a11 + a21, A2 = a12 + a22;
     atomicAdd(&out[0], ((A1 + A2) * 0.5) * weight);
     atomicAdd(&out[1], ((A1 - A2) * 0.5) * weight);
     A1 = a11 - a21; A2 = a12 - a22;
     atomicAdd(&out[4], ((A1 + A2) * 0.5) * weight);
     atomicAdd(&out[5], ((A1 - A2) * 0.5) * weight);
 
-    double c1r = j00r*j01r + j00i*j01i;
-    double c1i = j00i*j01r - j00r*j01i;
-    double c2r = j11r*j10r + j11i*j10i;
-    double c2i = j11i*j10r - j11r*j10i;
+    GpuReal c1r = j00r*j01r + j00i*j01i;
+    GpuReal c1i = j00i*j01r - j00r*j01i;
+    GpuReal c2r = j11r*j10r + j11i*j10i;
+    GpuReal c2i = j11i*j10r - j11r*j10i;
     atomicAdd(&out[2], (-c1r - c2r) * weight);
     atomicAdd(&out[3], ( c2i - c1i) * weight);
     atomicAdd(&out[6], ( c2r - c1r) * weight);
@@ -746,8 +782,8 @@ __global__ void mueller_batch_kernel(const double *jFull,
     atomicAdd(&out[15], ( c1r - c2r) * weight);
 }
 
-static void add_mueller_from_jones(const std::vector<double> &jones,
-                                   double weight,
+static void add_mueller_from_jones(const std::vector<GpuReal> &jones,
+                                   GpuReal weight,
                                    int nAz, int nZen,
                                    Arr2D &out)
 {
@@ -759,28 +795,28 @@ static void add_mueller_from_jones(const std::vector<double> &jones,
         for (int t = 0; t <= nZen; ++t)
         {
             int grid = p * (nZen + 1) + t;
-            const double *j = &jones[grid * 8];
-            double j00r = j[0], j00i = j[1];
-            double j01r = j[2], j01i = j[3];
-            double j10r = j[4], j10i = j[5];
-            double j11r = j[6], j11i = j[7];
+            const GpuReal *j = &jones[grid * 8];
+            GpuReal j00r = j[0], j00i = j[1];
+            GpuReal j01r = j[2], j01i = j[3];
+            GpuReal j10r = j[4], j10i = j[5];
+            GpuReal j11r = j[6], j11i = j[7];
 
-            double a11 = j00r*j00r + j00i*j00i;
-            double a12 = j01r*j01r + j01i*j01i;
-            double a21 = j10r*j10r + j10i*j10i;
-            double a22 = j11r*j11r + j11i*j11i;
+            GpuReal a11 = j00r*j00r + j00i*j00i;
+            GpuReal a12 = j01r*j01r + j01i*j01i;
+            GpuReal a21 = j10r*j10r + j10i*j10i;
+            GpuReal a22 = j11r*j11r + j11i*j11i;
 
-            double A1 = a11 + a21, A2 = a12 + a22;
+            GpuReal A1 = a11 + a21, A2 = a12 + a22;
             out(p, t, 0, 0) += ((A1 + A2) * 0.5) * weight;
             out(p, t, 0, 1) += ((A1 - A2) * 0.5) * weight;
             A1 = a11 - a21; A2 = a12 - a22;
             out(p, t, 1, 0) += ((A1 + A2) * 0.5) * weight;
             out(p, t, 1, 1) += ((A1 - A2) * 0.5) * weight;
 
-            double c1r = j00r*j01r + j00i*j01i;
-            double c1i = j00i*j01r - j00r*j01i;
-            double c2r = j11r*j10r + j11i*j10i;
-            double c2i = j11i*j10r - j11r*j10i;
+            GpuReal c1r = j00r*j01r + j00i*j01i;
+            GpuReal c1i = j00i*j01r - j00r*j01i;
+            GpuReal c2r = j11r*j10r + j11i*j10i;
+            GpuReal c2i = j11i*j10r - j11r*j10i;
             out(p, t, 0, 2) += (-c1r - c2r) * weight;
             out(p, t, 0, 3) += ( c2i - c1i) * weight;
             out(p, t, 1, 2) += ( c2r - c1r) * weight;
@@ -855,7 +891,7 @@ bool HandlerPO::HandleBeamsToLocalGpu(const PreparedOrientation &prepared,
         b.jp11r = pb.jp11r; b.jp11i = pb.jp11i;
     }
 
-    std::vector<double> hJ(gridCount * 8, 0.0), hJns(gridCount * 8, 0.0);
+    std::vector<GpuReal> hJ(gridCount * 8, 0.0), hJns(gridCount * 8, 0.0);
     GpuWorkspace &ws = g_gpuWorkspace;
 
     if (!ensure_device_capacity(ws.beams, ws.beamCap, hBeams.size())) return false;
@@ -869,21 +905,21 @@ bool HandlerPO::HandleBeamsToLocalGpu(const PreparedOrientation &prepared,
 
     if (ws.gridNAz != nAz || ws.gridNZen != nZen)
     {
-        std::vector<double> hSinTheta(nZen + 1), hCosTheta(nZen + 1);
+        std::vector<GpuReal> hSinTheta(nZen + 1), hCosTheta(nZen + 1);
         for (int t = 0; t <= nZen; ++t)
         {
-            double theta = m_sphere.GetZenith(t);
+            GpuReal theta = m_sphere.GetZenith(t);
             hSinTheta[t] = sin(theta);
             hCosTheta[t] = cos(theta);
         }
-        std::vector<double> hSinPhi(nAz), hCosPhi(nAz);
+        std::vector<GpuReal> hSinPhi(nAz), hCosPhi(nAz);
         for (int p = 0; p < nAz; ++p)
         {
-            double phi = p * m_sphere.azinuthStep;
+            GpuReal phi = p * m_sphere.azinuthStep;
             hSinPhi[p] = sin(phi);
             hCosPhi[p] = cos(phi);
         }
-        std::vector<double> hVf(gridCount * 3);
+        std::vector<GpuReal> hVf(gridCount * 3);
         for (int p = 0; p < nAz; ++p)
             for (int t = 0; t <= nZen; ++t)
             {
@@ -894,18 +930,18 @@ bool HandlerPO::HandleBeamsToLocalGpu(const PreparedOrientation &prepared,
                 hVf[grid * 3 + 2] = v.z;
             }
 
-        if (cudaMemcpy(ws.sinTheta, hSinTheta.data(), hSinTheta.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-        if (cudaMemcpy(ws.cosTheta, hCosTheta.data(), hCosTheta.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-        if (cudaMemcpy(ws.sinPhi, hSinPhi.data(), hSinPhi.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-        if (cudaMemcpy(ws.cosPhi, hCosPhi.data(), hCosPhi.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-        if (cudaMemcpy(ws.vf, hVf.data(), hVf.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+        if (cudaMemcpy(ws.sinTheta, hSinTheta.data(), hSinTheta.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+        if (cudaMemcpy(ws.cosTheta, hCosTheta.data(), hCosTheta.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+        if (cudaMemcpy(ws.sinPhi, hSinPhi.data(), hSinPhi.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+        if (cudaMemcpy(ws.cosPhi, hCosPhi.data(), hCosPhi.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+        if (cudaMemcpy(ws.vf, hVf.data(), hVf.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
         ws.gridNAz = nAz;
         ws.gridNZen = nZen;
     }
 
     if (cudaMemcpy(ws.beams, hBeams.data(), hBeams.size() * sizeof(GpuBeam), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    if (cudaMemset(ws.j, 0, hJ.size() * sizeof(double)) != cudaSuccess) return false;
-    if (cudaMemset(ws.jNoShadow, 0, hJns.size() * sizeof(double)) != cudaSuccess) return false;
+    if (cudaMemset(ws.j, 0, hJ.size() * sizeof(GpuReal)) != cudaSuccess) return false;
+    if (cudaMemset(ws.jNoShadow, 0, hJns.size() * sizeof(GpuReal)) != cudaSuccess) return false;
 
     long long total = (long long)nBeams * gridCount;
     int block = 256;
@@ -920,8 +956,8 @@ bool HandlerPO::HandleBeamsToLocalGpu(const PreparedOrientation &prepared,
     if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess)
         return false;
 
-    if (cudaMemcpy(hJ.data(), ws.j, hJ.size() * sizeof(double), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
-    if (cudaMemcpy(hJns.data(), ws.jNoShadow, hJns.size() * sizeof(double), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+    if (cudaMemcpy(hJ.data(), ws.j, hJ.size() * sizeof(GpuReal), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+    if (cudaMemcpy(hJns.data(), ws.jNoShadow, hJns.size() * sizeof(GpuReal), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
 
     add_mueller_from_jones(hJ, prepared.sinZenith, nAz, nZen, localM);
     add_mueller_from_jones(hJns, prepared.sinZenith, nAz, nZen, localM_noshadow);
@@ -944,12 +980,12 @@ int HandlerPO::SelectGpuOrientationBatchSize(const std::vector<PreparedOrientati
     const size_t gridCount = (size_t)nAz * ((size_t)nZen + 1);
 
     const size_t gridVectorsBytes =
-        ((size_t)nZen + 1) * 2 * sizeof(double) +
-        (size_t)nAz * 2 * sizeof(double) +
-        gridCount * 3 * sizeof(double);
-    const size_t muellerBytes = gridCount * 16 * 2 * sizeof(double);
+        ((size_t)nZen + 1) * 2 * sizeof(GpuReal) +
+        (size_t)nAz * 2 * sizeof(GpuReal) +
+        gridCount * 3 * sizeof(GpuReal);
+    const size_t muellerBytes = gridCount * 16 * 2 * sizeof(GpuReal);
     const size_t fixedBytes = gridVectorsBytes + muellerBytes + (256ULL << 20);
-    const size_t jonesPerOrientation = gridCount * 8 * 2 * sizeof(double);
+    const size_t jonesPerOrientation = gridCount * 8 * 2 * sizeof(GpuReal);
 
     size_t usable = (size_t)(freeBytes * gpu_memory_fraction());
     if (usable <= fixedBytes + jonesPerOrientation)
@@ -1031,7 +1067,7 @@ static bool fft_upsample_phi_arr2d(const Arr2D &low,
     const size_t lowCount = (size_t)batch * nLow;
     const size_t fullCount = (size_t)batch * nFull;
 
-    std::vector<cufftDoubleComplex> hLow(lowCount);
+    std::vector<GpuComplex> hLow(lowCount);
     for (int t = 0; t <= nZen; ++t)
         for (int r = 0; r < 4; ++r)
             for (int c = 0; c < 4; ++c)
@@ -1039,24 +1075,24 @@ static bool fft_upsample_phi_arr2d(const Arr2D &low,
                 int b = (t * nElem) + r * 4 + c;
                 for (int p = 0; p < nLow; ++p)
                 {
-                    cufftDoubleComplex z;
-                    z.x = low(p, t, r, c);
-                    z.y = 0.0;
+                    GpuComplex z;
+                    z.x = (GpuReal)low(p, t, r, c);
+                    z.y = (GpuReal)0.0;
                     hLow[(size_t)b * nLow + p] = z;
                 }
             }
 
-    cufftDoubleComplex *dLow = nullptr;
-    cufftDoubleComplex *dFull = nullptr;
+    GpuComplex *dLow = nullptr;
+    GpuComplex *dFull = nullptr;
     cufftHandle planLow = 0;
     cufftHandle planFull = 0;
     bool ok = false;
 
     do
     {
-        if (cudaMalloc(&dLow, lowCount * sizeof(cufftDoubleComplex)) != cudaSuccess) break;
-        if (cudaMalloc(&dFull, fullCount * sizeof(cufftDoubleComplex)) != cudaSuccess) break;
-        if (cudaMemcpy(dLow, hLow.data(), lowCount * sizeof(cufftDoubleComplex),
+        if (cudaMalloc(&dLow, lowCount * sizeof(GpuComplex)) != cudaSuccess) break;
+        if (cudaMalloc(&dFull, fullCount * sizeof(GpuComplex)) != cudaSuccess) break;
+        if (cudaMemcpy(dLow, hLow.data(), lowCount * sizeof(GpuComplex),
                        cudaMemcpyHostToDevice) != cudaSuccess) break;
 
         int nLowArr[1] = { nLow };
@@ -1064,23 +1100,23 @@ static bool fft_upsample_phi_arr2d(const Arr2D &low,
         if (cufftPlanMany(&planLow, 1, nLowArr,
                           nullptr, 1, nLow,
                           nullptr, 1, nLow,
-                          CUFFT_Z2Z, batch) != CUFFT_SUCCESS) break;
+                          GpuCufftType, batch) != CUFFT_SUCCESS) break;
         if (cufftPlanMany(&planFull, 1, nFullArr,
                           nullptr, 1, nFull,
                           nullptr, 1, nFull,
-                          CUFFT_Z2Z, batch) != CUFFT_SUCCESS) break;
-        if (cufftExecZ2Z(planLow, dLow, dLow, CUFFT_FORWARD) != CUFFT_SUCCESS) break;
-        if (cudaMemset(dFull, 0, fullCount * sizeof(cufftDoubleComplex)) != cudaSuccess) break;
+                          GpuCufftType, batch) != CUFFT_SUCCESS) break;
+        if (gpu_cufft_exec(planLow, dLow, dLow, CUFFT_FORWARD) != CUFFT_SUCCESS) break;
+        if (cudaMemset(dFull, 0, fullCount * sizeof(GpuComplex)) != cudaSuccess) break;
 
         int block = 256;
         int grid = (int)((lowCount + block - 1) / block);
-        double scale = 1.0 / (double)nLow;
+        GpuReal scale = (GpuReal)(1.0 / (double)nLow);
         fft_phi_pad_kernel<<<grid, block>>>(dLow, dFull, nLow, nFull, batch, scale);
         if (cudaGetLastError() != cudaSuccess) break;
-        if (cufftExecZ2Z(planFull, dFull, dFull, CUFFT_INVERSE) != CUFFT_SUCCESS) break;
+        if (gpu_cufft_exec(planFull, dFull, dFull, CUFFT_INVERSE) != CUFFT_SUCCESS) break;
 
-        std::vector<cufftDoubleComplex> hFull(fullCount);
-        if (cudaMemcpy(hFull.data(), dFull, fullCount * sizeof(cufftDoubleComplex),
+        std::vector<GpuComplex> hFull(fullCount);
+        if (cudaMemcpy(hFull.data(), dFull, fullCount * sizeof(GpuComplex),
                        cudaMemcpyDeviceToHost) != cudaSuccess) break;
 
         for (int t = 0; t <= nZen; ++t)
@@ -1247,7 +1283,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     ws.hWeights.assign(nOrient, 0.0);
     ws.hBeamOffsets.assign(nOrient + 1, 0);
     std::vector<GpuBeam> &hBeams = ws.hBeams;
-    std::vector<double> &hWeights = ws.hWeights;
+    std::vector<GpuReal> &hWeights = ws.hWeights;
     std::vector<int> &hBeamOffsets = ws.hBeamOffsets;
     size_t bi = 0;
     for (int oi = 0; oi < nOrient; ++oi)
@@ -1305,21 +1341,21 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
 
     if (ws.gridNAz != nAz || ws.gridNZen != nZen)
     {
-        std::vector<double> hSinTheta(nZen + 1), hCosTheta(nZen + 1);
+        std::vector<GpuReal> hSinTheta(nZen + 1), hCosTheta(nZen + 1);
         for (int t = 0; t <= nZen; ++t)
         {
-            double theta = m_sphere.GetZenith(t);
+            GpuReal theta = m_sphere.GetZenith(t);
             hSinTheta[t] = sin(theta);
             hCosTheta[t] = cos(theta);
         }
-        std::vector<double> hSinPhi(nAz), hCosPhi(nAz);
+        std::vector<GpuReal> hSinPhi(nAz), hCosPhi(nAz);
         for (int p = 0; p < nAz; ++p)
         {
-            double phi = p * m_sphere.azinuthStep;
+            GpuReal phi = p * m_sphere.azinuthStep;
             hSinPhi[p] = sin(phi);
             hCosPhi[p] = cos(phi);
         }
-        std::vector<double> hVf(gridCount * 3);
+        std::vector<GpuReal> hVf(gridCount * 3);
         for (int p = 0; p < nAz; ++p)
             for (int t = 0; t <= nZen; ++t)
             {
@@ -1330,22 +1366,22 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                 hVf[grid * 3 + 2] = v.z;
             }
 
-        if (cudaMemcpy(ws.sinTheta, hSinTheta.data(), hSinTheta.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-        if (cudaMemcpy(ws.cosTheta, hCosTheta.data(), hCosTheta.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-        if (cudaMemcpy(ws.sinPhi, hSinPhi.data(), hSinPhi.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-        if (cudaMemcpy(ws.cosPhi, hCosPhi.data(), hCosPhi.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-        if (cudaMemcpy(ws.vf, hVf.data(), hVf.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+        if (cudaMemcpy(ws.sinTheta, hSinTheta.data(), hSinTheta.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+        if (cudaMemcpy(ws.cosTheta, hCosTheta.data(), hCosTheta.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+        if (cudaMemcpy(ws.sinPhi, hSinPhi.data(), hSinPhi.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+        if (cudaMemcpy(ws.cosPhi, hCosPhi.data(), hCosPhi.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+        if (cudaMemcpy(ws.vf, hVf.data(), hVf.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
         ws.gridNAz = nAz;
         ws.gridNZen = nZen;
     }
 
     if (cudaMemcpy(ws.beams, hBeams.data(), hBeams.size() * sizeof(GpuBeam), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    if (cudaMemcpy(ws.weights, hWeights.data(), hWeights.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+    if (cudaMemcpy(ws.weights, hWeights.data(), hWeights.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
     if (cudaMemcpy(ws.beamOffsets, hBeamOffsets.data(), hBeamOffsets.size() * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    if (cudaMemset(ws.j, 0, jCount * sizeof(double)) != cudaSuccess) return false;
-    if (cudaMemset(ws.jNoShadow, 0, jCount * sizeof(double)) != cudaSuccess) return false;
-    if (cudaMemset(ws.m, 0, mCount * sizeof(double)) != cudaSuccess) return false;
-    if (cudaMemset(ws.mNoShadow, 0, mCount * sizeof(double)) != cudaSuccess) return false;
+    if (cudaMemset(ws.j, 0, jCount * sizeof(GpuReal)) != cudaSuccess) return false;
+    if (cudaMemset(ws.jNoShadow, 0, jCount * sizeof(GpuReal)) != cudaSuccess) return false;
+    if (cudaMemset(ws.m, 0, mCount * sizeof(GpuReal)) != cudaSuccess) return false;
+    if (cudaMemset(ws.mNoShadow, 0, mCount * sizeof(GpuReal)) != cudaSuccess) return false;
 
     int block = 256;
     bool noAtomics = gpu_no_atomics_enabled();
@@ -1369,7 +1405,8 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
             real(m_invComplWave), imag(m_invComplWave),
             m_legacySign ? 1 : 0, ws.j, ws.jNoShadow);
     }
-    if (cudaGetLastError() != cudaSuccess)
+    cudaError_t err = cudaGetLastError();
+    if (!gpu_report_cuda_error(err, "diffraction kernel launch"))
         return false;
 
     long long muellerTotal = (long long)nOrient * gridCount;
@@ -1377,22 +1414,26 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     mueller_batch_kernel<<<muellerGrid, block>>>(ws.j, ws.jNoShadow, ws.weights,
                                                  nOrient, gridCount,
                                                  ws.m, ws.mNoShadow);
-    if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess)
+    err = cudaGetLastError();
+    if (!gpu_report_cuda_error(err, "mueller kernel launch"))
+        return false;
+    err = cudaDeviceSynchronize();
+    if (!gpu_report_cuda_error(err, "mueller kernel sync"))
         return false;
 
     ws.hM.resize(mCount);
     ws.hMNoShadow.resize(mCount);
-    std::vector<double> &hM = ws.hM;
-    std::vector<double> &hMns = ws.hMNoShadow;
-    if (cudaMemcpy(hM.data(), ws.m, mCount * sizeof(double), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
-    if (cudaMemcpy(hMns.data(), ws.mNoShadow, mCount * sizeof(double), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+    std::vector<GpuReal> &hM = ws.hM;
+    std::vector<GpuReal> &hMns = ws.hMNoShadow;
+    if (cudaMemcpy(hM.data(), ws.m, mCount * sizeof(GpuReal), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+    if (cudaMemcpy(hMns.data(), ws.mNoShadow, mCount * sizeof(GpuReal), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
 
     for (int p = 0; p < nAz; ++p)
         for (int t = 0; t <= nZen; ++t)
         {
             int grid = p * (nZen + 1) + t;
-            const double *m = &hM[grid * 16];
-            const double *mn = &hMns[grid * 16];
+            const GpuReal *m = &hM[grid * 16];
+            const GpuReal *mn = &hMns[grid * 16];
             for (int r = 0; r < 4; ++r)
                 for (int c = 0; c < 4; ++c)
                 {
@@ -1471,30 +1512,30 @@ bool HandlerPO::DiffractThetasGpu(const std::vector<PreparedOrientation> &prepar
         }
     }
 
-    std::vector<double> hSinTheta(nPoints), hCosTheta(nPoints);
+    std::vector<GpuReal> hSinTheta(nPoints), hCosTheta(nPoints);
     for (int t = 0; t < nPoints; ++t)
     {
-        hSinTheta[t] = sin(theta_rads[t]);
-        hCosTheta[t] = cos(theta_rads[t]);
+        hSinTheta[t] = (GpuReal)sin(theta_rads[t]);
+        hCosTheta[t] = (GpuReal)cos(theta_rads[t]);
     }
 
-    std::vector<double> hSinPhi(nAz), hCosPhi(nAz);
+    std::vector<GpuReal> hSinPhi(nAz), hCosPhi(nAz);
     for (int p = 0; p < nAz; ++p)
     {
-        double phi = p * m_sphere.azinuthStep;
+        GpuReal phi = p * m_sphere.azinuthStep;
         hSinPhi[p] = sin(phi);
         hCosPhi[p] = cos(phi);
     }
 
     const int gridCount = nAz * nPoints;
-    std::vector<double> hVf((size_t)gridCount * 3);
+    std::vector<GpuReal> hVf((size_t)gridCount * 3);
     for (int p = 0; p < nAz; ++p)
     {
-        double cp = hCosPhi[p], sp = hSinPhi[p];
+        GpuReal cp = hCosPhi[p], sp = hSinPhi[p];
         for (int t = 0; t < nPoints; ++t)
         {
-            double dz = -hCosTheta[t];
-            double vfx, vfy, vfz;
+            GpuReal dz = -hCosTheta[t];
+            GpuReal vfx, vfy, vfz;
             if (dz >= 1.0 - 1e-15) { vfx = 0.0; vfy = -1.0; vfz = 0.0; }
             else if (dz <= -1.0 + 1e-15) { vfx = 0.0; vfy = 1.0; vfz = 0.0; }
             else { vfx = -sp; vfy = cp; vfz = 0.0; }
@@ -1515,13 +1556,13 @@ bool HandlerPO::DiffractThetasGpu(const std::vector<PreparedOrientation> &prepar
     if (!ensure_device_capacity(ws.m, ws.mCap, (size_t)nPoints)) return false;
 
     if (cudaMemcpy(ws.beams, ws.hBeams.data(), ws.hBeams.size() * sizeof(GpuBeam), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    if (cudaMemcpy(ws.weights, ws.hWeights.data(), ws.hWeights.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    if (cudaMemcpy(ws.sinTheta, hSinTheta.data(), hSinTheta.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    if (cudaMemcpy(ws.cosTheta, hCosTheta.data(), hCosTheta.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    if (cudaMemcpy(ws.sinPhi, hSinPhi.data(), hSinPhi.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    if (cudaMemcpy(ws.cosPhi, hCosPhi.data(), hCosPhi.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    if (cudaMemcpy(ws.vf, hVf.data(), hVf.size() * sizeof(double), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    if (cudaMemset(ws.m, 0, (size_t)nPoints * sizeof(double)) != cudaSuccess) return false;
+    if (cudaMemcpy(ws.weights, ws.hWeights.data(), ws.hWeights.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+    if (cudaMemcpy(ws.sinTheta, hSinTheta.data(), hSinTheta.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+    if (cudaMemcpy(ws.cosTheta, hCosTheta.data(), hCosTheta.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+    if (cudaMemcpy(ws.sinPhi, hSinPhi.data(), hSinPhi.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+    if (cudaMemcpy(ws.cosPhi, hCosPhi.data(), hCosPhi.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+    if (cudaMemcpy(ws.vf, hVf.data(), hVf.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+    if (cudaMemset(ws.m, 0, (size_t)nPoints * sizeof(GpuReal)) != cudaSuccess) return false;
 
     int block = 256;
     long long total = (long long)nBeams * gridCount;
@@ -1537,8 +1578,11 @@ bool HandlerPO::DiffractThetasGpu(const std::vector<PreparedOrientation> &prepar
     if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess)
         return false;
 
-    if (cudaMemcpy(m11_out.data(), ws.m, (size_t)nPoints * sizeof(double), cudaMemcpyDeviceToHost) != cudaSuccess)
+    std::vector<GpuReal> hM11(nPoints);
+    if (cudaMemcpy(hM11.data(), ws.m, (size_t)nPoints * sizeof(GpuReal), cudaMemcpyDeviceToHost) != cudaSuccess)
         return false;
+    for (int i = 0; i < nPoints; ++i)
+        m11_out[i] = hM11[i];
 
     ws.gridNAz = -1;
     ws.gridNZen = -1;

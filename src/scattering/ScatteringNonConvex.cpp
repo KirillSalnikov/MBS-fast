@@ -65,6 +65,8 @@ void ScatteringNonConvex::PushBeamsToTree(int facetId, const PolygonArray &polyg
 #endif
         in.AddOpticalPath(path);
         out.AddOpticalPath(path);
+        UpdateTraceReference(in);
+        UpdateTraceReference(out);
 #ifdef _DEBUG // DEB
         in.dirs.push_back(in.direction);
         out.dirs.push_back(out.direction);
@@ -73,6 +75,8 @@ void ScatteringNonConvex::PushBeamsToTree(int facetId, const PolygonArray &polyg
             throw false;
         }
 #endif
+        if (m_treeSize >= MAX_BEAM_REFL_NUM-1)
+            return;
         m_beamTree[m_treeSize++] = in;
         m_beamTree[m_treeSize++] = out;
 #ifdef _CHECK_ENERGY_BALANCE
@@ -107,6 +111,7 @@ void ScatteringNonConvex::SplitLightToBeams()
     m_incidentEnergy = 0;
 #endif
     m_treeSize = 0;
+    ResetTraceReference();
 
     IntArray facetIDs;
     SelectVisibleFacetsForLight(facetIDs);
@@ -384,12 +389,15 @@ int ScatteringNonConvex::FindFacetId(int facetId, const IntArray &arr)
 bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
 {
     bool ok = true;
+    int processedBeams = 0;
 //#ifdef _DEBUG // DEB
 //    ofstream logfile("logscat.txt", ios::out);
 //    int count = 0;
 //#endif
     while (m_treeSize != 0)
     {
+        if (m_traceMaxBeams > 0 && ++processedBeams > m_traceMaxBeams)
+            return false;
         Beam beam = m_beamTree[--m_treeSize];
 #ifdef _DEBUG // DEB
 //        logfile << count << " " << m_treeSize << " " << beam.id << std::endl;
@@ -732,7 +740,10 @@ bool ScatteringNonConvex::SplitBeamByFacet(const Polygon &intersection,
 
     bool hasOutBeam = SetOpticalBeamParams(facet, beam, inBeam, outBeam);
 
-    ok = PushBeamToTree(inBeam, beam, newId, facetId, Location::In);
+    if (IsTracePruned(inBeam))
+        ok = true;
+    else
+        ok = PushBeamToTree(inBeam, beam, newId, facetId, Location::In);
 
     if (hasOutBeam)
     {
