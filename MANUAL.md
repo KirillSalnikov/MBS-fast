@@ -79,6 +79,40 @@ Resize a particle loaded with `--pf`. Scales the particle so that its maximal di
 mbs_po --pf --rs 50.0 -p myparticle.dat --ri 1.31 0 -n 12 ...
 ```
 
+#### `--k_eq X`
+
+Resize a file particle by equivalent-volume radius instead of by maximal
+dimension. This is the preferred size control for irregular particles when
+comparing to ADDA.
+
+Definitions:
+
+```
+V      = particle volume
+r_eq  = (3 V / (4 pi))^(1/3)
+k_eq  = 2 pi r_eq / lambda
+```
+
+If the input particle has equivalent radius `r_eq0`, wavelength `lambda`, and
+the requested value is `K`, the code applies the scale factor
+
+```
+s = (K lambda / (2 pi)) / r_eq0
+Dmax_new = s Dmax_old
+V_new    = s^3 V_old
+```
+
+`--k_eq` and `--rs` are mutually exclusive. `--k_eq` requires `-w`.
+
+Example:
+
+```bash
+mbs_po --po --oldauto 2 --pole \
+    --pf shapeA64_mbs.dat --k_eq 20.76 \
+    --ri 1.6 0.002 -w 1.064 -n 8 \
+    --tgrid scattering_angles --nphi 600 --gpu --fft --close
+```
+
 #### `--forced_convex`
 
 Force the convex particle tracing algorithm, even if the particle would normally be detected as concave. Use when you know the particle is convex but auto-detection fails.
@@ -209,6 +243,63 @@ Uniform grid in beta x gamma over the symmetry-reduced domain. Traditional metho
 Total orientations = (N_BETA+1) x N_GAMMA.
 
 Example: `--random 20 60` -> 1260 orientations.
+
+Depth in random/oldauto logs means the internal reflection order of traced
+beams. Depth 0 is the external/shadow contribution, depth 1 is the first
+refracted/reflected generation, and so on up to `-n`.
+
+#### `--oldauto DIV`
+
+Physics-based regular orientation grid. It computes the beta/gamma grid from
+the diffraction-limited angular scale of the current particle and then divides
+that grid by `DIV`.
+
+Let
+
+```
+L = Dmax
+Delta_theta = 0.69 lambda / L    [radians]
+Delta_theta_deg = Delta_theta * 180/pi
+Delta_orient = Delta_theta_deg / ring_points
+```
+
+For particle symmetry ranges `beta_sym` and `gamma_sym` in degrees:
+
+```
+N_beta_full  = ceil(beta_sym  / Delta_orient)
+N_gamma_full = ceil(gamma_sym / Delta_orient)
+N_beta       = ceil(N_beta_full  / DIV)
+N_gamma      = ceil(N_gamma_full / DIV)
+```
+
+The actual beta count in the log is `N_beta + 1`; gamma count is `N_gamma`.
+For example, hexagonal symmetry has `beta_sym=90 deg`, `gamma_sym=60 deg`.
+
+`DIV=2` is the dense mode used for the Greek shape runs. Larger values are
+faster and less accurate. `--oldauto` uses `--nphi` if supplied, otherwise
+uses `--grid` phi or the default.
+
+#### `--ring_points N`
+
+Number of orientation samples per diffraction ring used by `--oldauto`.
+Default is 3.
+
+Formula:
+
+```
+Delta_orient = (0.69 lambda / Dmax) * 180/pi / N
+```
+
+Increasing `N` increases the orientation count roughly as `N^2`.
+
+#### `--pole`
+
+Fast pole shortcut for regular beta/gamma grids. At `beta=0` and `beta=pi`
+all gamma rotations describe the same physical orientation, so the code traces
+one gamma and multiplies its weight by the full gamma count.
+
+This keeps the normalization equivalent to the full grid while avoiding
+duplicated pole work.
 
 #### `--montecarlo N`
 
@@ -345,43 +436,227 @@ Scattering angle filter in degrees. Sets a backscattering cone aperture: only sc
 
 ---
 
-### Multi-Size Computation (`--sizefile`)
+### Multi-Size Computation
+
+#### `--multigrid DMIN DMAX N`
+
+Generate `N` logarithmically spaced maximal dimensions from `DMIN` to `DMAX`
+and compute them in one run.
 
 ```
---sizefile FILENAME
+D_i = exp(log(DMIN) + i (log(DMAX)-log(DMIN))/(N-1))
 ```
 
-Compute multiple size parameters from one beam tracing pass. Uses `BeamCache`: beam topology is invariant across sizes (same shape, same RI), only vertex positions and phases scale with D.
+With `--oldauto`, the particle is first resized to `DMAX`, the orientation
+grid is built for this largest size, and the tracing is performed once. The
+prepared beam geometry is then scaled for every `D_i`.
 
-**File format**: plain text, one size parameter (x = pi*D/lambda) value per line.
+#### `--multikeq KMIN KMAX N`
 
-**Example file** (`sizes.txt`):
+Same as `--multigrid`, but sizes are equivalent-volume size parameters:
+
 ```
-10
-20
-50
-100
-200
-500
+k_eq,i = exp(log(KMIN) + i (log(KMAX)-log(KMIN))/(N-1))
 ```
 
-**Output**: `M_x10.dat`, `M_x20.dat`, etc.
+With `--oldauto`, the common trace is done at `KMAX`.
 
-**Performance note**: Uses `ComputeFromCache`, which recomputes diffraction integrals for each cached beam at each size. This adds overhead compared to running each size independently. For small particles (small x), separate runs may be faster.
+#### `--multikeq_list FILE`
 
-**Recommendation**: Use `--sizefile` primarily for large particles (x > 500) with high reflection count (`-n` > 12), where the ray tracing phase dominates and caching provides the most benefit.
+Read exact `k_eq` values from a text file. This is the safest mode when the
+target sizes come from an external ADDA table and are not exactly log-spaced.
+
+File format:
+
+```
+# first column is k_eq; optional second column is ignored by the parser
+2.27 adda
+3.03 adda
+3.99 adda
+5.23 adda
+65 extrap
+```
+
+The code uses the maximum listed value as the reference size:
+
+```
+K_ref = max(k_eq list)
+```
+
+Then it traces once at `K_ref` and diffracts every listed size. Output labels
+use the exact values, for example:
+
+```
+OUT/OUT_keq2p27.dat
+OUT/OUT_keq2p27_noshadow.dat
+```
+
+Important: only tracing/preparation is shared. Diffraction is still computed
+for every size because the phase changes with size:
+
+```
+exp(i k optical_path) and exp(i k r)
+```
+
+For a size scale `s = K_i / K_ref`, the prepared geometry is scaled as:
+
+```
+coordinates       -> s coordinates
+areas             -> s^2 areas
+optical lengths   -> s optical lengths
+incoming energy   -> s^2 incoming energy
+```
+
+The diffraction integral must then be recomputed for the scaled beams.
+
+#### `--multigrid_parallel JOBS`
+
+Run `--multigrid` or `--multikeq` as independent child processes instead of
+using shared tracing. This is useful when one GPU should process several
+independent sizes concurrently, or when fault isolation matters more than
+shared tracing.
+
+Each child receives one size via `--rs` or `--k_eq`.
+
+#### `--multigrid_threads N`
+
+OpenMP threads per child process in `--multigrid_parallel`. If omitted, GPU
+children default to one thread so several child processes can share CPU cores.
 
 ---
 
 ### Performance Options
 
+#### `--threads N`
+
+Set the OpenMP worker thread count. If omitted, the program uses physical CPU
+cores by default, not hyperthreads.
+
+This affects CPU tracing/preparation and CPU diffraction. With `--gpu`, CUDA
+does the diffraction, but CPU threads are still used for ray tracing and beam
+preparation. In shared multikeq runs this phase can be large because the trace
+is done at the largest listed size.
+
+For one GPU job that should also use CPU tracing:
+
+```bash
+--threads 12 --gpu --fft
+```
+
+For many GPU jobs sharing the same machine:
+
+```bash
+--threads 1 --gpu --fft
+```
+
+#### `--gpu`
+
+Use the CUDA backend for Phase 2 diffraction. Requires a binary built with
+`USE_CUDA=1`.
+
+Build:
+
+```bash
+make USE_CUDA=1
+```
+
+For Ampere/Ada cards with older drivers, build with an explicit architecture
+to avoid PTX JIT errors:
+
+```bash
+make USE_CUDA=1 NVCCFLAGS="-O3 -std=c++11 -arch=sm_86 -U_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700"
+```
+
+CUDA implementation:
+
+- CPU traces rays and prepares `PreparedOrientation` / `PreparedBeam` data.
+- Beam polygon vertices, Jones matrices, projected centers, optical lengths,
+  and areas are packed into GPU buffers.
+- CUDA kernels evaluate diffraction for many scattering directions and beams.
+- Results are reduced into local Mueller arrays and copied back to CPU.
+
+Memory roughly scales as:
+
+```
+O(batch_orientations * beams_per_orientation * vertices_per_beam)
++ O(N_phi * N_theta * Mueller/Jones accumulators)
+```
+
+The code chooses GPU orientation batches dynamically so a 12 GB card can run
+large cases without allocating the full orientation set on the GPU at once.
+
+#### `--fft`
+
+Enable the experimental CUDA FFT phi-interpolation backend. Requires `--gpu`.
+
+This is not aperture pFFT/FMM and not a 3D spatial FFT. It accelerates the
+azimuthal scattering grid by computing diffraction on a reduced direct
+azimuth grid and reconstructing the requested `N_phi` grid using cuFFT-based
+angular Fourier interpolation.
+
+The log line:
+
+```
+GPU FFT phi interpolation: direct Nphi=60, output Nphi=600 (factor=10)
+```
+
+means direct diffraction was evaluated for 60 azimuth samples and interpolated
+to 600 output samples.
+
+Environment controls:
+
+```
+MBS_FFT_PHI_FACTOR=auto   # default
+MBS_FFT_PHI_FACTOR=10     # force output/direct ratio
+MBS_FFT_CHECK=1           # optional diagnostics/check path
+```
+
+Accuracy depends on smoothness in phi. It is usually appropriate for
+orientation-averaged Mueller matrices with dense `N_phi`; validate against
+`--gpu` without `--fft` for new particle classes.
+
 #### `--beam_cutoff EPS`
 
-Skip diffraction for negligible beams. Two dimensionless conditions must BOTH be true:
-- `|J|² / max|J|² < EPS` — beam amplitude is small relative to strongest beam
-- `area / maxArea < EPS` — beam aperture is small relative to largest beam
+Compatibility shorthand for beam cutoffs. It sets the separate J and area
+beam thresholds to `EPS`.
 
-This protects the forward diffraction peak (large area beams always kept) and strong narrow beams (large |J|² always kept). Only beams weak in BOTH amplitude AND area are skipped.
+Modern code exposes separate tests:
+
+```
+--beam_cutoff_j EPS
+--beam_cutoff_area EPS
+--beam_cutoff_importance EPS
+```
+
+The quantities are dimensionless and normalized within the current
+orientation/chunk:
+
+```
+J_rel    = |J|^2 / max(|J|^2)
+A_rel    = area / max(area)
+I_rel    = |J|^2 area / max(|J|^2 area)
+```
+
+`--beam_cutoff_j EPS` skips beams with:
+
+```
+J_rel < EPS
+```
+
+`--beam_cutoff_area EPS` skips beams with:
+
+```
+A_rel < EPS
+```
+
+`--beam_cutoff_importance EPS` skips beams with:
+
+```
+I_rel < EPS
+```
+
+Use the importance cutoff for a size-independent single threshold; it keeps
+beams that are either strong, large-area, or both.
 
 EPS = target accuracy (0 to 1). Set automatically by `--auto`/`--adaptive`. Can also be used standalone with `--random` or `--sobol`.
 
@@ -397,6 +672,68 @@ EPS = target accuracy (0 to 1). Set automatically by `--auto`/`--adaptive`. Can 
 mbs_po --po --random 10 30 --beam_cutoff 0.05 \
     -p 1 42.857 30 -w 0.532 --ri 1.31 0 -n 14 \
     --grid 0 180 48 180 --close
+```
+
+#### `--trace_cutoff EPS`
+
+Compatibility shorthand for tracing cutoffs. It sets:
+
+```
+--trace_cutoff_j EPS
+--trace_cutoff_area EPS
+```
+
+The trace cutoffs prune internal beam trees before diffraction, so they can
+reduce both tracing time and later diffraction work.
+
+#### `--trace_cutoff_j EPS`
+
+Stop tracing a beam branch when its relative Jones intensity is small:
+
+```
+|J|^2 / |J_initial|max^2 < EPS
+```
+
+This is independent of particle size because both numerator and denominator
+scale in the same internal amplitude units.
+
+#### `--trace_cutoff_area EPS`
+
+Stop tracing a beam branch when its relative aperture area is small:
+
+```
+area / area_initial,max < EPS
+```
+
+This removes geometrically tiny internal beams. Use with care for exact
+backscatter studies because small apertures can still contribute sharp
+features.
+
+#### `--trace_max_beams N`
+
+Abort tracing one orientation after more than `N` beam nodes. `0` disables the
+limit. This is a safety valve for pathological non-convex cases where internal
+beam splitting explodes.
+
+Recommended heavy-case starting point:
+
+```bash
+--beam_cutoff_importance 0.0001 \
+--trace_cutoff_j 0.0001 \
+--trace_cutoff_area 0.0001 \
+--trace_max_beams 20000
+```
+
+#### `--chunk N`
+
+Maximum orientation/gamma chunk size for memory-aware streaming modes. Smaller
+chunks reduce RAM pressure and make checkpointing/resume safer; larger chunks
+reduce overhead.
+
+Memory is approximately:
+
+```
+O(chunk * average_beams_per_orientation * PreparedBeam_size)
 ```
 
 #### `--shadow_off`
@@ -527,6 +864,35 @@ g++ -O3 -march=haswell -std=gnu++11 -funroll-loops -fopenmp \
 
 The code auto-detects AVX-512 at compile time (`#ifdef __AVX512F__`).
 
+### CUDA Build
+
+```bash
+make USE_CUDA=1
+```
+
+Optional precision selector:
+
+```bash
+make USE_CUDA=1 GPU_PRECISION=double   # default
+make USE_CUDA=1 GPU_PRECISION=float    # experimental FP32 CUDA path
+```
+
+`GPU_PRECISION=float` changes internal CUDA diffraction buffers/kernels to
+single precision while keeping the public CPU/output path in double where
+applicable. On RTX 3080 Ti / 4070 SUPER this has shown little benefit for the
+current FFT-heavy Greek-shape path; validate before using for production.
+
+For RTX 3080 Ti and RTX 4070 SUPER, this explicit architecture build has been
+used successfully:
+
+```bash
+make USE_CUDA=1 \
+  NVCCFLAGS="-O3 -std=c++11 -arch=sm_86 -U_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700"
+```
+
+Use `--gpu` at runtime to select CUDA. Add `--fft` to use cuFFT phi
+interpolation.
+
 ---
 
 ## Performance Summary
@@ -599,10 +965,28 @@ mbs_po --po --sobol 1024 --auto_tgrid --abs \
 
 ### Size scan
 ```bash
-echo -e "10\n20\n50\n100\n200" > sizes.txt
-mbs_po --po --sobol 1024 --auto_tgrid \
-    -p 1 14.3 10 -w 0.532 --ri 1.31 0 -n 12 \
-    --grid 0 180 48 180 --sizefile sizes.txt --close
+mbs_po --po --oldauto 2 --pole \
+    --pf shapeA64_mbs.dat --multikeq 2.27 160 15 \
+    --ri 1.6 0.002 -w 1.064 -n 8 \
+    --tgrid scattering_angles --nphi 600 --gpu --fft --close
+```
+
+### Exact k_eq list from ADDA table
+```bash
+cat > keq_list.txt <<EOF
+2.27 adda
+3.03 adda
+3.99 adda
+5.23 adda
+EOF
+
+mbs_po --po --oldauto 2 --pole \
+    --pf shapeA64_mbs.dat --multikeq_list keq_list.txt \
+    --ri 1.6 0.002 -w 1.064 -n 8 \
+    --tgrid scattering_angles --nphi 600 --gpu --fft \
+    --beam_cutoff_importance 0.0001 \
+    --trace_cutoff_j 0.0001 --trace_cutoff_area 0.0001 \
+    --trace_max_beams 20000 --close
 ```
 
 ### Custom particle from file
@@ -629,6 +1013,7 @@ mbs_po --po --all --tr tracks.dat --gr \
 | `-p` | TYPE H D [extra] | Particle | Particle type and dimensions |
 | `--pf` | (none) | Particle | Load particle from file (filename via `-p`) |
 | `--rs` | SIZE | Particle | Resize particle to maximal dimension SIZE |
+| `--k_eq` | K | Particle | Resize file particle so `2*pi*r_eq/lambda = K` |
 | `--forced_convex` | (none) | Particle | Force convex tracing algorithm |
 | `--forced_nonconvex` | (none) | Particle | Force non-convex tracing algorithm |
 | `-w` | WAVELENGTH | Physical | Wavelength in micrometers |
@@ -644,20 +1029,40 @@ mbs_po --po --all --tr tracks.dat --gr \
 | `--sobol` | N | Orientations | Sobol quasi-random (N = power of 2) |
 | `--adaptive` | EPS | Orientations | Adaptive convergence to accuracy EPS |
 | `--random` | N_BETA N_GAMMA | Orientations | Uniform grid |
+| `--oldauto` | DIV | Orientations | Physics-based regular grid divided by DIV |
+| `--ring_points` | N | Orientations | Points per diffraction ring for oldauto grid |
+| `--pole` | (none) | Orientations | Use one gamma at beta poles with full weight |
 | `--montecarlo` | N | Orientations | Monte Carlo random orientations |
 | `--fixed` | BETA GAMMA | Orientations | Single orientation (degrees) |
 | `--orientfile` | FILENAME | Orientations | Orientations from file (radians) |
 | `--checkpoint` | (none) | Orientations | Save/resume long `--orientfile` runs |
+| `--chunk` | N | Orientations | Max orientation/gamma chunk size |
 | `--sym` | B G | Orientations | Symmetry override: beta/B, gamma/(2pi/G) |
 | `-b` | MIN MAX | Orientations | Beta range override (degrees) |
 | `-g` | MIN MAX | Orientations | Gamma range override (degrees) |
 | `--grid` | T1 T2 N_PHI N_TH | Scattering | Uniform scattering grid |
 | `--tgrid` | FILENAME | Scattering | Non-uniform theta grid from file |
 | `--auto_tgrid` | (none) | Scattering | Auto-generate optimal theta grid |
+| `--auto_phi` | (none) | Scattering | Auto-select phi grid |
+| `--nphi` | N | Scattering | Override N_phi |
 | `--point` | (none) | Scattering | Backscatter point only (disabled) |
 | `--filter` | ANGLE | Scattering | Backscatter cone aperture (degrees) |
-| `--sizefile` | FILENAME | Multi-size | Multiple x values from file |
-| `--beam_cutoff` | EPS | Performance | Beam importance cutoff |
+| `--multigrid` | DMIN DMAX N | Multi-size | Log-spaced Dmax sizes; shared trace in oldauto |
+| `--multikeq` | KMIN KMAX N | Multi-size | Log-spaced k_eq sizes; shared trace in oldauto |
+| `--multikeq_list` | FILE | Multi-size | Exact k_eq values; shared trace at max |
+| `--multigrid_parallel` | JOBS | Multi-size | Run sizes as child processes |
+| `--multigrid_threads` | N | Multi-size | Threads per child process |
+| `--threads` | N | Performance | OpenMP worker threads |
+| `--gpu` | (none) | Performance | CUDA diffraction backend |
+| `--fft` | (none) | Performance | cuFFT phi interpolation backend; requires `--gpu` |
+| `--beam_cutoff` | EPS | Performance | Shorthand for J/area beam cutoffs |
+| `--beam_cutoff_j` | EPS | Performance | Beam skip by relative `|J|^2` |
+| `--beam_cutoff_area` | EPS | Performance | Beam skip by relative area |
+| `--beam_cutoff_importance` | EPS | Performance | Beam skip by relative `|J|^2*area` |
+| `--trace_cutoff` | EPS | Performance | Shorthand for trace J/area cutoffs |
+| `--trace_cutoff_j` | EPS | Performance | Trace prune by relative `|J|^2` |
+| `--trace_cutoff_area` | EPS | Performance | Trace prune by relative area |
+| `--trace_max_beams` | N | Performance | Max beam nodes per orientation |
 | `--shadow_off` | (none) | Performance | Disable shadow beam |
 | `-r` | RATIO | Performance | Small beam restriction ratio (default 100) |
 | `-o` | DIRNAME | Output | Output folder (default "M") |

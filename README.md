@@ -9,6 +9,7 @@ OpenMP + MPI parallel. AVX-512/AVX2 SIMD. Adaptive grids. Auto beam cutoff.
 - **OpenMP** (libgomp for GCC, libomp for Clang)
 - x86-64 CPU with AVX2+FMA (minimum) or AVX-512 (optimal)
 - **MPI** (optional, for cluster runs): `sudo apt install libopenmpi-dev`
+- **CUDA toolkit** (optional, for `--gpu`/`--fft`): NVIDIA GPU with CUDA-capable driver
 
 ## Build
 
@@ -26,6 +27,15 @@ Default `make`/`build.sh` intentionally avoid hard-coded AVX-512. On AMD EPYC
 `-march=native -mtune=native`. Override with `ARCH_FLAGS=...` or
 `CXXFLAGS=...` if you need a portable binary.
 
+CUDA build:
+
+```bash
+make USE_CUDA=1
+
+# For RTX 3080 Ti / 4070 SUPER, avoid unsupported PTX JIT on older drivers:
+make USE_CUDA=1 NVCCFLAGS="-O3 -std=c++11 -arch=sm_86 -U_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700"
+```
+
 ## Quick Start
 
 ```bash
@@ -41,9 +51,17 @@ bin/mbs_po --po --autofull 0.05 \
 bin/mbs_po --po --sobol 1024 --auto_tgrid 0.05 --auto_phi \
     -p 1 100 70 -w 0.532 --ri 1.31 0 -n 8 --close
 
-# Multi-size: trace once, compute all sizes
-bin/mbs_po --po --sobol 1024 --multigrid sizes.txt \
-    -p 1 400 50 -w 0.532 --ri 1.31 0 -n 8 --close
+# File particle scaled by equivalent size parameter k_eq
+bin/mbs_po --po --oldauto 2 --pole \
+    --pf shapeA64_mbs.dat --k_eq 20.76 \
+    --ri 1.6 0.002 -w 1.064 -n 8 \
+    --tgrid scattering_angles --nphi 600 --gpu --fft --close
+
+# Multi-size: trace once at max k_eq, then diffract each listed size
+bin/mbs_po --po --oldauto 2 --pole \
+    --pf shapeA64_mbs.dat --multikeq_list keq_list.txt \
+    --ri 1.6 0.002 -w 1.064 -n 8 \
+    --tgrid scattering_angles --nphi 600 --gpu --fft --close
 ```
 
 **Note**: `--grid` and `--sym` are NOT needed with `--auto`/`--autofull`. Theta grid, phi bins, and particle symmetry are set automatically.
@@ -68,7 +86,10 @@ bin/mbs_po --po --sobol 1024 --multigrid sizes.txt \
 Both converge on 5 control points: Q_sca, M₁₁(22°), M₁₁(46°), M₁₁(90°), M₁₁(180°).
 All must be within EPS for 2 consecutive iterations.
 
-Auto beam cutoff: skip beams where BOTH `|J|²/max < eps` AND `area/max < eps`. Dimensionless, size-independent. Protects forward peak (large area) and strong beams (large |J|²). Skips 45-80% of negligible beams depending on eps.
+Auto beam cutoff: skip beams by dimensionless relative thresholds. The modern
+fine-grained flags are `--beam_cutoff_j`, `--beam_cutoff_area`,
+`--beam_cutoff_importance`, `--trace_cutoff_j`, and `--trace_cutoff_area`.
+`--beam_cutoff EPS` remains a shorthand for the J/area beam tests.
 
 `--beam_cutoff EPS` can also be used standalone with `--random` or `--sobol`.
 
@@ -133,7 +154,8 @@ See `tests/reference_test/RESULTS.md` and comparison plots in `tests/reference_t
 - **Incremental adaptive**: reuses previous orientations (Sobol subset property)
 - **5 convergence controls**: Q_sca, M₁₁(22°), M₁₁(46°), M₁₁(90°), M₁₁(180°)
 - **Auto beam cutoff**: two dimensionless thresholds (|J|²/max < eps AND area/max < eps). Protects forward peak and strong beams, skips 45-80% of negligible beams
-- **Multi-size**: `--multigrid` — trace once, recompute diffraction for all sizes
+- **CUDA diffraction**: `--gpu`; add `--fft` for cuFFT phi interpolation backend
+- **Multi-size**: `--multigrid`, `--multikeq`, `--multikeq_list` — trace once at the largest size, recompute diffraction for all sizes
 - **Per-beta save**: `--save_betas` — write intermediate Mueller per beta (backup/resume)
 - **Opt-in checkpoint**: `--checkpoint` — save/resume long `--orientfile` runs; off by default to avoid extra I/O
 - **Dual output**: M.dat (with shadow) + M_noshadow.dat (without) at no extra cost
