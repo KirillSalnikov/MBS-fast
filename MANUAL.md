@@ -609,11 +609,50 @@ Environment controls:
 MBS_FFT_PHI_FACTOR=auto   # default
 MBS_FFT_PHI_FACTOR=10     # force output/direct ratio
 MBS_FFT_CHECK=1           # optional diagnostics/check path
+MBS_GPU_NO_ATOMICS=1      # use orientation-grid CUDA reduction path
+MBS_GPU_MEM_FRACTION=0.8  # fraction of free GPU memory available to batches
 ```
 
 Accuracy depends on smoothness in phi. It is usually appropriate for
 orientation-averaged Mueller matrices with dense `N_phi`; validate against
 `--gpu` without `--fft` for new particle classes.
+
+`MBS_GPU_NO_ATOMICS=1` switches the CUDA diffraction path from beam-grid
+atomic accumulation to orientation-grid accumulation. For many beams per
+orientation this can reduce atomic contention and improve GPU occupancy. It
+keeps the same mathematical result; small last-digit differences are expected
+from a different summation order.
+
+#### `MBS_SHARED_BETA_GROUP=N`
+
+Environment variable for shared `--oldauto --multikeq*` runs. It groups `N`
+beta blocks before the diffraction pass.
+
+Default:
+
+```
+MBS_SHARED_BETA_GROUP=1
+```
+
+With `N>1`, the code traces several beta blocks into one prepared-orientation
+batch and then diffracts that larger batch for every size. This reduces the
+number of CUDA/cuFFT launches and gives the GPU longer work packets.
+
+Memory tradeoff:
+
+```
+prepared memory ~ N * N_gamma * average_beams_per_orientation
+```
+
+Recommended starting values:
+
+```
+MBS_SHARED_BETA_GROUP=2   # conservative
+MBS_SHARED_BETA_GROUP=4   # faster GPU batching, more RAM
+```
+
+Validation on a small Greek-shape smoke test showed identical output within
+floating-point summation noise and about 2x faster CUDA Phase 2.
 
 #### `--beam_cutoff EPS`
 
