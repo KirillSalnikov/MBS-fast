@@ -31,6 +31,7 @@ private:
 
     void FindVisibleFacets(const Beam &beam, IntArray &facetIds);
     void FindVisibleFacetsForLight(IntArray &facetIDs);
+    void BuildFacetVisibilityCache();
 
     void SelectVisibleFacets(const Beam &beam, IntArray &facetIDs);
     void SelectVisibleFacetsForLight(IntArray &facetIDs);
@@ -80,4 +81,6 @@ protected:
 
 private:
     PolygonArray m_polygonBuffer;
+    int m_visibleFacetCache[2][MAX_FACET_NUM][MAX_FACET_NUM];
+    size_t m_visibleFacetCacheSize[2][MAX_FACET_NUM];
 };

@@ -31,6 +31,7 @@ bool ScatteringNonConvex::ScatterLight(double beta, double gamma,
 {
     // m_particle->Rotate(beta, gamma, 0);
     scaterredBeams.reserve(scaterredBeams.size() + 4 * m_particle->nFacets);
+    BuildFacetVisibilityCache();
     SplitLightToBeams();
     return SplitBeams(scaterredBeams);
 }
@@ -542,30 +543,52 @@ bool ScatteringNonConvex::IsVisibleFacet(int facetID, const Beam &beam)
     return (cosBF >= EPS_ORTO_FACET);
 }
 
+void ScatteringNonConvex::BuildFacetVisibilityCache()
+{
+    for (int locInt = 0; locInt < 2; ++locInt)
+    {
+        Location loc = locInt == 0 ? Location::In : Location::Out;
+        for (int sourceFacet = 0; sourceFacet < m_particle->nFacets; ++sourceFacet)
+        {
+            size_t &count = m_visibleFacetCacheSize[locInt][sourceFacet];
+            count = 0;
+
+            int begin = 0;
+            int end = m_particle->nFacets;
+            if (m_particle->isAggregated && loc == Location::In)
+                m_particle->GetParticalFacetIdRangeByFacetId(sourceFacet, begin, end);
+
+            const Point3f &beamNormal = -m_facets[sourceFacet].normal[!loc];
+            const Point3f &beamCenter = m_facets[sourceFacet].center;
+            for (int targetFacet = begin; targetFacet < end; ++targetFacet)
+            {
+                if (targetFacet == sourceFacet)
+                    continue;
+
+                const Point3f &facetCenter = m_facets[targetFacet].center;
+                Point3f vectorFromBeamToFacet = facetCenter - beamCenter;
+                double cosBF = DotProduct(beamNormal, vectorFromBeamToFacet);
+                if (cosBF >= EPS_ORTO_FACET)
+                    m_visibleFacetCache[locInt][sourceFacet][count++] = targetFacet;
+            }
+        }
+    }
+}
+
 void ScatteringNonConvex::FindVisibleFacets(const Beam &beam, IntArray &facetIds)
 {
-    int begin = 0;
-    int end = m_particle->nFacets;
-
-    if (m_particle->isAggregated && beam.location == Location::In)
+    const int locInt = beam.location == Location::In ? 0 : 1;
+    const size_t count = m_visibleFacetCacheSize[locInt][beam.lastFacetId];
+    for (size_t idx = 0; idx < count; ++idx)
     {
-        m_particle->GetParticalFacetIdRangeByFacetId(beam.lastFacetId, begin, end);
-    }
-
-    for (int i = begin; i < end; ++i)
-    {
-        if (i == beam.lastFacetId)
-            continue;
+        int i = m_visibleFacetCache[locInt][beam.lastFacetId][idx];
 
         const Point3f &facetNormal = m_facets[i].normal[!beam.location];
         double cosFB = DotProduct(beam.direction, facetNormal);
 
         if (cosFB >= FLT_EPSILON) // beam incidents to this facet
         {
-            if (IsVisibleFacet(i, beam))
-            {	// facet is in front of begin of beam
-                facetIds.Add(i);
-            }
+            facetIds.Add(i);
         }
     }
 }
@@ -949,4 +972,9 @@ bool ScatteringNonConvex::ScatterLight(double beta, double gamma,
 //		SplitByFacet(facetIDs, index);
 //		isIncident = true;
 //	}
+    (void)beta;
+    (void)gamma;
+    (void)tracks;
+    (void)scaterredBeams;
+    return false;
 }
