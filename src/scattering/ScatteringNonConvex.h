@@ -20,7 +20,6 @@ public:
                              std::vector<Beam> &scaterredBeams) override;
 private:
     void SortFacets_faster(const Point3f &beamDir, IntArray &facetIDs);
-    int FindClosestVertex(const Polygon &facet, const Point3f &beamDir);
     void CutBeamByFacet(const Facet &facet, Beam &beam,
                         PolygonArray &result);
 

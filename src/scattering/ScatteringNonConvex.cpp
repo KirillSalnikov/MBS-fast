@@ -239,12 +239,24 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir, IntArray &fa
         return;
     }
 
-    int vertices[MAX_VERTEX_NUM];
+    double keys[MAX_VERTEX_NUM];
 
     for (int i = 0; i < facetIDs.size; ++i)
     {
         const int &id = facetIDs.arr[i];
-        vertices[i] = FindClosestVertex(m_facets[id], beamDir);
+        const Polygon &facet = m_facets[id];
+        double key = DotProduct(facet.arr[0], beamDir);
+
+        for (unsigned vertex = 1; vertex < facet.nVertices; ++vertex)
+        {
+            double projection = DotProduct(facet.arr[vertex], beamDir);
+            if (key - projection > FLT_EPSILON)
+            {
+                key = projection;
+            }
+        }
+
+        keys[i] = key;
     }
 
     int left = 0;
@@ -262,17 +274,15 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir, IntArray &fa
         int i = left;
         int j = rigth;
 
-        Point3f base = m_facets[facetIDs.arr[id]].arr[vertices[id]];
+        double base = keys[id];
 
         while (i <= j)
         {
-            Point3f vecB;
             double cosVN;
 
             do
             {
-                vecB = base - m_facets[facetIDs.arr[i]].arr[vertices[i]];
-                cosVN = DotProduct(vecB, beamDir);
+                cosVN = base - keys[i];
                 ++i;
             }
             while (cosVN > FLT_EPSILON);
@@ -280,8 +290,7 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir, IntArray &fa
 
             do
             {
-                vecB = base - m_facets[facetIDs.arr[j]].arr[vertices[j]];
-                cosVN = DotProduct(vecB, beamDir);
+                cosVN = base - keys[j];
                 --j;
             }
             while (cosVN < EPS_M_COS_90);
@@ -289,9 +298,9 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir, IntArray &fa
 
             if (i <= j)	// exchange elems
             {
-                float temp_d = vertices[i];
-                vertices[i] = vertices[j];
-                vertices[j] = temp_d;
+                double temp_d = keys[i];
+                keys[i] = keys[j];
+                keys[j] = temp_d;
 
                 int temp_v = facetIDs.arr[i];
                 facetIDs.arr[i] = facetIDs.arr[j];
@@ -322,24 +331,6 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir, IntArray &fa
         rigth = stack[--size];
         left = stack[--size];
     }
-}
-
-int ScatteringNonConvex::FindClosestVertex(const Polygon &facet, const Point3f &beamDir)
-{
-    int closest = 0;
-
-    for (unsigned i = 1; i < facet.nVertices; ++i)
-    {
-        Point3f v = facet.arr[closest] - facet.arr[i];
-        double cosVD = DotProduct(v, beamDir);
-
-        if (cosVD > FLT_EPSILON)
-        {
-            closest = i;
-        }
-    }
-
-    return closest;
 }
 
 void ScatteringNonConvex::CutBeamByFacet(const Facet &facet, Beam &beam,
