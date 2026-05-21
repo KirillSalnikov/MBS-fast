@@ -157,7 +157,7 @@ See `tests/reference_test/RESULTS.md` and comparison plots in `tests/reference_t
 - **Auto beam cutoff**: two dimensionless thresholds (|J|²/max < eps AND area/max < eps). Protects forward peak and strong beams, skips 45-80% of negligible beams
 - **CUDA diffraction**: `--gpu`; add `--fft` for cuFFT phi interpolation backend
 - **Multi-size**: `--multigrid`, `--multikeq`, `--multikeq_list` — trace once at the largest size, recompute diffraction for all sizes
-- **GPU batching controls**: `MBS_SHARED_BETA_GROUP=N`, `MBS_GPU_NO_ATOMICS=1`, `MBS_GPU_MEM_FRACTION=...`; shared multi-size GPU mode scales each `k_eq` during CUDA packing instead of copying the full prepared-beam cache per size
+- **GPU batching controls**: `MBS_SHARED_BETA_GROUP=N`, `MBS_GPU_NO_ATOMICS=1`, `MBS_GPU_MEM_FRACTION=...`
 - **Per-beta save**: `--save_betas` — write intermediate Mueller per beta (backup/resume)
 - **Opt-in checkpoint**: `--checkpoint` — save/resume long `--orientfile` runs; off by default to avoid extra I/O
 - **Dual output**: M.dat (with shadow) + M_noshadow.dat (without) at no extra cost

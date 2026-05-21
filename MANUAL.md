@@ -572,10 +572,6 @@ CUDA implementation:
 - CPU traces rays and prepares `PreparedOrientation` / `PreparedBeam` data.
 - Beam polygon vertices, Jones matrices, projected centers, optical lengths,
   and areas are packed into GPU buffers.
-- In shared multi-size GPU mode, the prepared beams stay at the reference
-  size. Coordinates, areas, optical paths, and Jones phases are scaled while
-  packing the CUDA buffer for each requested `k_eq`, avoiding a full CPU-side
-  copy of all prepared beams for every size.
 - CUDA kernels evaluate diffraction for many scattering directions and beams.
 - Results are reduced into local Mueller arrays and copied back to CPU.
 
@@ -658,18 +654,6 @@ MBS_SHARED_BETA_GROUP=4   # faster GPU batching, more RAM
 
 Validation on a small Greek-shape smoke test showed identical output within
 floating-point summation noise and about 2x faster CUDA Phase 2.
-
-Shared multi-size CUDA runs also scale each `k_eq` during GPU packing instead
-of building a separate scaled `PreparedOrientation` vector on the CPU. This
-keeps memory traffic closer to:
-
-```
-prepared memory ~ one reference-size beam cache
-GPU pack memory ~ one orientation batch at the current k_eq
-```
-
-The mathematical operations are the same as the old scaled-copy path; small
-last-digit differences can appear from slightly different CPU packing order.
 
 #### `MBS_SHARED_PIPELINE=1`
 

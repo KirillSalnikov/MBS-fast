@@ -1506,6 +1506,11 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
         {
             double scale = x_sizes[s] / x_ref;
             double scale2 = scale * scale;
+            std::vector<PreparedOrientation> scaled;
+            scaled.reserve(group.prepared.size());
+            for (const PreparedOrientation &po : group.prepared)
+                scaled.push_back(ScalePreparedOrientation(
+                    po, scale, 2.0 * M_PI / m_scattering->m_wave));
 
             Arr2D localM(nAz + 1, nZen + 1, 4, 4); localM.ClearArr();
             Arr2D localM_ns(nAz + 1, nZen + 1, 4, 4); localM_ns.ClearArr();
@@ -1515,15 +1520,13 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
                 for (int gpuStart = 0; gpuStart < group.groupOrient; )
                 {
                     int gpuBatchSize = handlerPO->SelectGpuOrientationBatchSize(
-                        group.prepared, gpuStart, group.groupOrient - gpuStart);
+                        scaled, gpuStart, group.groupOrient - gpuStart);
                     int gpuEnd = std::min(gpuStart + gpuBatchSize, group.groupOrient);
                     bool ok = handlerPO->IsFftEnabled()
                         ? handlerPO->HandleOrientationsToLocalGpuFftPhi(
-                            group.prepared, gpuStart, gpuEnd - gpuStart,
-                            localM, localM_ns, scale, 2.0 * M_PI / m_scattering->m_wave)
+                            scaled, gpuStart, gpuEnd - gpuStart, localM, localM_ns)
                         : handlerPO->HandleOrientationsToLocalGpu(
-                            group.prepared, gpuStart, gpuEnd - gpuStart,
-                            localM, localM_ns, scale, 2.0 * M_PI / m_scattering->m_wave);
+                            scaled, gpuStart, gpuEnd - gpuStart, localM, localM_ns);
                     if (!ok)
                     {
                         std::cerr << "ERROR: shared multikeq GPU backend failed." << std::endl;
@@ -1534,12 +1537,6 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
             }
             else
             {
-                std::vector<PreparedOrientation> scaled;
-                scaled.reserve(group.prepared.size());
-                for (const PreparedOrientation &po : group.prepared)
-                    scaled.push_back(ScalePreparedOrientation(
-                        po, scale, 2.0 * M_PI / m_scattering->m_wave));
-
                 #pragma omp parallel
                 {
                     Arr2D threadM(nAz + 1, nZen + 1, 4, 4); threadM.ClearArr();
