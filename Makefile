@@ -47,6 +47,7 @@ DEPS = $(OBJECTS:.o=.d)
 
 TARGET = bin/mbs_po
 FFT_PROBE = bin/fft_aperture_probe
+GPU_TRACE_PROBE = bin/gpu_trace_projection_probe
 
 all: $(TARGET)
 
@@ -75,20 +76,28 @@ clean:
 	find $(SRC_DIR) -name '*.d' -delete
 	find src/bigint -name '*.o' -delete 2>/dev/null; true
 	find src/bigint -name '*.d' -delete 2>/dev/null; true
-	rm -f $(TARGET) $(FFT_PROBE)
+	rm -f $(TARGET) $(FFT_PROBE) $(GPU_TRACE_PROBE)
 
 ifeq ($(USE_CUDA),1)
 fft_probe: $(FFT_PROBE)
+gpu_trace_probe: $(GPU_TRACE_PROBE)
 
 $(FFT_PROBE): tools/fft_aperture_probe.cu
 	@mkdir -p bin
 	$(NVCC) $(NVCCFLAGS) -I$(CUDA_PATH)/include $< -o $@ -L$(CUDA_PATH)/lib64 -lcufft -lcudart
+
+$(GPU_TRACE_PROBE): tools/gpu_trace_projection_probe.cu
+	@mkdir -p bin
+	$(NVCC) $(NVCCFLAGS) -I$(CUDA_PATH)/include $< -o $@ -L$(CUDA_PATH)/lib64 -lcudart
 else
 fft_probe:
 	@echo "fft_probe requires USE_CUDA=1"
 	@false
+gpu_trace_probe:
+	@echo "gpu_trace_probe requires USE_CUDA=1"
+	@false
 endif
 
-.PHONY: all clean fft_probe
+.PHONY: all clean fft_probe gpu_trace_probe
 
 -include $(DEPS)
