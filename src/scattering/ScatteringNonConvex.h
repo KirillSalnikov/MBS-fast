@@ -82,4 +82,5 @@ private:
     PolygonArray m_polygonBuffer;
     int m_visibleFacetCache[2][MAX_FACET_NUM][MAX_FACET_NUM];
     size_t m_visibleFacetCacheSize[2][MAX_FACET_NUM];
+    bool m_visibilityCacheBuilt = false;
 };

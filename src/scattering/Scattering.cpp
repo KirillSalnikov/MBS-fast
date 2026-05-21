@@ -453,8 +453,8 @@ void Scattering::Difference(const Polygon &subject, const Vector3f &subjNormal,
 bool Scattering::ProjectToFacetPlane(const Polygon &polygon, const Vector3f &dir,
                                   const Point3f &normal, __m128 *_projection) const
 {
-    __m128 _normal = _mm_setr_ps(normal.cx, normal.cy, normal.cz, 0.0);
-    __m128 _direction = _mm_setr_ps(dir.cx, dir.cy, dir.cz, 0.0);
+    __m128 _normal = _mm_load_ps(normal.coordinates);
+    __m128 _direction = _mm_load_ps(dir.coordinates);
 
     __m128 _d_param = _mm_set_ps1(normal.d_param);
     __m128 _dp0 = _mm_dp_ps(_direction, _normal, MASK_FULL);
@@ -470,7 +470,7 @@ bool Scattering::ProjectToFacetPlane(const Polygon &polygon, const Vector3f &dir
     for (int i = 0; i < polygon.nVertices; ++i)
     {
         const Point3f &p = polygon.arr[i];
-        __m128 _point = _mm_setr_ps(p.cx, p.cy, p.cz, 0.0);
+        __m128 _point = _mm_load_ps(p.coordinates);
         __m128 _dp1 = _mm_dp_ps(_point, _normal, MASK_FULL);
         __m128 add = _mm_add_ps(_dp1, _d_param);
         __m128 _t = _mm_div_ps(add, _dp0);

@@ -31,7 +31,8 @@ bool ScatteringNonConvex::ScatterLight(double beta, double gamma,
 {
     // m_particle->Rotate(beta, gamma, 0);
     scaterredBeams.reserve(scaterredBeams.size() + 4 * m_particle->nFacets);
-    BuildFacetVisibilityCache();
+    if (!m_visibilityCacheBuilt)
+        BuildFacetVisibilityCache();
     SplitLightToBeams();
     return SplitBeams(scaterredBeams);
 }
@@ -564,6 +565,7 @@ void ScatteringNonConvex::BuildFacetVisibilityCache()
             }
         }
     }
+    m_visibilityCacheBuilt = true;
 }
 
 void ScatteringNonConvex::FindVisibleFacets(const Beam &beam, IntArray &facetIds)
@@ -754,10 +756,7 @@ bool ScatteringNonConvex::SplitBeamByFacet(const Polygon &intersection,
 
     bool hasOutBeam = SetOpticalBeamParams(facet, beam, inBeam, outBeam);
 
-    if (IsTracePruned(inBeam))
-        ok = true;
-    else
-        ok = PushBeamToTree(inBeam, beam, newId, facetId, Location::In);
+    ok = PushBeamToTree(inBeam, beam, newId, facetId, Location::In);
 
     if (hasOutBeam)
     {
