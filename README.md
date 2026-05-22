@@ -34,7 +34,15 @@ make USE_CUDA=1
 
 # For RTX 3080 Ti / 4070 SUPER, avoid unsupported PTX JIT on older drivers:
 make USE_CUDA=1 NVCCFLAGS="-O3 -std=c++11 -arch=sm_86 -U_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700"
+
+# Optional separate CUDA precision/speed binaries:
+make cuda_float       # bin/mbs_po_float
+make cuda_float_fast  # bin/mbs_po_float_fast
+make cuda_double_fast # bin/mbs_po_double_fast
 ```
+
+The default optimized PO output writes only the full Mueller matrix. Add
+`--noshadow_output` to also write the legacy `_noshadow` matrix.
 
 ## Quick Start
 
@@ -89,7 +97,8 @@ All must be within EPS for 2 consecutive iterations.
 
 Auto beam cutoff: skip beams by dimensionless relative thresholds. The modern
 fine-grained flags are `--beam_cutoff_j`, `--beam_cutoff_area`,
-`--beam_cutoff_importance`, `--trace_cutoff_j`, and `--trace_cutoff_area`.
+`--beam_cutoff_importance`, `--trace_cutoff_j`, `--trace_cutoff_area`, and
+`--trace_cutoff_importance`.
 `--beam_cutoff EPS` remains a shorthand for the J/area beam tests.
 
 `--beam_cutoff EPS` can also be used standalone with `--random` or `--sobol`.

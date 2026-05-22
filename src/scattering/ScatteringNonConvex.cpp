@@ -4,14 +4,64 @@
 #include <tgmath.h>
 #include <assert.h>
 #include <iostream>
+#include <cstdlib>
+#include <algorithm>
+#include <cmath>
 
 #include "BigIntegerLibrary.hh"
+#ifdef USE_CUDA
+#include "GpuTraceSupport.h"
+#endif
 
 //#ifdef _DEBUG // DEB
 #include "Tracer.h"
 //#endif
 
 #define EPS_ORTO_FACET 0.0001
+
+#ifdef USE_CUDA
+namespace {
+int GpuTraceBatchBeamLimit()
+{
+    const char *value = std::getenv("MBS_GPU_TRACE_BATCH_BEAMS");
+    if (!value || !*value)
+        return 1024;
+    char *end = nullptr;
+    long parsed = std::strtol(value, &end, 10);
+    if (!end || *end != '\0' || parsed < 1)
+        return 1024;
+    if (parsed > 4096)
+        return 4096;
+    return (int)parsed;
+}
+}
+#endif
+
+namespace {
+bool CpuTraceProjectedPrefilterEnabled()
+{
+    static const bool enabled = []() {
+        const char *value = std::getenv("MBS_TRACE_CPU_PREFILTER");
+        return value && *value == '1';
+    }();
+    return enabled;
+}
+
+double CpuTraceProjectedPrefilterMargin()
+{
+    static const double margin = []() {
+        const char *value = std::getenv("MBS_TRACE_CPU_PREFILTER_MARGIN");
+        if (!value || !*value)
+            return 1.0;
+        char *end = nullptr;
+        double parsed = std::strtod(value, &end);
+        if (!end || *end != '\0' || parsed < 0.0)
+            return 1.0;
+        return parsed;
+    }();
+    return margin;
+}
+}
 
 #ifdef _DEBUG
 using namespace std;
@@ -33,6 +83,10 @@ bool ScatteringNonConvex::ScatterLight(double beta, double gamma,
     scaterredBeams.reserve(scaterredBeams.size() + 4 * m_particle->nFacets);
     if (!m_visibilityCacheBuilt)
         BuildFacetVisibilityCache();
+#ifdef USE_CUDA
+    if (m_gpuTracePrefilter)
+        GpuTraceInvalidateFacetCache();
+#endif
     SplitLightToBeams();
     return SplitBeams(scaterredBeams);
 }
@@ -79,8 +133,11 @@ void ScatteringNonConvex::PushBeamsToTree(int facetId, const PolygonArray &polyg
 #endif
         if (m_treeSize >= MAX_BEAM_REFL_NUM-1)
             return;
-        m_beamTree[m_treeSize++] = in;
-        m_beamTree[m_treeSize++] = out;
+        if (!EnsureBeamTree())
+            return;
+        m_beamTree.push_back(in);
+        m_beamTree.push_back(out);
+        m_treeSize = (int)m_beamTree.size();
 #ifdef _CHECK_ENERGY_BALANCE
         ComputeFacetEnergy(facetId, out);
 #endif
@@ -113,6 +170,7 @@ void ScatteringNonConvex::SplitLightToBeams()
     m_incidentEnergy = 0;
 #endif
     m_treeSize = 0;
+    m_beamTree.clear();
     ResetTraceReference();
 
     IntArray facetIDs;
@@ -240,7 +298,7 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir, IntArray &fa
         return;
     }
 
-    double keys[MAX_VERTEX_NUM];
+    double keys[MAX_FACET_NUM];
 
     for (int i = 0; i < facetIDs.size; ++i)
     {
@@ -263,7 +321,7 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir, IntArray &fa
     int left = 0;
     int rigth = facetIDs.size - 1;
 
-    int stack[MAX_VERTEX_NUM*2];
+    int stack[MAX_FACET_NUM*2];
     int size = 0;
 
     stack[size++] = left;
@@ -383,32 +441,30 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
 {
     bool ok = true;
     int processedBeams = 0;
-//#ifdef _DEBUG // DEB
-//    ofstream logfile("logscat.txt", ios::out);
-//    int count = 0;
-//#endif
-    while (m_treeSize != 0)
+    auto processBeam = [this, &scaterredBeams, &ok](Beam beam,
+                                                    const IntArray *readyFacetIds,
+                                                    const std::vector<unsigned char> *mayIntersect) -> bool
     {
-        if (m_traceMaxBeams > 0 && ++processedBeams > m_traceMaxBeams)
-            return false;
-        Beam beam = m_beamTree[--m_treeSize];
-#ifdef _DEBUG // DEB
-//        logfile << count << " " << m_treeSize << " " << beam.id << std::endl;
-//        logfile.flush();
-//    ++count;
-        if (beam.id == 171)
-            int ffgf = 0;
-#endif
         if (!IsTerminalAct(beam)) // REF, OPT: перенести проверку во все места, где пучок закидывается в дерево, чтобы пучки заранее не закидывались в него
         {
-            IntArray facetIds;
-            SelectVisibleFacets(beam, facetIds);
+            IntArray localFacetIds;
+            const IntArray *facetIds = readyFacetIds;
+            if (facetIds == nullptr)
+            {
+                SelectVisibleFacets(beam, localFacetIds);
+                facetIds = &localFacetIds;
+            }
 
             bool isDivided = false;
 
-            for (unsigned i = 0; (i < facetIds.size) && !isDivided; ++i)// OPT: move this loop to SplitBeamByFacet
+            for (unsigned i = 0; (i < facetIds->size) && !isDivided; ++i)// OPT: move this loop to SplitBeamByFacet
             {
-                int facetId = facetIds.arr[i];
+                if (mayIntersect != nullptr && !mayIntersect->empty() && !(*mayIntersect)[i])
+                    continue;
+                int facetId = facetIds->arr[i];
+                if (CpuTraceProjectedPrefilterEnabled()
+                    && !MayBeamIntersectFacetProjected(beam, facetId))
+                    continue;
 
                 Polygon intersection;
                 Intersect(facetId, beam, intersection);
@@ -420,6 +476,11 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
                     if (!ok)
                     {
                         return false;
+                    }
+                    if (!isDivided && beam.location == Location::In && IsTracePruned(beam))
+                    {
+                        beam.nVertices = 0;
+                        break;
                     }
                 }
             }
@@ -440,6 +501,83 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
         {
             CutExternalBeam(beam, scaterredBeams);
         }
+        return true;
+    };
+//#ifdef _DEBUG // DEB
+//    ofstream logfile("logscat.txt", ios::out);
+//    int count = 0;
+//#endif
+    while (m_treeSize != 0)
+    {
+#ifdef USE_CUDA
+        if (m_gpuTracePrefilter)
+        {
+            struct TraceBatchItem
+            {
+                Beam beam;
+                IntArray facetIds;
+                std::vector<unsigned char> mayIntersect;
+                bool hasFacetIds = false;
+            };
+
+            std::vector<TraceBatchItem> batch;
+            batch.reserve(GpuTraceBatchBeamLimit());
+            while (m_treeSize != 0 && (int)batch.size() < GpuTraceBatchBeamLimit())
+            {
+                if (m_traceMaxBeams > 0 && ++processedBeams > m_traceMaxBeams)
+                    return false;
+                TraceBatchItem item;
+                item.beam = m_beamTree.back();
+                m_beamTree.pop_back();
+                m_treeSize = (int)m_beamTree.size();
+                if (!IsTerminalAct(item.beam))
+                {
+                    SelectVisibleFacets(item.beam, item.facetIds);
+                    item.hasFacetIds = true;
+                }
+                batch.push_back(item);
+            }
+
+            std::vector<GpuTraceBeamFacets> gpuItems;
+            gpuItems.reserve(batch.size());
+            for (size_t i = 0; i < batch.size(); ++i)
+            {
+                if (batch[i].hasFacetIds && batch[i].facetIds.size != 0)
+                {
+                    GpuTraceBeamFacets item;
+                    item.beam = &batch[i].beam;
+                    item.facetIds = &batch[i].facetIds;
+                    item.mayIntersect = &batch[i].mayIntersect;
+                    gpuItems.push_back(item);
+                }
+            }
+            if (!gpuItems.empty())
+                GpuTracePrefilterBeamFacetBatch(m_facets, gpuItems);
+
+            for (size_t i = 0; i < batch.size(); ++i)
+            {
+                if (!processBeam(batch[i].beam,
+                                 batch[i].hasFacetIds ? &batch[i].facetIds : nullptr,
+                                 batch[i].mayIntersect.empty() ? nullptr : &batch[i].mayIntersect))
+                    return false;
+            }
+            continue;
+        }
+#endif
+        if (m_traceMaxBeams > 0 && ++processedBeams > m_traceMaxBeams)
+            return false;
+        Beam beam = m_beamTree.back();
+        m_beamTree.pop_back();
+        m_treeSize = (int)m_beamTree.size();
+#ifdef _DEBUG // DEB
+//        logfile << count << " " << m_treeSize << " " << beam.id << std::endl;
+//        logfile.flush();
+//    ++count;
+        if (beam.id == 171)
+            int ffgf = 0;
+#endif
+        if (!processBeam(beam, nullptr, nullptr))
+            return false;
     }
 
     return true;
@@ -535,8 +673,59 @@ bool ScatteringNonConvex::IsVisibleFacet(int facetID, const Beam &beam)
     return (cosBF >= EPS_ORTO_FACET);
 }
 
+bool ScatteringNonConvex::MayBeamIntersectFacetProjected(const Beam &beam, int facetId) const
+{
+    if (beam.nVertices <= 0)
+        return false;
+
+    const Point3f &normal = (beam.location == Location::In)
+                          ? m_facets[facetId].in_normal
+                          : m_facets[facetId].ex_normal;
+    const double dp = DotProduct(beam.direction, normal);
+    if (std::fabs(dp) < EPS_PROJECTION)
+        return false;
+
+    const double ax = std::fabs(normal.cx);
+    const double ay = std::fabs(normal.cy);
+    const double az = std::fabs(normal.cz);
+    const int drop = (ax > ay && ax > az) ? 0 : ((ay > az) ? 1 : 2);
+
+    double bMinU = DBL_MAX, bMaxU = -DBL_MAX;
+    double bMinV = DBL_MAX, bMaxV = -DBL_MAX;
+    double fMinU = DBL_MAX, fMaxU = -DBL_MAX;
+    double fMinV = DBL_MAX, fMaxV = -DBL_MAX;
+
+    auto addPoint = [drop](const Point3f &p,
+                           double &minU, double &maxU,
+                           double &minV, double &maxV)
+    {
+        const double u = (drop == 0) ? p.cy : p.cx;
+        const double v = (drop == 2) ? p.cy : p.cz;
+        minU = std::min(minU, u);
+        maxU = std::max(maxU, u);
+        minV = std::min(minV, v);
+        maxV = std::max(maxV, v);
+    };
+
+    for (int i = 0; i < beam.nVertices; ++i)
+    {
+        const Point3f &p = beam.arr[i];
+        const double t = (DotProduct(p, normal) + normal.d_param) / dp;
+        addPoint(p - beam.direction * t, bMinU, bMaxU, bMinV, bMaxV);
+    }
+
+    const Facet &facet = m_facets[facetId];
+    for (int i = 0; i < facet.nVertices; ++i)
+        addPoint(facet.arr[i], fMinU, fMaxU, fMinV, fMaxV);
+
+    const double margin = CpuTraceProjectedPrefilterMargin();
+    return !(bMaxU < fMinU - margin || fMaxU < bMinU - margin ||
+             bMaxV < fMinV - margin || fMaxV < bMinV - margin);
+}
+
 void ScatteringNonConvex::BuildFacetVisibilityCache()
 {
+    m_visibilityCacheOwner = nullptr;
     for (int locInt = 0; locInt < 2; ++locInt)
     {
         Location loc = locInt == 0 ? Location::In : Location::Out;
@@ -568,13 +757,32 @@ void ScatteringNonConvex::BuildFacetVisibilityCache()
     m_visibilityCacheBuilt = true;
 }
 
+void ScatteringNonConvex::PrepareForParallelTrace()
+{
+    if (!m_visibilityCacheBuilt)
+        BuildFacetVisibilityCache();
+}
+
+void ScatteringNonConvex::CopyVisibilityCacheFrom(const ScatteringNonConvex &source)
+{
+    m_visibilityCacheBuilt = source.m_visibilityCacheBuilt;
+    m_visibilityCacheOwner = nullptr;
+    if (!m_visibilityCacheBuilt)
+        return;
+    m_visibilityCacheOwner = source.m_visibilityCacheOwner
+                           ? source.m_visibilityCacheOwner
+                           : &source;
+}
+
 void ScatteringNonConvex::FindVisibleFacets(const Beam &beam, IntArray &facetIds)
 {
     const int locInt = beam.location == Location::In ? 0 : 1;
-    const size_t count = m_visibleFacetCacheSize[locInt][beam.lastFacetId];
+    const ScatteringNonConvex &cache =
+        m_visibilityCacheOwner ? *m_visibilityCacheOwner : *this;
+    const size_t count = cache.m_visibleFacetCacheSize[locInt][beam.lastFacetId];
     for (size_t idx = 0; idx < count; ++idx)
     {
-        int i = m_visibleFacetCache[locInt][beam.lastFacetId][idx];
+        int i = cache.m_visibleFacetCache[locInt][beam.lastFacetId][idx];
 
         const Point3f &facetNormal = m_facets[i].normal[!beam.location];
         double cosFB = DotProduct(beam.direction, facetNormal);
@@ -594,7 +802,7 @@ void ScatteringNonConvex::FindVisibleFacets(const Beam &beam, IntArray &facetIds
 */
 void ScatteringNonConvex::SortFacets(const Point3f &beamDir, IntArray &facetIds)
 {
-    float distances[MAX_VERTEX_NUM];
+    float distances[MAX_FACET_NUM];
 
     for (int i = 0; i < facetIds.size; ++i)
     {
@@ -605,7 +813,7 @@ void ScatteringNonConvex::SortFacets(const Point3f &beamDir, IntArray &facetIds)
     int left = 0;
     int rigth = facetIds.size - 1;
 
-    int stack[MAX_VERTEX_NUM*2];
+    int stack[MAX_FACET_NUM*2];
     int size = 0;
 
     stack[size++] = left;
@@ -706,12 +914,20 @@ bool ScatteringNonConvex::PushBeamPartsToTree(const Beam &beam,
     {
         tmp = parts.arr[i];
 
+        if (tmp.location == Location::In && IsTracePruned(tmp))
+        {
+            continue;
+        }
+
         if (m_treeSize >= MAX_BEAM_REFL_NUM-1)
         {
             return false;
         }
+        if (!EnsureBeamTree())
+            return false;
 
-        m_beamTree[m_treeSize++] = tmp;
+        m_beamTree.push_back(tmp);
+        m_treeSize = (int)m_beamTree.size();
     }
 
     return true;

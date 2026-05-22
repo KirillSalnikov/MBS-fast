@@ -4,6 +4,7 @@
 #include <cufft.h>
 #include <cmath>
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstdio>
 #include <vector>
@@ -35,6 +36,30 @@ __device__ inline void gpu_sincos(GpuReal x, GpuReal *s, GpuReal *c)
 #else
     sincos(x, s, c);
 #endif
+}
+
+__device__ inline void gpu_atomic_add(GpuReal *address, double value)
+{
+    atomicAdd(address, (GpuReal)value);
+}
+
+static inline double regularized_gpu_theta(const ScatteringRange &sphere, int t)
+{
+    double theta = sphere.GetZenith(t);
+    if (sphere.nZenith <= 0)
+        return theta;
+
+    if (t == 0 && theta <= 1e-14)
+    {
+        double next = sphere.GetZenith(1);
+        return 0.5 * (theta + next);
+    }
+    if (t == sphere.nZenith && theta >= M_PI - 1e-14)
+    {
+        double prev = sphere.GetZenith(sphere.nZenith - 1);
+        return 0.5 * (prev + theta);
+    }
+    return theta;
 }
 
 struct GpuBeam
@@ -80,6 +105,17 @@ struct GpuWorkspace
     std::vector<int> hBeamOffsets;
     std::vector<GpuReal> hM;
     std::vector<GpuReal> hMNoShadow;
+    GpuComplex *fftLow = nullptr;
+    GpuComplex *fftFull = nullptr;
+    size_t fftLowCap = 0;
+    size_t fftFullCap = 0;
+    cufftHandle fftPlanLow = 0;
+    cufftHandle fftPlanFull = 0;
+    int fftNLow = 0;
+    int fftNFull = 0;
+    int fftBatch = 0;
+    std::vector<GpuComplex> hFftLow;
+    std::vector<GpuComplex> hFftFull;
 };
 
 static GpuWorkspace g_gpuWorkspace;
@@ -126,6 +162,39 @@ static bool gpu_fft_check_enabled()
     return value && value[0] == '1' && value[1] == '\0';
 }
 
+static bool gpu_timing_enabled()
+{
+    const char *value = std::getenv("MBS_GPU_TIMING");
+    return value && value[0] == '1' && value[1] == '\0';
+}
+
+static bool gpu_fft_pair_enabled()
+{
+    const char *value = std::getenv("MBS_GPU_FFT_PAIR");
+    return value && value[0] == '1' && value[1] == '\0';
+}
+
+static int gpu_block_size()
+{
+    const char *value = std::getenv("MBS_GPU_BLOCK");
+    if (!value || !*value)
+        return 256;
+    char *end = nullptr;
+    long parsed = std::strtol(value, &end, 10);
+    if (!end || *end != '\0')
+        return 256;
+    if (parsed != 128 && parsed != 256 && parsed != 512)
+        return 256;
+    return (int)parsed;
+}
+
+static double gpu_now_ms()
+{
+    using clock = std::chrono::steady_clock;
+    return std::chrono::duration<double, std::milli>(
+        clock::now().time_since_epoch()).count();
+}
+
 static bool gpu_report_cuda_error(cudaError_t err, const char *where)
 {
     if (err == cudaSuccess)
@@ -142,8 +211,10 @@ static int choose_fft_phi_factor(int nFull)
         return requested;
     if (nFull >= 2400)
         return 8;
+    if (nFull >= 1200)
+        return 6;
     if (nFull >= 600)
-        return 10;
+        return 4;
     if (nFull >= 240)
         return 3;
     return 2;
@@ -162,6 +233,49 @@ static bool ensure_device_capacity(T *&ptr, size_t &cap, size_t count)
     if (cudaMalloc(&ptr, count * sizeof(T)) != cudaSuccess)
         return false;
     cap = count;
+    return true;
+}
+
+static bool ensure_fft_workspace(GpuWorkspace &ws, int nLow, int nFull, int batch)
+{
+    const size_t lowCount = (size_t)batch * nLow;
+    const size_t fullCount = (size_t)batch * nFull;
+    if (!ensure_device_capacity(ws.fftLow, ws.fftLowCap, lowCount))
+        return false;
+    if (!ensure_device_capacity(ws.fftFull, ws.fftFullCap, fullCount))
+        return false;
+
+    if (ws.fftPlanLow && ws.fftNLow == nLow && ws.fftNFull == nFull
+        && ws.fftBatch == batch)
+        return true;
+
+    if (ws.fftPlanLow)
+    {
+        cufftDestroy(ws.fftPlanLow);
+        ws.fftPlanLow = 0;
+    }
+    if (ws.fftPlanFull)
+    {
+        cufftDestroy(ws.fftPlanFull);
+        ws.fftPlanFull = 0;
+    }
+
+    int nLowArr[1] = { nLow };
+    int nFullArr[1] = { nFull };
+    if (cufftPlanMany(&ws.fftPlanLow, 1, nLowArr,
+                      nullptr, 1, nLow,
+                      nullptr, 1, nLow,
+                      GpuCufftType, batch) != CUFFT_SUCCESS)
+        return false;
+    if (cufftPlanMany(&ws.fftPlanFull, 1, nFullArr,
+                      nullptr, 1, nFull,
+                      nullptr, 1, nFull,
+                      GpuCufftType, batch) != CUFFT_SUCCESS)
+        return false;
+
+    ws.fftNLow = nLow;
+    ws.fftNFull = nFull;
+    ws.fftBatch = batch;
     return true;
 }
 
@@ -232,11 +346,11 @@ __device__ inline void rotate_jones_gpu(
 __device__ inline bool compute_beam_jones_gpu(const GpuBeam &b,
                                               int grid,
                                               int nZen,
-                                              const GpuReal *sinTheta,
-                                              const GpuReal *cosTheta,
-                                              const GpuReal *sinPhi,
-                                              const GpuReal *cosPhi,
-                                              const GpuReal *vf,
+                                              const GpuReal *__restrict__ sinTheta,
+                                              const GpuReal *__restrict__ cosTheta,
+                                              const GpuReal *__restrict__ sinPhi,
+                                              const GpuReal *__restrict__ cosPhi,
+                                              const GpuReal *__restrict__ vf,
                                               GpuReal waveIndex,
                                               GpuReal wi2,
                                               GpuReal eps1,
@@ -380,12 +494,12 @@ __device__ inline bool compute_beam_jones_gpu(const GpuBeam &b,
     return true;
 }
 
-__global__ void diffraction_kernel(const GpuBeam *beams, int nBeams,
-                                   const GpuReal *sinTheta,
-                                   const GpuReal *cosTheta,
-                                   const GpuReal *sinPhi,
-                                   const GpuReal *cosPhi,
-                                   const GpuReal *vf,
+__global__ void diffraction_kernel(const GpuBeam *__restrict__ beams, int nBeams,
+                                   const GpuReal *__restrict__ sinTheta,
+                                   const GpuReal *__restrict__ cosTheta,
+                                   const GpuReal *__restrict__ sinPhi,
+                                   const GpuReal *__restrict__ cosPhi,
+                                   const GpuReal *__restrict__ vf,
                                    int nAz, int nZen,
                                    GpuReal waveIndex,
                                    GpuReal wi2,
@@ -396,8 +510,8 @@ __global__ void diffraction_kernel(const GpuBeam *beams, int nBeams,
                                    GpuReal invComplWaveR,
                                    GpuReal invComplWaveI,
                                    int legacySign,
-                                   GpuReal *jFull,
-                                   GpuReal *jNoShadow)
+                                   GpuReal *__restrict__ jFull,
+                                   GpuReal *__restrict__ jNoShadow)
 {
     int gridCount = nAz * (nZen + 1);
     long long total = (long long)nBeams * gridCount;
@@ -500,7 +614,7 @@ __global__ void diffraction_kernel(const GpuBeam *beams, int nBeams,
     if (isnan(fr)) return;
 
     GpuReal dpr = 1.0, dpi = 0.0;
-    if (!b.isExternal)
+    if (jNoShadow && !b.isExternal)
     {
         GpuReal dp_sin = cp * b.cenx + sp * b.ceny;
         GpuReal dp_cos = -b.cenz;
@@ -538,7 +652,7 @@ __global__ void diffraction_kernel(const GpuBeam *beams, int nBeams,
     atomicAdd(&jFull[off + 2], d01r); atomicAdd(&jFull[off + 3], d01i);
     atomicAdd(&jFull[off + 4], d10r); atomicAdd(&jFull[off + 5], d10i);
     atomicAdd(&jFull[off + 6], d11r); atomicAdd(&jFull[off + 7], d11i);
-    if (!b.isExternal)
+    if (jNoShadow && !b.isExternal)
     {
         atomicAdd(&jNoShadow[off + 0], d00r); atomicAdd(&jNoShadow[off + 1], d00i);
         atomicAdd(&jNoShadow[off + 2], d01r); atomicAdd(&jNoShadow[off + 3], d01i);
@@ -547,14 +661,14 @@ __global__ void diffraction_kernel(const GpuBeam *beams, int nBeams,
     }
 }
 
-__global__ void theta_m11_kernel(const GpuBeam *beams,
+__global__ void theta_m11_kernel(const GpuBeam *__restrict__ beams,
                                  int nBeams,
-                                 const GpuReal *weights,
-                                 const GpuReal *sinTheta,
-                                 const GpuReal *cosTheta,
-                                 const GpuReal *sinPhi,
-                                 const GpuReal *cosPhi,
-                                 const GpuReal *vf,
+                                 const GpuReal *__restrict__ weights,
+                                 const GpuReal *__restrict__ sinTheta,
+                                 const GpuReal *__restrict__ cosTheta,
+                                 const GpuReal *__restrict__ sinPhi,
+                                 const GpuReal *__restrict__ cosPhi,
+                                 const GpuReal *__restrict__ vf,
                                  int nAz,
                                  int nTheta,
                                  GpuReal waveIndex,
@@ -566,7 +680,7 @@ __global__ void theta_m11_kernel(const GpuBeam *beams,
                                  GpuReal invComplWaveR,
                                  GpuReal invComplWaveI,
                                  int legacySign,
-                                 GpuReal *m11)
+                                 GpuReal *__restrict__ m11)
 {
     int gridCount = nAz * nTheta;
     long long total = (long long)nBeams * gridCount;
@@ -596,13 +710,13 @@ __global__ void theta_m11_kernel(const GpuBeam *beams,
     atomicAdd(&m11[thetaIdx], value);
 }
 
-__global__ void diffraction_grid_kernel(const GpuBeam *beams,
-                                        const int *beamOffsets,
-                                        const GpuReal *sinTheta,
-                                        const GpuReal *cosTheta,
-                                        const GpuReal *sinPhi,
-                                        const GpuReal *cosPhi,
-                                        const GpuReal *vf,
+__global__ void diffraction_grid_kernel(const GpuBeam *__restrict__ beams,
+                                        const int *__restrict__ beamOffsets,
+                                        const GpuReal *__restrict__ sinTheta,
+                                        const GpuReal *__restrict__ cosTheta,
+                                        const GpuReal *__restrict__ sinPhi,
+                                        const GpuReal *__restrict__ cosPhi,
+                                        const GpuReal *__restrict__ vf,
                                         int nAz, int nZen,
                                         int nOrient,
                                         GpuReal waveIndex,
@@ -614,8 +728,8 @@ __global__ void diffraction_grid_kernel(const GpuBeam *beams,
                                         GpuReal invComplWaveR,
                                         GpuReal invComplWaveI,
                                         int legacySign,
-                                        GpuReal *jFull,
-                                        GpuReal *jNoShadow)
+                                        GpuReal *__restrict__ jFull,
+                                        GpuReal *__restrict__ jNoShadow)
 {
     int gridCount = nAz * (nZen + 1);
     long long total = (long long)nOrient * gridCount;
@@ -667,19 +781,22 @@ __global__ void diffraction_grid_kernel(const GpuBeam *beams,
     jFull[off + 2] = j01r; jFull[off + 3] = j01i;
     jFull[off + 4] = j10r; jFull[off + 5] = j10i;
     jFull[off + 6] = j11r; jFull[off + 7] = j11i;
-    jNoShadow[off + 0] = n00r; jNoShadow[off + 1] = n00i;
-    jNoShadow[off + 2] = n01r; jNoShadow[off + 3] = n01i;
-    jNoShadow[off + 4] = n10r; jNoShadow[off + 5] = n10i;
-    jNoShadow[off + 6] = n11r; jNoShadow[off + 7] = n11i;
+    if (jNoShadow)
+    {
+        jNoShadow[off + 0] = n00r; jNoShadow[off + 1] = n00i;
+        jNoShadow[off + 2] = n01r; jNoShadow[off + 3] = n01i;
+        jNoShadow[off + 4] = n10r; jNoShadow[off + 5] = n10i;
+        jNoShadow[off + 6] = n11r; jNoShadow[off + 7] = n11i;
+    }
 }
 
-__global__ void mueller_batch_kernel(const GpuReal *jFull,
-                                     const GpuReal *jNoShadow,
-                                     const GpuReal *weights,
+__global__ void mueller_batch_kernel(const GpuReal *__restrict__ jFull,
+                                     const GpuReal *__restrict__ jNoShadow,
+                                     const GpuReal *__restrict__ weights,
                                      int nOrient,
                                      int gridCount,
-                                     GpuReal *mFull,
-                                     GpuReal *mNoShadow)
+                                     GpuReal *__restrict__ mFull,
+                                     GpuReal *__restrict__ mNoShadow)
 {
     long long total = (long long)nOrient * gridCount;
     long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
@@ -702,38 +819,41 @@ __global__ void mueller_batch_kernel(const GpuReal *jFull,
     GpuReal a22 = j11r*j11r + j11i*j11i;
 
     GpuReal A1 = a11 + a21, A2 = a12 + a22;
-    atomicAdd(&out[0], ((A1 + A2) * 0.5) * weight);
-    atomicAdd(&out[1], ((A1 - A2) * 0.5) * weight);
+    gpu_atomic_add(&out[0], ((A1 + A2) * 0.5) * weight);
+    gpu_atomic_add(&out[1], ((A1 - A2) * 0.5) * weight);
     A1 = a11 - a21; A2 = a12 - a22;
-    atomicAdd(&out[4], ((A1 + A2) * 0.5) * weight);
-    atomicAdd(&out[5], ((A1 - A2) * 0.5) * weight);
+    gpu_atomic_add(&out[4], ((A1 + A2) * 0.5) * weight);
+    gpu_atomic_add(&out[5], ((A1 - A2) * 0.5) * weight);
 
     GpuReal c1r = j00r*j01r + j00i*j01i;
     GpuReal c1i = j00i*j01r - j00r*j01i;
     GpuReal c2r = j11r*j10r + j11i*j10i;
     GpuReal c2i = j11i*j10r - j11r*j10i;
-    atomicAdd(&out[2], (-c1r - c2r) * weight);
-    atomicAdd(&out[3], ( c2i - c1i) * weight);
-    atomicAdd(&out[6], ( c2r - c1r) * weight);
-    atomicAdd(&out[7], (-c1i - c2i) * weight);
+    gpu_atomic_add(&out[2], (-c1r - c2r) * weight);
+    gpu_atomic_add(&out[3], ( c2i - c1i) * weight);
+    gpu_atomic_add(&out[6], ( c2r - c1r) * weight);
+    gpu_atomic_add(&out[7], (-c1i - c2i) * weight);
 
     c1r = j00r*j10r + j00i*j10i;
     c1i = j00i*j10r - j00r*j10i;
     c2r = j11r*j01r + j11i*j01i;
     c2i = j11i*j01r - j11r*j01i;
-    atomicAdd(&out[8], (-c1r - c2r) * weight);
-    atomicAdd(&out[9], ( c2r - c1r) * weight);
-    atomicAdd(&out[12], ( c1i - c2i) * weight);
-    atomicAdd(&out[13], ( c2i + c1i) * weight);
+    gpu_atomic_add(&out[8], (-c1r - c2r) * weight);
+    gpu_atomic_add(&out[9], ( c2r - c1r) * weight);
+    gpu_atomic_add(&out[12], ( c1i - c2i) * weight);
+    gpu_atomic_add(&out[13], ( c2i + c1i) * weight);
 
     c1r = j00r*j11r + j00i*j11i;
     c1i = j00i*j11r - j00r*j11i;
     c2r = j01r*j10r + j01i*j10i;
     c2i = j01i*j10r - j01r*j10i;
-    atomicAdd(&out[10], ( c1r + c2r) * weight);
-    atomicAdd(&out[11], ( c1i - c2i) * weight);
-    atomicAdd(&out[14], (-c1i - c2i) * weight);
-    atomicAdd(&out[15], ( c1r - c2r) * weight);
+    gpu_atomic_add(&out[10], ( c1r + c2r) * weight);
+    gpu_atomic_add(&out[11], ( c1i - c2i) * weight);
+    gpu_atomic_add(&out[14], (-c1i - c2i) * weight);
+    gpu_atomic_add(&out[15], ( c1r - c2r) * weight);
+
+    if (!jNoShadow || !mNoShadow)
+        return;
 
     j = &jNoShadow[idx * 8];
     out = &mNoShadow[grid * 16];
@@ -748,38 +868,38 @@ __global__ void mueller_batch_kernel(const GpuReal *jFull,
     a22 = j11r*j11r + j11i*j11i;
 
     A1 = a11 + a21; A2 = a12 + a22;
-    atomicAdd(&out[0], ((A1 + A2) * 0.5) * weight);
-    atomicAdd(&out[1], ((A1 - A2) * 0.5) * weight);
+    gpu_atomic_add(&out[0], ((A1 + A2) * 0.5) * weight);
+    gpu_atomic_add(&out[1], ((A1 - A2) * 0.5) * weight);
     A1 = a11 - a21; A2 = a12 - a22;
-    atomicAdd(&out[4], ((A1 + A2) * 0.5) * weight);
-    atomicAdd(&out[5], ((A1 - A2) * 0.5) * weight);
+    gpu_atomic_add(&out[4], ((A1 + A2) * 0.5) * weight);
+    gpu_atomic_add(&out[5], ((A1 - A2) * 0.5) * weight);
 
     c1r = j00r*j01r + j00i*j01i;
     c1i = j00i*j01r - j00r*j01i;
     c2r = j11r*j10r + j11i*j10i;
     c2i = j11i*j10r - j11r*j10i;
-    atomicAdd(&out[2], (-c1r - c2r) * weight);
-    atomicAdd(&out[3], ( c2i - c1i) * weight);
-    atomicAdd(&out[6], ( c2r - c1r) * weight);
-    atomicAdd(&out[7], (-c1i - c2i) * weight);
+    gpu_atomic_add(&out[2], (-c1r - c2r) * weight);
+    gpu_atomic_add(&out[3], ( c2i - c1i) * weight);
+    gpu_atomic_add(&out[6], ( c2r - c1r) * weight);
+    gpu_atomic_add(&out[7], (-c1i - c2i) * weight);
 
     c1r = j00r*j10r + j00i*j10i;
     c1i = j00i*j10r - j00r*j10i;
     c2r = j11r*j01r + j11i*j01i;
     c2i = j11i*j01r - j11r*j01i;
-    atomicAdd(&out[8], (-c1r - c2r) * weight);
-    atomicAdd(&out[9], ( c2r - c1r) * weight);
-    atomicAdd(&out[12], ( c1i - c2i) * weight);
-    atomicAdd(&out[13], ( c2i + c1i) * weight);
+    gpu_atomic_add(&out[8], (-c1r - c2r) * weight);
+    gpu_atomic_add(&out[9], ( c2r - c1r) * weight);
+    gpu_atomic_add(&out[12], ( c1i - c2i) * weight);
+    gpu_atomic_add(&out[13], ( c2i + c1i) * weight);
 
     c1r = j00r*j11r + j00i*j11i;
     c1i = j00i*j11r - j00r*j11i;
     c2r = j01r*j10r + j01i*j10i;
     c2i = j01i*j10r - j01r*j10i;
-    atomicAdd(&out[10], ( c1r + c2r) * weight);
-    atomicAdd(&out[11], ( c1i - c2i) * weight);
-    atomicAdd(&out[14], (-c1i - c2i) * weight);
-    atomicAdd(&out[15], ( c1r - c2r) * weight);
+    gpu_atomic_add(&out[10], ( c1r + c2r) * weight);
+    gpu_atomic_add(&out[11], ( c1i - c2i) * weight);
+    gpu_atomic_add(&out[14], (-c1i - c2i) * weight);
+    gpu_atomic_add(&out[15], ( c1r - c2r) * weight);
 }
 
 static void add_mueller_from_jones(const std::vector<GpuReal> &jones,
@@ -854,6 +974,7 @@ bool HandlerPO::HandleBeamsToLocalGpu(const PreparedOrientation &prepared,
     const int nAz = m_sphere.nAzimuth;
     const int nZen = m_sphere.nZenith;
     const int gridCount = nAz * (nZen + 1);
+    const bool computeNoShadow = ComputeNoShadow();
     if (nBeams == 0 || gridCount == 0)
         return true;
 
@@ -908,7 +1029,7 @@ bool HandlerPO::HandleBeamsToLocalGpu(const PreparedOrientation &prepared,
         std::vector<GpuReal> hSinTheta(nZen + 1), hCosTheta(nZen + 1);
         for (int t = 0; t <= nZen; ++t)
         {
-            GpuReal theta = m_sphere.GetZenith(t);
+            GpuReal theta = (GpuReal)regularized_gpu_theta(m_sphere, t);
             hSinTheta[t] = sin(theta);
             hCosTheta[t] = cos(theta);
         }
@@ -944,7 +1065,7 @@ bool HandlerPO::HandleBeamsToLocalGpu(const PreparedOrientation &prepared,
     if (cudaMemset(ws.jNoShadow, 0, hJns.size() * sizeof(GpuReal)) != cudaSuccess) return false;
 
     long long total = (long long)nBeams * gridCount;
-    int block = 256;
+    int block = gpu_block_size();
     int grid = (int)((total + block - 1) / block);
     diffraction_kernel<<<grid, block>>>(
         ws.beams, nBeams, ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi, ws.vf,
@@ -957,10 +1078,11 @@ bool HandlerPO::HandleBeamsToLocalGpu(const PreparedOrientation &prepared,
         return false;
 
     if (cudaMemcpy(hJ.data(), ws.j, hJ.size() * sizeof(GpuReal), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
-    if (cudaMemcpy(hJns.data(), ws.jNoShadow, hJns.size() * sizeof(GpuReal), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+    if (computeNoShadow && cudaMemcpy(hJns.data(), ws.jNoShadow, hJns.size() * sizeof(GpuReal), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
 
     add_mueller_from_jones(hJ, prepared.sinZenith, nAz, nZen, localM);
-    add_mueller_from_jones(hJns, prepared.sinZenith, nAz, nZen, localM_noshadow);
+    if (computeNoShadow)
+        add_mueller_from_jones(hJns, prepared.sinZenith, nAz, nZen, localM_noshadow);
     return true;
 }
 
@@ -1053,89 +1175,138 @@ static void report_fft_check(const Arr2D &fftM, const Arr2D &refM,
                  name, maxAbs, maxRel, sigMaxRel, rmsRel, count, sigCount);
 }
 
+static bool fft_upsample_phi_arr2d_impl(const Arr2D &low,
+                                        const Arr2D *low2,
+                                        int nLow,
+                                        int nFull,
+                                        int nZen,
+                                        Arr2D &dst,
+                                        Arr2D *dst2)
+{
+    if (nLow <= 0 || nFull <= 0 || nZen < 0)
+        return false;
+
+    const int nElem = 16;
+    const int sideCount = (low2 && dst2) ? 2 : 1;
+    const int sideStride = (nZen + 1) * nElem;
+    const int batch = sideCount * sideStride;
+    const size_t lowCount = (size_t)batch * nLow;
+    const size_t fullCount = (size_t)batch * nFull;
+    const bool timing = gpu_timing_enabled();
+    const double tStart = timing ? gpu_now_ms() : 0.0;
+    double tPack = 0.0, tEnsure = 0.0, tH2d = 0.0, tForward = 0.0;
+    double tMemset = 0.0, tPad = 0.0, tInverse = 0.0, tD2h = 0.0, tAdd = 0.0;
+
+    GpuWorkspace &ws = g_gpuWorkspace;
+    ws.hFftLow.resize(lowCount);
+    std::vector<GpuComplex> &hLow = ws.hFftLow;
+    for (int side = 0; side < sideCount; ++side)
+    {
+        const Arr2D &src = (side == 0) ? low : *low2;
+        for (int t = 0; t <= nZen; ++t)
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c)
+                {
+                    int b = side * sideStride + (t * nElem) + r * 4 + c;
+                    for (int p = 0; p < nLow; ++p)
+                    {
+                        GpuComplex z;
+                        z.x = (GpuReal)src(p, t, r, c);
+                        z.y = (GpuReal)0.0;
+                        hLow[(size_t)b * nLow + p] = z;
+                    }
+                }
+    }
+    if (timing) tPack = gpu_now_ms() - tStart;
+
+    bool ok = false;
+
+    do
+    {
+        double t0 = timing ? gpu_now_ms() : 0.0;
+        if (!ensure_fft_workspace(ws, nLow, nFull, batch)) break;
+        if (timing) tEnsure = gpu_now_ms() - t0;
+        t0 = timing ? gpu_now_ms() : 0.0;
+        if (cudaMemcpy(ws.fftLow, hLow.data(), lowCount * sizeof(GpuComplex),
+                       cudaMemcpyHostToDevice) != cudaSuccess) break;
+        if (timing) tH2d = gpu_now_ms() - t0;
+
+        t0 = timing ? gpu_now_ms() : 0.0;
+        if (gpu_cufft_exec(ws.fftPlanLow, ws.fftLow, ws.fftLow, CUFFT_FORWARD) != CUFFT_SUCCESS) break;
+        if (timing && cudaDeviceSynchronize() != cudaSuccess) break;
+        if (timing) tForward = gpu_now_ms() - t0;
+        t0 = timing ? gpu_now_ms() : 0.0;
+        if (cudaMemset(ws.fftFull, 0, fullCount * sizeof(GpuComplex)) != cudaSuccess) break;
+        if (timing) tMemset = gpu_now_ms() - t0;
+
+        t0 = timing ? gpu_now_ms() : 0.0;
+        int block = gpu_block_size();
+        int grid = (int)((lowCount + block - 1) / block);
+        GpuReal scale = (GpuReal)(1.0 / (double)nLow);
+        fft_phi_pad_kernel<<<grid, block>>>(ws.fftLow, ws.fftFull, nLow, nFull, batch, scale);
+        if (cudaGetLastError() != cudaSuccess) break;
+        if (timing && cudaDeviceSynchronize() != cudaSuccess) break;
+        if (timing) tPad = gpu_now_ms() - t0;
+        t0 = timing ? gpu_now_ms() : 0.0;
+        if (gpu_cufft_exec(ws.fftPlanFull, ws.fftFull, ws.fftFull, CUFFT_INVERSE) != CUFFT_SUCCESS) break;
+        if (timing && cudaDeviceSynchronize() != cudaSuccess) break;
+        if (timing) tInverse = gpu_now_ms() - t0;
+
+        t0 = timing ? gpu_now_ms() : 0.0;
+        ws.hFftFull.resize(fullCount);
+        std::vector<GpuComplex> &hFull = ws.hFftFull;
+        if (cudaMemcpy(hFull.data(), ws.fftFull, fullCount * sizeof(GpuComplex),
+                       cudaMemcpyDeviceToHost) != cudaSuccess) break;
+        if (timing) tD2h = gpu_now_ms() - t0;
+
+        t0 = timing ? gpu_now_ms() : 0.0;
+        for (int side = 0; side < sideCount; ++side)
+        {
+            Arr2D &out = (side == 0) ? dst : *dst2;
+            for (int p = 0; p < nFull; ++p)
+                for (int t = 0; t <= nZen; ++t)
+                {
+                    double *cell = out.RawCell(p, t);
+                    const int base = side * sideStride + t * nElem;
+                    for (int k = 0; k < nElem; ++k)
+                        cell[k] += hFull[(size_t)(base + k) * nFull + p].x;
+                }
+        }
+        if (timing) tAdd = gpu_now_ms() - t0;
+
+        ok = true;
+    } while (false);
+
+    if (timing)
+        std::fprintf(stderr,
+                     "GPU timing fft_phi nLow=%d nFull=%d batch=%d sides=%d pack=%.3fms ensure=%.3fms h2d=%.3fms fwd=%.3fms memset=%.3fms pad=%.3fms inv=%.3fms d2h=%.3fms add=%.3fms total=%.3fms ok=%d\n",
+                     nLow, nFull, batch, sideCount, tPack, tEnsure, tH2d, tForward,
+                     tMemset, tPad, tInverse, tD2h, tAdd,
+                     gpu_now_ms() - tStart, ok ? 1 : 0);
+
+    return ok;
+}
+
 static bool fft_upsample_phi_arr2d(const Arr2D &low,
                                    int nLow,
                                    int nFull,
                                    int nZen,
                                    Arr2D &dst)
 {
-    if (nLow <= 0 || nFull <= 0 || nZen < 0)
-        return false;
+    return fft_upsample_phi_arr2d_impl(low, nullptr, nLow, nFull, nZen,
+                                      dst, nullptr);
+}
 
-    const int nElem = 16;
-    const int batch = (nZen + 1) * nElem;
-    const size_t lowCount = (size_t)batch * nLow;
-    const size_t fullCount = (size_t)batch * nFull;
-
-    std::vector<GpuComplex> hLow(lowCount);
-    for (int t = 0; t <= nZen; ++t)
-        for (int r = 0; r < 4; ++r)
-            for (int c = 0; c < 4; ++c)
-            {
-                int b = (t * nElem) + r * 4 + c;
-                for (int p = 0; p < nLow; ++p)
-                {
-                    GpuComplex z;
-                    z.x = (GpuReal)low(p, t, r, c);
-                    z.y = (GpuReal)0.0;
-                    hLow[(size_t)b * nLow + p] = z;
-                }
-            }
-
-    GpuComplex *dLow = nullptr;
-    GpuComplex *dFull = nullptr;
-    cufftHandle planLow = 0;
-    cufftHandle planFull = 0;
-    bool ok = false;
-
-    do
-    {
-        if (cudaMalloc(&dLow, lowCount * sizeof(GpuComplex)) != cudaSuccess) break;
-        if (cudaMalloc(&dFull, fullCount * sizeof(GpuComplex)) != cudaSuccess) break;
-        if (cudaMemcpy(dLow, hLow.data(), lowCount * sizeof(GpuComplex),
-                       cudaMemcpyHostToDevice) != cudaSuccess) break;
-
-        int nLowArr[1] = { nLow };
-        int nFullArr[1] = { nFull };
-        if (cufftPlanMany(&planLow, 1, nLowArr,
-                          nullptr, 1, nLow,
-                          nullptr, 1, nLow,
-                          GpuCufftType, batch) != CUFFT_SUCCESS) break;
-        if (cufftPlanMany(&planFull, 1, nFullArr,
-                          nullptr, 1, nFull,
-                          nullptr, 1, nFull,
-                          GpuCufftType, batch) != CUFFT_SUCCESS) break;
-        if (gpu_cufft_exec(planLow, dLow, dLow, CUFFT_FORWARD) != CUFFT_SUCCESS) break;
-        if (cudaMemset(dFull, 0, fullCount * sizeof(GpuComplex)) != cudaSuccess) break;
-
-        int block = 256;
-        int grid = (int)((lowCount + block - 1) / block);
-        GpuReal scale = (GpuReal)(1.0 / (double)nLow);
-        fft_phi_pad_kernel<<<grid, block>>>(dLow, dFull, nLow, nFull, batch, scale);
-        if (cudaGetLastError() != cudaSuccess) break;
-        if (gpu_cufft_exec(planFull, dFull, dFull, CUFFT_INVERSE) != CUFFT_SUCCESS) break;
-
-        std::vector<GpuComplex> hFull(fullCount);
-        if (cudaMemcpy(hFull.data(), dFull, fullCount * sizeof(GpuComplex),
-                       cudaMemcpyDeviceToHost) != cudaSuccess) break;
-
-        for (int t = 0; t <= nZen; ++t)
-            for (int r = 0; r < 4; ++r)
-                for (int c = 0; c < 4; ++c)
-                {
-                    int b = (t * nElem) + r * 4 + c;
-                    for (int p = 0; p < nFull; ++p)
-                        dst(p, t, r, c) += hFull[(size_t)b * nFull + p].x;
-                }
-
-        ok = true;
-    } while (false);
-
-    if (planLow) cufftDestroy(planLow);
-    if (planFull) cufftDestroy(planFull);
-    cudaFree(dLow);
-    cudaFree(dFull);
-    return ok;
+static bool fft_upsample_phi_arr2d_pair(const Arr2D &low,
+                                        const Arr2D &low2,
+                                        int nLow,
+                                        int nFull,
+                                        int nZen,
+                                        Arr2D &dst,
+                                        Arr2D &dst2)
+{
+    return fft_upsample_phi_arr2d_impl(low, &low2, nLow, nFull, nZen,
+                                      dst, &dst2);
 }
 
 bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientation> &prepared,
@@ -1159,6 +1330,7 @@ bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOri
 
     const int nFull = m_sphere.nAzimuth;
     const int nZen = m_sphere.nZenith;
+    const bool computeNoShadow = ComputeNoShadow();
     int factor = choose_fft_phi_factor(nFull);
     if (factor <= 1 || nFull < 32)
         return HandleOrientationsToLocalGpu(prepared, start, count,
@@ -1204,19 +1376,47 @@ bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOri
     bool doCheck = gpu_fft_check_enabled() && factor > 2;
     if (!doCheck)
     {
-        if (!fft_upsample_phi_arr2d(lowM, nLow, nFull, nZen, localM))
-            return false;
-        if (!fft_upsample_phi_arr2d(lowMns, nLow, nFull, nZen, localM_noshadow))
-            return false;
+        if (!computeNoShadow)
+        {
+            if (!fft_upsample_phi_arr2d(lowM, nLow, nFull, nZen, localM))
+                return false;
+        }
+        else if (gpu_fft_pair_enabled())
+        {
+            if (!fft_upsample_phi_arr2d_pair(lowM, lowMns, nLow, nFull, nZen,
+                                             localM, localM_noshadow))
+                return false;
+        }
+        else
+        {
+            if (!fft_upsample_phi_arr2d(lowM, nLow, nFull, nZen, localM))
+                return false;
+            if (!fft_upsample_phi_arr2d(lowMns, nLow, nFull, nZen, localM_noshadow))
+                return false;
+        }
         return true;
     }
 
     Arr2D fftM(nFull + 1, nZen + 1, 4, 4); fftM.ClearArr();
     Arr2D fftMns(nFull + 1, nZen + 1, 4, 4); fftMns.ClearArr();
-    if (!fft_upsample_phi_arr2d(lowM, nLow, nFull, nZen, fftM))
-        return false;
-    if (!fft_upsample_phi_arr2d(lowMns, nLow, nFull, nZen, fftMns))
-        return false;
+    if (!computeNoShadow)
+    {
+        if (!fft_upsample_phi_arr2d(lowM, nLow, nFull, nZen, fftM))
+            return false;
+    }
+    else if (gpu_fft_pair_enabled())
+    {
+        if (!fft_upsample_phi_arr2d_pair(lowM, lowMns, nLow, nFull, nZen,
+                                         fftM, fftMns))
+            return false;
+    }
+    else
+    {
+        if (!fft_upsample_phi_arr2d(lowM, nLow, nFull, nZen, fftM))
+            return false;
+        if (!fft_upsample_phi_arr2d(lowMns, nLow, nFull, nZen, fftMns))
+            return false;
+    }
 
     if (doCheck)
     {
@@ -1238,16 +1438,32 @@ bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOri
 
         Arr2D checkM(nFull + 1, nZen + 1, 4, 4); checkM.ClearArr();
         Arr2D checkMns(nFull + 1, nZen + 1, 4, 4); checkMns.ClearArr();
-        if (!fft_upsample_phi_arr2d(checkLowM, nCheck, nFull, nZen, checkM))
-            return false;
-        if (!fft_upsample_phi_arr2d(checkLowMns, nCheck, nFull, nZen, checkMns))
-            return false;
+        if (!computeNoShadow)
+        {
+            if (!fft_upsample_phi_arr2d(checkLowM, nCheck, nFull, nZen, checkM))
+                return false;
+        }
+        else if (gpu_fft_pair_enabled())
+        {
+            if (!fft_upsample_phi_arr2d_pair(checkLowM, checkLowMns, nCheck,
+                                             nFull, nZen, checkM, checkMns))
+                return false;
+        }
+        else
+        {
+            if (!fft_upsample_phi_arr2d(checkLowM, nCheck, nFull, nZen, checkM))
+                return false;
+            if (!fft_upsample_phi_arr2d(checkLowMns, nCheck, nFull, nZen, checkMns))
+                return false;
+        }
         report_fft_check(fftM, checkM, nFull, nZen, "full");
-        report_fft_check(fftMns, checkMns, nFull, nZen, "no-shadow");
+        if (computeNoShadow)
+            report_fft_check(fftMns, checkMns, nFull, nZen, "no-shadow");
     }
 
     add_arr2d_inplace(fftM, nFull, nZen, localM);
-    add_arr2d_inplace(fftMns, nFull, nZen, localM_noshadow);
+    if (computeNoShadow)
+        add_arr2d_inplace(fftMns, nFull, nZen, localM_noshadow);
 
     return true;
 }
@@ -1271,6 +1487,11 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     const int gridCount = nAz * (nZen + 1);
     if (nOrient == 0 || gridCount == 0)
         return true;
+    const bool computeNoShadow = ComputeNoShadow();
+    const bool timing = gpu_timing_enabled();
+    const double tStart = timing ? gpu_now_ms() : 0.0;
+    double tCount = 0.0, tPack = 0.0, tEnsure = 0.0, tGrid = 0.0;
+    double tCopy = 0.0, tKernel = 0.0, tD2h = 0.0, tAdd = 0.0;
 
     size_t nBeams = 0;
     for (int oi = 0; oi < nOrient; ++oi)
@@ -1285,8 +1506,10 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     }
     if (nBeams == 0)
         return true;
+    if (timing) tCount = gpu_now_ms() - tStart;
 
     GpuWorkspace &ws = g_gpuWorkspace;
+    double t0 = timing ? gpu_now_ms() : 0.0;
     const bool scaleOnPack = (fabs(scale - 1.0) > 1e-15);
     const double scale2 = scale * scale;
     ws.hBeams.resize(nBeams);
@@ -1360,10 +1583,12 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         }
     }
     hBeamOffsets[nOrient] = (int)bi;
+    if (timing) tPack = gpu_now_ms() - t0;
 
     const size_t jCount = (size_t)nOrient * gridCount * 8;
     const size_t mCount = (size_t)gridCount * 16;
 
+    t0 = timing ? gpu_now_ms() : 0.0;
     if (!ensure_device_capacity(ws.beams, ws.beamCap, hBeams.size())) return false;
     if (!ensure_device_capacity(ws.weights, ws.weightsCap, hWeights.size())) return false;
     if (!ensure_device_capacity(ws.beamOffsets, ws.beamOffsetsCap, hBeamOffsets.size())) return false;
@@ -1375,14 +1600,16 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     if (!ensure_device_capacity(ws.j, ws.jCap, jCount)) return false;
     if (!ensure_device_capacity(ws.jNoShadow, ws.jNoShadowCap, jCount)) return false;
     if (!ensure_device_capacity(ws.m, ws.mCap, mCount)) return false;
-    if (!ensure_device_capacity(ws.mNoShadow, ws.mNoShadowCap, mCount)) return false;
+    if (computeNoShadow && !ensure_device_capacity(ws.mNoShadow, ws.mNoShadowCap, mCount)) return false;
+    if (timing) tEnsure = gpu_now_ms() - t0;
 
+    t0 = timing ? gpu_now_ms() : 0.0;
     if (ws.gridNAz != nAz || ws.gridNZen != nZen)
     {
         std::vector<GpuReal> hSinTheta(nZen + 1), hCosTheta(nZen + 1);
         for (int t = 0; t <= nZen; ++t)
         {
-            GpuReal theta = m_sphere.GetZenith(t);
+            GpuReal theta = (GpuReal)regularized_gpu_theta(m_sphere, t);
             hSinTheta[t] = sin(theta);
             hCosTheta[t] = cos(theta);
         }
@@ -1412,16 +1639,20 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         ws.gridNAz = nAz;
         ws.gridNZen = nZen;
     }
+    if (timing) tGrid = gpu_now_ms() - t0;
 
+    t0 = timing ? gpu_now_ms() : 0.0;
     if (cudaMemcpy(ws.beams, hBeams.data(), hBeams.size() * sizeof(GpuBeam), cudaMemcpyHostToDevice) != cudaSuccess) return false;
     if (cudaMemcpy(ws.weights, hWeights.data(), hWeights.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
     if (cudaMemcpy(ws.beamOffsets, hBeamOffsets.data(), hBeamOffsets.size() * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) return false;
     if (cudaMemset(ws.j, 0, jCount * sizeof(GpuReal)) != cudaSuccess) return false;
     if (cudaMemset(ws.jNoShadow, 0, jCount * sizeof(GpuReal)) != cudaSuccess) return false;
     if (cudaMemset(ws.m, 0, mCount * sizeof(GpuReal)) != cudaSuccess) return false;
-    if (cudaMemset(ws.mNoShadow, 0, mCount * sizeof(GpuReal)) != cudaSuccess) return false;
+    if (computeNoShadow && cudaMemset(ws.mNoShadow, 0, mCount * sizeof(GpuReal)) != cudaSuccess) return false;
+    if (timing) tCopy = gpu_now_ms() - t0;
 
-    int block = 256;
+    t0 = timing ? gpu_now_ms() : 0.0;
+    int block = gpu_block_size();
     bool noAtomics = gpu_no_atomics_enabled();
     long long diffractionTotal = (long long)(noAtomics ? nOrient : (int)hBeams.size()) * gridCount;
     int diffractionGrid = (int)((diffractionTotal + block - 1) / block);
@@ -1451,34 +1682,50 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     int muellerGrid = (int)((muellerTotal + block - 1) / block);
     mueller_batch_kernel<<<muellerGrid, block>>>(ws.j, ws.jNoShadow, ws.weights,
                                                  nOrient, gridCount,
-                                                 ws.m, ws.mNoShadow);
+                                                 ws.m, computeNoShadow ? ws.mNoShadow : nullptr);
     err = cudaGetLastError();
     if (!gpu_report_cuda_error(err, "mueller kernel launch"))
         return false;
     err = cudaDeviceSynchronize();
     if (!gpu_report_cuda_error(err, "mueller kernel sync"))
         return false;
+    if (timing) tKernel = gpu_now_ms() - t0;
 
+    t0 = timing ? gpu_now_ms() : 0.0;
     ws.hM.resize(mCount);
-    ws.hMNoShadow.resize(mCount);
+    if (computeNoShadow)
+        ws.hMNoShadow.resize(mCount);
     std::vector<GpuReal> &hM = ws.hM;
     std::vector<GpuReal> &hMns = ws.hMNoShadow;
     if (cudaMemcpy(hM.data(), ws.m, mCount * sizeof(GpuReal), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
-    if (cudaMemcpy(hMns.data(), ws.mNoShadow, mCount * sizeof(GpuReal), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+    if (computeNoShadow && cudaMemcpy(hMns.data(), ws.mNoShadow, mCount * sizeof(GpuReal), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+    if (timing) tD2h = gpu_now_ms() - t0;
 
+    t0 = timing ? gpu_now_ms() : 0.0;
     for (int p = 0; p < nAz; ++p)
         for (int t = 0; t <= nZen; ++t)
         {
             int grid = p * (nZen + 1) + t;
             const GpuReal *m = &hM[grid * 16];
-            const GpuReal *mn = &hMns[grid * 16];
-            for (int r = 0; r < 4; ++r)
-                for (int c = 0; c < 4; ++c)
-                {
-                    localM(p, t, r, c) += m[r * 4 + c];
-                    localM_noshadow(p, t, r, c) += mn[r * 4 + c];
-                }
+            double *cell = localM.RawCell(p, t);
+            for (int k = 0; k < 16; ++k)
+                cell[k] += m[k];
+            if (computeNoShadow)
+            {
+                const GpuReal *mn = &hMns[grid * 16];
+                double *cellNs = localM_noshadow.RawCell(p, t);
+                for (int k = 0; k < 16; ++k)
+                    cellNs[k] += mn[k];
+            }
         }
+    if (timing)
+    {
+        tAdd = gpu_now_ms() - t0;
+        std::fprintf(stderr,
+                     "GPU timing diffract orient=%d beams=%zu nAz=%d nZen=%d count=%.3fms pack=%.3fms ensure=%.3fms grid=%.3fms copy=%.3fms kernels=%.3fms d2h=%.3fms add=%.3fms total=%.3fms\n",
+                     nOrient, hBeams.size(), nAz, nZen, tCount, tPack, tEnsure,
+                     tGrid, tCopy, tKernel, tD2h, tAdd, gpu_now_ms() - tStart);
+    }
 
     return true;
 }
@@ -1553,8 +1800,13 @@ bool HandlerPO::DiffractThetasGpu(const std::vector<PreparedOrientation> &prepar
     std::vector<GpuReal> hSinTheta(nPoints), hCosTheta(nPoints);
     for (int t = 0; t < nPoints; ++t)
     {
-        hSinTheta[t] = (GpuReal)sin(theta_rads[t]);
-        hCosTheta[t] = (GpuReal)cos(theta_rads[t]);
+        double theta = theta_rads[t];
+        if (theta <= 1e-14)
+            theta = 1e-6;
+        else if (theta >= M_PI - 1e-14)
+            theta = M_PI - 1e-6;
+        hSinTheta[t] = (GpuReal)sin(theta);
+        hCosTheta[t] = (GpuReal)cos(theta);
     }
 
     std::vector<GpuReal> hSinPhi(nAz), hCosPhi(nAz);
@@ -1602,7 +1854,7 @@ bool HandlerPO::DiffractThetasGpu(const std::vector<PreparedOrientation> &prepar
     if (cudaMemcpy(ws.vf, hVf.data(), hVf.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
     if (cudaMemset(ws.m, 0, (size_t)nPoints * sizeof(GpuReal)) != cudaSuccess) return false;
 
-    int block = 256;
+    int block = gpu_block_size();
     long long total = (long long)nBeams * gridCount;
     int launchGrid = (int)((total + block - 1) / block);
     theta_m11_kernel<<<launchGrid, block>>>(

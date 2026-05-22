@@ -1,5 +1,6 @@
 #include "Polygon.h"
 #include <math.h>
+#include <string.h>
 
 #define EPS_NORMAL 0.1
 
@@ -13,21 +14,13 @@ Polygon::Polygon(int size) : nVertices(size) {}
 Polygon::Polygon(const Polygon &other)
 {
 	nVertices = other.nVertices;
-
-	for (int i = 0; i < other.nVertices; ++i)
-	{
-		arr[i] = other.arr[i];
-	}
+	memcpy(arr, other.arr, nVertices * sizeof(Point3f));
 }
 
 Polygon::Polygon(Polygon &&other)
 {
 	nVertices = other.nVertices;
-
-	for (int i = 0; i < nVertices; ++i)
-	{
-		arr[i] = other.arr[i];
-	}
+	memcpy(arr, other.arr, nVertices * sizeof(Point3f));
 
 	other.nVertices = 0;
 }
@@ -42,11 +35,7 @@ Polygon &Polygon::operator =(const Polygon &other)
 	if (this != &other)
 	{
 		nVertices = other.nVertices;
-
-		for (int i = 0; i < nVertices; ++i)
-		{
-			arr[i] = other.arr[i];
-		}
+		memcpy(arr, other.arr, nVertices * sizeof(Point3f));
 	}
 
 	return *this;
@@ -57,11 +46,7 @@ Polygon &Polygon::operator = (Polygon &&other)
 	if (this != &other)
 	{
 		nVertices = other.nVertices;
-
-		for (int i = 0; i < nVertices; ++i)
-		{
-			arr[i] = other.arr[i];
-		}
+		memcpy(arr, other.arr, nVertices * sizeof(Point3f));
 
 		other.nVertices = 0;
 	}

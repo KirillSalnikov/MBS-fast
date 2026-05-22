@@ -140,6 +140,9 @@ public:
     bool IsGpuEnabled() const;
     void SetFftEnabled(bool value);
     bool IsFftEnabled() const;
+    void SetFullOnly(bool value);
+    bool IsFullOnly() const;
+    bool ComputeNoShadow() const;
 
     matrix *m_Lp;
     matrix *m_Ln;
@@ -200,6 +203,7 @@ public:
     bool outputJones = false;
     bool m_gpuEnabled = false;
     bool m_fftEnabled = false;
+    bool m_fullOnly = true;
 protected:
     bool isNanOccured = false;
     bool isNan = false;

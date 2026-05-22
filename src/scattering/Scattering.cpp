@@ -3,6 +3,7 @@
 #include <float.h>
 #include <assert.h>
 #include <algorithm>
+#include <cstdlib>
 
 #include "geometry_lib.h"
 
@@ -10,6 +11,15 @@
 
 using namespace std;
 using ::complex;
+
+static bool DisableTraceTrackIds()
+{
+    static const bool disabled = []() {
+        const char *value = std::getenv("MBS_DISABLE_TRACK_IDS");
+        return value != nullptr && value[0] == '1' && value[1] == '\0';
+    }();
+    return disabled;
+}
 
 Scattering::Scattering(Particle *particle, Light *incidentLight, bool isOpticalPath,
                        int nActs)
@@ -31,17 +41,33 @@ Scattering::Scattering(Particle *particle, Light *incidentLight, bool isOpticalP
     EPS_BEAM_ENERGY = (0.25*0.25*m_particle->Area())/M_PI*riContrast*riContrast*1e-7;
 }
 
+Scattering::~Scattering()
+{
+}
+
+bool Scattering::EnsureBeamTree()
+{
+    if (m_beamTree.capacity() == 0)
+        m_beamTree.reserve(4096);
+    return true;
+}
+
 void Scattering::CopyRuntimeOptionsFrom(const Scattering &source)
 {
     m_wave = source.m_wave;
     restriction = source.restriction;
     m_traceCutoffJRel = source.m_traceCutoffJRel;
     m_traceCutoffAreaRel = source.m_traceCutoffAreaRel;
+    m_traceCutoffImportanceRel = source.m_traceCutoffImportanceRel;
     m_traceMaxBeams = source.m_traceMaxBeams;
+    m_gpuTracePrefilter = source.m_gpuTracePrefilter;
 }
 
 IdType Scattering::Scattering::RecomputeTrackId(const IdType &oldId, int facetId)
 {
+    if (DisableTraceTrackIds())
+        return 0;
+
     return (oldId + (facetId + 1)) * (m_particle->nFacets + 1);
 }
 
@@ -59,9 +85,15 @@ bool Scattering::PushBeamToTree(Beam &beam, int facetId, int level, Location loc
     {
         return false;
     }
+    if (m_traceMaxBeams > 0 && m_treeSize >= m_traceMaxBeams)
+    {
+        return false;
+    }
+    if (!EnsureBeamTree())
+        return false;
 
-    m_beamTree[m_treeSize] = beam;
-    m_treeSize += 1;
+    m_beamTree.push_back(beam);
+    m_treeSize = (int)m_beamTree.size();
     return true;
 }
 
@@ -315,25 +347,40 @@ void Scattering::ResetTraceReference()
 {
     m_traceRefJNorm = 0;
     m_traceRefArea = 0;
+    m_traceRefImportance = 0;
 }
 
 void Scattering::UpdateTraceReference(const Beam &beam)
 {
     double jn = beam.J.Norm();
     double ar = beam.Area();
+    double importance = jn * ar;
     if (jn > m_traceRefJNorm) m_traceRefJNorm = jn;
     if (ar > m_traceRefArea) m_traceRefArea = ar;
+    if (importance > m_traceRefImportance) m_traceRefImportance = importance;
 }
 
 bool Scattering::IsTracePruned(const Beam &beam) const
 {
     if (beam.nActs == 0)
         return false;
-    bool smallJ = (m_traceCutoffJRel > 0 && m_traceRefJNorm > 0
-                   && beam.J.Norm() < m_traceCutoffJRel * m_traceRefJNorm);
-    bool smallArea = (m_traceCutoffAreaRel > 0 && m_traceRefArea > 0
-                      && beam.Area() < m_traceCutoffAreaRel * m_traceRefArea);
-    return smallJ || smallArea;
+    const bool useJ = (m_traceCutoffJRel > 0 && m_traceRefJNorm > 0);
+    const bool useArea = (m_traceCutoffAreaRel > 0 && m_traceRefArea > 0);
+    const bool useImportance = (m_traceCutoffImportanceRel > 0
+                                && m_traceRefImportance > 0);
+    if (!useJ && !useArea && !useImportance)
+        return false;
+
+    double jn = 0;
+    double ar = 0;
+    if (useJ || useImportance)
+        jn = beam.J.Norm();
+    if (useArea || useImportance)
+        ar = beam.Area();
+
+    return (useJ && jn < m_traceCutoffJRel * m_traceRefJNorm)
+        || (useArea && ar < m_traceCutoffAreaRel * m_traceRefArea)
+        || (useImportance && jn * ar < m_traceCutoffImportanceRel * m_traceRefImportance);
 }
 
 void Scattering::Difference(const Polygon &subject, const Vector3f &subjNormal,
@@ -486,11 +533,12 @@ bool Scattering::ProjectToFacetPlane(const Polygon &polygon, const Vector3f &dir
 void Scattering::Intersect(int facetID, const Beam &beam, Polygon &intersection) const
 {
     __m128 _output_points[MAX_VERTEX_NUM];
+    const Facet &facet = m_particle->facets[facetID];
     // REF: перенести в случай невыпуклых частиц
-    const Point3f &normal = m_facets[facetID].in_normal;
+    const Point3f &normal = facet.in_normal;
 
-    const Point3f &normal1 = (beam.location == Location::In) ? m_facets[facetID].in_normal
-                                                            : m_facets[facetID].ex_normal;
+    const Point3f &normal1 = (beam.location == Location::In) ? facet.in_normal
+                                                            : facet.ex_normal;
     bool isProjected = ProjectToFacetPlane(beam, beam.direction, normal1,
                                            _output_points);
     if (!isProjected)
@@ -506,19 +554,19 @@ void Scattering::Intersect(int facetID, const Beam &beam, Polygon &intersection)
     __m128 *_buffer_ptr = _buffer;
     int bufferSize;
 
-    int facetSize = m_particle->facets[facetID].nVertices;
+    int facetSize = facet.nVertices;
 
     __m128 _p1, _p2; // vertices of facet
     __m128 _s_point, _e_point;	// points of projection
     bool isInsideE, isInsideS;
 
-    Point3f p2 = m_particle->facets[facetID].arr[facetSize-1];
+    Point3f p2 = facet.arr[facetSize-1];
     _p2 = _mm_load_ps(p2.coordinates);
 
     for (int i = 0; i < facetSize; ++i)
     {
         _p1 = _p2;
-        p2 = m_particle->facets[facetID].arr[i];
+        p2 = facet.arr[i];
         _p2 = _mm_load_ps(p2.coordinates);
 
         bufferSize = outputSize;

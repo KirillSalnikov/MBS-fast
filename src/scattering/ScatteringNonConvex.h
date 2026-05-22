@@ -12,8 +12,10 @@ public:
     Scattering* CloneFor(Particle *p, Light *l) override {
         ScatteringNonConvex *copy = new ScatteringNonConvex(p, l, true, m_nActs);
         copy->CopyRuntimeOptionsFrom(*this);
+        copy->CopyVisibilityCacheFrom(*this);
         return copy;
     }
+    void PrepareForParallelTrace() override;
 
     bool ScatterLight(double beta, double gamma, std::vector<Beam> &scaterredBeams) override;
     bool ScatterLight(double beta, double gamma, const std::vector<std::vector<int>> &tracks,
@@ -31,6 +33,7 @@ private:
     void FindVisibleFacets(const Beam &beam, IntArray &facetIds);
     void FindVisibleFacetsForLight(IntArray &facetIDs);
     void BuildFacetVisibilityCache();
+    void CopyVisibilityCacheFrom(const ScatteringNonConvex &source);
 
     void SelectVisibleFacets(const Beam &beam, IntArray &facetIDs);
     void SelectVisibleFacetsForLight(IntArray &facetIDs);
@@ -53,6 +56,7 @@ private:
                          Beam &inBeam, Beam &outBeam);
 
     bool IsVisibleFacet(int facetID, const Beam &beam);
+    bool MayBeamIntersectFacetProjected(const Beam &beam, int facetId) const;
 
     void SplitByFacet(const IntArray &facetIDs, int facetIndex);
 
@@ -82,5 +86,6 @@ private:
     PolygonArray m_polygonBuffer;
     int m_visibleFacetCache[2][MAX_FACET_NUM][MAX_FACET_NUM];
     size_t m_visibleFacetCacheSize[2][MAX_FACET_NUM];
+    const ScatteringNonConvex *m_visibilityCacheOwner = nullptr;
     bool m_visibilityCacheBuilt = false;
 };

@@ -287,7 +287,12 @@ typedef Point3d Vector3d;
  * Functions
  */
 
-double DotProduct(const Vector3f &v1, const Vector3f &v2);
+inline double DotProduct(const Vector3f &v1, const Vector3f &v2)
+{
+	return	  (double)v1.cx * (double)v2.cx
+			+ (double)v1.cy * (double)v2.cy
+			+ (double)v1.cz * (double)v2.cz;
+}
 double DotProductD(const Vector3d &v1, const Vector3d &v2);
 void CrossProduct(const Vector3f &v1, const Vector3f &v2, Vector3f &res);
 Point3f CrossProduct(const Point3f &v1, const Point3f &v2);

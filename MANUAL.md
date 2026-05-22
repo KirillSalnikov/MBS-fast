@@ -301,6 +301,41 @@ one gamma and multiplies its weight by the full gamma count.
 This keeps the normalization equivalent to the full grid while avoiding
 duplicated pole work.
 
+#### `--mirror_gamma`
+
+Use mirror symmetry in the regular `--oldauto` beta/gamma grid. For particles
+with a mirror plane inside the rotational symmetry sector, the fundamental
+gamma interval is halved:
+
+```
+gamma_max_effective = gamma_sym / 2
+```
+
+For a hexagonal particle this changes the oldauto gamma domain from `0..60 deg`
+to `0..30 deg`. The oldauto formula is then applied to the reduced interval:
+
+```
+N_gamma_full = ceil((gamma_sym/2) / Delta_orient)
+N_gamma      = ceil(N_gamma_full / DIV)
+```
+
+The quadrature normalization uses the reduced fundamental domain. The omitted
+mirror half is restored in the Mueller grid by pairing azimuths `phi` and
+`-phi`:
+
+```
+M_mirror_averaged(phi) = 0.5 * (M(phi) + P M(-phi) P)
+P = diag(1, 1, -1, -1)
+```
+
+This preserves the even Mueller components and cancels the components that are
+odd under the mirror operation. It is valid when the particle really has the
+mirror symmetry in the input geometry.
+
+On a hex plate test, `--oldauto 4` changed the grid from `30 x 20` to
+`30 x 10` gamma samples and matched the full-gamma `M11(theta)` curve with
+maximum relative difference about `4.4e-6`.
+
 #### `--montecarlo N`
 
 Monte Carlo random orientations. N is the total number of orientations, sampled randomly within the beta/gamma range (uses random seed). Less efficient than Sobol for the same N.
@@ -585,6 +620,30 @@ O(batch_orientations * beams_per_orientation * vertices_per_beam)
 The code chooses GPU orientation batches dynamically so a 12 GB card can run
 large cases without allocating the full orientation set on the GPU at once.
 
+#### `--gpu_trace`
+
+Enable the experimental CUDA prefilter for non-convex tracing candidates.
+This does not replace the exact CPU polygon intersection. CUDA only projects
+beam/facet pairs and rejects pairs whose 2D bounding boxes cannot overlap;
+all surviving pairs still go through the existing CPU `Intersect()` path.
+
+The implementation batches many beams from one tracing stack layer, copies
+beam records, facet records, and compact `(beam, facet)` index pairs to the
+GPU, then copies one byte per candidate back to the CPU. Workspaces are
+thread-local so OpenMP tracing can call the prefilter safely.
+
+Environment controls:
+
+```
+MBS_GPU_TRACE_BATCH_BEAMS=1024      # beams collected per CUDA prefilter batch
+MBS_GPU_TRACE_MIN_CANDIDATES=8192   # below this, skip CUDA and use CPU path
+```
+
+Current status: this is a correctness-checked experimental path, not a default
+speed path. It is useful as groundwork for a full GPU tracing layer, but on
+small and medium Afine30 tests the CPU tracer is still faster because the
+remaining exact intersection and CPU/GPU synchronization dominate.
+
 #### `--fft`
 
 Enable the experimental CUDA FFT phi-interpolation backend. Requires `--gpu`.
@@ -611,8 +670,14 @@ MBS_FFT_PHI_FACTOR=10     # force output/direct ratio
 MBS_FFT_CHECK=1           # optional diagnostics/check path
 MBS_GPU_NO_ATOMICS=1      # use orientation-grid CUDA reduction path
 MBS_GPU_MEM_FRACTION=0.8  # fraction of free GPU memory available to batches
+MBS_GPU_BLOCK=128|256|512 # CUDA block size for diffraction kernels, default 256
 MBS_SHARED_PIPELINE=1     # experimental CPU trace/GPU diffraction overlap
 ```
+
+By default the optimized PO path writes only the full Mueller matrix. The
+legacy `_noshadow` matrix is skipped to avoid an extra no-shadow reduction,
+host copy, FFT interpolation, and output file. Use `--noshadow_output` when
+that diagnostic matrix is needed.
 
 Accuracy depends on smoothness in phi. It is usually appropriate for
 orientation-averaged Mueller matrices with dense `N_phi`; validate against
@@ -764,6 +829,20 @@ area / area_initial,max < EPS
 This removes geometrically tiny internal beams. Use with care for exact
 backscatter studies because small apertures can still contribute sharp
 features.
+
+#### `--trace_cutoff_importance EPS`
+
+Stop tracing a beam branch when its relative internal importance is small:
+
+```
+(|J|^2 * area) / max_initial(|J|^2 * area) < EPS
+```
+
+This is usually the safest speed cutoff when particle size changes, because it
+combines field strength and aperture size in one dimensionless quantity. It is
+applied while building the non-convex beam tree, including newly split beam
+parts after facet clipping, so tiny internal leftovers are not put back into
+the tracing stack.
 
 #### `--trace_max_beams N`
 
@@ -931,12 +1010,28 @@ Optional precision selector:
 ```bash
 make USE_CUDA=1 GPU_PRECISION=double   # default
 make USE_CUDA=1 GPU_PRECISION=float    # experimental FP32 CUDA path
+make USE_CUDA=1 GPU_FAST_MATH=1        # double kernels with nvcc fast math
 ```
 
 `GPU_PRECISION=float` changes internal CUDA diffraction buffers/kernels to
 single precision while keeping the public CPU/output path in double where
-applicable. On RTX 3080 Ti / 4070 SUPER this has shown little benefit for the
-current FFT-heavy Greek-shape path; validate before using for production.
+applicable. On RTX 3080 Ti / 4070 SUPER this can speed CUDA diffraction by
+about 1.4-1.5x on Afine30 smoke tests, while integrated `Q` and `M11` remain
+close. Small polarization components are more sensitive: on one Afine30
+control run the largest significant FP32 relative error was in `M14/M41` near
+theta=0 deg, about 4.5%. `GPU_FAST_MATH=1` with float was faster again but
+increased that polarization error to about 8%, so treat it as a diagnostic or
+M11-only speed mode unless validated for the target observable.
+
+Convenience CUDA targets build separate binaries without replacing the default
+double binary:
+
+```bash
+make cuda_float       # bin/mbs_po_float
+make cuda_float_fast  # bin/mbs_po_float_fast
+make cuda_double_fast # bin/mbs_po_double_fast
+make cuda_variants    # all three
+```
 
 For RTX 3080 Ti and RTX 4070 SUPER, this explicit architecture build has been
 used successfully:
@@ -1087,6 +1182,7 @@ mbs_po --po --all --tr tracks.dat --gr \
 | `--random` | N_BETA N_GAMMA | Orientations | Uniform grid |
 | `--oldauto` | DIV | Orientations | Physics-based regular grid divided by DIV |
 | `--ring_points` | N | Orientations | Points per diffraction ring for oldauto grid |
+| `--mirror_gamma` | (none) | Orientations | Use mirror symmetry; oldauto gamma domain is halved |
 | `--pole` | (none) | Orientations | Use one gamma at beta poles with full weight |
 | `--montecarlo` | N | Orientations | Monte Carlo random orientations |
 | `--fixed` | BETA GAMMA | Orientations | Single orientation (degrees) |
@@ -1118,6 +1214,7 @@ mbs_po --po --all --tr tracks.dat --gr \
 | `--trace_cutoff` | EPS | Performance | Shorthand for trace J/area cutoffs |
 | `--trace_cutoff_j` | EPS | Performance | Trace prune by relative `|J|^2` |
 | `--trace_cutoff_area` | EPS | Performance | Trace prune by relative area |
+| `--trace_cutoff_importance` | EPS | Performance | Trace prune by relative `|J|^2*area` |
 | `--trace_max_beams` | N | Performance | Max beam nodes per orientation |
 | `--shadow_off` | (none) | Performance | Disable shadow beam |
 | `-r` | RATIO | Performance | Small beam restriction ratio (default 100) |

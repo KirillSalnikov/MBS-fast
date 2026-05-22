@@ -118,6 +118,13 @@ void ApplyBeamCutoffOptions(const ArgPP &args, Handler *handler)
         handler->m_beamCutoffImportanceRel = args.GetDoubleValue("beam_cutoff_importance", 0);
 }
 
+void ApplyPOOutputOptions(const ArgPP &args, HandlerPO *handler)
+{
+    if (!handler)
+        return;
+    handler->SetFullOnly(!args.IsCatched("noshadow_output"));
+}
+
 void ApplyTraceCutoffOptions(const ArgPP &args, Scattering *scattering)
 {
     if (args.IsCatched("trace_cutoff"))
@@ -130,8 +137,12 @@ void ApplyTraceCutoffOptions(const ArgPP &args, Scattering *scattering)
         scattering->m_traceCutoffJRel = args.GetDoubleValue("trace_cutoff_j", 0);
     if (args.IsCatched("trace_cutoff_area"))
         scattering->m_traceCutoffAreaRel = args.GetDoubleValue("trace_cutoff_area", 0);
+    if (args.IsCatched("trace_cutoff_importance"))
+        scattering->m_traceCutoffImportanceRel = args.GetDoubleValue("trace_cutoff_importance", 0);
     if (args.IsCatched("trace_max_beams"))
         scattering->m_traceMaxBeams = args.GetIntValue("trace_max_beams", 0);
+    if (args.IsCatched("gpu_trace"))
+        scattering->m_gpuTracePrefilter = true;
 }
 
 enum class ParticleType : int
@@ -183,6 +194,8 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("incoh", zero, true);
     parser.AddRule("jones", zero, true);
     parser.AddRule("shadow_off", zero, true);
+    parser.AddRule("full_only", zero, true);
+    parser.AddRule("noshadow_output", zero, true);
     parser.AddRule("forced_nonconvex", zero, true);
     parser.AddRule("forced_convex", zero, true);
     parser.AddRule("r", 1, true); // restriction ratio for small beams when intersection (100 by default)
@@ -202,7 +215,9 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("trace_cutoff", 1, true); // common relative tracing prune cutoff
     parser.AddRule("trace_cutoff_j", 1, true); // relative |J|^2 tracing prune cutoff
     parser.AddRule("trace_cutoff_area", 1, true); // relative area tracing prune cutoff
+    parser.AddRule("trace_cutoff_importance", 1, true); // relative |J|^2*area tracing prune cutoff
     parser.AddRule("trace_max_beams", 1, true); // max traced beam nodes per orientation
+    parser.AddRule("gpu_trace", 0, true); // experimental CUDA tracing prefilter
     parser.AddRule("sobol", 1, true); // Sobol quasi-random orientations (number, power of 2)
     parser.AddRule("auto_tgrid", 1, true); // adaptive theta grid (arg: tolerance, e.g. 0.05)
     parser.AddRule("auto_phi", 0, true); // auto-select N_phi based on size parameter
@@ -214,6 +229,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("chunk", 1, true); // max Sobol orientations per memory chunk
     parser.AddRule("oldauto", 1, true); // physics-based: div2/div4/div8 of diffraction-limited grid
     parser.AddRule("ring_points", 1, true); // points per diffraction ring for orientation estimates
+    parser.AddRule("mirror_gamma", 0, true); // use mirror symmetry: gamma fundamental range is halved
     parser.AddRule("threads", 1, true); // OpenMP worker threads
     parser.AddRule("gpu", 0, true); // enable CUDA GPU backend
     parser.AddRule("fft", 0, true); // enable experimental FFT angular interpolation backend
@@ -254,6 +270,7 @@ void PrintHelp()
          << "  --autofull EPS         Full auto including n search\n"
          << "  --oldauto DIV          Physics-based grid (div2/div4/div8 of diffraction limit)\n"
          << "  --ring_points N        Points per diffraction ring for orientation estimates (default 3)\n"
+         << "  --mirror_gamma         Use mirror symmetry: gamma range is halved (60 -> 30 deg)\n"
          << "  --orientfile FILE      Orientations from file (beta gamma per line)\n"
          << "  --b B1 B2              Beta range in degrees for --random\n"
          << "  --g G1 G2              Gamma range in degrees for --random\n"
@@ -286,13 +303,18 @@ void PrintHelp()
          << "  --trace_cutoff EPS     Stop tracing internal beams if either relative test matches\n"
          << "  --trace_cutoff_j EPS   Trace prune by |J|^2/initial-max < EPS\n"
          << "  --trace_cutoff_area EPS Trace prune by area/initial-max < EPS\n"
+         << "  --trace_cutoff_importance EPS Trace prune by |J|^2*area/max < EPS\n"
          << "  --trace_max_beams N    Abort one orientation after N traced beam nodes (0 disables)\n"
+         << "  --gpu_trace            Experimental CUDA prefilter for nonconvex tracing candidates\n"
+         << "                         Env: MBS_GPU_TRACE_BATCH_BEAMS=1024, MBS_GPU_TRACE_MIN_CANDIDATES=8192\n"
          << "  -r RATIO               Beam area restriction ratio (default 100)\n"
          << "  --sym Sb Sg            Override symmetry: beta/Sb, 360/Sg degrees\n"
          << "  --filter DEG           Restrict output to backscattering cone\n"
          << "  --point                Backscatter point mode (legacy; not for optimized --random)\n"
          << "  --shadow               Legacy flag, currently no effect\n"
          << "  --shadow_off           Disable shadow beam\n"
+         << "  --full_only            Do not compute/write no-shadow Mueller output (default)\n"
+         << "  --noshadow_output      Also compute/write _noshadow Mueller output\n"
          << "  --forced_convex        Force convex-particle processing\n"
          << "  --forced_nonconvex     Force non-convex-particle processing\n\n"
 
@@ -1259,6 +1281,7 @@ int main(int argc, const char* argv[])
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
             handler->SetFftEnabled(useFft);
+            ApplyPOOutputOptions(args, handler);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             handler->outputJones = args.IsCatched("jones");
@@ -1351,10 +1374,12 @@ int main(int argc, const char* argv[])
             // Get symmetry from particle
             double betaSym_deg = RadToDeg(particle->GetSymmetry().beta);
             double gammaSym_deg = RadToDeg(particle->GetSymmetry().gamma);
+            bool mirrorGamma = args.IsCatched("mirror_gamma");
+            double gammaRange_deg = mirrorGamma ? 0.5 * gammaSym_deg : gammaSym_deg;
 
             // Full grid: N = sym_range / step
             int N_beta_full = (int)ceil(betaSym_deg / orient_step);
-            int N_gamma_full = (int)ceil(gammaSym_deg / orient_step);
+            int N_gamma_full = (int)ceil(gammaRange_deg / orient_step);
 
             // Divide by div factor, round UP
             int N_beta = (N_beta_full + div - 1) / div;
@@ -1386,10 +1411,16 @@ int main(int argc, const char* argv[])
                  << " = " << (long long)N_beta_full * N_gamma_full << endl;
             cout << "  div" << div << ": " << N_beta << " x " << N_gamma
                  << " = " << N_beta * N_gamma << " orientations" << endl;
+            if (mirrorGamma)
+                cout << "  Gamma mirror symmetry: using 0.." << gammaRange_deg
+                     << " deg instead of 0.." << gammaSym_deg << " deg" << endl;
             cout << "  N_phi=" << N_phi << endl;
             cout << "  n=" << reflNum << endl;
 
             additionalSummary += ", oldauto div" + to_string(div) + "\n\n";
+            if (mirrorGamma)
+                additionalSummary += "\tGamma mirror symmetry: 0.."
+                    + to_string(gammaRange_deg) + " deg\n";
 
             // Build conus
             ScatteringRange conus = (args.IsCatched("grid") || args.IsCatched("tgrid"))
@@ -1410,7 +1441,7 @@ int main(int argc, const char* argv[])
             }
 
             TracerPOTotal *tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
             tracer->m_scattering->m_wave = wave;
             ApplyTraceCutoffOptions(args, tracer->m_scattering);
             tracer->shadowOff = args.IsCatched("shadow_off");
@@ -1424,6 +1455,7 @@ int main(int argc, const char* argv[])
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
             handler->SetFftEnabled(useFft);
+            ApplyPOOutputOptions(args, handler);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             ApplyNphiOverride(args, conus);
@@ -1438,7 +1470,7 @@ int main(int argc, const char* argv[])
 
             // Use --random with computed N_beta, N_gamma
             AngleRange betaRange(0, particle->GetSymmetry().beta, N_beta);
-            AngleRange gammaRange(0, particle->GetSymmetry().gamma, N_gamma);
+            AngleRange gammaRange(0, DegToRad(gammaRange_deg), N_gamma);
 
             if (args.IsCatched("multikeq") || args.IsCatched("multikeq_list"))
             {
@@ -1587,7 +1619,7 @@ int main(int argc, const char* argv[])
                 if (args.IsCatched("all"))
                 {
                     tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
                     tracer->m_scattering->m_wave = wave;
             ApplyTraceCutoffOptions(args, tracer->m_scattering);
                     if (args.IsCatched("r"))
@@ -1610,7 +1642,7 @@ int main(int argc, const char* argv[])
                 {
                     // Use TracerPOTotal for OpenMP + batched sincos acceleration
                     tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
                     tracer->m_scattering->m_wave = wave;
             ApplyTraceCutoffOptions(args, tracer->m_scattering);
                     tracer->shadowOff = args.IsCatched("shadow_off");
@@ -1635,6 +1667,7 @@ int main(int argc, const char* argv[])
                 handler->isCoh = !args.IsCatched("incoh");
                 handler->SetGpuEnabled(useGpu);
                 handler->SetFftEnabled(useFft);
+                ApplyPOOutputOptions(args, handler);
                 handler->m_legacySign = args.IsCatched("legacy_sign");
                 handler->useKarczewski = args.IsCatched("karczewski");
                 ApplyNphiOverride(args, conus);
@@ -1694,7 +1727,7 @@ int main(int argc, const char* argv[])
             ScatteringRange conus = SetConus(args);
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
             tracer->m_scattering->m_wave = wave;
             ApplyTraceCutoffOptions(args, tracer->m_scattering);
             tracer->shadowOff = args.IsCatched("shadow_off");
@@ -1710,6 +1743,7 @@ int main(int argc, const char* argv[])
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
             handler->SetFftEnabled(useFft);
+            ApplyPOOutputOptions(args, handler);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             ApplyNphiOverride(args, conus);
             handler->SetScatteringSphere(conus);
@@ -1737,7 +1771,7 @@ int main(int argc, const char* argv[])
             ScatteringRange conus = SetConus(args);
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
             tracer->m_scattering->m_wave = wave;
             ApplyTraceCutoffOptions(args, tracer->m_scattering);
             tracer->shadowOff = args.IsCatched("shadow_off");
@@ -1751,6 +1785,7 @@ int main(int argc, const char* argv[])
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
             handler->SetFftEnabled(useFft);
+            ApplyPOOutputOptions(args, handler);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             ApplyNphiOverride(args, conus);
@@ -1787,7 +1822,7 @@ int main(int argc, const char* argv[])
                 : ScatteringRange(0, M_PI, 1, 1);
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
             tracer->m_scattering->m_wave = wave;
             ApplyTraceCutoffOptions(args, tracer->m_scattering);
             tracer->shadowOff = args.IsCatched("shadow_off");
@@ -1822,6 +1857,7 @@ int main(int argc, const char* argv[])
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
             handler->SetFftEnabled(useFft);
+            ApplyPOOutputOptions(args, handler);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             ApplyNphiOverride(args, conus);

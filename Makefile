@@ -35,8 +35,12 @@ ifeq ($(USE_CUDA),1)
 NVCC ?= nvcc
 NVCCFLAGS ?= -O3 -std=c++11 -U_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700
 GPU_PRECISION ?= double
+GPU_FAST_MATH ?= 0
 ifeq ($(GPU_PRECISION),float)
-NVCCFLAGS += -DMBS_GPU_FLOAT
+override NVCCFLAGS += -DMBS_GPU_FLOAT
+endif
+ifeq ($(GPU_FAST_MATH),1)
+override NVCCFLAGS += --use_fast_math
 endif
 SOURCES += $(shell find $(SRC_DIR) -name '*.cu')
 endif
@@ -46,6 +50,9 @@ OBJECTS := $(OBJECTS:.cu=.o)
 DEPS = $(OBJECTS:.o=.d)
 
 TARGET = bin/mbs_po
+TARGET_FLOAT = bin/mbs_po_float
+TARGET_FLOAT_FAST = bin/mbs_po_float_fast
+TARGET_DOUBLE_FAST = bin/mbs_po_double_fast
 FFT_PROBE = bin/fft_aperture_probe
 GPU_TRACE_PROBE = bin/gpu_trace_projection_probe
 
@@ -76,7 +83,31 @@ clean:
 	find $(SRC_DIR) -name '*.d' -delete
 	find src/bigint -name '*.o' -delete 2>/dev/null; true
 	find src/bigint -name '*.d' -delete 2>/dev/null; true
-	rm -f $(TARGET) $(FFT_PROBE) $(GPU_TRACE_PROBE)
+	rm -f $(TARGET) $(TARGET_FLOAT) $(TARGET_FLOAT_FAST) $(TARGET_DOUBLE_FAST) $(FFT_PROBE) $(GPU_TRACE_PROBE)
+
+clean_cuda_objects:
+	find $(SRC_DIR)/cuda -name '*.o' -delete
+	find $(SRC_DIR)/cuda -name '*.d' -delete
+
+cuda_float:
+	$(MAKE) clean_cuda_objects
+	$(MAKE) USE_CUDA=1 GPU_PRECISION=float TARGET=$(TARGET_FLOAT) all
+	$(MAKE) clean_cuda_objects
+
+cuda_float_fast:
+	$(MAKE) clean_cuda_objects
+	$(MAKE) USE_CUDA=1 GPU_PRECISION=float GPU_FAST_MATH=1 TARGET=$(TARGET_FLOAT_FAST) all
+	$(MAKE) clean_cuda_objects
+
+cuda_double_fast:
+	$(MAKE) clean_cuda_objects
+	$(MAKE) USE_CUDA=1 GPU_FAST_MATH=1 TARGET=$(TARGET_DOUBLE_FAST) all
+	$(MAKE) clean_cuda_objects
+
+cuda_variants:
+	$(MAKE) cuda_float
+	$(MAKE) cuda_float_fast
+	$(MAKE) cuda_double_fast
 
 ifeq ($(USE_CUDA),1)
 fft_probe: $(FFT_PROBE)
@@ -98,6 +129,6 @@ gpu_trace_probe:
 	@false
 endif
 
-.PHONY: all clean fft_probe gpu_trace_probe
+.PHONY: all clean clean_cuda_objects cuda_float cuda_float_fast cuda_double_fast cuda_variants fft_probe gpu_trace_probe
 
 -include $(DEPS)

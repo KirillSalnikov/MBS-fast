@@ -13,6 +13,7 @@ bool ScatteringConvex::ScatterLight(double beta, double gamma,
 
     m_incidentEnergy = 0;
     m_treeSize = 0;
+    m_beamTree.clear();
     ResetTraceReference();
 
     /// first extermal beam
@@ -59,7 +60,9 @@ void ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
 {
     while (m_treeSize != 0)
     {
-        Beam beam = m_beamTree[--m_treeSize];
+        Beam beam = m_beamTree.back();
+        m_beamTree.pop_back();
+        m_treeSize = (int)m_beamTree.size();
 
         if (IsTerminalAct(beam))
         {

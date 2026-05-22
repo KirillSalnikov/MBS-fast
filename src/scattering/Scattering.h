@@ -7,6 +7,7 @@
 #include "Splitting.h"
 
 #include <float.h>
+#include <vector>
 
 //#define MAX_BEAM_REFL_NUM 32768
 #define MAX_BEAM_REFL_NUM 65536
@@ -46,16 +47,18 @@ protected:
     Vector3f m_polarBasis;
     int m_nActs;
 
-    Beam m_beamTree[MAX_BEAM_REFL_NUM];	///< tree of beams (works like stack)
+    std::vector<Beam> m_beamTree;	///< tree of beams (works like stack), grows lazily
     int m_treeSize;
     double m_incidentEnergy;
     double EPS_BEAM_ENERGY;
     double m_traceRefJNorm = 0;
     double m_traceRefArea = 0;
+    double m_traceRefImportance = 0;
 
 public:
     Scattering(Particle *particle, Light *incidentLight, bool isOpticalPath,
                int nActs);
+    virtual ~Scattering();
 
     /// Create a clone that uses a different particle copy.
     /// Caller owns the returned pointer.
@@ -64,11 +67,14 @@ public:
         copy->CopyRuntimeOptionsFrom(*this);
         return copy;
     }
+    virtual void PrepareForParallelTrace() {}
     void SetMaxReflections(int n) { m_nActs = n; }
     int GetMaxReflections() const { return m_nActs; }
     double m_traceCutoffJRel = 0;
     double m_traceCutoffAreaRel = 0;
+    double m_traceCutoffImportanceRel = 0;
     int m_traceMaxBeams = 0;
+    bool m_gpuTracePrefilter = false;
     void CopyRuntimeOptionsFrom(const Scattering &source);
 
     virtual bool ScatterLight(double /*beta*/, double /*gamma*/, std::vector<Beam> &/*scaterredBeams*/)
@@ -100,6 +106,7 @@ protected:
 
     bool IsTerminalAct(const Beam &beam);
     bool IsTracePruned(const Beam &beam) const;
+    bool EnsureBeamTree();
     void ResetTraceReference();
     void UpdateTraceReference(const Beam &beam);
 

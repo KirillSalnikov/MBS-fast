@@ -759,6 +759,21 @@ bool HandlerPO::IsFftEnabled() const
     return m_fftEnabled;
 }
 
+void HandlerPO::SetFullOnly(bool value)
+{
+    m_fullOnly = value;
+}
+
+bool HandlerPO::IsFullOnly() const
+{
+    return m_fullOnly;
+}
+
+bool HandlerPO::ComputeNoShadow() const
+{
+    return !m_fullOnly;
+}
+
 void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
                                                Scattering *scattering)
 {

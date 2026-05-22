@@ -59,6 +59,10 @@ public:
 	/// Returns the matrix element (_n,_m) stored in the array by address (_N,_M)
 	double operator() (unsigned int _N, unsigned int _M, unsigned int _n, unsigned int _m) const
 		{ return this->ptr[_N][_M][_n*this->n+_m]; }
+	double* RawCell(unsigned int _N, unsigned int _M)
+		{ return this->ptr[_N][_M]; }
+	const double* RawCell(unsigned int _N, unsigned int _M) const
+		{ return this->ptr[_N][_M]; }
 	Arr2D operator=(const Arr2D &);
 	Arr2D operator+=(const Arr2D &);
 	Arr2D operator*(double);

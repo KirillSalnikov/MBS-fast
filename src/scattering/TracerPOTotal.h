@@ -61,6 +61,10 @@ public:
     /// Default false uses honest all-gamma averaging; --pole enables this shortcut.
     bool m_fastPoleGamma = false;
 
+    /// Mirror gamma fundamental domain. The omitted mirror half is restored as
+    /// M(phi) -> P M(-phi) P, P=diag(1,1,-1,-1), for full Mueller output.
+    bool m_mirrorGamma = false;
+
     /// Optional manual cap for Sobol streaming chunks. 0 means auto.
     int m_sobolChunkSize = 0;
 

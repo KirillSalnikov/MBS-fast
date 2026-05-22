@@ -19,6 +19,29 @@
 #include <future>
 #include <sys/stat.h>
 
+static matrix MirrorGammaMuellerMatrix(const matrix &src, const matrix &mirror)
+{
+    static const double parity[4] = { 1.0, 1.0, -1.0, -1.0 };
+    matrix out(4, 4);
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j)
+            out[i][j] = 0.5 * (src[i][j] + parity[i] * parity[j] * mirror[i][j]);
+    return out;
+}
+
+static void ApplyMirrorGammaMueller(Arr2D &arr, int nAz, int nZen)
+{
+    Arr2D mirrored(nAz + 1, nZen + 1, 4, 4);
+    mirrored.ClearArr();
+    for (int p = 0; p < nAz; ++p)
+    {
+        int pm = (p == 0) ? 0 : (nAz - p);
+        for (int t = 0; t <= nZen; ++t)
+            mirrored.insert(p, t, MirrorGammaMuellerMatrix(arr(p, t), arr(pm, t)));
+    }
+    arr = mirrored;
+}
+
 // ---- Checkpoint save/load for resume after crash ----
 static void SaveCheckpoint(const std::string &path, const Arr2D &M, const Arr2D &M_ns,
                             double energy, double outputEnergy,
@@ -158,10 +181,12 @@ static void MPI_ReduceMueller(HandlerPO *hp, int nAz, int nZen,
     MPI_Reduce(sendbuf.data(), recvbuf.data(), totalDoubles, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     if (mpi_rank == 0) FlatToArr2D(recvbuf.data(), nAz+1, nZen+1, hp->M);
 
-    // Reduce M_noshadow
-    Arr2DToFlat(hp->M_noshadow, nAz+1, nZen+1, sendbuf.data());
-    MPI_Reduce(sendbuf.data(), recvbuf.data(), totalDoubles, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    if (mpi_rank == 0) FlatToArr2D(recvbuf.data(), nAz+1, nZen+1, hp->M_noshadow);
+    if (hp->ComputeNoShadow())
+    {
+        Arr2DToFlat(hp->M_noshadow, nAz+1, nZen+1, sendbuf.data());
+        MPI_Reduce(sendbuf.data(), recvbuf.data(), totalDoubles, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        if (mpi_rank == 0) FlatToArr2D(recvbuf.data(), nAz+1, nZen+1, hp->M_noshadow);
+    }
 
     // Reduce incomingEnergy
     double totalEnergy = 0;
@@ -375,6 +400,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         std::cout << line.str() << std::endl;
         AppendTextLog(line.str() + "\n");
     }
+    m_scattering->PrepareForParallelTrace();
 
     auto prepareBetaBlock = [&](int ib, int gammaStart, int gammaLimit) {
         BetaBlock block;
@@ -633,6 +659,13 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             }
         }
 
+        if (m_mirrorGamma)
+        {
+            ApplyMirrorGammaMueller(betaM, nAz, nZen);
+            if (handlerPO->ComputeNoShadow())
+                ApplyMirrorGammaMueller(betaM_ns, nAz, nZen);
+        }
+
         // Accumulate into global Mueller
         for (int p=0;p<nAz;++p) for (int t=0;t<=nZen;++t) {
             handlerPO->M.insert(p,t,betaM(p,t));
@@ -717,10 +750,13 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
 
         m_handler->WriteTotalMatricesToFile(m_resultDirName);
         m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
-        std::swap(handlerPO->M, handlerPO->M_noshadow);
-        std::string nsName = m_resultDirName + "_noshadow";
-        handlerPO->WriteMatricesToFile(nsName, m_incomingEnergy);
-        std::swap(handlerPO->M, handlerPO->M_noshadow);
+        if (handlerPO->ComputeNoShadow())
+        {
+            std::swap(handlerPO->M, handlerPO->M_noshadow);
+            std::string nsName = m_resultDirName + "_noshadow";
+            handlerPO->WriteMatricesToFile(nsName, m_incomingEnergy);
+            std::swap(handlerPO->M, handlerPO->M_noshadow);
+        }
         OutputStatisticsPO(timer, nOrientations, m_resultDirName);
     }
 }
@@ -813,10 +849,13 @@ void TracerPOTotal::TraceMonteCarlo(const AngleRange &betaRange,
     if (m_mpiRank == 0) {
         m_handler->WriteTotalMatricesToFile(m_resultDirName);
         m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
-        std::swap(handlerPO->M, handlerPO->M_noshadow);
-        std::string nsName = m_resultDirName + "_noshadow";
-        handlerPO->WriteMatricesToFile(nsName, m_incomingEnergy);
-        std::swap(handlerPO->M, handlerPO->M_noshadow);
+        if (handlerPO->ComputeNoShadow())
+        {
+            std::swap(handlerPO->M, handlerPO->M_noshadow);
+            std::string nsName = m_resultDirName + "_noshadow";
+            handlerPO->WriteMatricesToFile(nsName, m_incomingEnergy);
+            std::swap(handlerPO->M, handlerPO->M_noshadow);
+        }
         OutputStatisticsPO(timer, nOrientations, m_resultDirName);
     }
 }
@@ -1098,7 +1137,7 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
     // Write no-shadow Mueller matrix (swap M <-> M_noshadow temporarily)
     {
         HandlerPO *hp = dynamic_cast<HandlerPO*>(m_handler);
-        if (hp) {
+        if (hp && hp->ComputeNoShadow()) {
             std::swap(hp->M, hp->M_noshadow);
             std::string nsName = m_resultDirName + "_noshadow";
             hp->WriteMatricesToFile(nsName, m_incomingEnergy);
@@ -1368,6 +1407,7 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     long long count = 0;
     double phase1 = 0.0;
     double phase2 = 0.0;
+    const bool computeNoShadow = handlerPO->ComputeNoShadow();
     std::vector<Arr2D> results_M;
     std::vector<Arr2D> results_M_ns;
     std::vector<double> results_energy(x_sizes.size(), 0.0);
@@ -1376,8 +1416,11 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     {
         results_M.push_back(Arr2D(nAz + 1, nZen + 1, 4, 4));
         results_M.back().ClearArr();
-        results_M_ns.push_back(Arr2D(nAz + 1, nZen + 1, 4, 4));
-        results_M_ns.back().ClearArr();
+        if (computeNoShadow)
+        {
+            results_M_ns.push_back(Arr2D(nAz + 1, nZen + 1, 4, 4));
+            results_M_ns.back().ClearArr();
+        }
     }
 
     int sharedBetaGroup = 1;
@@ -1402,6 +1445,7 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     HandlerPO prepareTemplate(m_particle, &m_incidentLight,
                               handlerPO->nTheta, m_scattering->m_wave);
     prepareTemplate.ConfigureForThreadLocalPrepare(*handlerPO, m_scattering);
+    m_scattering->PrepareForParallelTrace();
 
     struct SharedGroupData
     {
@@ -1429,57 +1473,58 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
 
         auto groupTraceStart = std::chrono::high_resolution_clock::now();
 
-        for (int ib = group.ib0; ib < group.ibEnd; ++ib)
+        #pragma omp parallel
         {
-            double beta = betaRange.min + ib * betaRange.step;
-            double dcos = 0.0;
-            CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
-            const bool pole = (fabs(beta) <= FLT_EPSILON
-                               || fabs(beta - M_PI) <= FLT_EPSILON);
-            double traceBeta = beta;
-            if (pole && betaRange.step > 0.0)
-            {
-                if (fabs(beta) <= FLT_EPSILON)
-                    traceBeta = beta + 0.5 * betaRange.step;
-                else
-                    traceBeta = beta - 0.5 * betaRange.step;
-            }
-            const int groupOffset = (ib - group.ib0) * nGamma;
+            Particle localParticle = *m_particle;
+            Scattering *localScatter = m_scattering->CloneFor(&localParticle, &m_incidentLight);
+            HandlerPO localHandler(&localParticle, &m_incidentLight,
+                                   handlerPO->nTheta, m_scattering->m_wave);
+            localHandler.ConfigureForThreadLocalPrepare(prepareTemplate, localScatter);
+            std::vector<Beam> localBeams;
 
-            #pragma omp parallel
+            #pragma omp for schedule(dynamic, 1)
+            for (int localIndex = 0; localIndex < group.groupOrient; ++localIndex)
             {
-                Particle localParticle = *m_particle;
-                Scattering *localScatter = m_scattering->CloneFor(&localParticle, &m_incidentLight);
-                HandlerPO localHandler(&localParticle, &m_incidentLight,
-                                       handlerPO->nTheta, m_scattering->m_wave);
-                localHandler.ConfigureForThreadLocalPrepare(prepareTemplate, localScatter);
-                std::vector<Beam> localBeams;
+                const int localBeta = localIndex / nGamma;
+                const int jg = localIndex - localBeta * nGamma;
+                const int ib = group.ib0 + localBeta;
+                const int gi = localIndex;
 
-                #pragma omp for schedule(dynamic, 1)
-                for (int jg = 0; jg < nGamma; ++jg)
+                double beta = betaRange.min + ib * betaRange.step;
+                double dcos = 0.0;
+                CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
+                const bool pole = (fabs(beta) <= FLT_EPSILON
+                                   || fabs(beta - M_PI) <= FLT_EPSILON);
+                double traceBeta = beta;
+                if (pole && betaRange.step > 0.0)
                 {
-                    const int gi = groupOffset + jg;
-                    double gamma = gammaRange.min + (jg + 0.5) * gammaRange.step;
-                    localParticle.Rotate(traceBeta, gamma, 0);
-                    if (!shadowOff)
-                        localScatter->FormShadowBeam(localBeams);
-                    bool ok = localScatter->ScatterLight(0, 0, localBeams);
-                    group.beamCounts[gi] = (int)localBeams.size();
-                    group.energies[gi] = localScatter->GetIncedentEnergy() * dcos;
-                    if (ok)
-                    {
-                        double beforeOutput = localHandler.m_outputEnergy;
-                        localHandler.PrepareBeams(localBeams, dcos, group.prepared[gi]);
-                        group.outputEnergies[gi] = localHandler.m_outputEnergy - beforeOutput;
-                    }
+                    if (fabs(beta) <= FLT_EPSILON)
+                        traceBeta = beta + 0.5 * betaRange.step;
                     else
-                    {
-                        group.prepared[gi].sinZenith = dcos;
-                    }
-                    localBeams.clear();
+                        traceBeta = beta - 0.5 * betaRange.step;
                 }
-                delete localScatter;
+
+                double gamma = gammaRange.min + (jg + 0.5) * gammaRange.step;
+                localParticle.Rotate(traceBeta, gamma, 0);
+                if (!shadowOff)
+                    localScatter->FormShadowBeam(localBeams);
+                bool ok = localScatter->ScatterLight(0, 0, localBeams);
+                group.beamCounts[gi] = (int)localBeams.size();
+                group.energies[gi] = localScatter->GetIncedentEnergy() * dcos;
+                if (ok)
+                {
+                    double beforeOutput = localHandler.m_outputEnergy;
+                    localHandler.PrepareBeams(localBeams, dcos, group.prepared[gi]);
+                    group.outputEnergies[gi] = localHandler.m_outputEnergy - beforeOutput;
+                }
+                else
+                {
+                    group.prepared[gi].sinZenith = dcos;
+                }
+                localBeams.clear();
             }
+
+            delete localScatter;
         }
         group.traceSeconds = std::chrono::duration<double>(
             std::chrono::high_resolution_clock::now() - groupTraceStart).count();
@@ -1550,27 +1595,39 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
                     for (int i = 0; i < group.groupOrient; ++i) {
                         if (!scaled[i].beams.empty())
                             handlerPO->HandleBeamsToLocal(scaled[i], threadM, localJ,
-                                                           handlerPO->isCoh ? &localJns : nullptr);
+                                                           (handlerPO->isCoh && computeNoShadow) ? &localJns : nullptr);
                         if (handlerPO->isCoh && !localJ.empty()) {
                             double w = scaled[i].sinZenith;
                             HandlerPO::AddToMuellerLocal(localJ, w, threadM, nAz, nZen);
-                            HandlerPO::AddToMuellerLocal(localJns, w, threadMns, nAz, nZen);
-                            localJ[0].ClearArr(); localJns[0].ClearArr();
+                            if (computeNoShadow)
+                                HandlerPO::AddToMuellerLocal(localJns, w, threadMns, nAz, nZen);
+                            localJ[0].ClearArr();
+                            if (computeNoShadow)
+                                localJns[0].ClearArr();
                         }
                     }
                     #pragma omp critical
                     {
                         for (int p=0; p<nAz; ++p) for (int t=0; t<=nZen; ++t) {
                             localM.insert(p, t, threadM(p, t));
-                            localM_ns.insert(p, t, threadMns(p, t));
+                            if (computeNoShadow)
+                                localM_ns.insert(p, t, threadMns(p, t));
                         }
                     }
                 }
             }
 
+            if (m_mirrorGamma)
+            {
+                ApplyMirrorGammaMueller(localM, nAz, nZen);
+                if (computeNoShadow)
+                    ApplyMirrorGammaMueller(localM_ns, nAz, nZen);
+            }
+
             for (int p=0; p<nAz; ++p) for (int t=0; t<=nZen; ++t) {
                 results_M[s].insert(p, t, localM(p, t));
-                results_M_ns[s].insert(p, t, localM_ns(p, t));
+                if (computeNoShadow)
+                    results_M_ns[s].insert(p, t, localM_ns(p, t));
             }
             for (int i = 0; i < group.groupOrient; ++i) {
                 results_energy[s] += group.energies[i] * scale2;
@@ -1619,7 +1676,6 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     for (size_t s = 0; s < x_sizes.size(); ++s)
     {
         handlerPO->M = results_M[s];
-        handlerPO->M_noshadow = results_M_ns[s];
         m_incomingEnergy = results_energy[s];
         handlerPO->m_outputEnergy = results_output_energy[s];
         std::string suffix = (s < labels.size() && !labels[s].empty())
@@ -1627,10 +1683,14 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
             : ("x" + std::to_string((int)x_sizes[s]));
         std::string outName = baseName + "_" + suffix;
         handlerPO->WriteMatricesToFile(outName, m_incomingEnergy);
-        std::swap(handlerPO->M, handlerPO->M_noshadow);
-        std::string nsName = outName + "_noshadow";
-        handlerPO->WriteMatricesToFile(nsName, m_incomingEnergy);
-        std::swap(handlerPO->M, handlerPO->M_noshadow);
+        if (computeNoShadow)
+        {
+            handlerPO->M_noshadow = results_M_ns[s];
+            std::swap(handlerPO->M, handlerPO->M_noshadow);
+            std::string nsName = outName + "_noshadow";
+            handlerPO->WriteMatricesToFile(nsName, m_incomingEnergy);
+            std::swap(handlerPO->M, handlerPO->M_noshadow);
+        }
     }
     handlerPO->M = savedM;
     handlerPO->M_noshadow = savedMns;
@@ -1797,6 +1857,7 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
     double phase1_total = 0, phase2_total = 0;
     std::vector<Beam> outBeams;
     long long count = 0;
+    m_scattering->PrepareForParallelTrace();
 
     for (int chunk = 0; chunk < nChunks; ++chunk)
     {
@@ -1960,11 +2021,13 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
         m_handler->WriteTotalMatricesToFile(m_resultDirName);
         m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
 
-        // Write no-shadow Mueller
-        std::swap(handlerPO->M, handlerPO->M_noshadow);
-        std::string nsName = m_resultDirName + "_noshadow";
-        handlerPO->WriteMatricesToFile(nsName, m_incomingEnergy);
-        std::swap(handlerPO->M, handlerPO->M_noshadow);
+        if (handlerPO->ComputeNoShadow())
+        {
+            std::swap(handlerPO->M, handlerPO->M_noshadow);
+            std::string nsName = m_resultDirName + "_noshadow";
+            handlerPO->WriteMatricesToFile(nsName, m_incomingEnergy);
+            std::swap(handlerPO->M, handlerPO->M_noshadow);
+        }
 
         OutputStatisticsPO(timer, nOrient, m_resultDirName);
     }
