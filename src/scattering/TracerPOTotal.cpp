@@ -1431,9 +1431,61 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
         if (end && *end == '\0' && value > 0)
             sharedBetaGroup = (int)std::min<long>(value, nBeta);
     }
-    if (m_mpiRank == 0 && sharedBetaGroup > 1)
+    else if (nThreads > 1 && nBeta > 1)
+    {
+        // A single beta block has only nGamma independent trace tasks. For
+        // non-convex particles dynamic scheduling still leaves a long serial
+        // tail when a few hard orientations split many beams. Group a few beta
+        // blocks by default so OpenMP has enough independent orientations while
+        // keeping prepared-beam memory bounded.
+        int autoGroup = std::max(1, nThreads / 4);
+        autoGroup = std::min(autoGroup, 4);
+        autoGroup = std::min(autoGroup, nBeta);
+
+        const int maxGroupOrient = std::max(nGamma, nThreads * 96);
+        while (autoGroup > 1 && autoGroup * nGamma > maxGroupOrient)
+            --autoGroup;
+
+        sharedBetaGroup = autoGroup;
+    }
+    if (m_mpiRank == 0)
+    {
         std::cout << "Shared multikeq beta grouping: " << sharedBetaGroup
-                  << " beta blocks per diffraction pass" << std::endl;
+                  << " beta block"
+                  << (sharedBetaGroup == 1 ? "" : "s")
+                  << " per diffraction pass";
+        if (!std::getenv("MBS_SHARED_BETA_GROUP"))
+            std::cout << " (auto; set MBS_SHARED_BETA_GROUP to override)";
+        std::cout << std::endl;
+    }
+
+    int sharedOrientChunk = sharedBetaGroup * nGamma;
+    bool orientChunkFromEnv = false;
+    if (const char *env = std::getenv("MBS_SHARED_ORIENT_CHUNK"))
+    {
+        char *end = nullptr;
+        long value = std::strtol(env, &end, 10);
+        if (end && *end == '\0' && value > 0)
+        {
+            sharedOrientChunk = (int)std::min<long>(value, nOrientations);
+            orientChunkFromEnv = true;
+        }
+    }
+    else if (handlerPO->IsGpuEnabled())
+    {
+        int autoChunk = 64;
+        autoChunk = std::min(autoChunk, nGamma);
+        sharedOrientChunk = std::min(autoChunk, nOrientations);
+    }
+    sharedOrientChunk = std::max(1, std::min(sharedOrientChunk, nOrientations));
+    if (m_mpiRank == 0)
+    {
+        std::cout << "Shared multikeq global scheduler: chunks of "
+                  << sharedOrientChunk << " orientations";
+        if (!orientChunkFromEnv)
+            std::cout << " (auto; set MBS_SHARED_ORIENT_CHUNK to override)";
+        std::cout << std::endl;
+    }
 
     bool sharedPipeline = false;
     if (const char *env = std::getenv("MBS_SHARED_PIPELINE"))
@@ -1449,8 +1501,8 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
 
     struct SharedGroupData
     {
-        int ib0 = 0;
-        int ibEnd = 0;
+        int orientStart = 0;
+        int orientEnd = 0;
         int groupOrient = 0;
         std::vector<PreparedOrientation> prepared;
         std::vector<double> energies;
@@ -1459,13 +1511,12 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
         double traceSeconds = 0.0;
     };
 
-    auto traceGroup = [&](int ib0) -> SharedGroupData
+    auto traceGroup = [&](int orientStart) -> SharedGroupData
     {
         SharedGroupData group;
-        group.ib0 = ib0;
-        group.ibEnd = std::min(nBeta, ib0 + sharedBetaGroup);
-        const int groupBetas = group.ibEnd - group.ib0;
-        group.groupOrient = groupBetas * nGamma;
+        group.orientStart = orientStart;
+        group.orientEnd = std::min(nOrientations, orientStart + sharedOrientChunk);
+        group.groupOrient = group.orientEnd - group.orientStart;
         group.prepared.resize(group.groupOrient);
         group.energies.assign(group.groupOrient, 0.0);
         group.outputEnergies.assign(group.groupOrient, 0.0);
@@ -1485,9 +1536,9 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
             #pragma omp for schedule(dynamic, 1)
             for (int localIndex = 0; localIndex < group.groupOrient; ++localIndex)
             {
-                const int localBeta = localIndex / nGamma;
-                const int jg = localIndex - localBeta * nGamma;
-                const int ib = group.ib0 + localBeta;
+                const int globalIndex = group.orientStart + localIndex;
+                const int ib = globalIndex / nGamma;
+                const int jg = globalIndex - ib * nGamma;
                 const int gi = localIndex;
 
                 double beta = betaRange.min + ib * betaRange.step;
@@ -1534,16 +1585,12 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     auto processGroup = [&](const SharedGroupData &group)
     {
         phase1 += group.traceSeconds;
-        for (int ib = group.ib0; ib < group.ibEnd; ++ib)
+        for (int i = 0; i < group.groupOrient; ++i)
         {
-            const int groupOffset = (ib - group.ib0) * nGamma;
-            for (int jg = 0; jg < nGamma; ++jg)
-            {
-                int idx = ib * nGamma + jg;
-                ++count;
-                OutputProgress(nOrientations, count, idx, 0, timer,
-                               group.beamCounts[groupOffset + jg]);
-            }
+            int idx = group.orientStart + i;
+            ++count;
+            OutputProgress(nOrientations, count, idx, 0, timer,
+                           group.beamCounts[i]);
         }
 
         auto betaDiffStart = std::chrono::high_resolution_clock::now();
@@ -1638,25 +1685,26 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
             std::chrono::high_resolution_clock::now() - betaDiffStart).count();
     };
 
-    if (sharedPipeline && nBeta > sharedBetaGroup)
+    if (sharedPipeline && nOrientations > sharedOrientChunk)
     {
-        int ib0 = 0;
+        int orientStart = 0;
         std::future<SharedGroupData> current =
-            std::async(std::launch::async, traceGroup, ib0);
-        ib0 += sharedBetaGroup;
-        while (ib0 < nBeta)
+            std::async(std::launch::async, traceGroup, orientStart);
+        orientStart += sharedOrientChunk;
+        while (orientStart < nOrientations)
         {
             SharedGroupData group = current.get();
-            current = std::async(std::launch::async, traceGroup, ib0);
-            ib0 += sharedBetaGroup;
+            current = std::async(std::launch::async, traceGroup, orientStart);
+            orientStart += sharedOrientChunk;
             processGroup(group);
         }
         processGroup(current.get());
     }
     else
     {
-        for (int ib0 = 0; ib0 < nBeta; ib0 += sharedBetaGroup)
-            processGroup(traceGroup(ib0));
+        for (int orientStart = 0; orientStart < nOrientations;
+             orientStart += sharedOrientChunk)
+            processGroup(traceGroup(orientStart));
     }
 
     EraseConsoleLine(60);

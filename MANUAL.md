@@ -671,7 +671,8 @@ MBS_FFT_CHECK=1           # optional diagnostics/check path
 MBS_GPU_NO_ATOMICS=1      # use orientation-grid CUDA reduction path
 MBS_GPU_MEM_FRACTION=0.8  # fraction of free GPU memory available to batches
 MBS_GPU_BLOCK=128|256|512 # CUDA block size for diffraction kernels, default 256
-MBS_SHARED_PIPELINE=1     # experimental CPU trace/GPU diffraction overlap
+MBS_SHARED_PIPELINE=1     # overlap CPU trace and GPU diffraction in shared multikeq
+MBS_SHARED_ORIENT_CHUNK=64 # global scheduler chunk size for shared multikeq
 ```
 
 By default the optimized PO path writes only the full Mueller matrix. The
@@ -692,12 +693,15 @@ from a different summation order.
 #### `MBS_SHARED_BETA_GROUP=N`
 
 Environment variable for shared `--oldauto --multikeq*` runs. It groups `N`
-beta blocks before the diffraction pass.
+beta blocks before the diffraction pass when the legacy beta-block scheduler is
+used. Current GPU shared multikeq runs use the global orientation scheduler
+below, so this variable is mostly a memory/diagnostic knob rather than the main
+batch-size control.
 
 Default:
 
 ```
-MBS_SHARED_BETA_GROUP=1
+auto: min(nThreads/4, 4), bounded by nBeta
 ```
 
 With `N>1`, the code traces several beta blocks into one prepared-orientation
@@ -710,31 +714,75 @@ Memory tradeoff:
 prepared memory ~ N * N_gamma * average_beams_per_orientation
 ```
 
-Recommended starting values:
+Recommended only for legacy beta-block tests:
 
 ```
-MBS_SHARED_BETA_GROUP=2   # conservative
-MBS_SHARED_BETA_GROUP=4   # faster GPU batching, more RAM
+MBS_SHARED_BETA_GROUP=1   # smallest memory and latency
+MBS_SHARED_BETA_GROUP=2   # conservative larger beta block
+MBS_SHARED_BETA_GROUP=4   # longer GPU packets, more RAM and longer tails
 ```
 
-Validation on a small Greek-shape smoke test showed identical output within
-floating-point summation noise and about 2x faster CUDA Phase 2.
+Large `N` can be slower for non-convex file particles: one hard orientation can
+hold the entire beta group and leave the GPU idle.
+
+#### `MBS_SHARED_ORIENT_CHUNK=N`
+
+Environment variable for shared `--oldauto --multikeq*` GPU runs. It enables the
+global orientation scheduler:
+
+```
+globalIndex = betaIndex * N_gamma + gammaIndex
+```
+
+The scheduler traces contiguous chunks of `N` global orientations and immediately
+passes each completed chunk to CUDA diffraction. With `MBS_SHARED_PIPELINE=1`,
+the CPU traces chunk `k+1` while the GPU diffracts chunk `k`.
+
+Default for `--gpu` shared multikeq:
+
+```
+MBS_SHARED_ORIENT_CHUNK=64
+```
+
+Memory tradeoff:
+
+```
+prepared memory ~ chunk * average_beams_per_orientation
+```
+
+Recommended values:
+
+```
+MBS_SHARED_ORIENT_CHUNK=64   # current default; good Afine30/Greek starting point
+MBS_SHARED_ORIENT_CHUNK=128  # fewer CUDA launches, sometimes faster on large GPUs
+MBS_SHARED_ORIENT_CHUNK=32   # lower latency, useful when GPU has long idle gaps
+```
+
+On Afine30 with `--grid 0 180 600 181 --gpu --fft --oldauto 2`, chunks of
+`32..64` improved the observed scheduler rate from about `4.3 orient/s` to
+about `5.5 orient/s` on the 4070 SUPER node and reduced host RAM from roughly
+`10 GB` to below `2 GB`.
 
 #### `MBS_SHARED_PIPELINE=1`
 
-Experimental environment variable for shared multi-size GPU runs. It starts
-CPU tracing of the next beta group while the current group is being diffracted
-on the GPU. This can help only when CPU tracing and GPU work use mostly
-independent resources.
+Environment variable for shared multi-size GPU runs. It starts CPU tracing of
+the next global orientation chunk while the current chunk is being diffracted on
+the GPU. Use it together with `MBS_SHARED_ORIENT_CHUNK`.
 
-On the current Greek-shape `--fft` runs the mode was not faster because CPU
-tracing competes with host-side CUDA packing and cuFFT launch work. Keep it
-off unless a local benchmark shows a win:
+Recommended for file-particle multikeq runs:
 
 ```bash
-MBS_SHARED_PIPELINE=0  # default, recommended for current Greek runs
-MBS_SHARED_PIPELINE=1  # benchmark-only overlap mode
+MBS_SHARED_PIPELINE=1 MBS_SHARED_ORIENT_CHUNK=64 \
+./bin/mbs_po_float_fast --pf Afine30.dat --multikeq_list keq_list.txt \
+    --ri 1.6 0.002 -n 14 --po --oldauto 2 \
+    --beam_cutoff_j 0.001 --beam_cutoff_area 0.002 \
+    --trace_cutoff_importance 0.0001 --trace_max_beams 20000 \
+    --grid 0 180 600 181 -w 1.064 --gpu --fft --close
 ```
+
+If GPU utilization oscillates with long zero-utilization gaps, reduce
+`MBS_SHARED_ORIENT_CHUNK` to `32`. If GPU launch overhead dominates and host RAM
+is available, try `128`.
 
 #### `--beam_cutoff EPS`
 

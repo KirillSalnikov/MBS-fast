@@ -5,6 +5,7 @@
 \usepackage{geometry}
 \geometry{margin=2.2cm}
 \usepackage{amsmath}
+\usepackage{graphicx}
 \usepackage{longtable,booktabs,array}
 \usepackage{hyperref}
 \hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
@@ -448,6 +449,103 @@ Threads & Phase 2 & Speedup \\
 \end{tabular}
 
 *Estimated; use $\geq$512 orientations for 64 cores.
+
+%======================================================================
+\section{CUDA / FFT Recommendations for File Particles}
+
+For large file particles and shared size sweeps, use the CUDA diffraction
+backend with FFT phi interpolation and the global orientation scheduler:
+
+\begin{lstlisting}
+MBS_SHARED_PIPELINE=1 MBS_SHARED_ORIENT_CHUNK=64 \
+./bin/mbs_po_float_fast --pf Afine30.dat --multikeq_list keq_list.txt \
+    --ri 1.6 0.002 -n 14 --po --oldauto 2 \
+    --beam_cutoff_j 0.001 --beam_cutoff_area 0.002 \
+    --trace_cutoff_importance 0.0001 --trace_max_beams 20000 \
+    --grid 0 180 600 181 -w 1.064 --gpu --fft --close
+\end{lstlisting}
+
+\subsection{\texttt{--gpu --fft}}
+
+\texttt{--gpu} moves the Phase 2 diffraction integral to CUDA. The CPU still
+performs ray tracing and prepares beam data. \texttt{--fft} enables angular
+Fourier interpolation in $\varphi$: diffraction is evaluated on a reduced direct
+azimuth grid and reconstructed to the requested $N_\varphi$ by cuFFT. This is
+not aperture pFFT/FMM and not a 3D spatial FFT.
+
+Recommended scattering grid for ADDA comparisons used here:
+\begin{lstlisting}
+--grid 0 180 600 181
+\end{lstlisting}
+This gives 600 azimuth points and 181 theta points, including 0 and 180 degrees.
+
+\subsection{\texttt{MBS\_SHARED\_ORIENT\_CHUNK=N}}
+
+Shared \texttt{--oldauto --multikeq*} GPU runs use a global orientation
+scheduler. Orientations are indexed as
+\[
+  i = i_\beta N_\gamma + i_\gamma .
+\]
+The scheduler traces contiguous chunks of \texttt{N} orientations and
+immediately sends each completed chunk to CUDA diffraction. This avoids waiting
+for a whole beta block when one non-convex orientation is slow.
+
+Default for GPU shared multikeq:
+\begin{lstlisting}
+MBS_SHARED_ORIENT_CHUNK=64
+\end{lstlisting}
+
+Memory scales approximately as
+\[
+  M_\mathrm{host} \sim N_\mathrm{chunk}
+      \langle N_\mathrm{beams/orientation}\rangle ,
+\]
+instead of
+\[
+  M_\mathrm{host} \sim N_\mathrm{betaGroup} N_\gamma
+      \langle N_\mathrm{beams/orientation}\rangle .
+\]
+
+Practical choices:
+\begin{itemize}
+\item \texttt{MBS\_SHARED\_ORIENT\_CHUNK=64}: recommended default for
+  Afine30 / Greek file-particle runs.
+\item \texttt{MBS\_SHARED\_ORIENT\_CHUNK=32}: lower latency; use when GPU
+  utilization has long zero-utilization gaps.
+\item \texttt{MBS\_SHARED\_ORIENT\_CHUNK=128}: fewer CUDA launches; test when
+  GPU launch overhead dominates and host RAM is available.
+\end{itemize}
+
+On Afine30 with \texttt{--grid 0 180 600 181 --gpu --fft --oldauto 2}, chunks
+of 32--64 improved the observed scheduler rate from about 4.3 orientations/s
+to about 5.5 orientations/s on the RTX 4070 SUPER node and reduced host RAM
+from roughly 10 GB to below 2 GB.
+
+\subsection{\texttt{MBS\_SHARED\_PIPELINE=1}}
+
+This overlaps CPU tracing of chunk $k+1$ with CUDA diffraction of chunk $k$.
+Use it with the global scheduler:
+\begin{lstlisting}
+MBS_SHARED_PIPELINE=1 MBS_SHARED_ORIENT_CHUNK=64
+\end{lstlisting}
+
+If the GPU is still idle for long intervals, reduce the chunk to 32. If the GPU
+is busy but many tiny launches dominate, increase it to 128.
+
+\subsection{\texttt{MBS\_SHARED\_BETA\_GROUP=N}}
+
+This is the older beta-block batching control. Large values reduce CUDA launch
+count but can be slower on non-convex particles because one hard orientation
+holds the whole beta group. With the global scheduler enabled, treat this as a
+diagnostic/legacy knob. Use:
+\begin{lstlisting}
+MBS_SHARED_BETA_GROUP=1  # lowest latency
+MBS_SHARED_BETA_GROUP=2  # conservative beta-block test
+MBS_SHARED_BETA_GROUP=4  # larger packet, more RAM, longer tails
+\end{lstlisting}
+
+Recommended production mode is the global orientation chunk, not large beta
+groups.
 
 %======================================================================
 \section{Bugfixes}
