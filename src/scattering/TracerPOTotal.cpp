@@ -42,6 +42,193 @@ static void ApplyMirrorGammaMueller(Arr2D &arr, int nAz, int nZen)
     arr = mirrored;
 }
 
+static bool SharedFftGlobalRefineEnabled()
+{
+    const char *env = std::getenv("MBS_FFT_GLOBAL_REFINE");
+    if (!env || !*env)
+        return true;
+    return !(env[0] == '0' && env[1] == '\0');
+}
+
+static double SharedFftGlobalRefineThreshold()
+{
+    const char *env = std::getenv("MBS_FFT_GLOBAL_REFINE_THRESHOLD");
+    if (!env || !*env)
+        return 0.04;
+    char *end = nullptr;
+    double value = std::strtod(env, &end);
+    if (!end || *end != '\0' || value <= 0.0)
+        return 0.04;
+    return value;
+}
+
+static int SharedFftGlobalRefineMaxRows()
+{
+    const char *env = std::getenv("MBS_FFT_GLOBAL_REFINE_MAX_ROWS");
+    if (!env || !*env)
+        return 8;
+    char *end = nullptr;
+    long value = std::strtol(env, &end, 10);
+    if (!end || *end != '\0' || value < 0 || value > 128)
+        return 8;
+    return (int)value;
+}
+
+static bool SharedFftSpikeDebugEnabled()
+{
+    const char *env = std::getenv("MBS_FFT_SPIKE_DEBUG");
+    return env && std::atoi(env) != 0;
+}
+
+static std::string SharedFftSpikeDebugPath()
+{
+    const char *env = std::getenv("MBS_FFT_SPIKE_DEBUG_FILE");
+    if (env && *env)
+        return std::string(env);
+    return std::string("fft_spike_groups.csv");
+}
+
+static void AzimuthAverageOutputCell(const Arr2D &src, int nAz, int nZen,
+                                     int t, double out[16])
+{
+    for (int k = 0; k < 16; ++k)
+        out[k] = 0.0;
+
+    const bool isPole = (t == 0 || t == nZen);
+    for (int p = 0; p < nAz; ++p)
+    {
+        matrix m = src(p, t);
+        if (isPole)
+        {
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c)
+                    out[r * 4 + c] += m[r][c];
+            continue;
+        }
+
+        const double radAz = -p * (M_2PI / (double)nAz);
+        matrix Lp(4, 4);
+        Lp.Fill(0.0);
+        for (int i = 0; i < 4; ++i)
+            Lp[i][i] = 1.0;
+        Lp[1][1] = cos(2 * radAz);
+        Lp[1][2] = sin(2 * radAz);
+        Lp[2][1] = -Lp[1][2];
+        Lp[2][2] = Lp[1][1];
+        matrix rotated = m * Lp;
+        for (int r = 0; r < 4; ++r)
+            for (int c = 0; c < 4; ++c)
+                out[r * 4 + c] += rotated[r][c];
+    }
+
+    const double inv = 1.0 / (double)nAz;
+    for (int k = 0; k < 16; ++k)
+        out[k] *= inv;
+}
+
+static std::vector<int> DetectGlobalFftSpikeRows(const Arr2D &m, int nAz,
+                                                 int nZen, double threshold,
+                                                 int maxRows)
+{
+    std::vector<int> rows;
+    if (maxRows <= 0 || nAz <= 0 || nZen < 2)
+        return rows;
+
+    const int elems[] = {
+        1 * 4 + 2, 1 * 4 + 3,
+        2 * 4 + 1, 2 * 4 + 3,
+        3 * 4 + 1, 3 * 4 + 2,
+        0 * 4 + 2, 0 * 4 + 3
+    };
+    const int nElems = (int)(sizeof(elems) / sizeof(elems[0]));
+    std::vector<std::pair<double, int>> scored;
+    double prev[16], cur[16], next[16];
+
+    for (int t = 1; t < nZen; ++t)
+    {
+        AzimuthAverageOutputCell(m, nAz, nZen, t - 1, prev);
+        AzimuthAverageOutputCell(m, nAz, nZen, t, cur);
+        AzimuthAverageOutputCell(m, nAz, nZen, t + 1, next);
+        const double c11 = std::max(fabs(cur[0]), 1e-30);
+        const double p11 = std::max(fabs(prev[0]), 1e-30);
+        const double n11 = std::max(fabs(next[0]), 1e-30);
+        double score = 0.0;
+        for (int i = 0; i < nElems; ++i)
+        {
+            int e = elems[i];
+            double yc = cur[e] / c11;
+            double yn = 0.5 * (prev[e] / p11 + next[e] / n11);
+            score = std::max(score, fabs(yc - yn));
+        }
+        if (score >= threshold)
+            scored.push_back(std::make_pair(score, t));
+    }
+
+    std::sort(scored.begin(), scored.end(),
+              [](const std::pair<double, int> &a,
+                 const std::pair<double, int> &b) {
+                  return a.first > b.first;
+              });
+    for (const auto &entry : scored)
+    {
+        rows.push_back(entry.second);
+        if ((int)rows.size() >= maxRows)
+            break;
+    }
+    std::sort(rows.begin(), rows.end());
+    return rows;
+}
+
+static void WriteSpikeDebugHeader(std::ofstream &f)
+{
+    f << "size_index,label,theta_index,theta_deg,orient_start,orient_end,"
+      << "beta_start_deg,beta_end_deg,gamma_start_deg,gamma_end_deg,"
+      << "M11,M13,M14,M23,M24,M32,M42,"
+      << "R13,R14,R23,R24,R32,R42\n";
+}
+
+static void WriteSpikeDebugRow(std::ofstream &f, size_t sizeIndex,
+                               const std::string &label, int thetaIndex,
+                               double thetaDeg, int orientStart, int orientEnd,
+                               int nGamma, const AngleRange &betaRange,
+                               const AngleRange &gammaRange,
+                               const double avg[16])
+{
+    const int firstBeta = orientStart / nGamma;
+    const int lastBeta = (orientEnd - 1) / nGamma;
+    const int firstGamma = orientStart - firstBeta * nGamma;
+    const int lastGamma = (orientEnd - 1) - lastBeta * nGamma;
+    const double betaStart = betaRange.min + firstBeta * betaRange.step;
+    const double betaEnd = betaRange.min + lastBeta * betaRange.step;
+    const double gammaStart = gammaRange.min + (firstGamma + 0.5) * gammaRange.step;
+    const double gammaEnd = gammaRange.min + (lastGamma + 0.5) * gammaRange.step;
+    const double m11 = avg[0];
+    const double denom = std::max(std::fabs(m11), 1e-300);
+    f << sizeIndex << ','
+      << label << ','
+      << thetaIndex << ','
+      << thetaDeg << ','
+      << orientStart << ','
+      << orientEnd << ','
+      << RadToDeg(betaStart) << ','
+      << RadToDeg(betaEnd) << ','
+      << RadToDeg(gammaStart) << ','
+      << RadToDeg(gammaEnd) << ','
+      << avg[0] << ','
+      << avg[2] << ','
+      << avg[3] << ','
+      << avg[6] << ','
+      << avg[7] << ','
+      << avg[9] << ','
+      << avg[13] << ','
+      << (avg[2] / denom) << ','
+      << (avg[3] / denom) << ','
+      << (avg[6] / denom) << ','
+      << (avg[7] / denom) << ','
+      << (avg[9] / denom) << ','
+      << (avg[13] / denom) << '\n';
+}
+
 // ---- Checkpoint save/load for resume after crash ----
 static void SaveCheckpoint(const std::string &path, const Arr2D &M, const Arr2D &M_ns,
                             double energy, double outputEnergy,
@@ -1473,7 +1660,7 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     }
     else if (handlerPO->IsGpuEnabled())
     {
-        int autoChunk = 64;
+        int autoChunk = 256;
         autoChunk = std::min(autoChunk, nGamma);
         sharedOrientChunk = std::min(autoChunk, nOrientations);
     }
@@ -1486,6 +1673,30 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
             std::cout << " (auto; set MBS_SHARED_ORIENT_CHUNK to override)";
         std::cout << std::endl;
     }
+    int debugOrientBegin = 0;
+    int debugOrientEnd = nOrientations;
+    if (const char *env = std::getenv("MBS_DEBUG_ORIENT_BEGIN"))
+    {
+        char *end = nullptr;
+        long value = std::strtol(env, &end, 10);
+        if (end && *end == '\0' && value >= 0 && value < nOrientations)
+            debugOrientBegin = (int)value;
+    }
+    if (const char *env = std::getenv("MBS_DEBUG_ORIENT_END"))
+    {
+        char *end = nullptr;
+        long value = std::strtol(env, &end, 10);
+        if (end && *end == '\0' && value > debugOrientBegin
+            && value <= nOrientations)
+            debugOrientEnd = (int)value;
+    }
+    if (m_mpiRank == 0
+        && (debugOrientBegin != 0 || debugOrientEnd != nOrientations))
+    {
+        std::cout << "DEBUG: limiting shared multikeq orientations to ["
+                  << debugOrientBegin << ", " << debugOrientEnd
+                  << ") via MBS_DEBUG_ORIENT_BEGIN/END" << std::endl;
+    }
 
     bool sharedPipeline = false;
     if (const char *env = std::getenv("MBS_SHARED_PIPELINE"))
@@ -1493,7 +1704,13 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     if (m_mpiRank == 0 && sharedPipeline)
         std::cout << "Shared multikeq pipeline: CPU tracing of the next beta group "
                   << "overlaps current GPU diffraction" << std::endl;
-
+    const bool sharedGpuExplicitScale =
+        handlerPO->IsGpuEnabled()
+        && std::getenv("MBS_SHARED_GPU_EXPLICIT_SCALE")
+        && std::atoi(std::getenv("MBS_SHARED_GPU_EXPLICIT_SCALE")) != 0;
+    if (m_mpiRank == 0 && sharedGpuExplicitScale)
+        std::cout << "Shared multikeq GPU: explicit CPU scaling enabled "
+                  << "(MBS_SHARED_GPU_EXPLICIT_SCALE=1)" << std::endl;
     HandlerPO prepareTemplate(m_particle, &m_incidentLight,
                               handlerPO->nTheta, m_scattering->m_wave);
     prepareTemplate.ConfigureForThreadLocalPrepare(*handlerPO, m_scattering);
@@ -1598,27 +1815,39 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
         {
             double scale = x_sizes[s] / x_ref;
             double scale2 = scale * scale;
-            std::vector<PreparedOrientation> scaled;
-            scaled.reserve(group.prepared.size());
-            for (const PreparedOrientation &po : group.prepared)
-                scaled.push_back(ScalePreparedOrientation(
-                    po, scale, 2.0 * M_PI / m_scattering->m_wave));
 
             Arr2D localM(nAz + 1, nZen + 1, 4, 4); localM.ClearArr();
             Arr2D localM_ns(nAz + 1, nZen + 1, 4, 4); localM_ns.ClearArr();
 
             if (handlerPO->IsGpuEnabled())
             {
+                const double waveIndex = 2.0 * M_PI / m_scattering->m_wave;
+                const std::vector<PreparedOrientation> *gpuPrepared = &group.prepared;
+                std::vector<PreparedOrientation> scaled;
+                double gpuScale = scale;
+                double gpuWaveIndex = waveIndex;
+                if (sharedGpuExplicitScale)
+                {
+                    scaled.reserve(group.prepared.size());
+                    for (const PreparedOrientation &po : group.prepared)
+                        scaled.push_back(ScalePreparedOrientation(po, scale, waveIndex));
+                    gpuPrepared = &scaled;
+                    gpuScale = 1.0;
+                    gpuWaveIndex = 0.0;
+                }
+
                 for (int gpuStart = 0; gpuStart < group.groupOrient; )
                 {
                     int gpuBatchSize = handlerPO->SelectGpuOrientationBatchSize(
-                        scaled, gpuStart, group.groupOrient - gpuStart);
+                        *gpuPrepared, gpuStart, group.groupOrient - gpuStart);
                     int gpuEnd = std::min(gpuStart + gpuBatchSize, group.groupOrient);
                     bool ok = handlerPO->IsFftEnabled()
                         ? handlerPO->HandleOrientationsToLocalGpuFftPhi(
-                            scaled, gpuStart, gpuEnd - gpuStart, localM, localM_ns)
+                            *gpuPrepared, gpuStart, gpuEnd - gpuStart, localM, localM_ns,
+                            gpuScale, gpuWaveIndex)
                         : handlerPO->HandleOrientationsToLocalGpu(
-                            scaled, gpuStart, gpuEnd - gpuStart, localM, localM_ns);
+                            *gpuPrepared, gpuStart, gpuEnd - gpuStart, localM, localM_ns,
+                            gpuScale, gpuWaveIndex);
                     if (!ok)
                     {
                         std::cerr << "ERROR: shared multikeq GPU backend failed." << std::endl;
@@ -1629,6 +1858,12 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
             }
             else
             {
+                std::vector<PreparedOrientation> scaled;
+                scaled.reserve(group.prepared.size());
+                for (const PreparedOrientation &po : group.prepared)
+                    scaled.push_back(ScalePreparedOrientation(
+                        po, scale, 2.0 * M_PI / m_scattering->m_wave));
+
                 #pragma omp parallel
                 {
                     Arr2D threadM(nAz + 1, nZen + 1, 4, 4); threadM.ClearArr();
@@ -1687,11 +1922,11 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
 
     if (sharedPipeline && nOrientations > sharedOrientChunk)
     {
-        int orientStart = 0;
+        int orientStart = debugOrientBegin;
         std::future<SharedGroupData> current =
             std::async(std::launch::async, traceGroup, orientStart);
         orientStart += sharedOrientChunk;
-        while (orientStart < nOrientations)
+        while (orientStart < debugOrientEnd)
         {
             SharedGroupData group = current.get();
             current = std::async(std::launch::async, traceGroup, orientStart);
@@ -1702,9 +1937,156 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     }
     else
     {
-        for (int orientStart = 0; orientStart < nOrientations;
+        for (int orientStart = debugOrientBegin; orientStart < debugOrientEnd;
              orientStart += sharedOrientChunk)
             processGroup(traceGroup(orientStart));
+    }
+
+    double refineSeconds = 0.0;
+    if (handlerPO->IsGpuEnabled() && handlerPO->IsFftEnabled()
+        && SharedFftGlobalRefineEnabled())
+    {
+        const double refineThreshold = SharedFftGlobalRefineThreshold();
+        const int refineMaxRows = SharedFftGlobalRefineMaxRows();
+        const bool spikeDebug = SharedFftSpikeDebugEnabled();
+        std::ofstream spikeDebugFile;
+        if (spikeDebug && m_mpiRank == 0)
+        {
+            spikeDebugFile.open(SharedFftSpikeDebugPath().c_str(), std::ios::out);
+            if (spikeDebugFile.is_open())
+            {
+                spikeDebugFile << std::setprecision(17);
+                WriteSpikeDebugHeader(spikeDebugFile);
+            }
+            else
+                std::cerr << "WARNING: cannot open MBS_FFT_SPIKE_DEBUG_FILE="
+                          << SharedFftSpikeDebugPath() << std::endl;
+        }
+        ScatteringRange savedSphere = handlerPO->m_sphere;
+        std::vector<std::vector<int>> refineRows(x_sizes.size());
+        for (size_t s = 0; s < x_sizes.size(); ++s)
+        {
+            refineRows[s] = DetectGlobalFftSpikeRows(results_M[s], nAz, nZen,
+                                                     refineThreshold,
+                                                     refineMaxRows);
+            if (!refineRows[s].empty() && m_mpiRank == 0)
+            {
+                std::cout << "GPU FFT global phi refine for "
+                          << ((s < labels.size() && !labels[s].empty())
+                                  ? labels[s] : std::to_string(s))
+                          << ": " << refineRows[s].size()
+                          << " theta rows at full N_phi=" << nAz
+                          << " (threshold=" << refineThreshold << "):";
+                for (int t : refineRows[s])
+                    std::cout << ' ' << RadToDeg(savedSphere.GetZenith(t));
+                std::cout << std::endl;
+            }
+        }
+
+        auto refineStart = std::chrono::high_resolution_clock::now();
+        for (size_t s = 0; s < x_sizes.size(); ++s)
+        {
+            const std::vector<int> &rows = refineRows[s];
+            if (rows.empty())
+                continue;
+
+            const double scale = x_sizes[s] / x_ref;
+            const double waveIndex = 2.0 * M_PI / m_scattering->m_wave;
+
+            for (int rt = 0; rt < (int)rows.size(); ++rt)
+            {
+                const int row = rows[rt];
+                ScatteringRange rowSphere = savedSphere;
+                rowSphere.isNonUniform = true;
+                rowSphere.thetaValues.clear();
+                rowSphere.thetaValues.push_back(savedSphere.GetZenith(row));
+                rowSphere.nAzimuth = nAz;
+                rowSphere.azinuthStep = M_2PI / nAz;
+                rowSphere.nZenith = 0;
+                rowSphere.zenithStart = rowSphere.thetaValues.front();
+                rowSphere.zenithEnd = rowSphere.thetaValues.front();
+                rowSphere.zenithStep = 0.0;
+                rowSphere.ComputeSphereDirections(m_incidentLight);
+
+                Arr2D refined(nAz + 1, 1, 4, 4); refined.ClearArr();
+                Arr2D refinedNs(nAz + 1, 1, 4, 4); refinedNs.ClearArr();
+
+                for (int orientStart = debugOrientBegin; orientStart < debugOrientEnd;
+                     orientStart += sharedOrientChunk)
+                {
+                    SharedGroupData group = traceGroup(orientStart);
+                    const std::vector<PreparedOrientation> *gpuPrepared = &group.prepared;
+                    std::vector<PreparedOrientation> scaled;
+                    double gpuScale = scale;
+                    double gpuWaveIndex = waveIndex;
+                    if (sharedGpuExplicitScale)
+                    {
+                        scaled.reserve(group.prepared.size());
+                        for (const PreparedOrientation &po : group.prepared)
+                            scaled.push_back(ScalePreparedOrientation(po, scale, waveIndex));
+                        gpuPrepared = &scaled;
+                        gpuScale = 1.0;
+                        gpuWaveIndex = 0.0;
+                    }
+
+                    Arr2D localM(nAz + 1, 1, 4, 4); localM.ClearArr();
+                    Arr2D localMns(nAz + 1, 1, 4, 4); localMns.ClearArr();
+                    handlerPO->m_sphere = rowSphere;
+                    for (int gpuStart = 0; gpuStart < group.groupOrient; )
+                    {
+                        int gpuBatchSize = handlerPO->SelectGpuOrientationBatchSize(
+                            *gpuPrepared, gpuStart, group.groupOrient - gpuStart);
+                        int gpuEnd = std::min(gpuStart + gpuBatchSize, group.groupOrient);
+                        bool ok = handlerPO->HandleOrientationsToLocalGpu(
+                            *gpuPrepared, gpuStart, gpuEnd - gpuStart,
+                            localM, localMns, gpuScale, gpuWaveIndex);
+                        if (!ok)
+                        {
+                            handlerPO->m_sphere = savedSphere;
+                            std::cerr << "ERROR: shared multikeq GPU global refine failed." << std::endl;
+                            throw std::runtime_error("shared multikeq GPU global refine failed");
+                        }
+                        gpuStart = gpuEnd;
+                    }
+                    handlerPO->m_sphere = savedSphere;
+
+                    if (m_mirrorGamma)
+                    {
+                        ApplyMirrorGammaMueller(localM, nAz, 0);
+                        if (computeNoShadow)
+                            ApplyMirrorGammaMueller(localMns, nAz, 0);
+                    }
+                    if (spikeDebug && m_mpiRank == 0 && spikeDebugFile.is_open())
+                    {
+                        const std::string label = (s < labels.size() && !labels[s].empty())
+                            ? labels[s] : std::to_string(s);
+                        double avg[16];
+                        AzimuthAverageOutputCell(localM, nAz, 0, 0, avg);
+                        WriteSpikeDebugRow(spikeDebugFile, s, label, row,
+                                           RadToDeg(savedSphere.GetZenith(row)),
+                                           group.orientStart, group.orientEnd,
+                                           nGamma, betaRange, gammaRange, avg);
+                    }
+
+                    for (int p = 0; p < nAz; ++p)
+                    {
+                        refined.insert(p, 0, localM(p, 0));
+                        if (computeNoShadow)
+                            refinedNs.insert(p, 0, localMns(p, 0));
+                    }
+                }
+
+                for (int p = 0; p < nAz; ++p)
+                {
+                    results_M[s].replace(p, row, refined(p, 0));
+                    if (computeNoShadow)
+                        results_M_ns[s].replace(p, row, refinedNs(p, 0));
+                }
+            }
+        }
+        handlerPO->m_sphere = savedSphere;
+        refineSeconds = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now() - refineStart).count();
     }
 
     EraseConsoleLine(60);
@@ -1716,6 +2098,9 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
               << "): " << std::fixed << std::setprecision(2)
               << phase2 << " s" << std::endl;
     std::cout << "Shared multikeq total: " << phase1 + phase2 << " s" << std::endl;
+    if (refineSeconds > 0.0)
+        std::cout << "Shared multikeq FFT global refine: " << std::fixed
+                  << std::setprecision(2) << refineSeconds << " s" << std::endl;
 
     std::string baseName = m_resultDirName;
     Arr2D savedM = handlerPO->M;
