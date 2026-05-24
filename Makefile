@@ -42,6 +42,7 @@ endif
 ifeq ($(GPU_FAST_MATH),1)
 override NVCCFLAGS += --use_fast_math
 endif
+override NVCCFLAGS += -Xcompiler -fopenmp
 SOURCES += $(shell find $(SRC_DIR) -name '*.cu')
 endif
 OBJECTS = $(SOURCES:.cpp=.o)

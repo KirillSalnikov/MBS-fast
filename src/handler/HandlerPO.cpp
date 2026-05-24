@@ -8,6 +8,9 @@
 #include <fstream>
 #include <cmath>
 #include <chrono>
+#include <algorithm>
+#include <cerrno>
+#include <cstdlib>
 
 bool HandlerPO::IsParticleBeam(const Beam &beam)
 {
@@ -759,6 +762,56 @@ bool HandlerPO::IsFftEnabled() const
     return m_fftEnabled;
 }
 
+void HandlerPO::SetFftPhiFactor(int value)
+{
+    m_fftPhiFactor = value > 0 ? value : 0;
+}
+
+int HandlerPO::FftPhiFactor() const
+{
+    return m_fftPhiFactor;
+}
+
+void HandlerPO::AutoSelectFftPhiFactor(double eps)
+{
+    SetFftPhiFactor(SelectAutoFftPhiFactor(m_sphere.nAzimuth, eps));
+}
+
+bool HandlerPO::HasNumericFftPhiFactorOverride()
+{
+    const char *value = std::getenv("MBS_FFT_PHI_FACTOR");
+    if (!value || !*value)
+        return false;
+    char *end = nullptr;
+    errno = 0;
+    long parsed = std::strtol(value, &end, 10);
+    return errno == 0 && end && *end == '\0' && parsed >= 1 && parsed <= 64;
+}
+
+int HandlerPO::SelectAutoFftPhiFactor(int nPhi, double eps)
+{
+    if (nPhi < 2)
+        return 1;
+
+    int minDirectPhi = 100;
+    int maxFactor = 6;
+    if (eps > 0.0 && eps <= 0.0025)
+    {
+        minDirectPhi = 150;
+        maxFactor = 4;
+    }
+    else if (eps > 0.0 && eps <= 0.005)
+    {
+        minDirectPhi = 120;
+        maxFactor = 5;
+    }
+
+    int factor = nPhi / minDirectPhi;
+    if (factor < 2)
+        return 1;
+    return std::min(factor, maxFactor);
+}
+
 void HandlerPO::SetFullOnly(bool value)
 {
     m_fullOnly = value;
@@ -772,6 +825,11 @@ bool HandlerPO::IsFullOnly() const
 bool HandlerPO::ComputeNoShadow() const
 {
     return !m_fullOnly;
+}
+
+bool HandlerPO::HasAbsorptionAccounting() const
+{
+    return m_hasAbsorption;
 }
 
 void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
@@ -795,6 +853,7 @@ void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
     m_legacySign = source.m_legacySign;
     m_gpuEnabled = source.m_gpuEnabled;
     m_fftEnabled = source.m_fftEnabled;
+    m_fftPhiFactor = source.m_fftPhiFactor;
     isBackScatteringConusEnabled = source.isBackScatteringConusEnabled;
     backScatteringConus = source.backScatteringConus;
 }

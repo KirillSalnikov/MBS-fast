@@ -17,6 +17,8 @@
 #include <map>
 #include <stdexcept>
 #include <future>
+#include <algorithm>
+#include <limits>
 #include <sys/stat.h>
 
 static matrix MirrorGammaMuellerMatrix(const matrix &src, const matrix &mirror)
@@ -46,8 +48,8 @@ static bool SharedFftGlobalRefineEnabled()
 {
     const char *env = std::getenv("MBS_FFT_GLOBAL_REFINE");
     if (!env || !*env)
-        return true;
-    return !(env[0] == '0' && env[1] == '\0');
+        return false;
+    return env[0] == '1' && env[1] == '\0';
 }
 
 static double SharedFftGlobalRefineThreshold()
@@ -60,6 +62,1176 @@ static double SharedFftGlobalRefineThreshold()
     if (!end || *end != '\0' || value <= 0.0)
         return 0.04;
     return value;
+}
+
+static int ReadEnvInt(const char *name, int fallback, int minValue, int maxValue)
+{
+    const char *env = std::getenv(name);
+    if (!env || !*env)
+        return fallback;
+    char *end = nullptr;
+    long value = std::strtol(env, &end, 10);
+    if (!end || *end != '\0')
+        return fallback;
+    if (value < minValue)
+        return minValue;
+    if (value > maxValue)
+        return maxValue;
+    return (int)value;
+}
+
+static double ReadEnvDouble(const char *name, double fallback,
+                            double minValue, double maxValue)
+{
+    const char *env = std::getenv(name);
+    if (!env || !*env)
+        return fallback;
+    char *end = nullptr;
+    double value = std::strtod(env, &end);
+    if (!end || *end != '\0' || !std::isfinite(value))
+        return fallback;
+    if (value < minValue)
+        return minValue;
+    if (value > maxValue)
+        return maxValue;
+    return value;
+}
+
+static int RoundUpToMultiple(int value, int step)
+{
+    if (step <= 1)
+        return value;
+    return ((value + step - 1) / step) * step;
+}
+
+static int RoundDownToMultiple(int value, int step)
+{
+    if (step <= 1)
+        return value;
+    return std::max(step, (value / step) * step);
+}
+
+static bool AutoFullThetaZonesEnabled()
+{
+    const char *env = std::getenv("MBS_AUTOFULL_THETA_ZONES");
+    if (!env || !*env)
+        return true;
+    return !(env[0] == '0' && env[1] == '\0');
+}
+
+static bool AutoFullRowOrientEnabled()
+{
+    const char *env = std::getenv("MBS_AUTOFULL_ROW_ORIENT");
+    if (!env || !*env)
+        return true;
+    return !(env[0] == '0' && env[1] == '\0');
+}
+
+static int AutoFullThetaZone(double thetaDeg)
+{
+    const double forwardMax =
+        ReadEnvDouble("MBS_AUTOFULL_ZONE_FORWARD_DEG", 20.0, 0.0, 90.0);
+    const double backwardMin =
+        ReadEnvDouble("MBS_AUTOFULL_ZONE_BACKWARD_DEG", 150.0, 90.0, 180.0);
+    if (thetaDeg <= forwardMax)
+        return 0;
+    if (thetaDeg >= backwardMin)
+        return 2;
+    return 1;
+}
+
+static const char *AutoFullThetaZoneName(int zone)
+{
+    if (zone < 0)
+        return "mixed";
+    if (zone == 0)
+        return "forward";
+    if (zone == 2)
+        return "backward";
+    return "middle";
+}
+
+static double AutoFullThetaZoneOrientFactor(int zone)
+{
+    if (zone == 0)
+        return ReadEnvDouble("MBS_AUTOFULL_ZONE_FORWARD_ORIENT_FACTOR",
+                             0.5, 0.015625, 1.0);
+    if (zone == 2)
+        return ReadEnvDouble("MBS_AUTOFULL_ZONE_BACKWARD_ORIENT_FACTOR",
+                             1.0, 0.015625, 1.0);
+    return ReadEnvDouble("MBS_AUTOFULL_ZONE_MIDDLE_ORIENT_FACTOR",
+                         0.875, 0.015625, 1.0);
+}
+
+static double AutoFullRowOrientSafetyFactor(int zone)
+{
+    if (zone == 0)
+        return ReadEnvDouble("MBS_AUTOFULL_ROW_ORIENT_FORWARD_SAFETY",
+                             0.75, 0.0, 1.0);
+    if (zone == 2)
+        return ReadEnvDouble("MBS_AUTOFULL_ROW_ORIENT_BACKWARD_SAFETY",
+                             0.0, 0.0, 1.0);
+    return ReadEnvDouble("MBS_AUTOFULL_ROW_ORIENT_MIDDLE_SAFETY",
+                         0.5, 0.0, 1.0);
+}
+
+static int AutoFullThetaZoneOrientLimit(int nOrient, int zone)
+{
+    if (!AutoFullThetaZonesEnabled())
+        return nOrient;
+    const double factor = AutoFullThetaZoneOrientFactor(zone);
+    int raw = (int)std::floor(nOrient * factor + 0.5);
+    raw = std::max(64, std::min(raw, nOrient));
+    int limit = RoundDownToMultiple(raw, 16);
+    return std::max(64, std::min(limit, nOrient));
+}
+
+struct AutoFullOldautoOrientEstimate
+{
+    int div = 1;
+    int nBetaFull = 1;
+    int nGammaFull = 1;
+    int nBeta = 1;
+    int nGamma = 1;
+    int total = 1;
+};
+
+static int ClampOrientCount(long long value)
+{
+    if (value < 1)
+        return 1;
+    if (value > std::numeric_limits<int>::max())
+        return std::numeric_limits<int>::max();
+    return (int)value;
+}
+
+static int CeilDivInt(int value, int div)
+{
+    if (div < 1)
+        div = 1;
+    return (value + div - 1) / div;
+}
+
+static AutoFullOldautoOrientEstimate AutoFullOldautoEstimate(
+    double betaSym, double gammaSym, double wave, double Dmax,
+    int ringPoints, int div)
+{
+    AutoFullOldautoOrientEstimate est;
+    est.div = std::max(1, div);
+    const double deltaDeg = (Dmax > 0.0)
+        ? 0.69 * wave / Dmax * (180.0 / M_PI)
+        : 180.0;
+    const double orientStep = deltaDeg / std::max(1, ringPoints);
+    const double betaDeg = RadToDeg(betaSym);
+    const double gammaDeg = RadToDeg(gammaSym);
+    est.nBetaFull = std::max(1, (int)std::ceil(betaDeg / orientStep));
+    est.nGammaFull = std::max(1, (int)std::ceil(gammaDeg / orientStep));
+    est.nBeta = std::max(3, CeilDivInt(est.nBetaFull, est.div));
+    est.nGamma = std::max(3, CeilDivInt(est.nGammaFull, est.div));
+    est.total = ClampOrientCount((long long)est.nBeta * est.nGamma);
+    return est;
+}
+
+static double AutoFullThetaZoneCutoffMultiplier(int zone)
+{
+    if (zone == 0)
+        return ReadEnvDouble("MBS_AUTOFULL_ZONE_FORWARD_CUTOFF_MULT",
+                             1.0, 1.0, 1000.0);
+    if (zone == 2)
+        return ReadEnvDouble("MBS_AUTOFULL_ZONE_BACKWARD_CUTOFF_MULT",
+                             1.0, 1.0, 1000.0);
+    return ReadEnvDouble("MBS_AUTOFULL_ZONE_MIDDLE_CUTOFF_MULT",
+                         1.0, 1.0, 1000.0);
+}
+
+static double PreparedBeamImportance(const PreparedBeam &beam)
+{
+    if (beam.isExternal)
+        return std::numeric_limits<double>::infinity();
+    const double jn = beam.origBeam.J.Norm();
+    const double importance = jn * beam.beam_area;
+    return std::isfinite(importance) && importance > 0.0 ? importance : 0.0;
+}
+
+static std::vector<PreparedOrientation> BuildPreparedSliceForThetaZone(
+    const std::vector<PreparedOrientation> &prepared,
+    int start,
+    int count,
+    double weightScale,
+    double extraImportanceRel)
+{
+    std::vector<PreparedOrientation> out;
+    out.reserve(std::max(0, count));
+    for (int i = 0; i < count; ++i)
+    {
+        PreparedOrientation po = prepared[start + i];
+        po.sinZenith *= weightScale;
+        if (extraImportanceRel > 0.0)
+        {
+            double maxImportance = 0.0;
+            for (const PreparedBeam &beam : po.beams)
+                if (!beam.isExternal)
+                    maxImportance = std::max(maxImportance,
+                                             PreparedBeamImportance(beam));
+            if (maxImportance > 0.0)
+            {
+                std::vector<PreparedBeam> filtered;
+                filtered.reserve(po.beams.size());
+                const double threshold = maxImportance * extraImportanceRel;
+                for (const PreparedBeam &beam : po.beams)
+                {
+                    if (beam.isExternal
+                        || PreparedBeamImportance(beam) >= threshold)
+                    {
+                        filtered.push_back(beam);
+                    }
+                }
+                po.beams.swap(filtered);
+            }
+        }
+        out.push_back(po);
+    }
+    return out;
+}
+
+static long long CountPreparedBeams(
+    const std::vector<PreparedOrientation> &prepared)
+{
+    long long count = 0;
+    for (const PreparedOrientation &orientation : prepared)
+        count += (long long)orientation.beams.size();
+    return count;
+}
+
+struct AutoFullThetaWorkKey
+{
+    int nPhi;
+    int nOrient;
+    int zone;
+    double beamCutoff;
+    bool directFullPhi;
+
+    bool operator<(const AutoFullThetaWorkKey &other) const
+    {
+        if (nOrient != other.nOrient)
+            return nOrient < other.nOrient;
+        if (zone != other.zone)
+            return zone < other.zone;
+        if (beamCutoff != other.beamCutoff)
+            return beamCutoff < other.beamCutoff;
+        if (directFullPhi != other.directFullPhi)
+            return directFullPhi < other.directFullPhi;
+        return nPhi < other.nPhi;
+    }
+};
+
+struct MuellerRowAverage
+{
+    double v[16];
+};
+
+static std::vector<MuellerRowAverage> AverageMuellerRows(const Arr2D &arr,
+                                                         int nAz,
+                                                         int nZen)
+{
+    std::vector<MuellerRowAverage> rows(nZen + 1);
+    for (int t = 0; t <= nZen; ++t)
+    {
+        for (int k = 0; k < 16; ++k)
+            rows[t].v[k] = 0.0;
+        for (int p = 0; p < nAz; ++p)
+        {
+            matrix m = arr(p, t);
+            for (int i = 0; i < 4; ++i)
+                for (int j = 0; j < 4; ++j)
+                    rows[t].v[i * 4 + j] += m[i][j];
+        }
+        double inv = nAz > 0 ? 1.0 / nAz : 1.0;
+        for (int k = 0; k < 16; ++k)
+            rows[t].v[k] *= inv;
+    }
+    return rows;
+}
+
+static double MuellerRowRelativeError(const MuellerRowAverage &current,
+                                      const MuellerRowAverage &previous)
+{
+    double maxErr = 0.0;
+    double c11 = current.v[0];
+    double p11 = previous.v[0];
+    double m11Den = std::max(std::max(std::fabs(c11), std::fabs(p11)), 1e-30);
+    maxErr = std::max(maxErr, std::fabs(c11 - p11) / m11Den);
+
+    if (std::fabs(c11) < 1e-30 || std::fabs(p11) < 1e-30)
+        return maxErr;
+
+    for (int k = 1; k < 16; ++k)
+    {
+        double cn = current.v[k] / c11;
+        double pn = previous.v[k] / p11;
+        double den = std::max(1.0, std::max(std::fabs(cn), std::fabs(pn)));
+        double err = std::fabs(cn - pn) / den;
+        if (std::isfinite(err))
+            maxErr = std::max(maxErr, err);
+    }
+    return maxErr;
+}
+
+static double MuellerRowRelativeErrorValues(const double *current,
+                                            const double *previous,
+                                            int *worstElement)
+{
+    double maxErr = 0.0;
+    int worst = 0;
+    double c11 = current[0];
+    double p11 = previous[0];
+    double m11Den = std::max(std::max(std::fabs(c11), std::fabs(p11)), 1e-30);
+    maxErr = std::fabs(c11 - p11) / m11Den;
+
+    if (std::fabs(c11) >= 1e-30 && std::fabs(p11) >= 1e-30)
+    {
+        for (int k = 1; k < 16; ++k)
+        {
+            double cn = current[k] / c11;
+            double pn = previous[k] / p11;
+            double den = std::max(1.0, std::max(std::fabs(cn), std::fabs(pn)));
+            double err = std::fabs(cn - pn) / den;
+            if (std::isfinite(err) && err > maxErr)
+            {
+                maxErr = err;
+                worst = k;
+            }
+        }
+    }
+
+    if (worstElement)
+        *worstElement = worst;
+    return maxErr;
+}
+
+static double OwenMeanScalarRelativeError(const std::vector<double> &samples)
+{
+    const int n = (int)samples.size();
+    if (n < 2)
+        return 0.0;
+
+    double sum = 0.0;
+    for (double value : samples)
+        sum += value;
+    const double mean = sum / n;
+
+    double sq = 0.0;
+    for (double value : samples)
+    {
+        const double loo = (sum - value) / (n - 1);
+        const double den = std::max(std::max(std::fabs(mean), std::fabs(loo)),
+                                    1e-30);
+        const double err = std::fabs(mean - loo) / den;
+        if (std::isfinite(err))
+            sq += err * err;
+    }
+
+    return std::sqrt(sq / n) / std::sqrt((double)n);
+}
+
+static double OwenMeanMuellerControlError(
+    const std::vector<std::vector<double>> &seedCtrl,
+    int ctrlRows,
+    std::vector<double> *rowErrors,
+    std::vector<int> *rowElements,
+    int *worstRow,
+    int *worstElement)
+{
+    const int seedCount = (int)seedCtrl.size();
+    const int ctrlValues = ctrlRows * 16;
+    if (seedCount < 2 || ctrlRows <= 0)
+        return 0.0;
+
+    std::vector<double> sum(ctrlValues, 0.0);
+    for (const std::vector<double> &ctrl : seedCtrl)
+    {
+        if ((int)ctrl.size() < ctrlValues)
+        {
+            if (rowErrors)
+                rowErrors->assign(ctrlRows,
+                                  std::numeric_limits<double>::infinity());
+            if (rowElements)
+                rowElements->assign(ctrlRows, 0);
+            if (worstRow)
+                *worstRow = 0;
+            if (worstElement)
+                *worstElement = 0;
+            return std::numeric_limits<double>::infinity();
+        }
+        for (int i = 0; i < ctrlValues; ++i)
+            sum[i] += ctrl[i];
+    }
+
+    std::vector<double> mean(ctrlValues, 0.0);
+    for (int i = 0; i < ctrlValues; ++i)
+        mean[i] = sum[i] / seedCount;
+
+    double maxEstimate = 0.0;
+    int maxRow = 0;
+    int maxElement = 0;
+    if (rowErrors)
+        rowErrors->assign(ctrlRows, 0.0);
+    if (rowElements)
+        rowElements->assign(ctrlRows, 0);
+
+    for (int row = 0; row < ctrlRows; ++row)
+    {
+        double rowSq = 0.0;
+        double rowWorstSeedErr = 0.0;
+        int rowWorstElement = 0;
+        const int base = row * 16;
+
+        for (int s = 0; s < seedCount; ++s)
+        {
+            double loo[16];
+            for (int e = 0; e < 16; ++e)
+                loo[e] = (sum[base + e] - seedCtrl[s][base + e])
+                    / (seedCount - 1);
+
+            int element = 0;
+            const double err = MuellerRowRelativeErrorValues(
+                &mean[base], loo, &element);
+            if (std::isfinite(err))
+            {
+                rowSq += err * err;
+                if (err > rowWorstSeedErr)
+                {
+                    rowWorstSeedErr = err;
+                    rowWorstElement = element;
+                }
+            }
+        }
+
+        const double estimate =
+            std::sqrt(rowSq / seedCount) / std::sqrt((double)seedCount);
+        if (rowErrors)
+            (*rowErrors)[row] = estimate;
+        if (rowElements)
+            (*rowElements)[row] = rowWorstElement;
+        if (std::isfinite(estimate) && estimate > maxEstimate)
+        {
+            maxEstimate = estimate;
+            maxRow = row;
+            maxElement = rowWorstElement;
+        }
+    }
+
+    if (worstRow)
+        *worstRow = maxRow;
+    if (worstElement)
+        *worstElement = maxElement;
+    return maxEstimate;
+}
+
+static double OwenMeanMuellerControlError(
+    const std::vector<std::vector<double>> &seedCtrl,
+    int ctrlRows,
+    int *worstRow,
+    int *worstElement)
+{
+    return OwenMeanMuellerControlError(seedCtrl, ctrlRows, nullptr, nullptr,
+                                      worstRow, worstElement);
+}
+
+static std::string MuellerElementName(int element)
+{
+    element = std::max(0, std::min(15, element));
+    std::ostringstream ss;
+    ss << 'M' << (element / 4 + 1) << (element % 4 + 1);
+    return ss.str();
+}
+
+static int AutoFullPilotOrientations(double eps)
+{
+    int fallback = 128;
+    if (eps > 0.0 && eps <= 0.0025)
+        fallback = 512;
+    else if (eps > 0.0 && eps <= 0.01)
+        fallback = 256;
+    return ReadEnvInt("MBS_AUTOFULL_PILOT_ORIENT", fallback, 32, 4096);
+}
+
+static int AutoFullMaxNphi(int initialNphi)
+{
+    int fallback = std::max(600, RoundUpToMultiple(initialNphi, 6));
+    return ReadEnvInt("MBS_AUTOFULL_MAX_NPHI", fallback, 36, 2400);
+}
+
+static std::vector<int> AutoFullPhiCandidates(int maxNphi)
+{
+    std::vector<int> candidates;
+    const char *env = std::getenv("MBS_AUTOFULL_PHI_CANDIDATES");
+    if (env && *env)
+    {
+        std::string text(env);
+        for (char &ch : text)
+            if (ch == ',' || ch == ';' || ch == ':')
+                ch = ' ';
+        std::stringstream ss(text);
+        int value = 0;
+        while (ss >> value)
+        {
+            if (value >= 2)
+                candidates.push_back(value);
+        }
+    }
+    if (candidates.empty())
+        candidates = {36, 48, 60, 72, 90, 108, 132, 156, 180,
+                      216, 252, 300, 360, 420, 480, 540, 600};
+
+    candidates.push_back(maxNphi);
+    std::sort(candidates.begin(), candidates.end());
+    candidates.erase(std::unique(candidates.begin(), candidates.end()),
+                     candidates.end());
+    while (!candidates.empty() && candidates.back() > maxNphi)
+        candidates.pop_back();
+    if (candidates.empty() || candidates.front() != 36)
+        candidates.insert(candidates.begin(), 36);
+    return candidates;
+}
+
+static double AutoFullBoundedQualityEps(double eps)
+{
+    double value = eps > 0.0 ? eps : 0.01;
+    return std::max(1e-4, std::min(value, 0.01));
+}
+
+static double AutoFullPhiSafetyFactor()
+{
+    return ReadEnvDouble("MBS_AUTOFULL_PHI_SAFETY", 0.85, 0.1, 1.0);
+}
+
+static bool AutoFullBeamCutoffAutoEnabled()
+{
+    const char *env = std::getenv("MBS_AUTOFULL_BEAM_CUTOFF_AUTO");
+    if (!env || !*env)
+        return true;
+    return !(env[0] == '0' && env[1] == '\0');
+}
+
+static double AutoFullBeamCutoffSafetyFactor(int zone)
+{
+    if (zone == 0)
+        return ReadEnvDouble("MBS_AUTOFULL_BEAM_CUTOFF_FORWARD_SAFETY",
+                             0.50, 0.0, 1.0);
+    if (zone == 2)
+        return ReadEnvDouble("MBS_AUTOFULL_BEAM_CUTOFF_BACKWARD_SAFETY",
+                             0.20, 0.0, 1.0);
+    return ReadEnvDouble("MBS_AUTOFULL_BEAM_CUTOFF_MIDDLE_SAFETY",
+                         0.35, 0.0, 1.0);
+}
+
+static std::vector<double> AutoFullBeamCutoffCandidates(double baseCutoff)
+{
+    std::vector<double> candidates;
+    const char *env = std::getenv("MBS_AUTOFULL_BEAM_CUTOFF_CANDIDATES");
+    if (env && *env)
+    {
+        std::string text(env);
+        for (char &ch : text)
+            if (ch == ',' || ch == ';' || ch == ':')
+                ch = ' ';
+        std::stringstream ss(text);
+        double value = 0.0;
+        while (ss >> value)
+        {
+            if (value > 0.0 && std::isfinite(value))
+                candidates.push_back(value);
+        }
+    }
+    else if (baseCutoff > 0.0)
+    {
+        const double multipliers[] = {2.0, 4.0, 8.0, 16.0, 32.0};
+        for (double mult : multipliers)
+            candidates.push_back(baseCutoff * mult);
+    }
+
+    candidates.erase(
+        std::remove_if(candidates.begin(), candidates.end(),
+                       [baseCutoff](double value)
+                       {
+                           return !(value > baseCutoff * (1.0 + 1e-12))
+                               || value > 0.25;
+                       }),
+        candidates.end());
+    std::sort(candidates.begin(), candidates.end());
+    candidates.erase(std::unique(candidates.begin(), candidates.end()),
+                     candidates.end());
+    return candidates;
+}
+
+static bool EnvFlagEnabled(const char *name, bool defaultValue)
+{
+    const char *value = std::getenv(name);
+    if (!value || !*value)
+        return defaultValue;
+    return !(value[0] == '0' && value[1] == '\0');
+}
+
+static int FftPhiFactorOverrideValue()
+{
+    const char *value = std::getenv("MBS_FFT_PHI_FACTOR");
+    if (!value || !*value)
+        return 0;
+    if ((value[0] == 'a' || value[0] == 'A')
+        && (value[1] == 'u' || value[1] == 'U')
+        && (value[2] == 't' || value[2] == 'T')
+        && (value[3] == 'o' || value[3] == 'O')
+        && value[4] == '\0')
+        return 0;
+    char *end = nullptr;
+    long parsed = std::strtol(value, &end, 10);
+    if (!end || *end != '\0' || parsed < 1 || parsed > 64)
+        return 0;
+    return (int)parsed;
+}
+
+static int AutoFullFinalAveragePhi(int nPhi, double eps)
+{
+    int factor = FftPhiFactorOverrideValue();
+    if (factor <= 0)
+        factor = HandlerPO::SelectAutoFftPhiFactor(nPhi, eps);
+    if (factor <= 1 || nPhi < 32)
+        return nPhi;
+
+    int nLow = nPhi / factor;
+    if (nLow < 16)
+        nLow = std::min(nPhi, 16);
+    if (nLow >= nPhi)
+        return nPhi;
+    return nLow;
+}
+
+static bool AutoFullLowPhiAverageEnabled(const HandlerPO *handler, double eps)
+{
+    return handler
+        && handler->IsGpuEnabled()
+        && handler->IsFftEnabled()
+        && eps > 0.0
+        && EnvFlagEnabled("MBS_AUTOFULL_FINAL_LOWPHI_AVG", true);
+}
+
+static bool AutoFullDirectFullPhiEnabled(const HandlerPO *handler)
+{
+    return handler
+        && handler->IsGpuEnabled()
+        && handler->IsFftEnabled()
+        && EnvFlagEnabled("MBS_AUTOFULL_DIRECT_FULL_NPHI", true);
+}
+
+static int AutoFullVariableCalcPhi(int nPhi, double eps, int minDirectPhi,
+                                   bool canUseFftAverage,
+                                   bool directFullPhi)
+{
+    if (directFullPhi)
+        return nPhi;
+    if (!canUseFftAverage)
+        return nPhi;
+    return std::max(AutoFullFinalAveragePhi(nPhi, eps), minDirectPhi);
+}
+
+static int AutoFullLowPhiDirectFloor(int outputNphi, double eps)
+{
+    return std::max(2, AutoFullFinalAveragePhi(outputNphi, eps));
+}
+
+static std::vector<int> BuildThetaControlIndices(const ScatteringRange &sphere,
+                                                 double eps)
+{
+    std::vector<int> indices;
+    auto addIndex = [&](int idx)
+    {
+        idx = std::max(0, std::min(idx, sphere.nZenith));
+        indices.push_back(idx);
+    };
+
+    const int nTheta = sphere.nZenith + 1;
+    int fallbackAllRowsMax = 64;
+    if (eps > 0.0 && eps <= 0.01)
+        fallbackAllRowsMax = 1024;
+    if (eps > 0.0 && eps <= 0.005)
+        fallbackAllRowsMax = std::max(fallbackAllRowsMax, 256);
+    const int allRowsMax = ReadEnvInt("MBS_AUTOFULL_ORIENT_CONTROL_ALL_MAX",
+                                      fallbackAllRowsMax, 0, 1000000);
+    if (EnvFlagEnabled("MBS_AUTOFULL_ORIENT_CONTROL_ALL", false)
+        || nTheta <= allRowsMax)
+    {
+        for (int j = 0; j <= sphere.nZenith; ++j)
+            addIndex(j);
+        return indices;
+    }
+
+    auto addNearestDeg = [&](double deg)
+    {
+        double rad = DegToRad(deg);
+        int best = 0;
+        double bestD = 1e30;
+        for (int j = 0; j <= sphere.nZenith; ++j)
+        {
+            double d = std::fabs(sphere.GetZenith(j) - rad);
+            if (d < bestD)
+            {
+                bestD = d;
+                best = j;
+            }
+        }
+        addIndex(best);
+    };
+
+    const double keyAngles[] = {
+        0.0, 2.0, 5.0, 10.0, 22.0, 30.0, 46.0, 60.0, 75.0,
+        90.0, 105.0, 120.0, 135.0, 150.0, 160.0, 170.0, 175.0, 180.0
+    };
+    for (double deg : keyAngles)
+        addNearestDeg(deg);
+    if (sphere.nZenith >= 1)
+    {
+        addIndex(1);
+        addIndex(sphere.nZenith - 1);
+    }
+
+    int fallbackEven = 9;
+    if (sphere.nZenith + 1 >= 512)
+        fallbackEven = 65;
+    else if (sphere.nZenith + 1 >= 128)
+        fallbackEven = 33;
+    else if (sphere.nZenith + 1 >= 64)
+        fallbackEven = 17;
+    if (eps > 0.0 && eps <= 0.005)
+        fallbackEven = std::max(fallbackEven, 129);
+    int nEven = std::min(ReadEnvInt("MBS_AUTOFULL_ORIENT_CONTROL_ROWS",
+                                    fallbackEven, 9, 1025),
+                         sphere.nZenith + 1);
+    for (int k = 0; k < nEven; ++k)
+    {
+        int idx = nEven > 1
+            ? (int)std::lround((double)k * sphere.nZenith / (nEven - 1))
+            : 0;
+        addIndex(idx);
+    }
+
+    std::sort(indices.begin(), indices.end());
+    indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+    return indices;
+}
+
+static void ApplyForwardPoleSymmetryLocal(matrix &m)
+{
+    const double M00 = m[0][0];
+    const double M11 = 0.5 * (m[1][1] + m[2][2]);
+    const double M33 = m[3][3];
+    const double M03 = m[0][3];
+
+    m.Fill(0.0);
+    m[0][0] = M00;
+    m[1][1] = M11;
+    m[2][2] = M11;
+    m[3][3] = M33;
+    m[0][3] = M03;
+    m[3][0] = M03;
+}
+
+static void ApplyBackwardPoleSymmetryLocal(matrix &m)
+{
+    const double M00 = m[0][0];
+    const double M11 = 0.5 * (m[1][1] - m[2][2]);
+    const double M33 = m[3][3];
+    const double M03 = m[0][3];
+
+    m.Fill(0.0);
+    m[0][0] = M00;
+    m[1][1] = M11;
+    m[2][2] = -M11;
+    m[3][3] = M33;
+    m[0][3] = M03;
+    m[3][0] = M03;
+}
+
+static matrix AzimuthAverageOutputMatrix(const Arr2D &src,
+                                         const ScatteringRange &sphere,
+                                         int nAz,
+                                         int localRow)
+{
+    matrix sum(4, 4);
+    sum.Fill(0.0);
+    matrix Lp(4, 4);
+    Lp.Fill(0.0);
+    for (int i = 0; i < 4; ++i)
+        Lp[i][i] = 1.0;
+
+    const double theta = sphere.GetZenith(localRow);
+    const bool isForwardPole = theta < __FLT_EPSILON__;
+    const bool isBackwardPole = theta > M_PI - __FLT_EPSILON__;
+
+    for (int p = 0; p < nAz; ++p)
+    {
+        const double radAz = -p * sphere.azinuthStep;
+        matrix m = src(p, localRow);
+        Lp[1][1] = cos(2 * radAz);
+        Lp[1][2] = sin(2 * radAz);
+        Lp[2][1] = -Lp[1][2];
+        Lp[2][2] = Lp[1][1];
+
+        if (isForwardPole || isBackwardPole)
+            sum += m;
+        else
+            sum += m * Lp;
+    }
+    sum /= nAz;
+    if (isBackwardPole)
+        ApplyBackwardPoleSymmetryLocal(sum);
+    else if (isForwardPole)
+        ApplyForwardPoleSymmetryLocal(sum);
+    return sum;
+}
+
+static double MuellerMatrixRelativeError(const matrix &current,
+                                         const matrix &previous,
+                                         int *worstElement)
+{
+    double currentValues[16];
+    double previousValues[16];
+    for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 4; ++c)
+        {
+            currentValues[r * 4 + c] = current[r][c];
+            previousValues[r * 4 + c] = previous[r][c];
+        }
+    return MuellerRowRelativeErrorValues(currentValues, previousValues,
+                                         worstElement);
+}
+
+static double WriteOwenSpreadByThetaFile(
+    const std::string &fileName,
+    const ScatteringRange &sphere,
+    const std::vector<std::vector<matrix>> &seedRows)
+{
+    if (seedRows.size() < 2)
+        return 0.0;
+
+    std::ofstream out(fileName.c_str(), std::ios::out);
+    out << std::setprecision(10);
+    out << "# theta_deg m11_pair_spread_pct max_mueller_pair_spread_pct"
+        << " pair_worst_element m11_mean_error_est_pct"
+        << " max_mueller_mean_error_est_pct mean_worst_element\n";
+
+    double globalMueller = 0.0;
+    double globalM11 = 0.0;
+    int globalTheta = 0;
+    int globalElement = 0;
+    double globalMeanMueller = 0.0;
+    double globalMeanM11 = 0.0;
+    int globalMeanTheta = 0;
+    int globalMeanElement = 0;
+
+    for (int t = 0; t <= sphere.nZenith; ++t)
+    {
+        double rowM11 = 0.0;
+        double rowMueller = 0.0;
+        int rowElement = 0;
+        double rowMeanM11 = 0.0;
+        double rowMeanMueller = 0.0;
+        int rowMeanElement = 0;
+
+        for (size_t a = 0; a < seedRows.size(); ++a)
+            for (size_t b = a + 1; b < seedRows.size(); ++b)
+            {
+                const matrix &ma = seedRows[a][t];
+                const matrix &mb = seedRows[b][t];
+                const double den = std::max(std::max(std::fabs(ma[0][0]),
+                                                     std::fabs(mb[0][0])),
+                                            1e-30);
+                const double m11 = std::fabs(ma[0][0] - mb[0][0]) / den;
+                rowM11 = std::max(rowM11, m11);
+
+                int element = 0;
+                const double mueller =
+                    MuellerMatrixRelativeError(ma, mb, &element);
+                if (std::isfinite(mueller) && mueller > rowMueller)
+                {
+                    rowMueller = mueller;
+                    rowElement = element;
+                }
+            }
+
+        if (seedRows.size() >= 3)
+        {
+            const int seedCount = (int)seedRows.size();
+            double sum[16] = {0.0};
+            double mean[16] = {0.0};
+            for (size_t s = 0; s < seedRows.size(); ++s)
+                for (int r = 0; r < 4; ++r)
+                    for (int c = 0; c < 4; ++c)
+                        sum[r * 4 + c] += seedRows[s][t][r][c];
+            for (int e = 0; e < 16; ++e)
+                mean[e] = sum[e] / seedCount;
+
+            double m11Sq = 0.0;
+            double muellerSq = 0.0;
+            double rowWorstSeedErr = 0.0;
+            for (size_t s = 0; s < seedRows.size(); ++s)
+            {
+                double loo[16];
+                for (int r = 0; r < 4; ++r)
+                    for (int c = 0; c < 4; ++c)
+                    {
+                        const int e = r * 4 + c;
+                        loo[e] = (sum[e] - seedRows[s][t][r][c])
+                            / (seedCount - 1);
+                    }
+
+                const double denM11 = std::max(std::max(std::fabs(mean[0]),
+                                                        std::fabs(loo[0])),
+                                               1e-30);
+                const double m11Err = std::fabs(mean[0] - loo[0]) / denM11;
+                if (std::isfinite(m11Err))
+                    m11Sq += m11Err * m11Err;
+
+                int element = 0;
+                const double muellerErr =
+                    MuellerRowRelativeErrorValues(mean, loo, &element);
+                if (std::isfinite(muellerErr))
+                {
+                    muellerSq += muellerErr * muellerErr;
+                    if (muellerErr > rowWorstSeedErr)
+                    {
+                        rowWorstSeedErr = muellerErr;
+                        rowMeanElement = element;
+                    }
+                }
+            }
+
+            rowMeanM11 = std::sqrt(m11Sq / seedCount)
+                / std::sqrt((double)seedCount);
+            rowMeanMueller = std::sqrt(muellerSq / seedCount)
+                / std::sqrt((double)seedCount);
+        }
+
+        if (rowMueller > globalMueller)
+        {
+            globalMueller = rowMueller;
+            globalM11 = rowM11;
+            globalTheta = t;
+            globalElement = rowElement;
+        }
+        if (rowMeanMueller > globalMeanMueller)
+        {
+            globalMeanMueller = rowMeanMueller;
+            globalMeanM11 = rowMeanM11;
+            globalMeanTheta = t;
+            globalMeanElement = rowMeanElement;
+        }
+
+        out << RadToDeg(sphere.GetZenith(t)) << ' '
+            << rowM11 * 100.0 << ' '
+            << rowMueller * 100.0 << ' '
+            << MuellerElementName(rowElement) << ' '
+            << rowMeanM11 * 100.0 << ' '
+            << rowMeanMueller * 100.0 << ' '
+            << MuellerElementName(rowMeanElement) << '\n';
+    }
+    out.close();
+
+    std::cout << "Autofull final Owen spread by theta written: "
+              << fileName << std::endl;
+    std::cout << "Worst final Owen inter-seed theta spread: "
+              << std::fixed << std::setprecision(2)
+              << globalMueller * 100.0 << "% @ "
+              << RadToDeg(sphere.GetZenith(globalTheta)) << "deg/"
+              << MuellerElementName(globalElement)
+              << " (M11 spread " << globalM11 * 100.0 << "%)"
+              << std::endl;
+    if (seedRows.size() >= 3)
+    {
+        std::cout << "Worst final Owen mean-error estimate: "
+                  << std::fixed << std::setprecision(2)
+                  << globalMeanMueller * 100.0 << "% @ "
+                  << RadToDeg(sphere.GetZenith(globalMeanTheta)) << "deg/"
+                  << MuellerElementName(globalMeanElement)
+                  << " (M11 estimate " << globalMeanM11 * 100.0 << "%)"
+                  << std::endl;
+    }
+    return seedRows.size() >= 3 ? globalMeanMueller : 0.0;
+}
+
+static void WriteAveragedRowsFile(const std::string &destName,
+                                  const ScatteringRange &sphere,
+                                  const std::vector<matrix> &rows,
+                                  double incomingEnergy,
+                                  double outputEnergy,
+                                  bool hasAbsorption,
+                                  std::string &integralSummary)
+{
+    std::ofstream outFile(destName + ".dat", std::ios::out);
+    outFile << std::setprecision(10);
+    outFile << "ScAngle 2pi*dcos "
+            << "M11 M12 M13 M14 "
+            << "M21 M22 M23 M24 "
+            << "M31 M32 M33 M34 "
+            << "M41 M42 M43 M44";
+
+    double csca = 0.0;
+    for (int t = 0; t <= sphere.nZenith; ++t)
+    {
+        double dcos = sphere.Compute2PiDcos(t);
+        csca += rows[t][0][0] * dcos;
+        outFile << '\n' << RadToDeg(sphere.GetZenith(t)) << ' ' << dcos << ' ';
+        outFile << rows[t];
+    }
+    outFile.close();
+
+    if (incomingEnergy > 0.0)
+    {
+        const double cAbsRaw = hasAbsorption ? (incomingEnergy - outputEnergy) : 0.0;
+        const double absTol = std::max(1.0, incomingEnergy) * 1e-10;
+        const double cAbs = (std::fabs(cAbsRaw) < absTol) ? 0.0 : cAbsRaw;
+        const double cExt = csca + cAbs;
+        const double qSca = csca / incomingEnergy;
+        const double qAbs = cAbs / incomingEnergy;
+        const double qExt = cExt / incomingEnergy;
+
+        std::ostringstream log;
+        log << std::fixed << std::setprecision(4);
+        log << "\n===== SCATTERING EFFICIENCY: full =====\n";
+        log << "C_sca = " << csca << "\n";
+        log << "A_proj (incoming energy) = " << incomingEnergy << "\n";
+        log << "Q_sca (full) = C_sca / A_proj = " << qSca << "\n";
+        log << "Outcoming energy = " << outputEnergy << "\n";
+        log << "C_abs = A_proj - outcoming energy = " << cAbs << "\n";
+        log << "C_ext = C_sca + C_abs = " << cExt << "\n";
+        log << "Q_abs = C_abs / A_proj = " << qAbs << "\n";
+        log << "Q_ext = C_ext / A_proj = " << qExt << "\n";
+        log << "EFFICIENCY_SUMMARY "
+            << "Qext=" << qExt << ' '
+            << "Cext=" << cExt << ' '
+            << "Qabs=" << qAbs << ' '
+            << "Qsca=" << qSca << ' '
+            << "Csca=" << csca << ' '
+            << "Cabs=" << cAbs << ' '
+            << "Aproj=" << incomingEnergy << ' '
+            << "Eout=" << outputEnergy << "\n";
+        std::ofstream logFile(destName + "_log.txt", std::ios::app);
+        if (logFile.is_open())
+            logFile << log.str();
+        integralSummary = log.str();
+    }
+}
+
+static bool AutoFullSymmetryApplicable(double betaSym, double gammaSym)
+{
+    const bool fullBetaHemisphere = std::fabs(betaSym - 0.5 * M_PI) < 1e-6;
+    const bool hexLikeGamma = gammaSym <= M_PI / 3.0 + 1e-6;
+    return fullBetaHemisphere && hexLikeGamma;
+}
+
+static bool AutoFullSymmetryErrorProjectionEnabled(double betaSym,
+                                                   double gammaSym)
+{
+    const char *env = std::getenv("MBS_AUTOFULL_SYMMETRY_ERROR_PROJECT");
+    if (env && *env)
+        return !(env[0] == '0' && env[1] == '\0');
+    return AutoFullSymmetryApplicable(betaSym, gammaSym);
+}
+
+static bool AutoFullSymmetryOutputProjectionEnabled(double betaSym,
+                                                    double gammaSym)
+{
+    const char *env = std::getenv("MBS_AUTOFULL_SYMMETRY_OUTPUT_PROJECT");
+    if (!env || !*env)
+        env = std::getenv("MBS_AUTOFULL_SYMMETRY_PROJECT");
+    if (env && *env)
+        return !(env[0] == '0' && env[1] == '\0');
+    (void)betaSym;
+    (void)gammaSym;
+    return false;
+}
+
+static void ProjectRandomOrientationMuellerValues(double *v)
+{
+    static const int zeroElems[] = {2, 3, 6, 7, 8, 9, 12, 13};
+    for (int idx : zeroElems)
+        v[idx] = 0.0;
+}
+
+static void ProjectMuellerControlValues(std::vector<double> &values)
+{
+    const int rows = (int)values.size() / 16;
+    for (int row = 0; row < rows; ++row)
+        ProjectRandomOrientationMuellerValues(&values[row * 16]);
+}
+
+static void ProjectRandomOrientationMuellerSymmetry(matrix &m)
+{
+    // Full random-orientation hex-column averaging makes these components odd
+    // under mirror/symmetry operations.  Oldauto's paired grid cancels them
+    // exactly; Sobol/Owen only cancels statistically unless we project them.
+    static const int zeroElems[][2] = {
+        {0, 2}, {0, 3},
+        {1, 2}, {1, 3},
+        {2, 0}, {2, 1},
+        {3, 0}, {3, 1}
+    };
+    for (const auto &rc : zeroElems)
+        m[rc[0]][rc[1]] = 0.0;
+}
+
+static void ProjectRowsRandomOrientationMuellerSymmetry(
+    std::vector<matrix> &rows)
+{
+    for (matrix &m : rows)
+        ProjectRandomOrientationMuellerSymmetry(m);
+}
+
+static void ProjectSeedRowsRandomOrientationMuellerSymmetry(
+    std::vector<std::vector<matrix>> &seedRows)
+{
+    for (std::vector<matrix> &rows : seedRows)
+        ProjectRowsRandomOrientationMuellerSymmetry(rows);
+}
+
+static bool AutoFullRobustOwenOutputEnabled()
+{
+    return EnvFlagEnabled("MBS_AUTOFULL_ROBUST_OWEN_OUTPUT", true);
+}
+
+static double MedianValue(std::vector<double> values)
+{
+    if (values.empty())
+        return 0.0;
+    std::sort(values.begin(), values.end());
+    const size_t n = values.size();
+    if (n & 1u)
+        return values[n / 2];
+    return 0.5 * (values[n / 2 - 1] + values[n / 2]);
+}
+
+static void ReplaceRowsByRobustOwenMedian(
+    std::vector<matrix> &rows,
+    const std::vector<std::vector<matrix>> &seedRows)
+{
+    const int seedCount = (int)seedRows.size();
+    if (seedCount < 3 || rows.empty())
+        return;
+
+    std::vector<double> values(seedCount);
+    for (size_t t = 0; t < rows.size(); ++t)
+    {
+        matrix robust(4, 4);
+        robust.Fill(0.0);
+        for (int r = 0; r < 4; ++r)
+            for (int c = 0; c < 4; ++c)
+            {
+                for (int s = 0; s < seedCount; ++s)
+                    values[s] = seedRows[s][t][r][c] * seedCount;
+                robust[r][c] = MedianValue(values);
+            }
+        rows[t] = robust;
+    }
 }
 
 static int SharedFftGlobalRefineMaxRows()
@@ -1660,8 +2832,10 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     }
     else if (handlerPO->IsGpuEnabled())
     {
-        int autoChunk = 256;
-        autoChunk = std::min(autoChunk, nGamma);
+        // Keep GPU diffraction passes large enough to amortize launch,
+        // transfer, and FFT interpolation overhead. The GPU backend still
+        // splits this chunk internally by available VRAM.
+        int autoChunk = handlerPO->ComputeNoShadow() ? 1024 : 4096;
         sharedOrientChunk = std::min(autoChunk, nOrientations);
     }
     sharedOrientChunk = std::max(1, std::min(sharedOrientChunk, nOrientations));
@@ -1732,7 +2906,7 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     {
         SharedGroupData group;
         group.orientStart = orientStart;
-        group.orientEnd = std::min(nOrientations, orientStart + sharedOrientChunk);
+        group.orientEnd = std::min(debugOrientEnd, orientStart + sharedOrientChunk);
         group.groupOrient = group.orientEnd - group.orientStart;
         group.prepared.resize(group.groupOrient);
         group.energies.assign(group.groupOrient, 0.0);
@@ -1984,37 +3158,61 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
         }
 
         auto refineStart = std::chrono::high_resolution_clock::now();
+        std::vector<ScatteringRange> rowSpheres;
+        rowSpheres.reserve(x_sizes.size());
+        std::vector<int> nRefineRows(x_sizes.size(), 0);
+        std::vector<Arr2D> refinedM(x_sizes.size());
+        std::vector<Arr2D> refinedMns(x_sizes.size());
+        bool anyRefineRows = false;
         for (size_t s = 0; s < x_sizes.size(); ++s)
         {
+            rowSpheres.push_back(ScatteringRange(0.0, 0.0, nAz, 1));
             const std::vector<int> &rows = refineRows[s];
             if (rows.empty())
                 continue;
 
-            const double scale = x_sizes[s] / x_ref;
-            const double waveIndex = 2.0 * M_PI / m_scattering->m_wave;
-
-            for (int rt = 0; rt < (int)rows.size(); ++rt)
-            {
-                const int row = rows[rt];
-                ScatteringRange rowSphere = savedSphere;
-                rowSphere.isNonUniform = true;
-                rowSphere.thetaValues.clear();
+            anyRefineRows = true;
+            nRefineRows[s] = (int)rows.size();
+            ScatteringRange &rowSphere = rowSpheres[s];
+            rowSphere.isNonUniform = true;
+            rowSphere.thetaValues.clear();
+            rowSphere.thetaValues.reserve(rows.size());
+            for (int row : rows)
                 rowSphere.thetaValues.push_back(savedSphere.GetZenith(row));
-                rowSphere.nAzimuth = nAz;
-                rowSphere.azinuthStep = M_2PI / nAz;
-                rowSphere.nZenith = 0;
-                rowSphere.zenithStart = rowSphere.thetaValues.front();
-                rowSphere.zenithEnd = rowSphere.thetaValues.front();
-                rowSphere.zenithStep = 0.0;
-                rowSphere.ComputeSphereDirections(m_incidentLight);
+            rowSphere.nAzimuth = nAz;
+            rowSphere.azinuthStep = M_2PI / nAz;
+            rowSphere.nZenith = (int)rowSphere.thetaValues.size() - 1;
+            rowSphere.zenithStart = rowSphere.thetaValues.front();
+            rowSphere.zenithEnd = rowSphere.thetaValues.back();
+            rowSphere.zenithStep = rowSphere.nZenith > 0
+                ? (rowSphere.zenithEnd - rowSphere.zenithStart) / rowSphere.nZenith
+                : 0.0;
+            rowSphere.ComputeSphereDirections(m_incidentLight);
 
-                Arr2D refined(nAz + 1, 1, 4, 4); refined.ClearArr();
-                Arr2D refinedNs(nAz + 1, 1, 4, 4); refinedNs.ClearArr();
+            refinedM[s] = Arr2D(nAz + 1, nRefineRows[s], 4, 4);
+            refinedM[s].ClearArr();
+            if (computeNoShadow)
+            {
+                refinedMns[s] = Arr2D(nAz + 1, nRefineRows[s], 4, 4);
+                refinedMns[s].ClearArr();
+            }
+        }
 
-                for (int orientStart = debugOrientBegin; orientStart < debugOrientEnd;
-                     orientStart += sharedOrientChunk)
+        const double waveIndex = 2.0 * M_PI / m_scattering->m_wave;
+        if (anyRefineRows)
+        {
+            for (int orientStart = debugOrientBegin; orientStart < debugOrientEnd;
+                 orientStart += sharedOrientChunk)
+            {
+                SharedGroupData group = traceGroup(orientStart);
+
+                for (size_t s = 0; s < x_sizes.size(); ++s)
                 {
-                    SharedGroupData group = traceGroup(orientStart);
+                    const int rowsForSize = nRefineRows[s];
+                    if (rowsForSize <= 0)
+                        continue;
+
+                    const double scale = x_sizes[s] / x_ref;
                     const std::vector<PreparedOrientation> *gpuPrepared = &group.prepared;
                     std::vector<PreparedOrientation> scaled;
                     double gpuScale = scale;
@@ -2029,9 +3227,9 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
                         gpuWaveIndex = 0.0;
                     }
 
-                    Arr2D localM(nAz + 1, 1, 4, 4); localM.ClearArr();
-                    Arr2D localMns(nAz + 1, 1, 4, 4); localMns.ClearArr();
-                    handlerPO->m_sphere = rowSphere;
+                    Arr2D localM(nAz + 1, rowsForSize, 4, 4); localM.ClearArr();
+                    Arr2D localMns(nAz + 1, rowsForSize, 4, 4); localMns.ClearArr();
+                    handlerPO->m_sphere = rowSpheres[s];
                     for (int gpuStart = 0; gpuStart < group.groupOrient; )
                     {
                         int gpuBatchSize = handlerPO->SelectGpuOrientationBatchSize(
@@ -2052,36 +3250,52 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
 
                     if (m_mirrorGamma)
                     {
-                        ApplyMirrorGammaMueller(localM, nAz, 0);
+                        ApplyMirrorGammaMueller(localM, nAz, rowsForSize - 1);
                         if (computeNoShadow)
-                            ApplyMirrorGammaMueller(localMns, nAz, 0);
+                            ApplyMirrorGammaMueller(localMns, nAz, rowsForSize - 1);
                     }
                     if (spikeDebug && m_mpiRank == 0 && spikeDebugFile.is_open())
                     {
                         const std::string label = (s < labels.size() && !labels[s].empty())
                             ? labels[s] : std::to_string(s);
-                        double avg[16];
-                        AzimuthAverageOutputCell(localM, nAz, 0, 0, avg);
-                        WriteSpikeDebugRow(spikeDebugFile, s, label, row,
-                                           RadToDeg(savedSphere.GetZenith(row)),
-                                           group.orientStart, group.orientEnd,
-                                           nGamma, betaRange, gammaRange, avg);
+                        const std::vector<int> &rows = refineRows[s];
+                        for (int localRow = 0; localRow < rowsForSize; ++localRow)
+                        {
+                            double avg[16];
+                            AzimuthAverageOutputCell(localM, nAz, rowsForSize - 1,
+                                                     localRow, avg);
+                            WriteSpikeDebugRow(spikeDebugFile, s, label,
+                                               rows[localRow],
+                                               RadToDeg(savedSphere.GetZenith(rows[localRow])),
+                                               group.orientStart, group.orientEnd,
+                                               nGamma, betaRange, gammaRange, avg);
+                        }
                     }
 
                     for (int p = 0; p < nAz; ++p)
-                    {
-                        refined.insert(p, 0, localM(p, 0));
-                        if (computeNoShadow)
-                            refinedNs.insert(p, 0, localMns(p, 0));
-                    }
+                        for (int localRow = 0; localRow < rowsForSize; ++localRow)
+                        {
+                            refinedM[s].insert(p, localRow, localM(p, localRow));
+                            if (computeNoShadow)
+                                refinedMns[s].insert(p, localRow, localMns(p, localRow));
+                        }
                 }
+            }
 
+            for (size_t s = 0; s < x_sizes.size(); ++s)
+            {
+                const int rowsForSize = nRefineRows[s];
+                if (rowsForSize <= 0)
+                    continue;
+                const std::vector<int> &rows = refineRows[s];
                 for (int p = 0; p < nAz; ++p)
-                {
-                    results_M[s].replace(p, row, refined(p, 0));
-                    if (computeNoShadow)
-                        results_M_ns[s].replace(p, row, refinedNs(p, 0));
-                }
+                    for (int localRow = 0; localRow < rowsForSize; ++localRow)
+                    {
+                        const int row = rows[localRow];
+                        results_M[s].replace(p, row, refinedM[s](p, localRow));
+                        if (computeNoShadow)
+                            results_M_ns[s].replace(p, row, refinedMns[s](p, localRow));
+                    }
             }
         }
         handlerPO->m_sphere = savedSphere;
@@ -2191,24 +3405,417 @@ void TracerPOTotal::TraceSobolMultiSize(int nOrient, double betaSym, double gamm
                   << x_sizes.size() << " sizes" << std::endl;
 }
 
+void TracerPOTotal::TraceEulerQuadratureMultiSize(
+    int nBeta, int nGamma, double betaSym, double gammaSym,
+    const std::vector<double> &x_sizes, double x_ref)
+{
+    HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
+    if (!handlerPO) {
+        std::cerr << "Error! Handler is not HandlerPO in TraceEulerQuadratureMultiSize" << std::endl;
+        throw std::exception();
+    }
+
+    double D_ref = m_particle->MaximalDimention();
+    int nAz = handlerPO->m_sphere.nAzimuth;
+    int nZen = handlerPO->m_sphere.nZenith;
+
+    std::string baseName = m_resultDirName;
+    int nOrient = nBeta * nGamma;
+
+    if (m_mpiRank == 0)
+        std::cout << "MultiSize Euler quadrature: " << x_sizes.size()
+                  << " sizes, " << nBeta << " x " << nGamma
+                  << " = " << nOrient << " orientations each" << std::endl;
+
+    auto t_total_start = std::chrono::high_resolution_clock::now();
+
+    for (size_t s = 0; s < x_sizes.size(); ++s)
+    {
+        double D_target = x_sizes[s] / x_ref * D_ref;
+        m_particle->Resize(D_target);
+
+        if (m_mpiRank == 0)
+            std::cout << "  Size " << (s + 1) << "/" << x_sizes.size()
+                      << ": x=" << (int)x_sizes[s]
+                      << " (D=" << m_particle->MaximalDimention() << ")" << std::endl;
+
+        handlerPO->M = Arr2D(nAz + 1, nZen + 1, 4, 4);
+        handlerPO->M_noshadow = Arr2D(nAz + 1, nZen + 1, 4, 4);
+        m_incomingEnergy = 0;
+
+        std::string savedName = m_resultDirName;
+        std::string sizeName = baseName + "_x" + std::to_string((int)x_sizes[s]);
+        m_resultDirName = sizeName;
+        TraceFromEulerQuadrature(nBeta, nGamma, betaSym, gammaSym);
+        m_resultDirName = savedName;
+    }
+
+    m_particle->Resize(D_ref);
+
+    auto t_total_end = std::chrono::high_resolution_clock::now();
+    double total_sec = std::chrono::duration<double>(t_total_end - t_total_start).count();
+
+    if (m_mpiRank == 0)
+        std::cout << "MultiSize Euler quadrature total: " << total_sec
+                  << " s for " << x_sizes.size() << " sizes" << std::endl;
+}
+
+void TracerPOTotal::TraceLatticeMultiSize(
+    int nOrient, double betaSym, double gammaSym,
+    const std::vector<double> &x_sizes, double x_ref, int generator)
+{
+    HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
+    if (!handlerPO) {
+        std::cerr << "Error! Handler is not HandlerPO in TraceLatticeMultiSize" << std::endl;
+        throw std::exception();
+    }
+
+    double D_ref = m_particle->MaximalDimention();
+    int nAz = handlerPO->m_sphere.nAzimuth;
+    int nZen = handlerPO->m_sphere.nZenith;
+    std::string baseName = m_resultDirName;
+
+    if (m_mpiRank == 0)
+        std::cout << "MultiSize lattice: " << x_sizes.size()
+                  << " sizes, " << nOrient << " orientations each" << std::endl;
+
+    auto t_total_start = std::chrono::high_resolution_clock::now();
+
+    for (size_t s = 0; s < x_sizes.size(); ++s)
+    {
+        double D_target = x_sizes[s] / x_ref * D_ref;
+        m_particle->Resize(D_target);
+
+        if (m_mpiRank == 0)
+            std::cout << "  Size " << (s + 1) << "/" << x_sizes.size()
+                      << ": x=" << (int)x_sizes[s]
+                      << " (D=" << m_particle->MaximalDimention() << ")" << std::endl;
+
+        handlerPO->M = Arr2D(nAz + 1, nZen + 1, 4, 4);
+        handlerPO->M_noshadow = Arr2D(nAz + 1, nZen + 1, 4, 4);
+        m_incomingEnergy = 0;
+
+        std::string savedName = m_resultDirName;
+        std::string sizeName = baseName + "_x" + std::to_string((int)x_sizes[s]);
+        m_resultDirName = sizeName;
+        if (generator > 0)
+            TraceFromLatticeGenerator(nOrient, generator, betaSym, gammaSym);
+        else
+            TraceFromLattice(nOrient, betaSym, gammaSym);
+        m_resultDirName = savedName;
+    }
+
+    m_particle->Resize(D_ref);
+
+    auto t_total_end = std::chrono::high_resolution_clock::now();
+    double total_sec = std::chrono::duration<double>(t_total_end - t_total_start).count();
+
+    if (m_mpiRank == 0)
+        std::cout << "MultiSize lattice total: " << total_sec
+                  << " s for " << x_sizes.size() << " sizes" << std::endl;
+}
+
+static void BuildGaussLegendreInterval(int n, double a, double b,
+                                       std::vector<double> &x,
+                                       std::vector<double> &w)
+{
+    if (n <= 0)
+        throw std::invalid_argument("Gauss-Legendre order must be positive");
+
+    x.assign(n, 0.0);
+    w.assign(n, 0.0);
+
+    const double center = 0.5 * (a + b);
+    const double half = 0.5 * (b - a);
+    const int m = (n + 1) / 2;
+    const double eps = 1e-14;
+
+    for (int i = 0; i < m; ++i)
+    {
+        double z = std::cos(M_PI * (i + 0.75) / (n + 0.5));
+        double zPrev = 0.0;
+        double p1 = 0.0;
+        double p2 = 0.0;
+        double pp = 0.0;
+
+        do
+        {
+            p1 = 1.0;
+            p2 = 0.0;
+            for (int j = 1; j <= n; ++j)
+            {
+                double p3 = p2;
+                p2 = p1;
+                p1 = ((2.0 * j - 1.0) * z * p2 - (j - 1.0) * p3) / j;
+            }
+            pp = n * (z * p1 - p2) / (z * z - 1.0);
+            zPrev = z;
+            z = zPrev - p1 / pp;
+        } while (std::fabs(z - zPrev) > eps);
+
+        const double nodeLo = center - half * z;
+        const double nodeHi = center + half * z;
+        const double weight = 2.0 * half / ((1.0 - z * z) * pp * pp);
+
+        x[i] = nodeLo;
+        x[n - 1 - i] = nodeHi;
+        w[i] = weight;
+        w[n - 1 - i] = weight;
+    }
+}
+
+static double RadicalInverseBase2(uint32_t value)
+{
+    value = (value << 16) | (value >> 16);
+    value = ((value & 0x00ff00ffu) << 8) | ((value & 0xff00ff00u) >> 8);
+    value = ((value & 0x0f0f0f0fu) << 4) | ((value & 0xf0f0f0f0u) >> 4);
+    value = ((value & 0x33333333u) << 2) | ((value & 0xccccccccu) >> 2);
+    value = ((value & 0x55555555u) << 1) | ((value & 0xaaaaaaaau) >> 1);
+    return (double)value / 4294967296.0;
+}
+
+static int GcdInt(int a, int b)
+{
+    a = std::abs(a);
+    b = std::abs(b);
+    while (b != 0)
+    {
+        int t = a % b;
+        a = b;
+        b = t;
+    }
+    return a;
+}
+
+static int PickLatticeGenerator(int n)
+{
+    if (n <= 1)
+        return 1;
+    const double invPhi = 0.6180339887498948482;
+    int z = (int)std::floor(n * invPhi + 0.5);
+    z = std::max(1, std::min(n - 1, z));
+    if ((z & 1) == 0)
+        ++z;
+    if (z >= n)
+        z = n - 1;
+    while (z > 1 && GcdInt(z, n) != 1)
+        z -= 2;
+    if (GcdInt(z, n) != 1)
+        z = 1;
+    return z;
+}
+
+static int NormalizeLatticeGenerator(int n, int generator)
+{
+    if (n <= 1)
+        return 1;
+    generator %= n;
+    if (generator < 0)
+        generator += n;
+    if (generator == 0)
+        generator = 1;
+    if (GcdInt(generator, n) != 1)
+        throw std::invalid_argument("lattice generator must be coprime with N");
+    return generator;
+}
+
 void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
+{
+    TraceFromSobolSeed(nOrient, 42u, betaSym, gammaSym);
+}
+
+void TracerPOTotal::TraceFromSobolSeed(int nOrient, unsigned int seed,
+                                       double betaSym, double gammaSym)
 {
     // Generate Sobol orientations mapped to [0, betaSym] x [0, gammaSym]
     // using the correct solid-angle measure:
     //   beta = arccos(1 - (1-cos(betaSym)) * u)  for uniform dOmega
     //   gamma = gammaSym * v
-    Sobol2D sobol(42);
+    if (nOrient <= 0)
+        throw std::invalid_argument("Sobol orientation count must be positive");
+
+    Sobol2D sobol(seed);
     std::vector<double> su, sv;
     sobol.generate(nOrient, su, sv);
 
     double cosBetaSym = cos(betaSym);
-    std::vector<std::pair<double,double>> orientations(nOrient);
+    std::vector<WeightedOrientation> orientations(nOrient);
+    double weight = 1.0 / nOrient;
     for (int i = 0; i < nOrient; ++i)
     {
         double beta  = acos(1.0 - (1.0 - cosBetaSym) * su[i]);
         double gamma = gammaSym * sv[i];
-        orientations[i] = {beta, gamma};
+        orientations[i] = {beta, gamma, weight};
     }
+
+    std::ostringstream label;
+    label << "Sobol Owen(seed=" << seed << ")";
+    TraceWeightedOrientations(orientations, label.str(), betaSym, gammaSym);
+}
+
+void TracerPOTotal::TraceFromSobolRing(int nBeta, int nGamma,
+                                       double betaSym, double gammaSym)
+{
+    if (nBeta <= 0 || nGamma <= 0)
+        throw std::invalid_argument("--sobol_ring requires positive Nbeta and Ngamma");
+
+    Sobol2D sobol(42);
+    std::vector<double> su, sv;
+    sobol.generate(nBeta, su, sv);
+
+    double cosBetaSym = cos(betaSym);
+    int nOrient = nBeta * nGamma;
+    double weight = 1.0 / nOrient;
+    std::vector<WeightedOrientation> orientations;
+    orientations.reserve(nOrient);
+
+    for (int ib = 0; ib < nBeta; ++ib)
+    {
+        double beta = acos(1.0 - (1.0 - cosBetaSym) * su[ib]);
+        double gammaShift = sv[ib];
+        for (int ig = 0; ig < nGamma; ++ig)
+        {
+            double gammaUnit = (ig + gammaShift) / nGamma;
+            gammaUnit -= std::floor(gammaUnit);
+            double gamma = gammaSym * gammaUnit;
+            orientations.push_back({beta, gamma, weight});
+        }
+    }
+
+    if (m_mpiRank == 0)
+    {
+        std::cout << "Sobol ring: Sobol beta x shifted periodic gamma, Nbeta="
+                  << nBeta << ", Ngamma=" << nGamma
+                  << ", total=" << orientations.size() << " orientations"
+                  << std::endl;
+    }
+
+    TraceWeightedOrientations(orientations, "Sobol ring", betaSym, gammaSym);
+}
+
+void TracerPOTotal::TraceFromHammersley(int nOrient, double betaSym,
+                                        double gammaSym)
+{
+    if (nOrient <= 0)
+        throw std::invalid_argument("Hammersley orientation count must be positive");
+
+    double cosBetaSym = cos(betaSym);
+    double weight = 1.0 / nOrient;
+    std::vector<WeightedOrientation> orientations;
+    orientations.reserve(nOrient);
+
+    for (int i = 0; i < nOrient; ++i)
+    {
+        double u = (i + 0.5) / nOrient;
+        double v = RadicalInverseBase2((uint32_t)i);
+        double beta = acos(1.0 - (1.0 - cosBetaSym) * u);
+        double gamma = gammaSym * v;
+        orientations.push_back({beta, gamma, weight});
+    }
+
+    if (m_mpiRank == 0)
+        std::cout << "Hammersley: " << nOrient << " orientations" << std::endl;
+
+    TraceWeightedOrientations(orientations, "Hammersley", betaSym, gammaSym);
+}
+
+void TracerPOTotal::TraceFromLattice(int nOrient, double betaSym,
+                                     double gammaSym)
+{
+    TraceFromLatticeGenerator(nOrient, PickLatticeGenerator(nOrient),
+                              betaSym, gammaSym);
+}
+
+void TracerPOTotal::TraceFromLatticeGenerator(int nOrient, int generator,
+                                              double betaSym,
+                                              double gammaSym)
+{
+    if (nOrient <= 0)
+        throw std::invalid_argument("Lattice orientation count must be positive");
+
+    double cosBetaSym = cos(betaSym);
+    double weight = 1.0 / nOrient;
+    generator = NormalizeLatticeGenerator(nOrient, generator);
+    std::vector<WeightedOrientation> orientations;
+    orientations.reserve(nOrient);
+
+    for (int i = 0; i < nOrient; ++i)
+    {
+        double u = (i + 0.5) / nOrient;
+        double v = (((long long)i * generator) % nOrient + 0.5) / nOrient;
+        double beta = acos(1.0 - (1.0 - cosBetaSym) * u);
+        double gamma = gammaSym * v;
+        orientations.push_back({beta, gamma, weight});
+    }
+
+    if (m_mpiRank == 0)
+        std::cout << "Rank-1 lattice: " << nOrient
+                  << " orientations, generator=" << generator << std::endl;
+
+    TraceWeightedOrientations(orientations, "Rank-1 lattice", betaSym, gammaSym);
+}
+
+void TracerPOTotal::TraceFromEulerQuadrature(int nBeta, int nGamma,
+                                             double betaSym, double gammaSym)
+{
+    if (nBeta <= 0 || nGamma <= 0)
+        throw std::invalid_argument("--euler_quad requires positive Nbeta and Ngamma");
+
+    double muMin = std::cos(betaSym);
+    double muMax = 1.0;
+    if (muMin > muMax)
+        std::swap(muMin, muMax);
+
+    std::vector<double> mu;
+    std::vector<double> muWeights;
+    BuildGaussLegendreInterval(nBeta, muMin, muMax, mu, muWeights);
+
+    const double muSpan = muMax - muMin;
+    std::vector<WeightedOrientation> orientations;
+    orientations.reserve((size_t)nBeta * (size_t)nGamma);
+
+    for (int ib = 0; ib < nBeta; ++ib)
+    {
+        double clampedMu = std::max(-1.0, std::min(1.0, mu[ib]));
+        double beta = std::acos(clampedMu);
+        double betaWeight = (muSpan > 0.0)
+            ? muWeights[ib] / muSpan
+            : 1.0 / nBeta;
+
+        for (int ig = 0; ig < nGamma; ++ig)
+        {
+            double gamma = gammaSym * (ig + 0.5) / nGamma;
+            orientations.push_back({ beta, gamma, betaWeight / nGamma });
+        }
+    }
+
+    double weightSum = 0.0;
+    for (const WeightedOrientation &orientation : orientations)
+        weightSum += orientation.weight;
+    if (weightSum > 0.0)
+        for (WeightedOrientation &orientation : orientations)
+            orientation.weight /= weightSum;
+
+    if (m_mpiRank == 0)
+    {
+        std::cout << "Euler quadrature: Gauss-Legendre in cos(beta) x "
+                  << "periodic midpoint gamma, Nbeta=" << nBeta
+                  << ", Ngamma=" << nGamma
+                  << ", algebraic beta order=" << (2 * nBeta - 1)
+                  << ", total=" << orientations.size() << " orientations"
+                  << std::endl;
+    }
+
+    TraceWeightedOrientations(orientations, "Euler quadrature", betaSym, gammaSym);
+}
+
+void TracerPOTotal::TraceWeightedOrientations(
+    const std::vector<WeightedOrientation> &orientations,
+    const std::string &label, double betaSym, double gammaSym)
+{
+    int nOrient = (int)orientations.size();
+    if (nOrient <= 0)
+        throw std::invalid_argument("orientation list must be non-empty");
 
     // MPI: each rank processes a subset of orientations
     int myStart = m_mpiRank * nOrient / m_mpiSize;
@@ -2216,7 +3823,7 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
     int myCount = myEnd - myStart;
 
     if (m_mpiRank == 0)
-        std::cout << "Sobol: " << nOrient << " orientations"
+        std::cout << label << ": " << nOrient << " orientations"
                   << (m_mpiSize > 1 ? " (" + std::to_string(myCount) + " per rank, " + std::to_string(m_mpiSize) + " ranks)" : "")
                   << ", beta_sym=" << RadToDeg(betaSym) << " deg, gamma_sym="
                   << RadToDeg(gammaSym) << " deg" << std::endl;
@@ -2225,13 +3832,12 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
     timer.Start();
     if (m_mpiRank == 0) OutputStartTime(timer);
 
-    double weight = 1.0 / nOrient;  // same weight regardless of MPI split
     m_handler->SetNormIndex(1);
 
     HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
     if (!handlerPO)
     {
-        std::cerr << "Error! Handler is not HandlerPO in TraceFromSobol" << std::endl;
+        std::cerr << "Error! Handler is not HandlerPO in TraceWeightedOrientations" << std::endl;
         throw std::exception();
     }
 
@@ -2321,7 +3927,9 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
             for (int i = 0; i < thisChunk; ++i)
             {
                 int idx = iStart + i;
-                localParticle.Rotate(orientations[idx].first, orientations[idx].second, 0);
+                const WeightedOrientation &orientation = orientations[idx];
+                double weight = orientation.weight;
+                localParticle.Rotate(orientation.beta, orientation.gamma, 0);
                 if (!shadowOff) localScatter->FormShadowBeam(localBeams);
                 bool ok = localScatter->ScatterLight(0, 0, localBeams);
                 if (ok)
@@ -2464,6 +4072,808 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
 
         OutputStatisticsPO(timer, nOrient, m_resultDirName);
     }
+}
+
+double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
+                                                double gammaSym,
+                                                const std::vector<int> &rowNphi,
+                                                const std::vector<int> &rowNorient,
+                                                int outputNphi,
+                                                double fftEps,
+                                                const std::vector<unsigned int> &owenSeeds,
+                                                const std::vector<double> &rowBeamCutoff)
+{
+    HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
+    if (!handlerPO)
+    {
+        std::cerr << "Error! Handler is not HandlerPO in TraceFromSobolVariablePhi" << std::endl;
+        throw std::exception();
+    }
+
+    ScatteringRange outputSphere = handlerPO->m_sphere;
+    outputSphere.nAzimuth = outputNphi;
+    outputSphere.azinuthStep = M_2PI / outputNphi;
+    outputSphere.ComputeSphereDirections(m_incidentLight);
+    handlerPO->SetScatteringSphere(outputSphere);
+
+    const int nZen = outputSphere.nZenith;
+    std::map<AutoFullThetaWorkKey, std::vector<int>> rowsByWork;
+    const bool canUseFftAverage =
+        AutoFullLowPhiAverageEnabled(handlerPO, fftEps);
+    const bool directFullPhiEnabled =
+        AutoFullDirectFullPhiEnabled(handlerPO);
+    const int minDirectPhi = canUseFftAverage
+        ? AutoFullLowPhiDirectFloor(outputNphi, fftEps)
+        : 2;
+    const int minRowPhi = canUseFftAverage
+        ? std::min(outputNphi, RoundUpToMultiple(minDirectPhi, 6))
+        : 2;
+    const bool thetaZonesEnabled = AutoFullThetaZonesEnabled();
+    const bool rowOrientEnabled = AutoFullRowOrientEnabled();
+    const double baseImportanceCutoff =
+        handlerPO->m_beamCutoffImportanceRel > 0.0
+            ? handlerPO->m_beamCutoffImportanceRel
+            : 0.0;
+    std::vector<int> rowPhiUsed(nZen + 1, outputNphi);
+    std::vector<int> rowZone(nZen + 1, 1);
+    std::vector<int> rowOrientLimit(nZen + 1, nOrient);
+    std::vector<int> rowOrientSource(nZen + 1, 0);
+    std::vector<double> rowExtraImportanceCutoff(nZen + 1, 0.0);
+    std::vector<int> rowDirectFullPhi(nZen + 1, 0);
+    auto lookupRowOrient = [&](int row, int fallbackZone, int *source) {
+        if (!rowOrientEnabled)
+        {
+            if (source) *source = 0;
+            return AutoFullThetaZoneOrientLimit(nOrient, fallbackZone);
+        }
+
+        if (row < (int)rowNorient.size() && rowNorient[row] > 0)
+        {
+            if (source) *source = 1;
+            return rowNorient[row];
+        }
+
+        int left = 0;
+        for (int i = std::min(row - 1, (int)rowNorient.size() - 1);
+             i >= 0; --i)
+        {
+            if (rowNorient[i] > 0)
+            {
+                left = rowNorient[i];
+                break;
+            }
+        }
+        int right = 0;
+        for (int i = row + 1; i < (int)rowNorient.size(); ++i)
+        {
+            if (rowNorient[i] > 0)
+            {
+                right = rowNorient[i];
+                break;
+            }
+        }
+        int value = std::max(left, right);
+        if (value > 0)
+        {
+            if (thetaZonesEnabled)
+                value = std::max(value,
+                    AutoFullThetaZoneOrientLimit(nOrient, fallbackZone));
+            if (source) *source = 2;
+            return value;
+        }
+
+        if (source) *source = 0;
+        return AutoFullThetaZoneOrientLimit(nOrient, fallbackZone);
+    };
+    for (int t = 0; t <= nZen; ++t)
+    {
+        int nPhi = (t < (int)rowNphi.size() && rowNphi[t] > 0)
+            ? rowNphi[t] : outputNphi;
+        nPhi = std::max(2, std::min(nPhi, outputNphi));
+        nPhi = RoundUpToMultiple(nPhi, 6);
+        nPhi = std::max(2, std::min(nPhi, outputNphi));
+        nPhi = std::max(nPhi, minRowPhi);
+
+        const double thetaDeg = RadToDeg(outputSphere.GetZenith(t));
+        const int physicalZone = AutoFullThetaZone(thetaDeg);
+        const int fallbackZone = thetaZonesEnabled ? physicalZone : 2;
+        int orientSource = 0;
+        int orientLimit = lookupRowOrient(t, fallbackZone, &orientSource);
+        orientLimit = std::max(64, std::min(orientLimit, nOrient));
+        orientLimit = RoundDownToMultiple(orientLimit, 16);
+        orientLimit = std::max(64, std::min(orientLimit, nOrient));
+
+        double extraImportanceCutoff = 0.0;
+        if (t < (int)rowBeamCutoff.size()
+            && rowBeamCutoff[t] > baseImportanceCutoff * (1.0 + 1e-12))
+        {
+            extraImportanceCutoff = rowBeamCutoff[t];
+        }
+        else if (thetaZonesEnabled && baseImportanceCutoff > 0.0)
+        {
+            const double zoneCutoff =
+                baseImportanceCutoff
+                * AutoFullThetaZoneCutoffMultiplier(physicalZone);
+            if (zoneCutoff > baseImportanceCutoff * (1.0 + 1e-12))
+                extraImportanceCutoff = zoneCutoff;
+        }
+
+        rowPhiUsed[t] = nPhi;
+        rowZone[t] = physicalZone;
+        rowOrientLimit[t] = orientLimit;
+        rowOrientSource[t] = orientSource;
+        rowExtraImportanceCutoff[t] = extraImportanceCutoff;
+        rowDirectFullPhi[t] =
+            (directFullPhiEnabled && nPhi >= outputNphi) ? 1 : 0;
+        const int workZone = extraImportanceCutoff > 0.0 ? physicalZone : -1;
+        AutoFullThetaWorkKey key = {
+            nPhi, orientLimit, workZone, extraImportanceCutoff,
+            rowDirectFullPhi[t] != 0
+        };
+        rowsByWork[key].push_back(t);
+    }
+    rowsByWork.clear();
+    if (nZen >= 1)
+    {
+        auto safeSharedCutoff = [](double a, double b)
+        {
+            if (a <= 0.0 || b <= 0.0)
+                return 0.0;
+            return std::min(a, b);
+        };
+        auto tiePoleToNeighbor = [&](int pole, int neighbor)
+        {
+            const int sharedPhi =
+                std::max(rowPhiUsed[pole], rowPhiUsed[neighbor]);
+            const int sharedOrient =
+                std::max(rowOrientLimit[pole], rowOrientLimit[neighbor]);
+            const double sharedCutoff = safeSharedCutoff(
+                rowExtraImportanceCutoff[pole],
+                rowExtraImportanceCutoff[neighbor]);
+            rowPhiUsed[pole] = rowPhiUsed[neighbor] = sharedPhi;
+            rowOrientLimit[pole] = rowOrientLimit[neighbor] = sharedOrient;
+            rowExtraImportanceCutoff[pole] =
+                rowExtraImportanceCutoff[neighbor] = sharedCutoff;
+            const int sharedDirectFull =
+                (directFullPhiEnabled && sharedPhi >= outputNphi) ? 1 : 0;
+            rowDirectFullPhi[pole] = rowDirectFullPhi[neighbor] =
+                sharedDirectFull;
+        };
+        tiePoleToNeighbor(0, 1);
+        tiePoleToNeighbor(nZen, nZen - 1);
+    }
+    for (int t = 0; t <= nZen; ++t)
+    {
+        const int workZone =
+            rowExtraImportanceCutoff[t] > 0.0 ? rowZone[t] : -1;
+        AutoFullThetaWorkKey key = {
+            rowPhiUsed[t], rowOrientLimit[t], workZone,
+            rowExtraImportanceCutoff[t],
+            rowDirectFullPhi[t] != 0
+        };
+        rowsByWork[key].push_back(t);
+    }
+
+    double work = 0.0;
+    double directWork = 0.0;
+    double orientWork = 0.0;
+    int directFullPhiRows = 0;
+    for (const auto &entry : rowsByWork)
+    {
+        const int nPhi = entry.first.nPhi;
+        const int orientLimit = entry.first.nOrient;
+        if (entry.first.directFullPhi)
+            directFullPhiRows += (int)entry.second.size();
+        work += (double)nPhi * (double)entry.second.size();
+        int directPhi = AutoFullVariableCalcPhi(
+            nPhi, fftEps, minDirectPhi, canUseFftAverage,
+            entry.first.directFullPhi);
+        directWork += (double)directPhi * (double)entry.second.size();
+        orientWork += (double)directPhi * (double)entry.second.size()
+                    * ((double)orientLimit / std::max(1, nOrient));
+    }
+    double fullWork = (double)outputNphi * (double)(nZen + 1);
+    std::cout << "Autofull variable-phi final: " << rowsByWork.size()
+              << " theta work groups, estimated phi-row work "
+              << std::fixed << std::setprecision(1)
+              << (100.0 * work / std::max(fullWork, 1.0)) << "% of rectangular"
+              << std::endl;
+    if (canUseFftAverage)
+    {
+        std::cout << "  FFT-average direct phi work "
+                  << std::fixed << std::setprecision(1)
+                  << (100.0 * directWork / std::max(fullWork, 1.0))
+                  << "% of rectangular"
+                  << ", direct N_phi floor=" << minDirectPhi
+                  << " (MBS_AUTOFULL_FINAL_LOWPHI_AVG=0 disables)"
+                  << std::endl;
+        if (directFullPhiRows > 0)
+        {
+            std::cout << "  Direct full-phi fallback rows: "
+                      << directFullPhiRows << "/" << (nZen + 1)
+                      << " (MBS_AUTOFULL_DIRECT_FULL_NPHI=0 disables)"
+                      << std::endl;
+        }
+    }
+    if (thetaZonesEnabled || rowOrientEnabled)
+    {
+        std::cout << "  Theta-zone orientation/direct work "
+                  << std::fixed << std::setprecision(1)
+                  << (100.0 * orientWork / std::max(fullWork, 1.0))
+                  << "% of full rectangular-orientation work"
+                  << " (MBS_AUTOFULL_THETA_ZONES=0 disables zones,"
+                  << " MBS_AUTOFULL_ROW_ORIENT=0 disables adaptive row N)"
+                  << std::endl;
+    }
+    for (const auto &entry : rowsByWork)
+    {
+        const int nPhi = entry.first.nPhi;
+        int directPhi = AutoFullVariableCalcPhi(
+            nPhi, fftEps, minDirectPhi, canUseFftAverage,
+            entry.first.directFullPhi);
+        double extraCutoff = 0.0;
+        if (!entry.second.empty())
+            extraCutoff = rowExtraImportanceCutoff[entry.second.front()];
+        std::cout << "  zone=" << AutoFullThetaZoneName(entry.first.zone)
+                  << " N_orient=" << entry.first.nOrient
+                  << " N_phi=" << nPhi << ": "
+                  << entry.second.size() << " theta rows";
+        if (entry.first.directFullPhi)
+            std::cout << ", direct full N_phi";
+        if (directPhi != nPhi)
+            std::cout << ", averaged from direct N_phi=" << directPhi;
+        if (extraCutoff > 0.0)
+            std::cout << ", beam_importance_cutoff=" << std::scientific
+                      << std::setprecision(1) << extraCutoff << std::fixed
+                      << std::setprecision(1);
+        std::cout << std::endl;
+    }
+    if (m_mpiRank == 0)
+    {
+        const std::string thetaWorkName =
+            m_resultDirName + "_autofull_theta_work.dat";
+        std::ofstream thetaWork(thetaWorkName.c_str(), std::ios::out);
+        thetaWork << std::setprecision(10);
+        thetaWork << "# theta_deg zone needed_Nphi needed_Norient"
+                  << " orient_source extra_beam_importance_cutoff_rel"
+                  << " direct_full_phi\n";
+        for (int t = 0; t <= nZen; ++t)
+        {
+            const char *source = rowOrientSource[t] == 1 ? "adaptive"
+                : (rowOrientSource[t] == 2 ? "neighbor" : "fallback");
+            thetaWork << RadToDeg(outputSphere.GetZenith(t)) << ' '
+                      << AutoFullThetaZoneName(rowZone[t]) << ' '
+                      << rowPhiUsed[t] << ' '
+                      << rowOrientLimit[t] << ' '
+                      << source << ' '
+                      << rowExtraImportanceCutoff[t] << ' '
+                      << rowDirectFullPhi[t] << '\n';
+        }
+        thetaWork.close();
+        std::cout << "  Theta work map written: " << thetaWorkName
+                  << std::endl;
+    }
+
+    std::vector<unsigned int> seeds = owenSeeds;
+    if (seeds.empty())
+        seeds.push_back(42u);
+    const int seedCount = (int)seeds.size();
+    const long long totalOrientationWork = (long long)nOrient * seedCount;
+    if (m_mpiRank == 0)
+    {
+        std::cout << "Autofull final Owen averaging: " << seedCount
+                  << " seed" << (seedCount == 1 ? "" : "s")
+                  << " x " << nOrient << " orientations";
+        if (seedCount > 1)
+        {
+            std::cout << " (";
+            for (size_t i = 0; i < seeds.size(); ++i)
+            {
+                if (i) std::cout << ',';
+                std::cout << seeds[i];
+            }
+            std::cout << ")";
+        }
+        std::cout << std::endl;
+    }
+
+    int myStart = m_mpiRank * nOrient / m_mpiSize;
+    int myEnd = (m_mpiRank + 1) * nOrient / m_mpiSize;
+    int myCount = myEnd - myStart;
+
+    CalcTimer timer;
+    timer.Start();
+    if (m_mpiRank == 0)
+        OutputStartTime(timer);
+
+    std::vector<matrix> rows;
+    std::vector<matrix> rowsNoShadow;
+    rows.reserve(nZen + 1);
+    rowsNoShadow.reserve(nZen + 1);
+    for (int t = 0; t <= nZen; ++t)
+    {
+        matrix m(4, 4);
+        m.Fill(0.0);
+        rows.push_back(m);
+        rowsNoShadow.push_back(m);
+    }
+    std::vector<std::vector<matrix>> seedRows;
+    if (seedCount > 1)
+    {
+        seedRows.resize(seedCount);
+        for (int s = 0; s < seedCount; ++s)
+        {
+            seedRows[s].reserve(nZen + 1);
+            for (int t = 0; t <= nZen; ++t)
+            {
+                matrix m(4, 4);
+                m.Fill(0.0);
+                seedRows[s].push_back(m);
+            }
+        }
+    }
+
+    m_incomingEnergy = 0.0;
+    handlerPO->m_outputEnergy = 0.0;
+    const bool computeNoShadow = handlerPO->ComputeNoShadow();
+    const double weight = 1.0 / ((double)nOrient * (double)seedCount);
+
+    long long availMB = 2048;
+#ifdef __linux__
+    {
+        std::ifstream meminfo("/proc/meminfo");
+        std::string line;
+        while (std::getline(meminfo, line))
+        {
+            if (line.find("MemAvailable:") == 0)
+            {
+                long long kb = 0;
+                sscanf(line.c_str(), "MemAvailable: %lld", &kb);
+                if (kb > 0) availMB = kb / 1024;
+                break;
+            }
+        }
+    }
+#endif
+    long long beamBudget = std::max(100LL, availMB / 2);
+    int chunkSize = std::max(32, std::min(4096, std::min(myCount, (int)(beamBudget * 1024 / 350))));
+    if (m_sobolChunkSize > 0)
+        chunkSize = std::max(1, std::min(chunkSize, m_sobolChunkSize));
+    int nChunks = (myCount + chunkSize - 1) / chunkSize;
+    int nThreads = 1;
+#ifdef _OPENMP
+    #pragma omp parallel
+    {
+        #pragma omp single
+        nThreads = omp_get_num_threads();
+    }
+#endif
+    if (m_mpiRank == 0)
+        std::cerr << "Variable-phi memory: " << availMB << " MB available, chunk="
+                  << chunkSize << " orientations (" << nChunks << " chunks), "
+                  << nThreads << " threads" << std::endl;
+
+    double phase1 = 0.0;
+    double phase2 = 0.0;
+    long long count = 0;
+    std::vector<Beam> outBeams;
+    m_scattering->PrepareForParallelTrace();
+
+    double cosBetaSym = cos(betaSym);
+    for (size_t seedIndex = 0; seedIndex < seeds.size(); ++seedIndex)
+    {
+        Sobol2D sobol(seeds[seedIndex]);
+        std::vector<double> su, sv;
+        sobol.generate(nOrient, su, sv);
+        std::vector<std::pair<double,double>> orientations(nOrient);
+        for (int i = 0; i < nOrient; ++i)
+        {
+            double beta = acos(1.0 - (1.0 - cosBetaSym) * su[i]);
+            double gamma = gammaSym * sv[i];
+            orientations[i] = {beta, gamma};
+        }
+
+        if (m_mpiRank == 0 && seedCount > 1)
+            std::cout << "  Owen seed " << seeds[seedIndex]
+                      << " (" << (seedIndex + 1) << "/" << seedCount << ")"
+                      << std::endl;
+
+        for (int chunk = 0; chunk < nChunks; ++chunk)
+        {
+            int iStart = myStart + chunk * chunkSize;
+            int iEnd = std::min(iStart + chunkSize, myEnd);
+            int thisChunk = iEnd - iStart;
+
+            auto tp1 = std::chrono::high_resolution_clock::now();
+            std::vector<PreparedOrientation> chunkPrepared(thisChunk);
+            std::vector<double> chunkEnergies(thisChunk, 0.0);
+            std::vector<double> chunkOutputEnergies(thisChunk, 0.0);
+
+            #pragma omp parallel
+            {
+                Particle localParticle = *m_particle;
+                Scattering *localScatter = m_scattering->CloneFor(&localParticle, &m_incidentLight);
+                HandlerPO localHandler(&localParticle, &m_incidentLight,
+                                       handlerPO->nTheta, m_scattering->m_wave);
+                localHandler.ConfigureForThreadLocalPrepare(*handlerPO, localScatter);
+                std::vector<Beam> localBeams;
+
+                #pragma omp for schedule(dynamic, 4)
+                for (int i = 0; i < thisChunk; ++i)
+                {
+                    int idx = iStart + i;
+                    localParticle.Rotate(orientations[idx].first, orientations[idx].second, 0);
+                    if (!shadowOff)
+                        localScatter->FormShadowBeam(localBeams);
+                    bool ok = localScatter->ScatterLight(0, 0, localBeams);
+                    if (ok)
+                    {
+                        double beforeOutput = localHandler.m_outputEnergy;
+                        localHandler.PrepareBeams(localBeams, weight, chunkPrepared[i]);
+                        chunkOutputEnergies[i] = localHandler.m_outputEnergy - beforeOutput;
+                    }
+                    else
+                    {
+                        chunkPrepared[i].sinZenith = weight;
+                    }
+                    chunkEnergies[i] = localScatter->GetIncedentEnergy() * weight;
+                    localBeams.clear();
+                }
+
+                delete localScatter;
+            }
+
+            for (int i = 0; i < thisChunk; ++i)
+            {
+                m_incomingEnergy += chunkEnergies[i];
+                handlerPO->m_outputEnergy += chunkOutputEnergies[i];
+                ++count;
+            }
+            phase1 += std::chrono::duration<double>(
+                std::chrono::high_resolution_clock::now() - tp1).count();
+
+            auto tp2 = std::chrono::high_resolution_clock::now();
+            for (const auto &entry : rowsByWork)
+            {
+            const int groupOrientLimit = entry.first.nOrient;
+            if (iStart >= groupOrientLimit)
+                continue;
+            const int activeCount =
+                std::min(thisChunk, groupOrientLimit - iStart);
+            if (activeCount <= 0)
+                continue;
+
+            const int nPhi = entry.first.nPhi;
+            const int calcNphi = AutoFullVariableCalcPhi(
+                nPhi, fftEps, minDirectPhi, canUseFftAverage,
+                entry.first.directFullPhi);
+            const std::vector<int> &rowIds = entry.second;
+            const int rowCount = (int)rowIds.size();
+            ScatteringRange rowSphere = outputSphere;
+            rowSphere.nAzimuth = calcNphi;
+            rowSphere.azinuthStep = M_2PI / calcNphi;
+            rowSphere.isNonUniform = true;
+            rowSphere.thetaValues.clear();
+            rowSphere.thetaValues.reserve(rowCount);
+            for (int row : rowIds)
+                rowSphere.thetaValues.push_back(outputSphere.GetZenith(row));
+            rowSphere.nZenith = rowCount - 1;
+            rowSphere.zenithStart = rowSphere.thetaValues.front();
+            rowSphere.zenithEnd = rowSphere.thetaValues.back();
+            rowSphere.zenithStep = rowSphere.nZenith > 0
+                ? (rowSphere.zenithEnd - rowSphere.zenithStart) / rowSphere.nZenith
+                : 0.0;
+            rowSphere.ComputeSphereDirections(m_incidentLight);
+
+            Arr2D localM(calcNphi + 1, rowCount, 4, 4);
+            localM.ClearArr();
+            Arr2D localMns(calcNphi + 1, rowCount, 4, 4);
+            localMns.ClearArr();
+
+            ScatteringRange savedSphere = handlerPO->m_sphere;
+            handlerPO->m_sphere = rowSphere;
+            const double weightScale =
+                (double)nOrient / (double)std::max(1, groupOrientLimit);
+            double extraCutoff = 0.0;
+            if (!rowIds.empty())
+                extraCutoff = rowExtraImportanceCutoff[rowIds.front()];
+            std::vector<PreparedOrientation> filteredPrepared;
+            const std::vector<PreparedOrientation> *preparedForGroup =
+                &chunkPrepared;
+            int preparedStart = 0;
+            int preparedCount = activeCount;
+            if (extraCutoff > 0.0)
+            {
+                filteredPrepared = BuildPreparedSliceForThetaZone(
+                    chunkPrepared, 0, activeCount, 1.0, extraCutoff);
+                preparedForGroup = &filteredPrepared;
+                preparedStart = 0;
+                preparedCount = (int)filteredPrepared.size();
+            }
+            if (handlerPO->IsGpuEnabled())
+            {
+                for (int gpuStart = preparedStart;
+                     gpuStart < preparedStart + preparedCount; )
+                {
+                    int gpuBatchSize = handlerPO->SelectGpuOrientationBatchSize(
+                        *preparedForGroup, gpuStart,
+                        preparedStart + preparedCount - gpuStart);
+                    int gpuEnd = std::min(gpuStart + gpuBatchSize,
+                                          preparedStart + preparedCount);
+                    const bool useFftForGroup =
+                        handlerPO->IsFftEnabled()
+                        && !canUseFftAverage
+                        && !entry.first.directFullPhi;
+                    bool ok = useFftForGroup
+                        ? handlerPO->HandleOrientationsToLocalGpuFftPhi(
+                            *preparedForGroup, gpuStart, gpuEnd - gpuStart,
+                            localM, localMns)
+                        : handlerPO->HandleOrientationsToLocalGpu(
+                            *preparedForGroup, gpuStart, gpuEnd - gpuStart,
+                            localM, localMns);
+                    if (!ok)
+                    {
+                        handlerPO->m_sphere = savedSphere;
+                        throw std::runtime_error("variable-phi GPU diffraction failed");
+                    }
+                    gpuStart = gpuEnd;
+                }
+            }
+            else
+            {
+                #pragma omp parallel
+                {
+                    Arr2D threadM(calcNphi + 1, rowCount, 4, 4);
+                    threadM.ClearArr();
+                    Arr2D threadMns(calcNphi + 1, rowCount, 4, 4);
+                    threadMns.ClearArr();
+                    std::vector<Arr2DC> localJ, localJns;
+                    if (handlerPO->isCoh)
+                    {
+                        Arr2DC tmp(calcNphi + 1, rowCount, 2, 2);
+                        tmp.ClearArr();
+                        localJ.push_back(tmp);
+                        Arr2DC tmpNs(calcNphi + 1, rowCount, 2, 2);
+                        tmpNs.ClearArr();
+                        localJns.push_back(tmpNs);
+                    }
+
+                    #pragma omp for schedule(dynamic, 1)
+                    for (int i = 0; i < preparedCount; ++i)
+                    {
+                        const PreparedOrientation &prepared =
+                            (*preparedForGroup)[preparedStart + i];
+                        if (!prepared.beams.empty())
+                            handlerPO->HandleBeamsToLocal(
+                                prepared, threadM, localJ,
+                                handlerPO->isCoh ? &localJns : nullptr);
+                        if (handlerPO->isCoh && !localJ.empty())
+                        {
+                            double w = prepared.sinZenith;
+                            HandlerPO::AddToMuellerLocal(localJ, w, threadM,
+                                                         calcNphi, rowCount - 1);
+                            HandlerPO::AddToMuellerLocal(localJns, w, threadMns,
+                                                         calcNphi, rowCount - 1);
+                            localJ[0].ClearArr();
+                            localJns[0].ClearArr();
+                        }
+                    }
+
+                    #pragma omp critical
+                    {
+                        for (int p = 0; p < calcNphi; ++p)
+                            for (int t = 0; t < rowCount; ++t)
+                            {
+                                localM.insert(p, t, threadM(p, t));
+                                if (computeNoShadow)
+                                    localMns.insert(p, t, threadMns(p, t));
+                            }
+                    }
+                }
+            }
+            handlerPO->m_sphere = savedSphere;
+
+            if (m_mirrorGamma)
+            {
+                ApplyMirrorGammaMueller(localM, calcNphi, rowCount - 1);
+                if (computeNoShadow)
+                    ApplyMirrorGammaMueller(localMns, calcNphi, rowCount - 1);
+            }
+
+            for (int localRow = 0; localRow < rowCount; ++localRow)
+            {
+                int globalRow = rowIds[localRow];
+                matrix averaged = AzimuthAverageOutputMatrix(localM, rowSphere,
+                                                             calcNphi, localRow);
+                if (std::fabs(weightScale - 1.0) > 1e-15)
+                    averaged *= weightScale;
+                rows[globalRow] += averaged;
+                if (!seedRows.empty())
+                    seedRows[seedIndex][globalRow] += averaged;
+                if (computeNoShadow)
+                {
+                    matrix averagedNoShadow = AzimuthAverageOutputMatrix(
+                        localMns, rowSphere, calcNphi, localRow);
+                    if (std::fabs(weightScale - 1.0) > 1e-15)
+                        averagedNoShadow *= weightScale;
+                    rowsNoShadow[globalRow] += averagedNoShadow;
+                }
+            }
+        }
+        phase2 += std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now() - tp2).count();
+
+            if (m_mpiRank == 0)
+            {
+                int progressIndex =
+                    (int)((long long)seedIndex * nOrient + iEnd - 1);
+                OutputProgress((int)totalOrientationWork, count, progressIndex,
+                               chunk + 1, timer, -1);
+            }
+        }
+    }
+
+#ifdef USE_MPI
+    {
+        std::vector<double> send((nZen + 1) * 16, 0.0);
+        std::vector<double> recv((nZen + 1) * 16, 0.0);
+        for (int t = 0; t <= nZen; ++t)
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c)
+                    send[(t * 16) + r * 4 + c] = rows[t][r][c];
+        MPI_Reduce(send.data(), recv.data(), (int)send.size(),
+                   MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        if (m_mpiRank == 0)
+            for (int t = 0; t <= nZen; ++t)
+                for (int r = 0; r < 4; ++r)
+                    for (int c = 0; c < 4; ++c)
+                        rows[t][r][c] = recv[(t * 16) + r * 4 + c];
+
+        if (computeNoShadow)
+        {
+            std::fill(send.begin(), send.end(), 0.0);
+            std::fill(recv.begin(), recv.end(), 0.0);
+            for (int t = 0; t <= nZen; ++t)
+                for (int r = 0; r < 4; ++r)
+                    for (int c = 0; c < 4; ++c)
+                        send[(t * 16) + r * 4 + c] = rowsNoShadow[t][r][c];
+            MPI_Reduce(send.data(), recv.data(), (int)send.size(),
+                       MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+            if (m_mpiRank == 0)
+                for (int t = 0; t <= nZen; ++t)
+                    for (int r = 0; r < 4; ++r)
+                        for (int c = 0; c < 4; ++c)
+                            rowsNoShadow[t][r][c] = recv[(t * 16) + r * 4 + c];
+        }
+
+        if (!seedRows.empty())
+        {
+            const size_t rowBlock = (size_t)(nZen + 1) * 16;
+            std::vector<double> sendSeeds(seedRows.size() * rowBlock, 0.0);
+            std::vector<double> recvSeeds(seedRows.size() * rowBlock, 0.0);
+            for (size_t s = 0; s < seedRows.size(); ++s)
+                for (int t = 0; t <= nZen; ++t)
+                    for (int r = 0; r < 4; ++r)
+                        for (int c = 0; c < 4; ++c)
+                        {
+                            size_t idx = s * rowBlock + (size_t)t * 16
+                                       + (size_t)r * 4 + c;
+                            sendSeeds[idx] = seedRows[s][t][r][c];
+                        }
+            MPI_Reduce(sendSeeds.data(), recvSeeds.data(),
+                       (int)sendSeeds.size(), MPI_DOUBLE, MPI_SUM, 0,
+                       MPI_COMM_WORLD);
+            if (m_mpiRank == 0)
+                for (size_t s = 0; s < seedRows.size(); ++s)
+                    for (int t = 0; t <= nZen; ++t)
+                        for (int r = 0; r < 4; ++r)
+                            for (int c = 0; c < 4; ++c)
+                            {
+                                size_t idx = s * rowBlock + (size_t)t * 16
+                                           + (size_t)r * 4 + c;
+                                seedRows[s][t][r][c] = recvSeeds[idx];
+                            }
+        }
+
+        double totalEnergy = 0.0;
+        MPI_Reduce(&m_incomingEnergy, &totalEnergy, 1, MPI_DOUBLE,
+                   MPI_SUM, 0, MPI_COMM_WORLD);
+        if (m_mpiRank == 0)
+            m_incomingEnergy = totalEnergy;
+        double totalOutput = 0.0;
+        MPI_Reduce(&handlerPO->m_outputEnergy, &totalOutput, 1, MPI_DOUBLE,
+                   MPI_SUM, 0, MPI_COMM_WORLD);
+        if (m_mpiRank == 0)
+            handlerPO->m_outputEnergy = totalOutput;
+    }
+#endif
+
+    EraseConsoleLine(60);
+    handlerPO->m_sphere = outputSphere;
+    if (m_mpiRank == 0)
+    {
+        std::cout << "Variable-phi Phase 1 (tracing): " << std::fixed
+                  << std::setprecision(2) << phase1 << " s" << std::endl;
+        const char *diffractionMode = "OpenMP";
+        if (handlerPO->IsGpuEnabled())
+        {
+            if (canUseFftAverage)
+            {
+                diffractionMode =
+                    (directFullPhiRows == nZen + 1)
+                        ? "CUDA direct full-phi"
+                        : (directFullPhiRows > 0
+                            ? "CUDA low-phi average + direct full-phi"
+                            : "CUDA low-phi average");
+            }
+            else
+            {
+                diffractionMode = handlerPO->IsFftEnabled()
+                    ? "CUDA FFT"
+                    : "CUDA";
+            }
+        }
+        std::cout << "Variable-phi Phase 2 (diffraction, "
+                  << diffractionMode << "): " << phase2 << " s"
+                  << std::endl;
+        std::cout << "Variable-phi total: " << phase1 + phase2 << " s" << std::endl;
+
+        const bool projectSymmetryInError =
+            AutoFullSymmetryErrorProjectionEnabled(betaSym, gammaSym);
+        if (AutoFullRobustOwenOutputEnabled() && seedRows.size() >= 3)
+        {
+            ReplaceRowsByRobustOwenMedian(rows, seedRows);
+            std::cout << "Autofull robust Owen output: per-element median"
+                      << " over " << seedRows.size()
+                      << " final seeds"
+                      << " (MBS_AUTOFULL_ROBUST_OWEN_OUTPUT=0 disables)"
+                      << std::endl;
+        }
+        if (projectSymmetryInError && !seedRows.empty())
+            ProjectSeedRowsRandomOrientationMuellerSymmetry(seedRows);
+
+        if (AutoFullSymmetryOutputProjectionEnabled(betaSym, gammaSym))
+        {
+            ProjectRowsRandomOrientationMuellerSymmetry(rows);
+            if (computeNoShadow)
+                ProjectRowsRandomOrientationMuellerSymmetry(rowsNoShadow);
+            std::cout << "Autofull output symmetry projection: zeroed"
+                      << " M13/M14/M23/M24/M31/M32/M41/M42"
+                      << " (MBS_AUTOFULL_SYMMETRY_OUTPUT_PROJECT=0 disables)"
+                      << std::endl;
+        }
+        else if (projectSymmetryInError)
+        {
+            std::cout << "Autofull symmetry projection applied to convergence"
+                      << " and Owen diagnostics only; output Mueller is not"
+                      << " cosmetically zeroed"
+                      << std::endl;
+        }
+
+        WriteAveragedRowsFile(m_resultDirName, outputSphere, rows,
+                              m_incomingEnergy, handlerPO->m_outputEnergy,
+                              handlerPO->HasAbsorptionAccounting(),
+                              handlerPO->m_integralSummary);
+        double finalMeanError = 0.0;
+        if (!seedRows.empty())
+        {
+            std::string spreadName =
+                m_resultDirName + "_autofull_owen_spread_by_theta.dat";
+            finalMeanError =
+                WriteOwenSpreadByThetaFile(spreadName, outputSphere, seedRows);
+        }
+        if (computeNoShadow)
+        {
+            std::string nsName = m_resultDirName + "_noshadow";
+            std::string dummySummary;
+            WriteAveragedRowsFile(nsName, outputSphere, rowsNoShadow,
+                                  m_incomingEnergy, handlerPO->m_outputEnergy,
+                                  false, dummySummary);
+        }
+        OutputStatisticsPO(timer, totalOrientationWork, m_resultDirName);
+        return finalMeanError;
+    }
+    return 0.0;
 }
 
 void TracerPOTotal::TraceAdaptiveTheta(int nOrient, double betaSym, double gammaSym,
@@ -2680,10 +5090,185 @@ void TracerPOTotal::TraceAdaptiveTheta(int nOrient, double betaSym, double gamma
     TraceFromSobol(nOrient, betaSym, gammaSym);
 }
 
-void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, int maxOrientOverride)
+void TracerPOTotal::EvaluateOwenControlBatch(
+    int orientStart, int orientCount, int sobolCount, unsigned int seed,
+    double sampleWeight, double betaSym, double gammaSym,
+    const ScatteringRange &ctrlSphere, const std::vector<int> &ctrlIdx,
+    int nAz, std::vector<double> &ctrlAvg, double &energyAvg)
+{
+    HandlerPO *hp = dynamic_cast<HandlerPO*>(m_handler);
+    if (!hp)
+        throw std::runtime_error("EvaluateOwenControlBatch requires HandlerPO");
+
+    const int ctrlRows = (int)ctrlIdx.size();
+    const int ctrlValues = ctrlRows * 16;
+    ctrlAvg.assign(ctrlValues, 0.0);
+    energyAvg = 0.0;
+    if (orientCount <= 0 || ctrlRows <= 0)
+        return;
+    sobolCount = std::max(sobolCount, orientStart + orientCount);
+
+    Sobol2D sobol(seed);
+    std::vector<double> su, sv;
+    sobol.generate(sobolCount, su, sv);
+
+    int myStart = m_mpiRank * orientCount / m_mpiSize;
+    int myEnd = (m_mpiRank + 1) * orientCount / m_mpiSize;
+    int myCount = myEnd - myStart;
+    int subChunkMax = std::min(4096, std::max(1, myCount));
+    double cosBetaSym = cos(betaSym);
+    double weight = sampleWeight;
+    m_scattering->PrepareForParallelTrace();
+
+    for (int sc = 0; sc < myCount; sc += subChunkMax)
+    {
+        int scSize = std::min(subChunkMax, myCount - sc);
+        std::vector<PreparedOrientation> chunkPrep(scSize);
+        std::vector<double> chunkEnergy(scSize, 0.0);
+
+#pragma omp parallel
+        {
+            Particle localParticle = *m_particle;
+            Scattering *localScatter =
+                m_scattering->CloneFor(&localParticle, &m_incidentLight);
+            HandlerPO localHandler(&localParticle, &m_incidentLight,
+                                   hp->nTheta, m_scattering->m_wave);
+            localHandler.ConfigureForThreadLocalPrepare(*hp, localScatter);
+            std::vector<Beam> localBeams;
+
+#pragma omp for schedule(dynamic, 4)
+            for (int i = 0; i < scSize; ++i)
+            {
+                int idx = orientStart + myStart + sc + i;
+                double beta = acos(1.0 - (1.0 - cosBetaSym) * su[idx]);
+                double gamma = gammaSym * sv[idx];
+                localParticle.Rotate(beta, gamma, 0);
+                if (!shadowOff)
+                    localScatter->FormShadowBeam(localBeams);
+                bool ok = localScatter->ScatterLight(0, 0, localBeams);
+                if (ok)
+                    localHandler.PrepareBeams(localBeams, weight, chunkPrep[i]);
+                else
+                    chunkPrep[i].sinZenith = weight;
+                chunkEnergy[i] =
+                    localScatter->GetIncedentEnergy() * weight;
+                localBeams.clear();
+            }
+
+            delete localScatter;
+        }
+        for (double e : chunkEnergy)
+            energyAvg += e;
+
+        Arr2D ctrlM(nAz + 1, ctrlRows, 4, 4);
+        ctrlM.ClearArr();
+        Arr2D ctrlMns(nAz + 1, ctrlRows, 4, 4);
+        ctrlMns.ClearArr();
+
+        ScatteringRange savedSphere = hp->m_sphere;
+        hp->m_sphere = ctrlSphere;
+        bool usedGpuCtrl = false;
+        if (hp->IsGpuEnabled())
+        {
+            usedGpuCtrl = true;
+            for (int gpuStart = 0; gpuStart < scSize; )
+            {
+                int gpuBatchSize = hp->SelectGpuOrientationBatchSize(
+                    chunkPrep, gpuStart, scSize - gpuStart);
+                int gpuEnd = std::min(gpuStart + gpuBatchSize, scSize);
+                if (!hp->HandleOrientationsToLocalGpu(
+                        chunkPrep, gpuStart, gpuEnd - gpuStart,
+                        ctrlM, ctrlMns))
+                {
+                    usedGpuCtrl = false;
+                    ctrlM.ClearArr();
+                    ctrlMns.ClearArr();
+                    break;
+                }
+                gpuStart = gpuEnd;
+            }
+        }
+
+        if (!usedGpuCtrl)
+        {
+            std::vector<Arr2DC> localJ, localJns;
+            if (hp->isCoh)
+            {
+                Arr2DC tmp(nAz + 1, ctrlRows, 2, 2);
+                tmp.ClearArr();
+                localJ.push_back(tmp);
+                Arr2DC tmpNs(nAz + 1, ctrlRows, 2, 2);
+                tmpNs.ClearArr();
+                localJns.push_back(tmpNs);
+            }
+
+            for (int i = 0; i < scSize; ++i)
+            {
+                if (!chunkPrep[i].beams.empty())
+                    hp->HandleBeamsToLocal(chunkPrep[i], ctrlM, localJ,
+                                           hp->isCoh ? &localJns : nullptr);
+                if (hp->isCoh && !localJ.empty())
+                {
+                    double w = chunkPrep[i].sinZenith;
+                    HandlerPO::AddToMuellerLocal(localJ, w, ctrlM,
+                                                 nAz, ctrlRows - 1);
+                    localJ[0].ClearArr();
+                    localJns[0].ClearArr();
+                }
+            }
+        }
+        hp->m_sphere = savedSphere;
+
+        if (m_mirrorGamma)
+            ApplyMirrorGammaMueller(ctrlM, nAz, ctrlRows - 1);
+
+        for (int row = 0; row < ctrlRows; ++row)
+        {
+            matrix averaged = AzimuthAverageOutputMatrix(
+                ctrlM, ctrlSphere, nAz, row);
+            double *dst = &ctrlAvg[row * 16];
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c)
+                    dst[r * 4 + c] += averaged[r][c];
+        }
+    }
+
+#ifdef USE_MPI
+    if (m_mpiSize > 1)
+    {
+        std::vector<double> send(ctrlAvg.size() + 1, 0.0);
+        std::vector<double> recv(ctrlAvg.size() + 1, 0.0);
+        for (size_t k = 0; k < ctrlAvg.size(); ++k)
+            send[k] = ctrlAvg[k];
+        send.back() = energyAvg;
+        MPI_Allreduce(send.data(), recv.data(), (int)send.size(),
+                      MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        for (size_t k = 0; k < ctrlAvg.size(); ++k)
+            ctrlAvg[k] = recv[k];
+        energyAvg = recv.back();
+    }
+#endif
+}
+
+void TracerPOTotal::EvaluateOwenControlSample(
+    int nOrient, unsigned int seed, double betaSym, double gammaSym,
+    const ScatteringRange &ctrlSphere, const std::vector<int> &ctrlIdx,
+    int nAz, std::vector<double> &ctrlAvg, double &energyAvg)
+{
+    const double weight = nOrient > 0 ? 1.0 / nOrient : 0.0;
+    EvaluateOwenControlBatch(0, nOrient, nOrient, seed, weight,
+                             betaSym, gammaSym, ctrlSphere, ctrlIdx, nAz,
+                             ctrlAvg, energyAvg);
+}
+
+int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
+                                  int maxOrientOverride,
+                                  bool runFinalDiffraction,
+                                  bool strictConvergence)
 {
     std::cout << "Adaptive mode: target relative change = " << eps << std::endl;
-    std::cout << "  Convergence criteria: incoming energy, M11(22/46/90/180°)" << std::endl;
+    std::cout << "  Convergence criteria: incoming energy and all Mueller elements"
+              << " on control theta rows" << std::endl;
     std::cout << "  beta_sym=" << RadToDeg(betaSym) << " deg, gamma_sym="
               << RadToDeg(gammaSym) << " deg" << std::endl;
     std::vector<std::string> adaptiveLogLines;
@@ -2692,7 +5277,7 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         std::ostringstream log;
         log << "===== ADAPTIVE SOBOL =====\n";
         log << "target relative change = " << eps << "\n";
-        log << "controls: incoming energy, M11(22), M11(46), M11(90), M11(180)\n";
+        log << "controls: incoming energy and all Mueller elements on control theta rows\n";
         log << "beta_sym=" << RadToDeg(betaSym) << " deg, gamma_sym="
             << RadToDeg(gammaSym) << " deg\n";
         adaptiveLogLines.push_back(log.str());
@@ -2703,12 +5288,59 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
     {
         std::cerr << "Error: handler is not HandlerPO" << std::endl;
         TraceFromSobol(1024, betaSym, gammaSym);
-        return;
+        return 1024;
     }
 
     double cosBetaSym = cos(betaSym);
     int nZen = hp->m_sphere.nZenith;
     int nAz = hp->m_sphere.nAzimuth;
+    const int fullControlAz = nAz;
+    const int controlAz = AutoFullLowPhiAverageEnabled(hp, eps)
+        ? std::max(2, AutoFullFinalAveragePhi(fullControlAz, eps))
+        : fullControlAz;
+    std::vector<int> ctrlIdx = BuildThetaControlIndices(hp->m_sphere, eps);
+    if (ctrlIdx.empty())
+        ctrlIdx.push_back(nZen);
+    ScatteringRange fullSphereForControls = hp->m_sphere;
+    ScatteringRange ctrlSphere = fullSphereForControls;
+    ctrlSphere.nAzimuth = controlAz;
+    ctrlSphere.azinuthStep = 2.0 * M_PI / controlAz;
+    ctrlSphere.isNonUniform = true;
+    ctrlSphere.thetaValues.clear();
+    ctrlSphere.thetaValues.reserve(ctrlIdx.size());
+    for (int idx : ctrlIdx)
+        ctrlSphere.thetaValues.push_back(fullSphereForControls.GetZenith(idx));
+    ctrlSphere.nZenith = (int)ctrlSphere.thetaValues.size() - 1;
+    ctrlSphere.zenithStart = ctrlSphere.thetaValues.front();
+    ctrlSphere.zenithEnd = ctrlSphere.thetaValues.back();
+    ctrlSphere.zenithStep = ctrlSphere.nZenith > 0
+        ? (ctrlSphere.zenithEnd - ctrlSphere.zenithStart) / ctrlSphere.nZenith
+        : 0.0;
+    ctrlSphere.ComputeSphereDirections(m_incidentLight);
+    nAz = controlAz;
+    const int ctrlRows = (int)ctrlIdx.size();
+    const int ctrlValues = ctrlRows * 16;
+    const bool projectSymmetryInError =
+        AutoFullSymmetryErrorProjectionEnabled(betaSym, gammaSym);
+    m_lastAdaptiveRowOrient.assign(nZen + 1, 0);
+    m_lastAdaptiveAcceptedOldautoCap = false;
+    if (m_mpiRank == 0)
+    {
+        std::cout << "  Control theta rows (" << ctrlIdx.size() << "):";
+        for (int idx : ctrlIdx)
+            std::cout << ' ' << std::fixed << std::setprecision(2)
+                      << RadToDeg(hp->m_sphere.GetZenith(idx));
+        std::cout << " deg" << std::endl;
+        if (controlAz != fullControlAz)
+            std::cout << "  Control diffraction uses direct N_phi="
+                      << controlAz << " matching final low-phi averaging"
+                      << std::endl;
+        if (projectSymmetryInError)
+            std::cout << "  Symmetry-projected auto error criterion: ignoring"
+                      << " M13/M14/M23/M24/M31/M32/M41/M42"
+                      << " (MBS_AUTOFULL_SYMMETRY_ERROR_PROJECT=0 disables)"
+                      << std::endl;
+    }
 
     // =========================================================================
     // Incremental adaptive: each iteration adds NEW orientations only.
@@ -2723,25 +5355,24 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
     // Cost: N + N + N + ... = 2N (geometric series) instead of N+2N+4N = 7N.
     // Speedup vs restart: ~3.5× for convergence at the same N.
     // =========================================================================
-    // Physics-based starting N: oldauto div16 formula
-    // Δθ = 0.69 * λ / Dmax * (180/π), orient_step = Δθ / m_ringPoints
-    // N_beta = betaSym / orient_step / 16, N_gamma = gammaSym / orient_step / 16
-    // N_start = N_beta × N_gamma rounded down to power of 2
+    // Physics-based orientation estimates use the same ceil/full-grid formula
+    // as --oldauto.  This matters for large particles: the oldauto div2 grid is
+    // the practical upper reference used by the production column baselines.
     double Dmax = m_particle->MaximalDimention();
-    double delta_deg = 0.69 * m_scattering->m_wave / Dmax * (180.0 / M_PI);
-    double orient_step = delta_deg / std::max(1, m_ringPoints);
-    int nb16 = std::max(1, (int)(RadToDeg(betaSym) / orient_step / 16));
-    int ng16 = std::max(1, (int)(RadToDeg(gammaSym) / orient_step / 16));
-    int nStartRaw = nb16 * ng16;
+    AutoFullOldautoOrientEstimate oldauto16 = AutoFullOldautoEstimate(
+        betaSym, gammaSym, m_scattering->m_wave, Dmax, m_ringPoints, 16);
+    int nStartRaw = oldauto16.total;
     int nOrient = 1;
     while (nOrient * 2 <= nStartRaw) nOrient *= 2;
     if (nOrient < 64) nOrient = 64;
-    std::cout << "  Start estimate (div16): " << nb16 << " x " << ng16
+    std::cout << "  Start estimate (oldauto div16): "
+              << oldauto16.nBeta << " x " << oldauto16.nGamma
               << " = " << nStartRaw << " -> " << nOrient << " (power of 2)" << std::endl;
     if (m_mpiRank == 0)
     {
         std::ostringstream line;
-        line << "Start estimate (div16): " << nb16 << " x " << ng16
+        line << "Start estimate (oldauto div16): "
+             << oldauto16.nBeta << " x " << oldauto16.nGamma
              << " = " << nStartRaw << " -> " << nOrient << " (power of 2)\n";
         adaptiveLogLines.push_back(line.str());
     }
@@ -2761,42 +5392,518 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         }
     }
 #endif
-    // maxOrient from div1 estimate (full diffraction-limited grid)
-    int nb1 = std::max(1, (int)(RadToDeg(betaSym) / orient_step));
-    int ng1 = std::max(1, (int)(RadToDeg(gammaSym) / orient_step));
-    int maxFromPhysics = nb1 * ng1;
-    // Round down to power of 2
+    AutoFullOldautoOrientEstimate oldauto1 = AutoFullOldautoEstimate(
+        betaSym, gammaSym, m_scattering->m_wave, Dmax, m_ringPoints, 1);
+    int maxFromPhysics = oldauto1.total;
     int maxP2 = 1;
-    while (maxP2 * 2 <= maxFromPhysics) maxP2 *= 2;
+    while (maxP2 <= std::numeric_limits<int>::max() / 2
+           && maxP2 * 2 <= maxFromPhysics)
+    {
+        maxP2 *= 2;
+    }
+
+    const int oldautoMaxDiv = strictConvergence
+        ? ReadEnvInt("MBS_AUTOFULL_MAX_OLDAUTO_DIV", 2, 1, 64)
+        : 0;
+    AutoFullOldautoOrientEstimate oldautoCapEstimate =
+        oldautoMaxDiv > 0
+            ? AutoFullOldautoEstimate(betaSym, gammaSym,
+                                      m_scattering->m_wave, Dmax,
+                                      m_ringPoints, oldautoMaxDiv)
+            : AutoFullOldautoOrientEstimate();
+    int oldautoCap = oldautoMaxDiv > 0
+        ? std::max(64, oldautoCapEstimate.total)
+        : 0;
 
     int maxOrient;
+    bool userMaxOrient = maxOrientOverride > 0;
+    bool maxOrientFromOldautoCap = false;
     if (maxOrientOverride > 0) {
         maxOrient = 1;
-        while (maxOrient < maxOrientOverride) maxOrient *= 2;
+        while (maxOrient <= std::numeric_limits<int>::max() / 2
+               && maxOrient < maxOrientOverride)
+        {
+            maxOrient *= 2;
+        }
         if (maxOrient > maxOrientOverride) maxOrient /= 2;
         if (maxOrient < 64) maxOrient = 64;
+        if (oldautoCap > 0 && maxOrient >= oldautoCap)
+        {
+            maxOrient = oldautoCap;
+            maxOrientFromOldautoCap = true;
+        }
     } else {
-        // Physics cap: div2 of full grid (div1 is overkill, hours of compute)
-        // User can override with --maxorient for div1 if needed
-        int maxDiv2 = std::max(1024, maxP2 / 2);
-        int p2 = 1; while (p2 * 2 <= maxDiv2) p2 *= 2;
-        maxOrient = p2;
+        if (oldautoCap > 0)
+        {
+            maxOrient = oldautoCap;
+            maxOrientFromOldautoCap = true;
+        }
+        else
+        {
+            int maxDiv2 = std::max(1024, maxP2 / 2);
+            int p2 = 1;
+            while (p2 <= std::numeric_limits<int>::max() / 2
+                   && p2 * 2 <= maxDiv2)
+            {
+                p2 *= 2;
+            }
+            maxOrient = p2;
+        }
     }
-    std::cout << "  Max estimate (div1): " << nb1 << " x " << ng1
-              << " = " << maxFromPhysics << ", div2 cap -> " << maxOrient << std::endl;
+    std::cout << "  Oldauto div1 estimate: "
+              << oldauto1.nBeta << " x " << oldauto1.nGamma
+              << " = " << maxFromPhysics << std::endl;
+    if (oldautoCap > 0)
+    {
+        std::cout << "  Max estimate (oldauto div" << oldautoMaxDiv
+                  << "): " << oldautoCapEstimate.nBeta << " x "
+                  << oldautoCapEstimate.nGamma << " = "
+                  << oldautoCapEstimate.total
+                  << (userMaxOrient ? ", with user cap -> " : " -> ")
+                  << maxOrient << std::endl;
+    }
+    else
+    {
+        std::cout << "  Max estimate (power cap): "
+                  << (userMaxOrient ? "user cap -> " : "div2 cap -> ")
+                  << maxOrient << std::endl;
+    }
+    if (nOrient > maxOrient)
+    {
+        std::cout << "  Start estimate clipped to max orientations: "
+                  << nOrient << " -> " << maxOrient << std::endl;
+        nOrient = maxOrient;
+    }
     std::cerr << "Adaptive: max orientations = " << maxOrient
               << " (" << availMB_ad << " MB available)" << std::endl;
     if (m_mpiRank == 0)
     {
         std::ostringstream line;
-        line << "Max estimate (div1): " << nb1 << " x " << ng1
-             << " = " << maxFromPhysics << ", div2 cap -> " << maxOrient << "\n";
+        line << "Oldauto div1 estimate: "
+             << oldauto1.nBeta << " x " << oldauto1.nGamma
+             << " = " << maxFromPhysics << "\n";
+        if (oldautoCap > 0)
+        {
+            line << "Max estimate (oldauto div" << oldautoMaxDiv
+                 << "): " << oldautoCapEstimate.nBeta << " x "
+                 << oldautoCapEstimate.nGamma << " = "
+                 << oldautoCapEstimate.total
+                 << (userMaxOrient ? ", with user cap -> " : " -> ")
+                 << maxOrient << "\n";
+        }
+        else
+        {
+            line << "Max estimate (power cap): "
+                 << (userMaxOrient ? "user cap -> " : "div2 cap -> ")
+                 << maxOrient << "\n";
+        }
+        if (nOrient == maxOrient && nStartRaw > maxOrient)
+            line << "Start estimate clipped to max orientations\n";
         line << "Adaptive: max orientations = " << maxOrient
              << " (" << availMB_ad << " MB available)\n";
         adaptiveLogLines.push_back(line.str());
     }
 
     auto t_start = std::chrono::high_resolution_clock::now();
+
+    if (m_owenAverageSeeds.size() >= 2)
+    {
+        if (m_mpiRank == 0)
+        {
+            std::ostringstream line;
+            line << "Adaptive Owen "
+                 << (m_owenAverageSeeds.size() >= 3
+                     ? "mean-error"
+                     : "inter-seed")
+                 << " mode: " << m_owenAverageSeeds.size() << " seeds";
+            std::cout << line.str() << std::endl;
+            adaptiveLogLines.push_back(line.str() + "\n");
+        }
+
+        int totalOrient = 0;
+        int convergedCount = 0;
+        bool converged = false;
+        double lastDMax = std::numeric_limits<double>::infinity();
+        double lastDCtrl = std::numeric_limits<double>::infinity();
+        int lastCtrlIdx = ctrlIdx.empty() ? 0 : ctrlIdx[0];
+        int lastCtrlElement = 0;
+        std::vector<int> rowOrientRequirement(nZen + 1, 0);
+        std::vector<double> previousSeedMean;
+        int previousSeedMeanOrient = 0;
+        const bool incrementalOwen =
+            EnvFlagEnabled("MBS_AUTOFULL_OWEN_INCREMENTAL", true);
+        std::vector<std::vector<double>> seedControlSums;
+        std::vector<double> seedEnergySums;
+        int accumulatedOrient = 0;
+        if (incrementalOwen)
+        {
+            seedControlSums.assign(m_owenAverageSeeds.size(),
+                                   std::vector<double>(ctrlValues, 0.0));
+            seedEnergySums.assign(m_owenAverageSeeds.size(), 0.0);
+            if (m_mpiRank == 0)
+            {
+                std::cout << "  Incremental Owen control batches enabled"
+                          << " (MBS_AUTOFULL_OWEN_INCREMENTAL=0 disables)"
+                          << std::endl;
+                adaptiveLogLines.push_back(
+                    "Incremental Owen control batches enabled\n");
+            }
+        }
+        for (int iter = 0; iter < 15; ++iter)
+        {
+            totalOrient = nOrient;
+            const int batchStart = incrementalOwen ? accumulatedOrient : 0;
+            const int batchCount = incrementalOwen
+                ? totalOrient - accumulatedOrient
+                : totalOrient;
+            std::vector<std::vector<double>> seedCtrl;
+            std::vector<double> seedEnergy;
+            seedCtrl.reserve(m_owenAverageSeeds.size());
+            seedEnergy.reserve(m_owenAverageSeeds.size());
+
+            for (size_t seedIndex = 0; seedIndex < m_owenAverageSeeds.size();
+                 ++seedIndex)
+            {
+                const unsigned int seed = m_owenAverageSeeds[seedIndex];
+                if (m_mpiRank == 0)
+                {
+                    std::cout << "  control seed " << seed
+                              << ", N=" << totalOrient;
+                    if (incrementalOwen)
+                        std::cout << " (new " << std::max(0, batchCount)
+                                  << ")";
+                    std::cout << std::endl;
+                }
+                auto seedTimeStart =
+                    std::chrono::high_resolution_clock::now();
+                std::vector<double> ctrl;
+                double energy = 0.0;
+                if (incrementalOwen)
+                {
+                    EvaluateOwenControlBatch(
+                        batchStart, batchCount, totalOrient, seed, 1.0,
+                        betaSym, gammaSym, ctrlSphere, ctrlIdx, nAz,
+                        ctrl, energy);
+                    for (int i = 0; i < ctrlValues
+                         && i < (int)ctrl.size(); ++i)
+                    {
+                        seedControlSums[seedIndex][i] += ctrl[i];
+                    }
+                    seedEnergySums[seedIndex] += energy;
+                    ctrl.assign(ctrlValues, 0.0);
+                    const double invOrient =
+                        totalOrient > 0 ? 1.0 / totalOrient : 0.0;
+                    for (int i = 0; i < ctrlValues; ++i)
+                        ctrl[i] = seedControlSums[seedIndex][i] * invOrient;
+                    energy = seedEnergySums[seedIndex] * invOrient;
+                }
+                else
+                {
+                    EvaluateOwenControlSample(
+                        totalOrient, seed, betaSym, gammaSym,
+                        ctrlSphere, ctrlIdx, nAz, ctrl, energy);
+                }
+                if (projectSymmetryInError)
+                    ProjectMuellerControlValues(ctrl);
+                if (m_mpiRank == 0)
+                {
+                    double seedSec = std::chrono::duration<double>(
+                        std::chrono::high_resolution_clock::now()
+                        - seedTimeStart).count();
+                    std::cout << "    control seed time: "
+                              << std::fixed << std::setprecision(2)
+                              << seedSec << " s" << std::endl;
+                }
+                seedCtrl.push_back(ctrl);
+                seedEnergy.push_back(energy);
+            }
+            if (incrementalOwen)
+                accumulatedOrient = totalOrient;
+
+            double dEnergyMax = 0.0;
+            double dCtrlMax = 0.0;
+            int dCtrlMaxIdx = ctrlIdx.empty() ? 0 : ctrlIdx[0];
+            int dCtrlMaxElement = 0;
+            std::vector<double> rowCtrlErrors(ctrlRows, 0.0);
+            std::vector<int> rowCtrlElements(ctrlRows, 0);
+            std::vector<double> seedMean(ctrlValues, 0.0);
+            if (!seedCtrl.empty())
+            {
+                for (const std::vector<double> &ctrl : seedCtrl)
+                    for (int i = 0; i < ctrlValues && i < (int)ctrl.size(); ++i)
+                        seedMean[i] += ctrl[i];
+                const double invSeeds = 1.0 / (double)seedCtrl.size();
+                for (double &value : seedMean)
+                    value *= invSeeds;
+            }
+            std::vector<double> rowStepErrors(
+                ctrlRows, std::numeric_limits<double>::infinity());
+            if ((int)previousSeedMean.size() == ctrlValues)
+            {
+                for (int row = 0; row < ctrlRows; ++row)
+                {
+                    int element = 0;
+                    rowStepErrors[row] = MuellerRowRelativeErrorValues(
+                        &seedMean[row * 16],
+                        &previousSeedMean[row * 16],
+                        &element);
+                }
+            }
+
+            const bool meanErrorCriterion = seedCtrl.size() >= 3;
+            if (meanErrorCriterion)
+            {
+                dEnergyMax = OwenMeanScalarRelativeError(seedEnergy);
+                int dCtrlMaxRow = 0;
+                dCtrlMax = OwenMeanMuellerControlError(
+                    seedCtrl, ctrlRows, &rowCtrlErrors, &rowCtrlElements,
+                    &dCtrlMaxRow, &dCtrlMaxElement);
+                dCtrlMaxIdx = ctrlIdx[std::max(0,
+                    std::min(dCtrlMaxRow, (int)ctrlIdx.size() - 1))];
+            }
+            else
+            {
+                for (size_t a = 0; a < seedCtrl.size(); ++a)
+                {
+                    for (size_t b = a + 1; b < seedCtrl.size(); ++b)
+                    {
+                        double denomE = std::max(
+                            0.5 * (std::fabs(seedEnergy[a])
+                                   + std::fabs(seedEnergy[b])),
+                            1e-30);
+                        dEnergyMax = std::max(
+                            dEnergyMax,
+                            std::fabs(seedEnergy[a] - seedEnergy[b]) / denomE);
+
+                        for (int row = 0; row < ctrlRows; ++row)
+                        {
+                            int worstElement = 0;
+                            double d = MuellerRowRelativeErrorValues(
+                                &seedCtrl[a][row * 16],
+                                &seedCtrl[b][row * 16],
+                                &worstElement);
+                            if (d > dCtrlMax)
+                            {
+                                dCtrlMax = d;
+                                dCtrlMaxIdx = ctrlIdx[row];
+                                dCtrlMaxElement = worstElement;
+                            }
+                            if (d > rowCtrlErrors[row])
+                            {
+                                rowCtrlErrors[row] = d;
+                                rowCtrlElements[row] = worstElement;
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (int row = 0; row < ctrlRows; ++row)
+            {
+                const int globalRow = ctrlIdx[row];
+                if (globalRow < 0 || globalRow >= (int)rowOrientRequirement.size())
+                    continue;
+                const double thetaDeg =
+                    RadToDeg(hp->m_sphere.GetZenith(globalRow));
+                const int thetaZone = AutoFullThetaZone(thetaDeg);
+                const double rowOrientEps =
+                    eps * AutoFullRowOrientSafetyFactor(thetaZone);
+                if (rowOrientRequirement[globalRow] == 0
+                    && rowOrientEps > 0.0
+                    && previousSeedMeanOrient > 0
+                    && rowCtrlErrors[row] <= rowOrientEps
+                    && rowStepErrors[row] <= rowOrientEps)
+                {
+                    rowOrientRequirement[globalRow] = previousSeedMeanOrient;
+                }
+            }
+            previousSeedMean.swap(seedMean);
+            previousSeedMeanOrient = totalOrient;
+
+            double dMax = std::max(dEnergyMax, dCtrlMax);
+            lastDMax = dMax;
+            lastDCtrl = dCtrlMax;
+            lastCtrlIdx = dCtrlMaxIdx;
+            lastCtrlElement = dCtrlMaxElement;
+            if (m_mpiRank == 0)
+            {
+                std::ostringstream line;
+                line << std::fixed << std::setprecision(2);
+                line << "  N=" << totalOrient
+                     << (meanErrorCriterion
+                         ? "  OwenMeanError dE="
+                         : "  OwenInterseed dE=")
+                     << dEnergyMax * 100.0 << "%"
+                     << (meanErrorCriterion
+                         ? "  dMuellerMean="
+                         : "  dMuellerCtrl=")
+                     << dCtrlMax * 100.0 << "%"
+                     << "@" << RadToDeg(hp->m_sphere.GetZenith(dCtrlMaxIdx))
+                     << "deg/" << MuellerElementName(dCtrlMaxElement)
+                     << "  max=" << dMax * 100.0 << "%";
+                std::cout << line.str() << std::endl;
+                adaptiveLogLines.push_back(line.str() + "\n");
+            }
+
+            if (dMax <= eps)
+                ++convergedCount;
+            else
+                convergedCount = 0;
+
+            if (convergedCount >= 1)
+            {
+                converged = true;
+                if (m_mpiRank == 0)
+                {
+                    std::ostringstream line;
+                    line << "Converged at N=" << totalOrient
+                         << " by Owen "
+                         << (meanErrorCriterion ? "mean-error"
+                                                : "inter-seed")
+                         << " controls within "
+                         << eps * 100.0 << "%";
+                    std::cout << line.str() << std::endl;
+                    adaptiveLogLines.push_back(line.str() + "\n");
+                }
+                break;
+            }
+
+            long long nextOrient = (long long)nOrient * 2;
+            if (nextOrient > maxOrient && totalOrient < maxOrient)
+            {
+                nOrient = maxOrient;
+                continue;
+            }
+            nOrient = ClampOrientCount(nextOrient);
+            if (nOrient > maxOrient)
+            {
+                if (m_mpiRank == 0)
+                {
+                    std::ostringstream line;
+                    line << "WARNING: Max orientations reached (N="
+                         << totalOrient << ", limit=" << maxOrient
+                         << "). Owen "
+                         << (m_owenAverageSeeds.size() >= 3
+                             ? "mean-error"
+                             : "inter-seed")
+                         << " target accuracy "
+                         << eps * 100.0 << "% may not be achieved.";
+                    std::cout << line.str() << std::endl;
+                    adaptiveLogLines.push_back(line.str() + "\n");
+                    if (maxOrientFromOldautoCap)
+                    {
+                        std::cout << "  Reached oldauto-based maximum; not"
+                                  << " extrapolating beyond that cap."
+                                  << std::endl;
+                        adaptiveLogLines.push_back(
+                            "Reached oldauto-based maximum; not extrapolating beyond that cap.\n");
+                    }
+                    else
+                    {
+                        std::cout << "  To improve: use --maxorient "
+                                  << maxOrient * 2 << std::endl;
+                        adaptiveLogLines.push_back(
+                            "  To improve: use --maxorient "
+                            + std::to_string(maxOrient * 2) + "\n");
+                    }
+                }
+                break;
+            }
+        }
+
+        if (!converged && strictConvergence)
+        {
+            const bool acceptOldautoCap =
+                maxOrientFromOldautoCap
+                && totalOrient >= maxOrient
+                && EnvFlagEnabled("MBS_AUTOFULL_ACCEPT_OLDAUTO_CAP", true);
+            if (acceptOldautoCap)
+            {
+                m_lastAdaptiveAcceptedOldautoCap = true;
+                std::ostringstream warn;
+                warn << "WARNING: AUTOFULL reached oldauto-based orientation"
+                     << " cap N=" << totalOrient << " before Owen target "
+                     << eps * 100.0 << "% (last max="
+                     << lastDMax * 100.0 << "%, control="
+                     << lastDCtrl * 100.0 << "% @ "
+                     << RadToDeg(hp->m_sphere.GetZenith(lastCtrlIdx))
+                     << "deg/" << MuellerElementName(lastCtrlElement)
+                     << "). Accepting oldauto cap as the maximum estimate.";
+                std::cout << warn.str() << std::endl;
+                adaptiveLogLines.push_back(warn.str() + "\n");
+            }
+            else
+            {
+                std::ostringstream err;
+                err << "ERROR: AUTOFULL did not converge to target "
+                    << eps * 100.0 << "% by N=" << totalOrient
+                    << " (last max=" << lastDMax * 100.0
+                    << "%, control=" << lastDCtrl * 100.0 << "% @ "
+                    << RadToDeg(hp->m_sphere.GetZenith(lastCtrlIdx)) << "deg/"
+                    << MuellerElementName(lastCtrlElement) << "). "
+                    << "Increase --maxorient to at least " << maxOrient * 2
+                    << " or loosen --autofull eps.";
+                std::cerr << err.str() << std::endl;
+                std::exit(2);
+            }
+        }
+
+        for (int row = 0; row < ctrlRows; ++row)
+        {
+            const int globalRow = ctrlIdx[row];
+            if (globalRow < 0 || globalRow >= (int)rowOrientRequirement.size())
+                continue;
+            if (rowOrientRequirement[globalRow] == 0)
+                rowOrientRequirement[globalRow] = totalOrient;
+        }
+        m_lastAdaptiveRowOrient.swap(rowOrientRequirement);
+        if (m_mpiRank == 0)
+        {
+            int knownRows = 0;
+            int minRowOrient = totalOrient;
+            long long sumRowOrient = 0;
+            for (int value : m_lastAdaptiveRowOrient)
+            {
+                if (value <= 0)
+                    continue;
+                ++knownRows;
+                minRowOrient = std::min(minRowOrient, value);
+                sumRowOrient += value;
+            }
+            if (knownRows > 0)
+            {
+                std::ostringstream line;
+                line << "Adaptive per-theta N_orient map: "
+                     << knownRows << " rows, min=" << minRowOrient
+                     << ", avg=" << std::fixed << std::setprecision(1)
+                     << ((double)sumRowOrient / knownRows)
+                     << ", max=" << totalOrient;
+                std::cout << line.str() << std::endl;
+                adaptiveLogLines.push_back(line.str() + "\n");
+            }
+        }
+
+        if (!runFinalDiffraction)
+        {
+            if (m_mpiRank == 0)
+                std::cout << "\nFinal diffraction deferred; selected N="
+                          << totalOrient << std::endl;
+            return totalOrient;
+        }
+
+        if (m_mpiRank == 0)
+            std::cout << "\nFinal: full diffraction with N=" << totalOrient
+                      << " (first Owen seed; averaging is autofull-only)"
+                      << std::endl;
+        hp->M.ClearArr();
+        hp->M_noshadow.ClearArr();
+        hp->CleanJ();
+        m_incomingEnergy = 0;
+        hp->m_outputEnergy = 0;
+        TraceFromSobolSeed(totalOrient, m_owenAverageSeeds.front(),
+                           betaSym, gammaSym);
+        return totalOrient;
+    }
 
     // Generate ALL Sobol points up to maxOrient at once (deterministic)
     Sobol2D sobol_gen(42);
@@ -2812,12 +5919,17 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
     m_incomingEnergy = 0;
     hp->m_outputEnergy = 0;
 
-    double prevM11_180 = 0, prevM11_90 = 0, prevM11_46 = 0, prevM11_22 = 0;
     double prevEnergy = 0;
+    std::vector<double> prevCtrl(ctrlValues, 0.0);
     int totalOrient = 0;
     int convergedCount = 0;
-    double ctrlWeightedSum[4] = {0,0,0,0}; // sum(batch_average * batch_size)
-    double energyWeightedSum = 0.0;         // sum(batch_average * batch_size)
+    bool converged = false;
+    double lastDMax = std::numeric_limits<double>::infinity();
+    double lastDCtrl = std::numeric_limits<double>::infinity();
+    int lastCtrlIdx = ctrlIdx.empty() ? 0 : ctrlIdx[0];
+    int lastCtrlElement = 0;
+    std::vector<double> ctrlWeightedSum(ctrlValues, 0.0); // sum(batch_average * batch_size)
+    double energyWeightedSum = 0.0;                           // sum(batch_average * batch_size)
 
     for (int iter = 0; iter < 15; ++iter)
     {
@@ -2841,19 +5953,7 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         double weight = 1.0 / batchSize;  // global weight (not per-rank)
         std::vector<Beam> outBeams;
 
-        // Control angle indices (computed once)
-        auto findThetaIdx = [&](double deg) -> int {
-            double rad = DegToRad(deg);
-            int best = 0; double bestD = 1e30;
-            for (int jj = 0; jj <= nZen; ++jj) {
-                double d = fabs(hp->m_sphere.GetZenith(jj) - rad);
-                if (d < bestD) { bestD = d; best = jj; }
-            }
-            return best;
-        };
-        int ctrlIdx[4] = { findThetaIdx(22.0), findThetaIdx(46.0),
-                           findThetaIdx(90.0), nZen };
-        double batchCtrl[4] = {0,0,0,0};
+        std::vector<double> batchCtrl(ctrlValues, 0.0);
 
         // Process in sub-chunks to limit memory (max 4096 per chunk)
         int subChunkMax = std::min(4096, myBatchSize);
@@ -2878,12 +5978,79 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
                 outBeams.clear();
             }
 
-            // Diffract at 4 control angles only
-            for (int i = 0; i < scSize; ++i) {
-                if (chunkPrep[i].beams.empty()) continue;
-                double m11[4];
-                hp->DiffractControlPoints(chunkPrep[i], ctrlIdx, 4, m11);
-                for (int k = 0; k < 4; ++k) batchCtrl[k] += m11[k];
+            // Diffract selected control theta rows only, but keep all 16
+            // Mueller elements. This uses the same local Mueller path as the
+            // final calculation on a tiny non-uniform theta grid.
+            Arr2D ctrlM(nAz + 1, ctrlRows, 4, 4);
+            ctrlM.ClearArr();
+            Arr2D ctrlMns(nAz + 1, ctrlRows, 4, 4);
+            ctrlMns.ClearArr();
+
+            ScatteringRange savedSphere = hp->m_sphere;
+            hp->m_sphere = ctrlSphere;
+            bool usedGpuCtrl = false;
+            if (hp->IsGpuEnabled())
+            {
+                usedGpuCtrl = true;
+                for (int gpuStart = 0; gpuStart < scSize; )
+                {
+                    int gpuBatchSize = hp->SelectGpuOrientationBatchSize(
+                        chunkPrep, gpuStart, scSize - gpuStart);
+                    int gpuEnd = std::min(gpuStart + gpuBatchSize, scSize);
+                    if (!hp->HandleOrientationsToLocalGpu(
+                            chunkPrep, gpuStart, gpuEnd - gpuStart,
+                            ctrlM, ctrlMns))
+                    {
+                        usedGpuCtrl = false;
+                        ctrlM.ClearArr();
+                        ctrlMns.ClearArr();
+                        break;
+                    }
+                    gpuStart = gpuEnd;
+                }
+            }
+
+            if (!usedGpuCtrl)
+            {
+                std::vector<Arr2DC> localJ, localJns;
+                if (hp->isCoh)
+                {
+                    Arr2DC tmp(nAz + 1, ctrlRows, 2, 2);
+                    tmp.ClearArr();
+                    localJ.push_back(tmp);
+                    Arr2DC tmpNs(nAz + 1, ctrlRows, 2, 2);
+                    tmpNs.ClearArr();
+                    localJns.push_back(tmpNs);
+                }
+
+                for (int i = 0; i < scSize; ++i)
+                {
+                    if (!chunkPrep[i].beams.empty())
+                        hp->HandleBeamsToLocal(chunkPrep[i], ctrlM, localJ,
+                                               hp->isCoh ? &localJns : nullptr);
+                    if (hp->isCoh && !localJ.empty())
+                    {
+                        double w = chunkPrep[i].sinZenith;
+                        HandlerPO::AddToMuellerLocal(localJ, w, ctrlM,
+                                                     nAz, ctrlRows - 1);
+                        localJ[0].ClearArr();
+                        localJns[0].ClearArr();
+                    }
+                }
+            }
+            hp->m_sphere = savedSphere;
+
+            if (m_mirrorGamma)
+                ApplyMirrorGammaMueller(ctrlM, nAz, ctrlRows - 1);
+
+            for (int row = 0; row < ctrlRows; ++row)
+            {
+                matrix averaged = AzimuthAverageOutputMatrix(
+                    ctrlM, ctrlSphere, nAz, row);
+                double *dst = &batchCtrl[row * 16];
+                for (int r = 0; r < 4; ++r)
+                    for (int c = 0; c < 4; ++c)
+                        dst[r * 4 + c] += averaged[r][c];
             }
         } // sub-chunks
 
@@ -2891,27 +6058,30 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
 #ifdef USE_MPI
         if (m_mpiSize > 1)
         {
-            double sbuf5[5] = {batchCtrl[0], batchCtrl[1], batchCtrl[2], batchCtrl[3], batchEnergy};
-            double rbuf5[5];
-            MPI_Allreduce(sbuf5, rbuf5, 5, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-            for (int k = 0; k < 4; ++k)
-                batchCtrl[k] = rbuf5[k];
-            batchEnergy = rbuf5[4];
+            std::vector<double> send(batchCtrl.size() + 1, 0.0);
+            std::vector<double> recv(batchCtrl.size() + 1, 0.0);
+            for (size_t k = 0; k < batchCtrl.size(); ++k)
+                send[k] = batchCtrl[k];
+            send.back() = batchEnergy;
+            MPI_Allreduce(send.data(), recv.data(), (int)send.size(),
+                          MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+            for (size_t k = 0; k < batchCtrl.size(); ++k)
+                batchCtrl[k] = recv[k];
+            batchEnergy = recv.back();
         }
 #endif
 
-        for (int k = 0; k < 4; ++k)
+        for (size_t k = 0; k < ctrlWeightedSum.size(); ++k)
             ctrlWeightedSum[k] += batchCtrl[k] * batchSize;
         energyWeightedSum += batchEnergy * batchSize;
 
         totalOrient = batchEnd;
 
-        // Control points from fast DiffractControlPoints (not full grid).
+        // Control points from a tiny full-Mueller grid.
         double energyAvg = (totalOrient > 0) ? energyWeightedSum / totalOrient : 0;
-        double M11_22  = (totalOrient > 0) ? ctrlWeightedSum[0] / totalOrient : 0;
-        double M11_46  = (totalOrient > 0) ? ctrlWeightedSum[1] / totalOrient : 0;
-        double M11_90  = (totalOrient > 0) ? ctrlWeightedSum[2] / totalOrient : 0;
-        double M11_180 = (totalOrient > 0) ? ctrlWeightedSum[3] / totalOrient : 0;
+        std::vector<double> ctrlAvg(ctrlValues, 0.0);
+        for (size_t k = 0; k < ctrlAvg.size(); ++k)
+            ctrlAvg[k] = (totalOrient > 0) ? ctrlWeightedSum[k] / totalOrient : 0.0;
 
         auto relChange = [](double current, double previous) {
             double denom = std::max(std::fabs(previous), 1e-30);
@@ -2919,11 +6089,29 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         };
 
         double dEnergy = (iter > 0) ? relChange(energyAvg, prevEnergy) : 1.0;
-        double dM22    = (iter > 0) ? relChange(M11_22, prevM11_22) : 1.0;
-        double dM46    = (iter > 0) ? relChange(M11_46, prevM11_46) : 1.0;
-        double dM90    = (iter > 0) ? relChange(M11_90, prevM11_90) : 1.0;
-        double dM180   = (iter > 0) ? relChange(M11_180, prevM11_180) : 1.0;
-        double dMax = std::max({dEnergy, dM22, dM46, dM90, dM180});
+        double dCtrlMax = iter > 0 ? 0.0 : 1.0;
+        int dCtrlMaxIdx = ctrlIdx.empty() ? 0 : ctrlIdx[0];
+        int dCtrlMaxElement = 0;
+        for (int row = 0; row < ctrlRows; ++row)
+        {
+            int worstElement = 0;
+            double d = (iter > 0)
+                ? MuellerRowRelativeErrorValues(&ctrlAvg[row * 16],
+                                                &prevCtrl[row * 16],
+                                                &worstElement)
+                : 1.0;
+            if (d > dCtrlMax)
+            {
+                dCtrlMax = d;
+                dCtrlMaxIdx = ctrlIdx[row];
+                dCtrlMaxElement = worstElement;
+            }
+        }
+        double dMax = std::max(dEnergy, dCtrlMax);
+        lastDMax = dMax;
+        lastDCtrl = dCtrlMax;
+        lastCtrlIdx = dCtrlMaxIdx;
+        lastCtrlElement = dCtrlMaxElement;
 
         std::cout << std::fixed << std::setprecision(2);
         if (m_mpiRank == 0)
@@ -2932,16 +6120,15 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
             line << std::fixed << std::setprecision(2);
             line << "  N=" << totalOrient << " (+" << batchSize << ")"
                  << "  dE=" << dEnergy*100 << "%"
-                 << "  d22=" << dM22*100 << "%"
-                 << "  d46=" << dM46*100 << "%"
-                 << "  d90=" << dM90*100 << "%"
-                 << "  d180=" << dM180*100 << "%"
+                 << "  dMuellerCtrl=" << dCtrlMax*100 << "%"
+                 << "@" << RadToDeg(hp->m_sphere.GetZenith(dCtrlMaxIdx))
+                 << "deg/" << MuellerElementName(dCtrlMaxElement)
                  << "  max=" << dMax*100 << "%";
             std::cout << line.str() << std::endl;
             adaptiveLogLines.push_back(line.str() + "\n");
         }
 
-        bool all_ok = (dMax < eps && iter > 0);
+        bool all_ok = (dMax <= eps && iter > 0);
 
         if (all_ok)
             convergedCount++;
@@ -2950,11 +6137,14 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
 
         if (convergedCount >= 2)
         {
+            converged = true;
             if (m_mpiRank == 0)
             {
                 std::ostringstream line;
                 line << "Converged at N=" << totalOrient
-                     << " (all 5 controls within " << eps*100
+                     << " (energy + all Mueller elements on " << ctrlIdx.size()
+                     << " theta controls within "
+                     << eps*100
                      << "% for 2 consecutive steps)";
                 std::cout << line.str() << std::endl;
                 adaptiveLogLines.push_back(line.str() + "\n");
@@ -2963,19 +6153,26 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         }
 
         prevEnergy = energyAvg;
-        prevM11_22 = M11_22;
-        prevM11_46 = M11_46;
-        prevM11_90 = M11_90;
-        prevM11_180 = M11_180;
+        prevCtrl = ctrlAvg;
         nOrient *= 2;
         if (nOrient > maxOrient)
         {
             if (m_mpiRank == 0)
             {
                 std::ostringstream line;
-                line << "WARNING: Max orientations reached (N=" << totalOrient
-                     << ", limit=" << maxOrient << "). Target accuracy "
-                     << eps*100 << "% may not be achieved.";
+                if (all_ok)
+                {
+                    line << "WARNING: Max orientations reached (N=" << totalOrient
+                         << ", limit=" << maxOrient << ") after one passing step. "
+                         << "Two-step confirmation of target accuracy "
+                         << eps*100 << "% was not completed.";
+                }
+                else
+                {
+                    line << "WARNING: Max orientations reached (N=" << totalOrient
+                         << ", limit=" << maxOrient << "). Target accuracy "
+                         << eps*100 << "% may not be achieved.";
+                }
                 std::cout << line.str() << std::endl;
                 std::cout << "  To improve: use --maxorient " << maxOrient*2 << std::endl;
                 adaptiveLogLines.push_back(line.str() + "\n");
@@ -2985,11 +6182,34 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
         }
     }
 
+    if (!converged && strictConvergence)
+    {
+        std::ostringstream err;
+        err << "ERROR: AUTOFULL did not converge to target "
+            << eps * 100.0 << "% by N=" << totalOrient
+            << " (last max=" << lastDMax * 100.0
+            << "%, control=" << lastDCtrl * 100.0 << "% @ "
+            << RadToDeg(hp->m_sphere.GetZenith(lastCtrlIdx)) << "deg/"
+            << MuellerElementName(lastCtrlElement) << "). "
+            << "Increase --maxorient to at least " << maxOrient * 2
+            << " or loosen --autofull eps.";
+        std::cerr << err.str() << std::endl;
+        std::exit(2);
+    }
+
     // =================================================================
     // FINAL PHASE: full diffraction via TraceFromSobol (re-traces).
     // Sobol is deterministic → same orientations. Phase 1 = ~5% overhead.
     // Memory = O(chunkSize), not O(totalOrient). Chunked + OpenMP + MPI.
     // =================================================================
+    if (!runFinalDiffraction)
+    {
+        if (m_mpiRank == 0)
+            std::cout << "\nFinal diffraction deferred; selected N="
+                      << totalOrient << std::endl;
+        return totalOrient;
+    }
+
     if (m_mpiRank == 0)
         std::cout << "\nFinal: full diffraction with N=" << totalOrient
                   << " (re-tracing, chunked)" << std::endl;
@@ -3018,6 +6238,7 @@ void TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym, i
             << total_sec << " s\n";
         AppendTextLog(log.str());
     }
+    return totalOrient;
 }
 
 // =============================================================================
@@ -3038,6 +6259,25 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
 
     int nAz = hp->m_sphere.nAzimuth;
     int nZen = hp->m_sphere.nZenith;
+    const bool autoFftFactor = hp->IsFftEnabled()
+        && !HandlerPO::HasNumericFftPhiFactorOverride();
+    if (autoFftFactor)
+        hp->AutoSelectFftPhiFactor(eps);
+
+    if (nZen < 16)
+    {
+        conus.isNonUniform = false;
+        conus.thetaValues.clear();
+        conus.zenithStart = 0.0;
+        conus.zenithEnd = M_PI;
+        conus.nZenith = 60;
+        conus.zenithStep = (conus.zenithEnd - conus.zenithStart) / conus.nZenith;
+        hp->SetScatteringSphere(conus);
+        nAz = hp->m_sphere.nAzimuth;
+        nZen = hp->m_sphere.nZenith;
+        std::cout << "Autofull startup theta grid: " << (nZen + 1)
+                  << " points for n convergence" << std::endl;
+    }
 
     std::cout << "===== AUTOFULL: 3D sequential optimization =====" << std::endl;
     std::cout << "Target accuracy: " << eps*100 << "%" << std::endl;
@@ -3052,48 +6292,153 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
     int n_opt = 4;
     double prev_qsca_n = 0;
     int n_converged_count = 0;
+    const int nPilotN = 128;
+    const bool nSearchLowAverage = AutoFullLowPhiAverageEnabled(hp, eps);
+    if (nSearchLowAverage)
+    {
+        int directPhi = AutoFullFinalAveragePhi(nAz, eps);
+        if (directPhi != nAz)
+            std::cout << "  n-search Qsca uses direct N_phi=" << directPhi
+                      << " instead of " << nAz << std::endl;
+    }
 
     for (int n_test = 4; n_test <= 30; n_test += 2)
     {
         // Set reflection count
         m_scattering->SetMaxReflections(n_test); // hacky but works
 
-        // Run quick computation
+        // Run quick computation.  The old path used HandleBeams here, which
+        // forced CPU diffraction and dominated --autofull startup time.
         hp->M.ClearArr(); hp->M_noshadow.ClearArr(); hp->CleanJ();
         m_incomingEnergy = 0; hp->m_outputEnergy = 0;
 
         Sobol2D sobol(42);
         std::vector<double> su, sv;
-        sobol.generate(128, su, sv);
+        sobol.generate(nPilotN, su, sv);
         double cosBetaSym = cos(betaSym);
-        double weight = 1.0 / 128;
+        double weight = 1.0 / nPilotN;
         std::vector<Beam> outBeams;
+        std::vector<PreparedOrientation> prepared(nPilotN);
+        double incomingEnergy = 0.0;
 
-        for (int i = 0; i < 128; ++i)
+        for (int i = 0; i < nPilotN; ++i)
         {
             double beta = acos(1.0 - (1.0 - cosBetaSym) * su[i]);
             double gamma = gammaSym * sv[i];
             m_particle->Rotate(beta, gamma, 0);
             if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
-            m_scattering->ScatterLight(0, 0, outBeams);
-            m_handler->HandleBeams(outBeams, weight);
-            m_incomingEnergy += m_scattering->GetIncedentEnergy() * weight;
+            bool ok = m_scattering->ScatterLight(0, 0, outBeams);
+            if (ok)
+                hp->PrepareBeams(outBeams, weight, prepared[i]);
+            else
+                prepared[i].sinZenith = weight;
+            incomingEnergy += m_scattering->GetIncedentEnergy() * weight;
             outBeams.clear();
+        }
+
+        ScatteringRange savedSphere = hp->m_sphere;
+        ScatteringRange nSphere = savedSphere;
+        int nCalcAz = nSearchLowAverage
+            ? AutoFullFinalAveragePhi(savedSphere.nAzimuth, eps)
+            : savedSphere.nAzimuth;
+        nCalcAz = std::max(2, nCalcAz);
+        nSphere.nAzimuth = nCalcAz;
+        nSphere.azinuthStep = M_2PI / nCalcAz;
+        nSphere.ComputeSphereDirections(m_incidentLight);
+        hp->SetScatteringSphere(nSphere);
+
+        Arr2D localM(nCalcAz + 1, nZen + 1, 4, 4);
+        localM.ClearArr();
+        Arr2D localMns(nCalcAz + 1, nZen + 1, 4, 4);
+        localMns.ClearArr();
+
+        bool usedGpu = false;
+        if (hp->IsGpuEnabled())
+        {
+            usedGpu = true;
+            for (int gpuStart = 0; gpuStart < nPilotN; )
+            {
+                int gpuBatchSize = hp->SelectGpuOrientationBatchSize(
+                    prepared, gpuStart, nPilotN - gpuStart);
+                int gpuEnd = std::min(gpuStart + gpuBatchSize, nPilotN);
+                if (!hp->HandleOrientationsToLocalGpu(prepared, gpuStart,
+                                                      gpuEnd - gpuStart,
+                                                      localM, localMns))
+                {
+                    usedGpu = false;
+                    localM.ClearArr();
+                    localMns.ClearArr();
+                    break;
+                }
+                gpuStart = gpuEnd;
+            }
+        }
+
+        if (!usedGpu)
+        {
+            #pragma omp parallel
+            {
+                Arr2D threadM(nCalcAz + 1, nZen + 1, 4, 4);
+                threadM.ClearArr();
+                Arr2D threadMns(nCalcAz + 1, nZen + 1, 4, 4);
+                threadMns.ClearArr();
+                std::vector<Arr2DC> localJ, localJns;
+                if (hp->isCoh)
+                {
+                    Arr2DC tmp(nCalcAz + 1, nZen + 1, 2, 2);
+                    tmp.ClearArr();
+                    localJ.push_back(tmp);
+                    Arr2DC tmpNs(nCalcAz + 1, nZen + 1, 2, 2);
+                    tmpNs.ClearArr();
+                    localJns.push_back(tmpNs);
+                }
+
+                #pragma omp for schedule(dynamic, 1)
+                for (int i = 0; i < nPilotN; ++i)
+                {
+                    if (!prepared[i].beams.empty())
+                        hp->HandleBeamsToLocal(prepared[i], threadM, localJ,
+                                               hp->isCoh ? &localJns : nullptr);
+                    if (hp->isCoh && !localJ.empty())
+                    {
+                        double w = prepared[i].sinZenith;
+                        HandlerPO::AddToMuellerLocal(localJ, w, threadM,
+                                                     nCalcAz, nZen);
+                        HandlerPO::AddToMuellerLocal(localJns, w, threadMns,
+                                                     nCalcAz, nZen);
+                        localJ[0].ClearArr();
+                        localJns[0].ClearArr();
+                    }
+                }
+
+                #pragma omp critical
+                {
+                    for (int p = 0; p < nCalcAz; ++p)
+                        for (int t = 0; t <= nZen; ++t)
+                        {
+                            localM.insert(p, t, threadM(p, t));
+                            localMns.insert(p, t, threadMns(p, t));
+                        }
+                }
+            }
         }
 
         // Extract Q_sca
         double csca = 0;
         for (int j = 0; j <= nZen; ++j) {
             double m11_avg = 0;
-            for (int p = 0; p < nAz; ++p) m11_avg += hp->M(p, j)[0][0];
-            m11_avg /= nAz;
-            csca += m11_avg * hp->m_sphere.Compute2PiDcos(j);
+            for (int p = 0; p < nCalcAz; ++p) m11_avg += localM(p, j)[0][0];
+            m11_avg /= nCalcAz;
+            csca += m11_avg * nSphere.Compute2PiDcos(j);
         }
-        double qsca = (m_incomingEnergy > 0) ? csca / m_incomingEnergy : 0;
+        hp->SetScatteringSphere(savedSphere);
+
+        double qsca = (incomingEnergy > 0) ? csca / incomingEnergy : 0;
         double dq = (prev_qsca_n > 0) ? fabs(qsca - prev_qsca_n) / prev_qsca_n : 1.0;
 
         std::cout << "  n=" << n_test << " Q_sca=" << std::fixed << std::setprecision(4)
-                  << qsca << " dQ=" << std::setprecision(2) << dq*100 << "%" << std::endl;
+                  << qsca << " dQ=" << std::setprecision(2) << dq*100 << "%"
+                  << (usedGpu ? " GPU" : " CPU") << std::endl;
 
         if (dq < eps && n_test > 4) n_converged_count++;
         else n_converged_count = 0;
@@ -3110,98 +6455,760 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
     std::cout << std::endl;
 
     // =========================================================================
-    // STEP 2: Find optimal N_phi
-    // Run with N_orient=128, n=n_opt, vary N_phi
+    // STEP 2: Build an adaptive theta grid with the selected reflection count.
+    // This is part of --autofull now: theta rows are chosen from the scattering
+    // curve instead of relying on the coarse startup grid.
     // =========================================================================
-    std::cout << "--- Step 2: N_phi convergence (n=" << n_opt << ", N_orient=128) ---" << std::endl;
-
-    int phi_opt = 48;
-    double prev_qsca_phi = 0;
-    int phi_converged_count = 0;
-
-    for (int phi_test = 36; phi_test <= 300; phi_test = (int)(phi_test * 1.5 / 6) * 6)
+    if (!std::getenv("MBS_AUTOFULL_THETA_OFF"))
     {
-        if (phi_test < 36) phi_test = 36;
+        double Dmax = m_particle->MaximalDimention();
+        double dd = 0.69 * wave / Dmax * (180.0 / M_PI)
+            / std::max(1, m_ringPoints);
+        int nbProbe = std::max(1, (int)(RadToDeg(betaSym) / dd / 16));
+        int ngProbe = std::max(1, (int)(RadToDeg(gammaSym) / dd / 16));
+        int nProbe = nbProbe * ngProbe;
+        int p2 = 1;
+        while (p2 * 2 <= nProbe) p2 *= 2;
+        nProbe = std::max(64, p2);
+        nProbe = ReadEnvInt("MBS_AUTOFULL_THETA_ORIENT", nProbe, 32, 4096);
+        double thetaEps = eps > 0.0 ? std::min(0.05, std::max(eps, 0.005)) : 0.02;
 
-        // Rebuild scattering sphere with new N_phi
-        conus.nAzimuth = phi_test;
-        conus.azinuthStep = 2.0 * M_PI / phi_test;
-        hp->SetScatteringSphere(conus);
-        hp->SetTracks(hp->GetTracks());
-
-        int nAz2 = hp->m_sphere.nAzimuth;
-        int nZen2 = hp->m_sphere.nZenith;
-
-        hp->M.ClearArr(); hp->M_noshadow.ClearArr(); hp->CleanJ();
-        m_incomingEnergy = 0; hp->m_outputEnergy = 0;
-
-        Sobol2D sobol(42);
-        std::vector<double> su, sv;
-        sobol.generate(128, su, sv);
-        double cosBetaSym = cos(betaSym);
-        double weight = 1.0 / 128;
-        std::vector<Beam> outBeams;
-
-        for (int i = 0; i < 128; ++i)
-        {
-            double beta = acos(1.0 - (1.0 - cosBetaSym) * su[i]);
-            double gamma = gammaSym * sv[i];
-            m_particle->Rotate(beta, gamma, 0);
-            if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
-            m_scattering->ScatterLight(0, 0, outBeams);
-            m_handler->HandleBeams(outBeams, weight);
-            m_incomingEnergy += m_scattering->GetIncedentEnergy() * weight;
-            outBeams.clear();
-        }
-
-        double csca = 0;
-        for (int j = 0; j <= nZen2; ++j) {
-            double m11_avg = 0;
-            for (int p = 0; p < nAz2; ++p) m11_avg += hp->M(p, j)[0][0];
-            m11_avg /= nAz2;
-            csca += m11_avg * hp->m_sphere.Compute2PiDcos(j);
-        }
-        double qsca = (m_incomingEnergy > 0) ? csca / m_incomingEnergy : 0;
-        double dq = (prev_qsca_phi > 0) ? fabs(qsca - prev_qsca_phi) / prev_qsca_phi : 1.0;
-
-        std::cout << "  N_phi=" << phi_test << " Q_sca=" << std::fixed << std::setprecision(4)
-                  << qsca << " dQ=" << std::setprecision(2) << dq*100 << "%" << std::endl;
-
-        if (dq < eps && phi_test > 36) phi_converged_count++;
-        else phi_converged_count = 0;
-
-        if (phi_converged_count >= 2) {
-            phi_opt = phi_test - (int)((phi_test - phi_test/1.5) + 0.5); // approximate previous
-            phi_opt = ((phi_opt + 5) / 6) * 6;
-            std::cout << "  → N_phi converged at " << phi_opt << std::endl;
-            break;
-        }
-        prev_qsca_phi = qsca;
-        phi_opt = phi_test;
+        std::cout << "--- Step 2: adaptive theta grid (N_orient=" << nProbe
+                  << ", eps=" << thetaEps << ") ---" << std::endl;
+        hp->M.ClearArr();
+        hp->M_noshadow.ClearArr();
+        hp->CleanJ();
+        m_incomingEnergy = 0;
+        hp->m_outputEnergy = 0;
+        TraceAdaptiveTheta(nProbe, betaSym, gammaSym, thetaEps, 8, true);
+        conus = hp->m_sphere;
+        nAz = hp->m_sphere.nAzimuth;
+        nZen = hp->m_sphere.nZenith;
+        m_incomingEnergy = 0;
+        hp->m_outputEnergy = 0;
+        hp->M.ClearArr();
+        hp->M_noshadow.ClearArr();
+        hp->CleanJ();
+        std::cout << std::endl;
     }
+    else
+    {
+        std::cout << "--- Step 2: adaptive theta grid disabled by MBS_AUTOFULL_THETA_OFF ---"
+                  << std::endl << std::endl;
+    }
+
+    // =========================================================================
+    // STEP 3: Find required N_phi for every theta row.
+    // The output format is rectangular, so the final run uses the worst row,
+    // but the row-wise map is saved and printed for diagnostics.
+    // =========================================================================
+    std::cout << "--- Step 3: row-wise N_phi convergence (n=" << n_opt << ") ---" << std::endl;
+
+    const double phiEps = AutoFullBoundedQualityEps(eps);
+    const double phiPassEps = phiEps * AutoFullPhiSafetyFactor();
+    const int pilotOrient = AutoFullPilotOrientations(eps);
+    const int maxNphi = AutoFullMaxNphi(conus.nAzimuth);
+    std::vector<int> phiCandidates = AutoFullPhiCandidates(maxNphi);
+
+    std::cout << "  Pilot orientations=" << pilotOrient
+              << ", row tolerance=" << phiEps * 100.0
+              << "%, pass threshold=" << phiPassEps * 100.0
+              << "%, max N_phi=" << maxNphi << std::endl;
+    if (std::getenv("MBS_AUTOFULL_PHI_CANDIDATES"))
+        std::cout << "  Phi candidates from MBS_AUTOFULL_PHI_CANDIDATES ("
+                  << phiCandidates.size() << " values)" << std::endl;
+
+    Sobol2D sobolPhi(42);
+    std::vector<double> suPhi, svPhi;
+    sobolPhi.generate(pilotOrient, suPhi, svPhi);
+    double cosBetaSymPhi = cos(betaSym);
+    double pilotWeight = 1.0 / pilotOrient;
+    std::vector<PreparedOrientation> pilotPrepared(pilotOrient);
+    std::vector<Beam> outBeamsPhi;
+    for (int i = 0; i < pilotOrient; ++i)
+    {
+        double beta = acos(1.0 - (1.0 - cosBetaSymPhi) * suPhi[i]);
+        double gamma = gammaSym * svPhi[i];
+        m_particle->Rotate(beta, gamma, 0);
+        if (!shadowOff) m_scattering->FormShadowBeam(outBeamsPhi);
+        bool ok = m_scattering->ScatterLight(0, 0, outBeamsPhi);
+        if (ok)
+            hp->PrepareBeams(outBeamsPhi, pilotWeight, pilotPrepared[i]);
+        else
+            pilotPrepared[i].sinZenith = pilotWeight;
+        outBeamsPhi.clear();
+    }
+
+    std::vector<int> rowRequired(nZen + 1, 0);
+    std::vector<int> rowStreak(nZen + 1, 0);
+    std::vector<int> rowLastPassPhi(nZen + 1, 0);
+    std::vector<double> rowLastError(nZen + 1, 1.0);
+    std::vector<MuellerRowAverage> prevRows;
+    int prevPhi = 0;
+    int phi_opt = phiCandidates.back();
+    const bool phiSearchLowAverage = AutoFullLowPhiAverageEnabled(hp, eps);
+    if (phiSearchLowAverage)
+    {
+        std::cout << "  Phi search uses low-phi azimuth averages "
+                  << "(MBS_AUTOFULL_FINAL_LOWPHI_AVG=0 disables)" << std::endl;
+    }
+
+    for (int phi_test : phiCandidates)
+    {
+        if (phi_test < 2)
+            continue;
+        const int calcPhi = phiSearchLowAverage
+            ? AutoFullFinalAveragePhi(phi_test, eps)
+            : phi_test;
+        if (calcPhi < 2)
+            continue;
+
+        ScatteringRange phiSphere = conus;
+        phiSphere.nAzimuth = calcPhi;
+        phiSphere.azinuthStep = 2.0 * M_PI / calcPhi;
+        hp->SetScatteringSphere(phiSphere);
+        if (autoFftFactor && !phiSearchLowAverage)
+            hp->AutoSelectFftPhiFactor(eps);
+
+        Arr2D localM(calcPhi + 1, nZen + 1, 4, 4);
+        localM.ClearArr();
+        Arr2D localMns(calcPhi + 1, nZen + 1, 4, 4);
+        localMns.ClearArr();
+
+        bool usedGpu = false;
+        if (hp->IsGpuEnabled())
+        {
+            usedGpu = true;
+            for (int gpuStart = 0; gpuStart < pilotOrient; )
+            {
+                int gpuBatchSize = hp->SelectGpuOrientationBatchSize(
+                    pilotPrepared, gpuStart, pilotOrient - gpuStart);
+                int gpuEnd = std::min(gpuStart + gpuBatchSize, pilotOrient);
+                if (!hp->HandleOrientationsToLocalGpu(pilotPrepared,
+                                                      gpuStart,
+                                                      gpuEnd - gpuStart,
+                                                      localM, localMns))
+                {
+                    usedGpu = false;
+                    break;
+                }
+                gpuStart = gpuEnd;
+            }
+            if (!usedGpu)
+            {
+                localM.ClearArr();
+                localMns.ClearArr();
+            }
+        }
+
+        if (!usedGpu)
+        {
+            #pragma omp parallel
+            {
+                Arr2D threadM(calcPhi + 1, nZen + 1, 4, 4);
+                threadM.ClearArr();
+                Arr2D threadMns(calcPhi + 1, nZen + 1, 4, 4);
+                threadMns.ClearArr();
+                std::vector<Arr2DC> localJ, localJns;
+                if (hp->isCoh)
+                {
+                    Arr2DC tmp(calcPhi + 1, nZen + 1, 2, 2);
+                    tmp.ClearArr();
+                    localJ.push_back(tmp);
+                    Arr2DC tmpNs(calcPhi + 1, nZen + 1, 2, 2);
+                    tmpNs.ClearArr();
+                    localJns.push_back(tmpNs);
+                }
+                #pragma omp for schedule(dynamic, 1)
+                for (int i = 0; i < pilotOrient; ++i)
+                {
+                    if (!pilotPrepared[i].beams.empty())
+                        hp->HandleBeamsToLocal(pilotPrepared[i], threadM,
+                                               localJ,
+                                               hp->isCoh ? &localJns : nullptr);
+                    if (hp->isCoh && !localJ.empty())
+                    {
+                        double w = pilotPrepared[i].sinZenith;
+                        HandlerPO::AddToMuellerLocal(localJ, w, threadM,
+                                                     calcPhi, nZen);
+                        HandlerPO::AddToMuellerLocal(localJns, w, threadMns,
+                                                     calcPhi, nZen);
+                        localJ[0].ClearArr();
+                        localJns[0].ClearArr();
+                    }
+                }
+                #pragma omp critical
+                {
+                    for (int p = 0; p < calcPhi; ++p)
+                        for (int t = 0; t <= nZen; ++t)
+                        {
+                            localM.insert(p, t, threadM(p, t));
+                            localMns.insert(p, t, threadMns(p, t));
+                        }
+                }
+            }
+        }
+
+        std::vector<MuellerRowAverage> rows(nZen + 1);
+        for (int t = 0; t <= nZen; ++t)
+        {
+            matrix averaged = AzimuthAverageOutputMatrix(
+                localM, phiSphere, calcPhi, t);
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c)
+                    rows[t].v[r * 4 + c] = averaged[r][c];
+        }
+
+        double maxRowErr = prevRows.empty() ? 1.0 : 0.0;
+        int newlyConverged = 0;
+        if (!prevRows.empty())
+        {
+            for (int t = 0; t <= nZen; ++t)
+            {
+                double err = MuellerRowRelativeError(rows[t], prevRows[t]);
+                rowLastError[t] = err;
+                maxRowErr = std::max(maxRowErr, err);
+                if (rowRequired[t] == 0)
+                {
+                    if (err <= phiPassEps)
+                    {
+                        int previousPassPhi = rowLastPassPhi[t];
+                        rowLastPassPhi[t] = phi_test;
+                        ++rowStreak[t];
+                        if (rowStreak[t] >= 2)
+                        {
+                            rowRequired[t] = previousPassPhi > 0
+                                ? previousPassPhi : phi_test;
+                            ++newlyConverged;
+                        }
+                    }
+                    else
+                    {
+                        rowStreak[t] = 0;
+                        rowLastPassPhi[t] = 0;
+                    }
+                }
+            }
+        }
+
+        int unresolved = 0;
+        for (int t = 0; t <= nZen; ++t)
+            if (rowRequired[t] == 0)
+                ++unresolved;
+
+        std::cout << "  N_phi=" << phi_test;
+        if (calcPhi != phi_test)
+            std::cout << " direct_avg_N_phi=" << calcPhi;
+        if (autoFftFactor && !phiSearchLowAverage)
+            std::cout << " fft_factor=" << hp->FftPhiFactor();
+        std::cout << " max_row_delta=" << std::fixed << std::setprecision(3)
+                  << maxRowErr * 100.0 << "%"
+                  << " unresolved_rows=" << unresolved
+                  << " new=" << newlyConverged
+                  << (usedGpu ? " GPU" : " CPU") << std::endl;
+
+        prevRows.swap(rows);
+        prevPhi = phi_test;
+        bool allResolved = true;
+        for (int t = 0; t <= nZen; ++t)
+        {
+            if (rowRequired[t] == 0)
+            {
+                allResolved = false;
+                break;
+            }
+        }
+        if (allResolved)
+            break;
+    }
+
+    for (int t = 0; t <= nZen; ++t)
+        if (rowRequired[t] == 0)
+            rowRequired[t] = prevPhi > 0 ? prevPhi : maxNphi;
+
+    if (phiSearchLowAverage)
+    {
+        const int minFinalDirectPhi = AutoFullLowPhiDirectFloor(maxNphi, eps);
+        const int minRequiredPhi =
+            std::min(maxNphi, RoundUpToMultiple(minFinalDirectPhi, 6));
+        int liftedRows = 0;
+        for (int t = 0; t <= nZen; ++t)
+        {
+            if (rowRequired[t] < minRequiredPhi)
+            {
+                rowRequired[t] = minRequiredPhi;
+                ++liftedRows;
+            }
+        }
+        if (liftedRows > 0)
+        {
+            std::cout << "  Low-phi final floor lifted " << liftedRows
+                      << " rows to N_phi=" << minRequiredPhi
+                      << " (direct N_phi>=" << minFinalDirectPhi << ")"
+                      << std::endl;
+        }
+    }
+
+    phi_opt = 36;
+    for (int value : rowRequired)
+        phi_opt = std::max(phi_opt, value);
+    phi_opt = RoundUpToMultiple(phi_opt, 6);
+
+    std::string phiMapName = m_resultDirName + "_autofull_phi_by_theta.dat";
+    std::ofstream phiMap(phiMapName.c_str(), std::ios::out);
+    phiMap << std::setprecision(10);
+    phiMap << "# theta_deg needed_Nphi last_row_delta_pct\n";
+    for (int t = 0; t <= nZen; ++t)
+    {
+        phiMap << RadToDeg(conus.GetZenith(t)) << ' '
+               << rowRequired[t] << ' '
+               << rowLastError[t] * 100.0 << '\n';
+    }
+    phiMap.close();
+
+    std::cout << "  Row-wise phi map written: " << phiMapName << std::endl;
+    std::cout << "  Final rectangular output N_phi=max(row needed_Nphi)="
+              << phi_opt << std::endl;
 
     // Set final N_phi
     conus.nAzimuth = phi_opt;
     conus.azinuthStep = 2.0 * M_PI / phi_opt;
     hp->SetScatteringSphere(conus);
+    if (autoFftFactor)
+        hp->AutoSelectFftPhiFactor(eps);
     hp->SetTracks(hp->GetTracks());
+    if (autoFftFactor)
+    {
+        int directPhi = hp->FftPhiFactor() > 1
+            ? std::max(1, hp->m_sphere.nAzimuth / hp->FftPhiFactor())
+            : hp->m_sphere.nAzimuth;
+        std::cout << "Final FFT phi factor: factor=" << hp->FftPhiFactor()
+                  << ", direct N_phi=" << directPhi << std::endl;
+    }
     std::cout << std::endl;
 
+    std::vector<double> rowBeamCutoff(nZen + 1, 0.0);
+    std::vector<double> rowBeamCutoffError(nZen + 1, 0.0);
+    const double baseImportanceCutoff =
+        hp->m_beamCutoffImportanceRel > 0.0
+            ? hp->m_beamCutoffImportanceRel
+            : 0.0;
+    std::vector<double> beamCutoffCandidates =
+        AutoFullBeamCutoffCandidates(baseImportanceCutoff);
+    if (AutoFullBeamCutoffAutoEnabled()
+        && baseImportanceCutoff > 0.0
+        && !beamCutoffCandidates.empty())
+    {
+        const int cutoffCalcPhi = std::max(
+            2,
+            std::min(phi_opt,
+                     AutoFullLowPhiAverageEnabled(hp, eps)
+                         ? AutoFullFinalAveragePhi(phi_opt, eps)
+                         : phi_opt));
+        const double beamCutoffBaseEps = AutoFullBoundedQualityEps(eps);
+        std::cout << "--- Step 3b: row-wise beam cutoff validation"
+                  << " (pilot N_orient=" << pilotOrient
+                  << ", direct N_phi=" << cutoffCalcPhi << ") ---"
+                  << std::endl;
+
+        auto evaluatePilotRows =
+            [&](const std::vector<PreparedOrientation> &prepared)
+                -> std::vector<MuellerRowAverage>
+        {
+            ScatteringRange savedSphere = hp->m_sphere;
+            ScatteringRange cutoffSphere = conus;
+            cutoffSphere.nAzimuth = cutoffCalcPhi;
+            cutoffSphere.azinuthStep = 2.0 * M_PI / cutoffCalcPhi;
+            cutoffSphere.ComputeSphereDirections(m_incidentLight);
+            hp->SetScatteringSphere(cutoffSphere);
+
+            Arr2D localM(cutoffCalcPhi + 1, nZen + 1, 4, 4);
+            localM.ClearArr();
+            Arr2D localMns(cutoffCalcPhi + 1, nZen + 1, 4, 4);
+            localMns.ClearArr();
+
+            bool usedGpu = false;
+            if (hp->IsGpuEnabled())
+            {
+                usedGpu = true;
+                for (int gpuStart = 0;
+                     gpuStart < (int)prepared.size(); )
+                {
+                    int gpuBatchSize = hp->SelectGpuOrientationBatchSize(
+                        prepared, gpuStart,
+                        (int)prepared.size() - gpuStart);
+                    int gpuEnd = std::min(gpuStart + gpuBatchSize,
+                                          (int)prepared.size());
+                    if (!hp->HandleOrientationsToLocalGpu(
+                            prepared, gpuStart, gpuEnd - gpuStart,
+                            localM, localMns))
+                    {
+                        usedGpu = false;
+                        localM.ClearArr();
+                        localMns.ClearArr();
+                        break;
+                    }
+                    gpuStart = gpuEnd;
+                }
+            }
+
+            if (!usedGpu)
+            {
+                #pragma omp parallel
+                {
+                    Arr2D threadM(cutoffCalcPhi + 1, nZen + 1, 4, 4);
+                    threadM.ClearArr();
+                    Arr2D threadMns(cutoffCalcPhi + 1, nZen + 1, 4, 4);
+                    threadMns.ClearArr();
+                    std::vector<Arr2DC> localJ, localJns;
+                    if (hp->isCoh)
+                    {
+                        Arr2DC tmp(cutoffCalcPhi + 1, nZen + 1, 2, 2);
+                        tmp.ClearArr();
+                        localJ.push_back(tmp);
+                        Arr2DC tmpNs(cutoffCalcPhi + 1, nZen + 1, 2, 2);
+                        tmpNs.ClearArr();
+                        localJns.push_back(tmpNs);
+                    }
+
+                    #pragma omp for schedule(dynamic, 1)
+                    for (int i = 0; i < (int)prepared.size(); ++i)
+                    {
+                        if (!prepared[i].beams.empty())
+                            hp->HandleBeamsToLocal(
+                                prepared[i], threadM, localJ,
+                                hp->isCoh ? &localJns : nullptr);
+                        if (hp->isCoh && !localJ.empty())
+                        {
+                            const double w = prepared[i].sinZenith;
+                            HandlerPO::AddToMuellerLocal(
+                                localJ, w, threadM, cutoffCalcPhi, nZen);
+                            HandlerPO::AddToMuellerLocal(
+                                localJns, w, threadMns, cutoffCalcPhi, nZen);
+                            localJ[0].ClearArr();
+                            localJns[0].ClearArr();
+                        }
+                    }
+
+                    #pragma omp critical
+                    {
+                        for (int p = 0; p < cutoffCalcPhi; ++p)
+                            for (int t = 0; t <= nZen; ++t)
+                            {
+                                localM.insert(p, t, threadM(p, t));
+                                localMns.insert(p, t, threadMns(p, t));
+                            }
+                    }
+                }
+            }
+
+            if (m_mirrorGamma)
+                ApplyMirrorGammaMueller(localM, cutoffCalcPhi, nZen);
+            hp->SetScatteringSphere(savedSphere);
+            std::vector<MuellerRowAverage> rows(nZen + 1);
+            for (int t = 0; t <= nZen; ++t)
+            {
+                matrix averaged = AzimuthAverageOutputMatrix(
+                    localM, cutoffSphere, cutoffCalcPhi, t);
+                for (int r = 0; r < 4; ++r)
+                    for (int c = 0; c < 4; ++c)
+                        rows[t].v[r * 4 + c] = averaged[r][c];
+            }
+            return rows;
+        };
+
+        std::vector<MuellerRowAverage> baseRows =
+            evaluatePilotRows(pilotPrepared);
+        std::map<double, std::vector<double>> candidateRowErrors;
+        std::map<double, long long> candidateBeamCounts;
+        const long long baseBeamCount =
+            std::max(1LL, CountPreparedBeams(pilotPrepared));
+        for (double candidate : beamCutoffCandidates)
+        {
+            std::vector<PreparedOrientation> filtered =
+                BuildPreparedSliceForThetaZone(
+                    pilotPrepared, 0, (int)pilotPrepared.size(),
+                    1.0, candidate);
+            candidateBeamCounts[candidate] = CountPreparedBeams(filtered);
+            std::vector<MuellerRowAverage> rows =
+                evaluatePilotRows(filtered);
+
+            std::vector<double> candidateErrors(nZen + 1, 0.0);
+            int passingRows = 0;
+            double maxPassingError = 0.0;
+            double maxError = 0.0;
+            for (int t = 0; t <= nZen; ++t)
+            {
+                const double thetaDeg = RadToDeg(conus.GetZenith(t));
+                const int zone = AutoFullThetaZone(thetaDeg);
+                const double tol =
+                    beamCutoffBaseEps * AutoFullBeamCutoffSafetyFactor(zone);
+                if (tol <= 0.0)
+                    continue;
+                const double err =
+                    MuellerRowRelativeError(rows[t], baseRows[t]);
+                candidateErrors[t] = err;
+                maxError = std::max(maxError, err);
+                if (err <= tol)
+                {
+                    rowBeamCutoff[t] = candidate;
+                    ++passingRows;
+                    maxPassingError = std::max(maxPassingError, err);
+                }
+            }
+            candidateRowErrors[candidate].swap(candidateErrors);
+            std::cout << "  cutoff=" << std::scientific
+                      << std::setprecision(1) << candidate
+                      << std::fixed << std::setprecision(3)
+                      << " passing_rows=" << passingRows << "/" << (nZen + 1)
+                      << " max_pass_error=" << maxPassingError * 100.0
+                      << "% max_error=" << maxError * 100.0 << "%"
+                      << std::endl;
+        }
+
+        if (!EnvFlagEnabled("MBS_AUTOFULL_BEAM_CUTOFF_ROWWISE", false))
+        {
+            double zoneCutoff[3] = {0.0, 0.0, 0.0};
+            bool zoneSeen[3] = {false, false, false};
+            bool zoneAllPass[3] = {true, true, true};
+            for (int t = 0; t <= nZen; ++t)
+            {
+                const int zone = std::max(0, std::min(2,
+                    AutoFullThetaZone(RadToDeg(conus.GetZenith(t)))));
+                zoneSeen[zone] = true;
+                if (rowBeamCutoff[t] <= 0.0)
+                {
+                    zoneAllPass[zone] = false;
+                    continue;
+                }
+                if (zoneCutoff[zone] <= 0.0
+                    || rowBeamCutoff[t] < zoneCutoff[zone])
+                    zoneCutoff[zone] = rowBeamCutoff[t];
+            }
+            int smoothedRows = 0;
+            for (int t = 0; t <= nZen; ++t)
+            {
+                const int zone = std::max(0, std::min(2,
+                    AutoFullThetaZone(RadToDeg(conus.GetZenith(t)))));
+                const double value = (zoneSeen[zone] && zoneAllPass[zone])
+                    ? zoneCutoff[zone] : 0.0;
+                if (rowBeamCutoff[t] != value)
+                    ++smoothedRows;
+                rowBeamCutoff[t] = value;
+            }
+            std::cout << "  Zone-smoothed beam cutoffs:";
+            for (int zone = 0; zone < 3; ++zone)
+            {
+                std::cout << ' ' << AutoFullThetaZoneName(zone) << '=';
+                if (zoneSeen[zone] && zoneAllPass[zone]
+                    && zoneCutoff[zone] > 0.0)
+                    std::cout << std::scientific << std::setprecision(1)
+                              << zoneCutoff[zone] << std::fixed
+                              << std::setprecision(3);
+                else
+                    std::cout << "base";
+            }
+            std::cout << " (changed_rows=" << smoothedRows
+                      << ", MBS_AUTOFULL_BEAM_CUTOFF_ROWWISE=1 keeps"
+                      << " per-row values)" << std::endl;
+        }
+
+        for (int t = 0; t <= nZen; ++t)
+        {
+            rowBeamCutoffError[t] = 0.0;
+            if (rowBeamCutoff[t] <= 0.0)
+                continue;
+            std::map<double, std::vector<double>>::const_iterator it =
+                candidateRowErrors.find(rowBeamCutoff[t]);
+            if (it != candidateRowErrors.end()
+                && t < (int)it->second.size())
+                rowBeamCutoffError[t] = it->second[t];
+        }
+
+        std::map<double, int> selectedRows;
+        for (double value : rowBeamCutoff)
+            selectedRows[value] += 1;
+        if (selectedRows.size() > 1)
+        {
+            double estimatedWork = 0.0;
+            for (const auto &entry : selectedRows)
+            {
+                double beamFraction = 1.0;
+                if (entry.first > 0.0)
+                {
+                    std::map<double, long long>::const_iterator it =
+                        candidateBeamCounts.find(entry.first);
+                    if (it != candidateBeamCounts.end())
+                        beamFraction = (double)it->second
+                            / (double)baseBeamCount;
+                }
+                estimatedWork += (double)entry.second * beamFraction;
+            }
+            const double groupPenalty =
+                ReadEnvDouble("MBS_AUTOFULL_BEAM_CUTOFF_GROUP_PENALTY",
+                              0.08, 0.0, 10.0)
+                * (double)std::max(0, (int)selectedRows.size() - 1)
+                * (double)(nZen + 1);
+            const double estimatedRatio =
+                (estimatedWork + groupPenalty) / (double)(nZen + 1);
+            const double maxAcceptedRatio =
+                ReadEnvDouble("MBS_AUTOFULL_BEAM_CUTOFF_MAX_WORK_RATIO",
+                              0.85, 0.05, 1.5);
+            std::cout << "  Beam cutoff estimated diffraction work: "
+                      << std::fixed << std::setprecision(1)
+                      << estimatedRatio * 100.0
+                      << "% of base including group penalty" << std::endl;
+            if (estimatedRatio > maxAcceptedRatio)
+            {
+                std::fill(rowBeamCutoff.begin(), rowBeamCutoff.end(), 0.0);
+                std::fill(rowBeamCutoffError.begin(),
+                          rowBeamCutoffError.end(), 0.0);
+                selectedRows.clear();
+                selectedRows[0.0] = nZen + 1;
+                std::cout << "  Beam cutoff auto disabled for final run:"
+                          << " estimated saving is too small"
+                          << " (MBS_AUTOFULL_BEAM_CUTOFF_MAX_WORK_RATIO"
+                          << " overrides)" << std::endl;
+            }
+        }
+        std::cout << "  Selected beam cutoff rows:";
+        for (const auto &entry : selectedRows)
+        {
+            if (entry.first <= 0.0)
+                std::cout << " base(" << entry.second << ")";
+            else
+                std::cout << ' ' << std::scientific << std::setprecision(1)
+                          << entry.first << std::fixed << std::setprecision(3)
+                          << "(" << entry.second << ")";
+        }
+        std::cout << std::endl;
+
+        const std::string cutoffMapName =
+            m_resultDirName + "_autofull_beam_cutoff_by_theta.dat";
+        std::ofstream cutoffMap(cutoffMapName.c_str(), std::ios::out);
+        cutoffMap << std::setprecision(10);
+        cutoffMap << "# theta_deg zone selected_beam_importance_cutoff_rel"
+                  << " pilot_error_pct tolerance_pct\n";
+        for (int t = 0; t <= nZen; ++t)
+        {
+            const double thetaDeg = RadToDeg(conus.GetZenith(t));
+            const int zone = AutoFullThetaZone(thetaDeg);
+            cutoffMap << thetaDeg << ' '
+                      << AutoFullThetaZoneName(zone) << ' '
+                      << rowBeamCutoff[t] << ' '
+                      << rowBeamCutoffError[t] * 100.0 << ' '
+                      << beamCutoffBaseEps
+                         * AutoFullBeamCutoffSafetyFactor(zone) * 100.0
+                      << '\n';
+        }
+        cutoffMap.close();
+        std::cout << "  Beam cutoff map written: " << cutoffMapName
+                  << std::endl << std::endl;
+    }
+    else if (!AutoFullBeamCutoffAutoEnabled())
+    {
+        std::cout << "--- Step 3b: row-wise beam cutoff disabled by"
+                  << " MBS_AUTOFULL_BEAM_CUTOFF_AUTO=0 ---"
+                  << std::endl << std::endl;
+    }
+
     // =========================================================================
-    // STEP 3: Adaptive N_orient (reuse TraceAdaptive with found n, N_phi)
+    // STEP 4: Adaptive N_orient (reuse TraceAdaptive with found n, N_phi)
     // =========================================================================
-    std::cout << "--- Step 3: N_orient convergence (n=" << n_opt
+    std::cout << "--- Step 4: N_orient convergence (n=" << n_opt
               << ", N_phi=" << phi_opt << ") ---" << std::endl;
 
     // Clean and run adaptive
     hp->M.ClearArr(); hp->M_noshadow.ClearArr(); hp->CleanJ();
     m_incomingEnergy = 0; hp->m_outputEnergy = 0;
 
-    TraceAdaptive(eps, betaSym, gammaSym, maxOrientOverride);
+    bool variablePhiFinal = true;
+    if (const char *env = std::getenv("MBS_AUTOFULL_VARIABLE_PHI"))
+        variablePhiFinal = !(env[0] == '0' && env[1] == '\0');
+    if (variablePhiFinal)
+    {
+        int finalOrient = TraceAdaptive(eps, betaSym, gammaSym,
+                                        maxOrientOverride, false, true);
+        double finalMeanError = TraceFromSobolVariablePhi(
+            finalOrient, betaSym, gammaSym, rowRequired,
+            m_lastAdaptiveRowOrient, phi_opt, eps,
+            m_owenAverageSeeds, rowBeamCutoff);
+        if (m_owenAverageSeeds.size() >= 3 && eps > 0.0
+            && finalMeanError > eps)
+        {
+            bool hasReducedOrient = false;
+            for (int value : m_lastAdaptiveRowOrient)
+            {
+                if (value > 0 && value < finalOrient)
+                {
+                    hasReducedOrient = true;
+                    break;
+                }
+            }
+            bool hasExtraCutoff = false;
+            for (double value : rowBeamCutoff)
+            {
+                if (value > 0.0)
+                {
+                    hasExtraCutoff = true;
+                    break;
+                }
+            }
+            const bool retryConservative =
+                EnvFlagEnabled("MBS_AUTOFULL_FINAL_CONSERVATIVE_RETRY", true)
+                && (hasReducedOrient || hasExtraCutoff);
+            if (retryConservative)
+            {
+                std::cout << "Final Owen estimate exceeded target after"
+                          << " accelerated final pass ("
+                          << finalMeanError * 100.0 << "% > "
+                          << eps * 100.0
+                          << "%). Retrying once with full per-theta"
+                          << " N_orient and base beam cutoff."
+                          << std::endl;
+                std::vector<int> fullRowOrient(conus.nZenith + 1,
+                                               finalOrient);
+                std::vector<double> noExtraBeamCutoff;
+                finalMeanError = TraceFromSobolVariablePhi(
+                    finalOrient, betaSym, gammaSym, rowRequired,
+                    fullRowOrient, phi_opt, eps,
+                    m_owenAverageSeeds, noExtraBeamCutoff);
+            }
+            if (finalMeanError > eps)
+            {
+                const bool acceptOldautoCap =
+                    m_lastAdaptiveAcceptedOldautoCap
+                    && EnvFlagEnabled("MBS_AUTOFULL_ACCEPT_OLDAUTO_CAP", true);
+                if (acceptOldautoCap)
+                {
+                    std::cout << "WARNING: AUTOFULL final Owen mean-error"
+                              << " estimate " << finalMeanError * 100.0
+                              << "% exceeds target " << eps * 100.0
+                              << "%, but oldauto-based orientation cap was"
+                              << " reached. Keeping the oldauto-cap result."
+                              << std::endl;
+                }
+                else
+                {
+                    std::cerr << "ERROR: AUTOFULL final Owen mean-error estimate "
+                              << finalMeanError * 100.0
+                              << "% exceeds target " << eps * 100.0
+                              << "%. Increase --maxorient"
+                              << " or loosen --autofull eps." << std::endl;
+                    std::exit(2);
+                }
+            }
+        }
+    }
+    else
+    {
+        TraceAdaptive(eps, betaSym, gammaSym, maxOrientOverride, true, true);
+    }
 
     auto t_total_end = std::chrono::high_resolution_clock::now();
     double total_time = std::chrono::duration<double>(t_total_end - t_total_start).count();
     std::cout << std::endl << "===== AUTOFULL TOTAL: " << std::fixed
               << std::setprecision(1) << total_time << " s =====" << std::endl;
-    std::cout << "Final: n=" << n_opt << ", N_phi=" << phi_opt << std::endl;
+    std::cout << "Final: n=" << n_opt << ", N_phi=" << phi_opt
+              << ", N_theta=" << (hp->m_sphere.nZenith + 1) << std::endl;
 }

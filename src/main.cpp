@@ -219,11 +219,19 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("trace_max_beams", 1, true); // max traced beam nodes per orientation
     parser.AddRule("gpu_trace", 0, true); // experimental CUDA tracing prefilter
     parser.AddRule("sobol", 1, true); // Sobol quasi-random orientations (number, power of 2)
+    parser.AddRule("sobol_seed", 2, true); // Sobol orientations with nested Owen scramble seed (N seed)
+    parser.AddRule("sobol_ring", 2, true); // Sobol beta x uniform gamma ring (Nbeta Ngamma)
+    parser.AddRule("hammersley", 1, true); // Hammersley orientation set (N)
+    parser.AddRule("lattice", 1, true); // rank-1 lattice orientation set (N)
+    parser.AddRule("lattice_z", 2, true); // rank-1 lattice with explicit generator (N Z)
+    parser.AddRule("euler_quad", 2, true); // high-order Euler quadrature (Nbeta Ngamma)
     parser.AddRule("auto_tgrid", 1, true); // adaptive theta grid (arg: tolerance, e.g. 0.05)
     parser.AddRule("auto_phi", 0, true); // auto-select N_phi based on size parameter
     parser.AddRule("nphi", 1, true); // override N_phi (takes priority over --grid and --auto_phi)
     parser.AddRule("adaptive", 1, true); // adaptive convergence (target relative accuracy)
     parser.AddRule("autofull", 1, true); // full 3D sequential: n → N_phi → N_orient
+    parser.AddRule("owen_avg", 1, true); // --autofull final: average K nested Owen Sobol seeds
+    parser.AddRule("owen_seeds", '+', true); // explicit seeds for --autofull final averaging
     parser.AddRule("auto", 1, true); // full auto: auto_tgrid + auto_phi + adaptive (one arg: eps)
     parser.AddRule("maxorient", 1, true); // max orientations for adaptive (power of 2)
     parser.AddRule("chunk", 1, true); // max Sobol orientations per memory chunk
@@ -264,10 +272,18 @@ void PrintHelp()
          << "  --fixed BETA GAMMA     Single orientation (degrees)\n"
          << "  --random Nb Ng         Regular beta x gamma grid\n"
          << "  --sobol N              Sobol quasi-random (N orientations)\n"
+         << "  --sobol_seed N S       Sobol with nested Owen scramble seed S\n"
+         << "  --sobol_ring Nb Ng     Sobol beta x shifted uniform gamma ring\n"
+         << "  --hammersley N         Hammersley low-discrepancy orientations\n"
+         << "  --lattice N            Rank-1 lattice orientations\n"
+         << "  --lattice_z N Z        Rank-1 lattice with explicit generator Z\n"
+         << "  --euler_quad Nb Ng     High-order: Gauss in cos(beta) x periodic gamma\n"
          << "  --montecarlo N         Monte Carlo random (N orientations)\n"
          << "  --adaptive EPS         Adaptive Sobol (converge to EPS relative accuracy)\n"
          << "  --auto EPS             Full auto: adaptive theta + phi + orientations\n"
          << "  --autofull EPS         Full auto including n search\n"
+         << "  --owen_avg K           With --autofull, average K nested Owen final seeds (default 3)\n"
+         << "  --owen_seeds S...      Explicit final Owen seeds for --autofull averaging\n"
          << "  --oldauto DIV          Physics-based grid (div2/div4/div8 of diffraction limit)\n"
          << "  --ring_points N        Points per diffraction ring for orientation estimates (default 3)\n"
          << "  --mirror_gamma         Use mirror symmetry: gamma range is halved (60 -> 30 deg)\n"
@@ -295,7 +311,7 @@ void PrintHelp()
          << "  --threads N            OpenMP worker threads (default: physical cores)\n"
          << "  --gpu                  Use CUDA GPU backend for diffraction (requires USE_CUDA=1 build)\n"
          << "  --fft                  With --gpu, use experimental cuFFT phi interpolation backend\n"
-         << "                         Env: MBS_FFT_PHI_FACTOR=auto|N (default auto), MBS_FFT_CHECK=1\n"
+         << "                         Auto modes select phi factor from EPS/Nphi; env MBS_FFT_PHI_FACTOR=N overrides\n"
          << "  --beam_cutoff EPS      Set both relative beam cutoffs below; skip if either matches\n"
          << "  --beam_cutoff_j EPS    Skip beams with |J|^2/max < EPS (0 disables J test)\n"
          << "  --beam_cutoff_area EPS Skip beams with area/max < EPS (0 disables area test)\n"
@@ -571,10 +587,15 @@ void ApplyAutoThetaGrid(ScatteringRange &range, double D, double wave)
 
 std::vector<double> GenerateLogSizes(double minValue, double maxValue, int count)
 {
-    if (count < 2)
-        count = 2;
+    if (count < 1)
+        count = 1;
     std::vector<double> values;
     values.reserve(count);
+    if (count == 1)
+    {
+        values.push_back(maxValue);
+        return values;
+    }
     double logMin = std::log(minValue);
     double logMax = std::log(maxValue);
     for (int i = 0; i < count; ++i)
@@ -584,6 +605,58 @@ std::vector<double> GenerateLogSizes(double minValue, double maxValue, int count
     }
     values.back() = maxValue;
     return values;
+}
+
+std::vector<unsigned int> BuildOwenAverageSeeds(const ArgPP &args)
+{
+    static const unsigned int defaults[] = {
+        7u, 123u, 777u, 2026u, 9001u,
+        42u, 314159u, 271828u, 1618033u, 112358u
+    };
+
+    std::vector<unsigned int> seeds;
+    if (args.IsCatched("owen_seeds"))
+    {
+        unsigned n = args.GetArgNumber("owen_seeds");
+        for (unsigned i = 0; i < n; ++i)
+            seeds.push_back((unsigned int)std::max(0, args.GetIntValue("owen_seeds", i)));
+        return seeds;
+    }
+
+    if (!args.IsCatched("owen_avg"))
+    {
+        int defaultCount = 3;
+        if (const char *env = std::getenv("MBS_AUTOFULL_DEFAULT_OWEN_AVG"))
+        {
+            char *end = nullptr;
+            long parsed = std::strtol(env, &end, 10);
+            if (end && *end == '\0')
+                defaultCount = (int)parsed;
+        }
+        if (defaultCount <= 0)
+            return seeds;
+        int count = std::max(1, defaultCount);
+        seeds.reserve(count);
+        for (int i = 0; i < count; ++i)
+        {
+            if (i < (int)(sizeof(defaults) / sizeof(defaults[0])))
+                seeds.push_back(defaults[i]);
+            else
+                seeds.push_back((unsigned int)(2654435761u * (unsigned int)(i + 1) + 1013904223u));
+        }
+        return seeds;
+    }
+
+    int count = std::max(1, args.GetIntValue("owen_avg", 0));
+    seeds.reserve(count);
+    for (int i = 0; i < count; ++i)
+    {
+        if (i < (int)(sizeof(defaults) / sizeof(defaults[0])))
+            seeds.push_back(defaults[i]);
+        else
+            seeds.push_back((unsigned int)(2654435761u * (unsigned int)(i + 1) + 1013904223u));
+    }
+    return seeds;
 }
 
 std::vector<double> ReadSizeList(const std::string &fileName)
@@ -1804,14 +1877,34 @@ int main(int argc, const char* argv[])
 
             delete handler;
         }
-        else if (args.IsCatched("sobol") || args.IsCatched("adaptive") || args.IsCatched("auto") || args.IsCatched("autofull"))
+        else if (args.IsCatched("sobol") || args.IsCatched("sobol_seed")
+              || args.IsCatched("sobol_ring")
+              || args.IsCatched("hammersley") || args.IsCatched("lattice")
+              || args.IsCatched("lattice_z")
+              || args.IsCatched("euler_quad")
+              || args.IsCatched("adaptive") || args.IsCatched("auto") || args.IsCatched("autofull"))
         {
             // --auto EPS implies --adaptive EPS + --auto_tgrid + --auto_phi
             bool isAuto = args.IsCatched("auto") || args.IsCatched("autofull");
             bool isAutoFull = args.IsCatched("autofull");
             bool isAdaptive = args.IsCatched("adaptive") || isAuto;
+            bool isSobolSeed = args.IsCatched("sobol_seed");
+            bool isSobolRing = args.IsCatched("sobol_ring");
+            bool isHammersley = args.IsCatched("hammersley");
+            bool isLattice = args.IsCatched("lattice") || args.IsCatched("lattice_z");
+            bool isEulerQuad = args.IsCatched("euler_quad");
             if (isAdaptive)
                 additionalSummary += ", adaptive Sobol\n\n";
+            else if (isSobolSeed)
+                additionalSummary += ", Sobol nested Owen seed\n\n";
+            else if (isSobolRing)
+                additionalSummary += ", Sobol beta x gamma ring\n\n";
+            else if (isHammersley)
+                additionalSummary += ", Hammersley orientations\n\n";
+            else if (isLattice)
+                additionalSummary += ", rank-1 lattice orientations\n\n";
+            else if (isEulerQuad)
+                additionalSummary += ", Euler high-order quadrature\n\n";
             else
                 additionalSummary += ", Sobol quasi-random\n\n";
 
@@ -1861,6 +1954,30 @@ int main(int argc, const char* argv[])
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             ApplyNphiOverride(args, conus);
+            if (useFft && isAuto)
+            {
+                if (!HandlerPO::HasNumericFftPhiFactorOverride())
+                {
+                    double fftEps = isAutoFull
+                        ? args.GetDoubleValue("autofull", 0)
+                        : args.GetDoubleValue("auto", 0);
+                    int fftFactor = HandlerPO::SelectAutoFftPhiFactor(conus.nAzimuth, fftEps);
+                    handler->SetFftPhiFactor(fftFactor);
+                    int directPhi = fftFactor > 1
+                        ? std::max(1, conus.nAzimuth / fftFactor)
+                        : conus.nAzimuth;
+                    cout << (isAutoFull ? "Initial auto FFT phi factor: "
+                                         : "Auto FFT phi factor: ")
+                         << "N_phi=" << conus.nAzimuth
+                         << ", factor=" << fftFactor
+                         << ", direct N_phi=" << directPhi
+                         << ", eps=" << fftEps << endl;
+                }
+                else
+                {
+                    cout << "Auto FFT phi factor: using MBS_FFT_PHI_FACTOR override" << endl;
+                }
+            }
             handler->SetScatteringSphere(conus);
             handler->SetTracks(&trackGroups);
             handler->SetAbsorptionAccounting(isAbs);
@@ -1895,7 +2012,8 @@ int main(int argc, const char* argv[])
             // Explicit beam cutoff flags have priority over --auto/--adaptive eps.
             bool explicitBeamCutoff = args.IsCatched("beam_cutoff")
                 || args.IsCatched("beam_cutoff_j")
-                || args.IsCatched("beam_cutoff_area");
+                || args.IsCatched("beam_cutoff_area")
+                || args.IsCatched("beam_cutoff_importance");
             if (!explicitBeamCutoff && isAdaptive) {
                 double epsForCutoff = args.IsCatched("autofull")
                     ? args.GetDoubleValue("autofull", 0)
@@ -1909,13 +2027,25 @@ int main(int argc, const char* argv[])
                 double epsAdapt = args.GetDoubleValue("autofull", 0);
                 int maxOrientUser = args.IsCatched("maxorient")
                     ? args.GetIntValue("maxorient", 0) : 0;
+                tracer->m_owenAverageSeeds = BuildOwenAverageSeeds(args);
+                if (!tracer->m_owenAverageSeeds.empty())
+                {
+                    std::cout << "Autofull final Owen averaging seeds:";
+                    for (unsigned int seed : tracer->m_owenAverageSeeds)
+                        std::cout << ' ' << seed;
+                    std::cout << std::endl;
+                }
                 tracer->TraceAutoFull(epsAdapt, betaSym, gammaSym, maxOrientUser,
                                       particle, wave, conus, handler);
             }
             else if (isAdaptive)
             {
-                if (args.IsCatched("sobol"))
-                    std::cerr << "WARNING: --sobol N ignored (--auto/--adaptive overrides with adaptive orientations)." << std::endl;
+                if (args.IsCatched("sobol") || args.IsCatched("sobol_seed")
+                    || args.IsCatched("sobol_ring")
+                    || args.IsCatched("hammersley") || args.IsCatched("lattice")
+                    || args.IsCatched("lattice_z")
+                    || args.IsCatched("euler_quad"))
+                    std::cerr << "WARNING: explicit orientation rule ignored (--auto/--adaptive overrides with adaptive orientations)." << std::endl;
                 double epsAdapt = isAuto ? args.GetDoubleValue("auto", 0)
                                          : args.GetDoubleValue("adaptive", 0);
                 int maxOrientUser = args.IsCatched("maxorient")
@@ -1943,9 +2073,172 @@ int main(int argc, const char* argv[])
             }
             else
             {
-                int nSobol = args.GetIntValue("sobol", 0);
+                bool useSobolSeed = args.IsCatched("sobol_seed");
+                bool useSobolRing = args.IsCatched("sobol_ring");
+                bool useHammersley = args.IsCatched("hammersley");
+                bool useLattice = args.IsCatched("lattice") || args.IsCatched("lattice_z");
+                bool useEulerQuad = args.IsCatched("euler_quad");
+                int nSobol = args.IsCatched("sobol") ? args.GetIntValue("sobol", 0) : 0;
 
-                if (args.IsCatched("multigrid"))
+                if (useSobolSeed)
+                {
+                    if (args.IsCatched("sobol") || args.IsCatched("euler_quad"))
+                        std::cerr << "WARNING: --sobol/--euler_quad ignored because --sobol_seed is selected." << std::endl;
+                    if (args.IsCatched("multigrid"))
+                        std::cerr << "WARNING: --sobol_seed currently runs single-size; --multigrid ignored." << std::endl;
+                    int nOrient = args.GetIntValue("sobol_seed", 0);
+                    unsigned int seed = (unsigned int)std::max(0, args.GetIntValue("sobol_seed", 1));
+                    if (args.IsCatched("auto_tgrid") && !args.IsCatched("grid") && !args.IsCatched("tgrid"))
+                    {
+                        double tgridEps = args.GetDoubleValue("auto_tgrid", 0);
+                        if (tgridEps <= 0) tgridEps = 0.05;
+                        tracer->TraceAdaptiveTheta(std::max(64, nOrient), betaSym, gammaSym, tgridEps, 8, true);
+                    }
+                    tracer->TraceFromSobolSeed(nOrient, seed, betaSym, gammaSym);
+                }
+                else if (useSobolRing)
+                {
+                    if (args.IsCatched("sobol") || args.IsCatched("euler_quad"))
+                        std::cerr << "WARNING: --sobol/--euler_quad ignored because --sobol_ring is selected." << std::endl;
+                    if (args.IsCatched("multigrid"))
+                        std::cerr << "WARNING: --sobol_ring currently runs single-size; --multigrid ignored." << std::endl;
+                    int nBeta = args.GetIntValue("sobol_ring", 0);
+                    int nGamma = args.GetIntValue("sobol_ring", 1);
+                    if (args.IsCatched("auto_tgrid") && !args.IsCatched("grid") && !args.IsCatched("tgrid"))
+                    {
+                        double tgridEps = args.GetDoubleValue("auto_tgrid", 0);
+                        if (tgridEps <= 0) tgridEps = 0.05;
+                        int nProbe = std::max(64, nBeta * nGamma);
+                        tracer->TraceAdaptiveTheta(nProbe, betaSym, gammaSym, tgridEps, 8, true);
+                    }
+                    tracer->TraceFromSobolRing(nBeta, nGamma, betaSym, gammaSym);
+                }
+                else if (useHammersley)
+                {
+                    if (args.IsCatched("sobol") || args.IsCatched("euler_quad")
+                        || args.IsCatched("lattice"))
+                        std::cerr << "WARNING: other explicit orientation rules ignored because --hammersley is selected." << std::endl;
+                    if (args.IsCatched("multigrid"))
+                        std::cerr << "WARNING: --hammersley currently runs single-size; --multigrid ignored." << std::endl;
+                    int nOrient = args.GetIntValue("hammersley", 0);
+                    if (args.IsCatched("auto_tgrid") && !args.IsCatched("grid") && !args.IsCatched("tgrid"))
+                    {
+                        double tgridEps = args.GetDoubleValue("auto_tgrid", 0);
+                        if (tgridEps <= 0) tgridEps = 0.05;
+                        tracer->TraceAdaptiveTheta(std::max(64, nOrient), betaSym, gammaSym, tgridEps, 8, true);
+                    }
+                    tracer->TraceFromHammersley(nOrient, betaSym, gammaSym);
+                }
+                else if (useLattice)
+                {
+                    if (args.IsCatched("sobol") || args.IsCatched("euler_quad"))
+                        std::cerr << "WARNING: other explicit orientation rules ignored because --lattice is selected." << std::endl;
+                    bool explicitGenerator = args.IsCatched("lattice_z");
+                    int nOrient = explicitGenerator
+                        ? args.GetIntValue("lattice_z", 0)
+                        : args.GetIntValue("lattice", 0);
+                    int latticeGenerator = explicitGenerator
+                        ? args.GetIntValue("lattice_z", 1) : 0;
+                    if (args.IsCatched("auto_tgrid") && !args.IsCatched("grid") && !args.IsCatched("tgrid"))
+                    {
+                        double tgridEps = args.GetDoubleValue("auto_tgrid", 0);
+                        if (tgridEps <= 0) tgridEps = 0.05;
+                        tracer->TraceAdaptiveTheta(std::max(64, nOrient), betaSym, gammaSym, tgridEps, 8, true);
+                    }
+                    if (args.IsCatched("multigrid"))
+                    {
+                        double Dmin = args.GetDoubleValue("multigrid", 0);
+                        double Dmax_mg = args.GetDoubleValue("multigrid", 1);
+                        int nSizes = args.GetIntValue("multigrid", 2);
+                        if (nSizes < 2) nSizes = 2;
+
+                        double D_current = particle->MaximalDimention();
+                        double x_ref = M_PI * D_current / wave;
+
+                        std::vector<double> x_sizes;
+                        double logMin = log(Dmin), logMax = log(Dmax_mg);
+                        for (int i = 0; i < nSizes; ++i) {
+                            double D_user = exp(logMin + (logMax - logMin) * i / (nSizes - 1));
+                            double x = x_ref * (D_user / Dmax_mg);
+                            x_sizes.push_back(x);
+                        }
+                        x_sizes.back() = x_ref;
+
+                        cout << "Multigrid: " << nSizes << " sizes, D=" << Dmin
+                             << ".." << Dmax_mg << " (log), Dmax_particle=" << D_current
+                             << ", x_ref=" << x_ref << endl;
+                        cout << "  x range: " << x_sizes.front() << " .. " << x_sizes.back() << endl;
+
+                        if (D_current < Dmax_mg * 0.99)
+                            std::cerr << "WARNING: -p particle Dmax=" << D_current
+                                      << " < multigrid Dmax=" << Dmax_mg
+                                      << ". Use -p with largest size." << endl;
+
+                        tracer->TraceLatticeMultiSize(nOrient, betaSym, gammaSym,
+                                                      x_sizes, x_ref,
+                                                      latticeGenerator);
+                    }
+                    else
+                    {
+                        if (explicitGenerator)
+                            tracer->TraceFromLatticeGenerator(
+                                nOrient, latticeGenerator, betaSym, gammaSym);
+                        else
+                            tracer->TraceFromLattice(nOrient, betaSym, gammaSym);
+                    }
+                }
+                else if (useEulerQuad)
+                {
+                    if (args.IsCatched("sobol"))
+                        std::cerr << "WARNING: --sobol ignored because --euler_quad is selected." << std::endl;
+                    int nBeta = args.GetIntValue("euler_quad", 0);
+                    int nGamma = args.GetIntValue("euler_quad", 1);
+                    if (args.IsCatched("auto_tgrid") && !args.IsCatched("grid") && !args.IsCatched("tgrid"))
+                    {
+                        double tgridEps = args.GetDoubleValue("auto_tgrid", 0);
+                        if (tgridEps <= 0) tgridEps = 0.05;
+                        int nProbe = std::max(64, nBeta * nGamma);
+                        tracer->TraceAdaptiveTheta(nProbe, betaSym, gammaSym, tgridEps, 8, true);
+                    }
+                    if (args.IsCatched("multigrid"))
+                    {
+                        double Dmin = args.GetDoubleValue("multigrid", 0);
+                        double Dmax_mg = args.GetDoubleValue("multigrid", 1);
+                        int nSizes = args.GetIntValue("multigrid", 2);
+                        if (nSizes < 2) nSizes = 2;
+
+                        double D_current = particle->MaximalDimention();
+                        double x_ref = M_PI * D_current / wave;
+
+                        std::vector<double> x_sizes;
+                        double logMin = log(Dmin), logMax = log(Dmax_mg);
+                        for (int i = 0; i < nSizes; ++i) {
+                            double D_user = exp(logMin + (logMax - logMin) * i / (nSizes - 1));
+                            double x = x_ref * (D_user / Dmax_mg);
+                            x_sizes.push_back(x);
+                        }
+                        x_sizes.back() = x_ref;
+
+                        cout << "Multigrid: " << nSizes << " sizes, D=" << Dmin
+                             << ".." << Dmax_mg << " (log), Dmax_particle=" << D_current
+                             << ", x_ref=" << x_ref << endl;
+                        cout << "  x range: " << x_sizes.front() << " .. " << x_sizes.back() << endl;
+
+                        if (D_current < Dmax_mg * 0.99)
+                            std::cerr << "WARNING: -p particle Dmax=" << D_current
+                                      << " < multigrid Dmax=" << Dmax_mg
+                                      << ". Use -p with largest size." << endl;
+
+                        tracer->TraceEulerQuadratureMultiSize(nBeta, nGamma,
+                                                              betaSym, gammaSym,
+                                                              x_sizes, x_ref);
+                    }
+                    else
+                    {
+                        tracer->TraceFromEulerQuadrature(nBeta, nGamma, betaSym, gammaSym);
+                    }
+                }
+                else if (args.IsCatched("multigrid"))
                 {
                     double Dmin = args.GetDoubleValue("multigrid", 0);
                     double Dmax_mg = args.GetDoubleValue("multigrid", 1);
@@ -2087,13 +2380,24 @@ int main(int argc, const char* argv[])
         if (!args.IsCatched("po") && !args.IsCatched("fixed")
             && !args.IsCatched("random") && !args.IsCatched("montecarlo")
             && !args.IsCatched("oldauto") && !args.IsCatched("sobol")
-            && !args.IsCatched("auto"))
+            && !args.IsCatched("sobol_seed")
+            && !args.IsCatched("sobol_ring")
+            && !args.IsCatched("hammersley") && !args.IsCatched("lattice")
+            && !args.IsCatched("lattice_z")
+            && !args.IsCatched("euler_quad") && !args.IsCatched("adaptive")
+            && !args.IsCatched("auto") && !args.IsCatched("autofull"))
         {
             cerr << "\nWARNING: No computation mode specified. Nothing was computed.\n"
                  << "  Use --po for Physical Optics, or specify orientation mode:\n"
                  << "    --fixed BETA GAMMA    Fixed orientation\n"
                  << "    --random B G          Random orientation grid\n"
                  << "    --sobol N             Quasi-random orientations\n"
+                 << "    --sobol_seed N S      Sobol with nested Owen scramble seed\n"
+                 << "    --sobol_ring B G      Sobol beta x uniform gamma ring\n"
+                 << "    --hammersley N        Hammersley orientations\n"
+                 << "    --lattice N           Rank-1 lattice orientations\n"
+                 << "    --lattice_z N Z       Rank-1 lattice with generator Z\n"
+                 << "    --euler_quad B G      High-order Euler quadrature\n"
                  << "    --oldauto DIV         Physics-based auto grid\n"
                  << "    --auto EPS            Full auto mode\n"
                  << "  Example: mbs_po --po -p 1 10 5 --ri 1.3 0 -w 1 -n 4 --oldauto 8\n";

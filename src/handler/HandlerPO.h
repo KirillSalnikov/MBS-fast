@@ -140,9 +140,15 @@ public:
     bool IsGpuEnabled() const;
     void SetFftEnabled(bool value);
     bool IsFftEnabled() const;
+    void SetFftPhiFactor(int value);
+    int FftPhiFactor() const;
+    void AutoSelectFftPhiFactor(double eps);
+    static bool HasNumericFftPhiFactorOverride();
+    static int SelectAutoFftPhiFactor(int nPhi, double eps);
     void SetFullOnly(bool value);
     bool IsFullOnly() const;
     bool ComputeNoShadow() const;
+    bool HasAbsorptionAccounting() const;
 
     matrix *m_Lp;
     matrix *m_Ln;
@@ -203,6 +209,7 @@ public:
     bool outputJones = false;
     bool m_gpuEnabled = false;
     bool m_fftEnabled = false;
+    int m_fftPhiFactor = 0;
     bool m_fullOnly = true;
 protected:
     bool isNanOccured = false;

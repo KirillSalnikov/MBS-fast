@@ -7,7 +7,7 @@
 /**
  * Simple 2D Sobol quasi-random sequence generator.
  * Uses Van der Corput for dimension 1, Joe-Kuo direction numbers for dimension 2.
- * Supports optional Owen scrambling via XOR with random seed.
+ * Supports nested Owen scrambling via seed-dependent per-prefix bit permutations.
  */
 class Sobol2D
 {
@@ -25,10 +25,12 @@ public:
 
 private:
     uint32_t m_index;
+    uint32_t m_seed;
     uint32_t m_state[2];
     uint32_t m_directions[2][32];
-    uint32_t m_scramble[2];
 
     void initDirections();
-    uint32_t hash(uint32_t seed, uint32_t dim);
+    uint32_t hash(uint32_t seed, uint32_t dim, uint32_t level,
+                  uint32_t prefix) const;
+    uint32_t scrambleOwen(uint32_t value, uint32_t dim) const;
 };

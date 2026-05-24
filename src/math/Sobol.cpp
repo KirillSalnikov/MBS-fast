@@ -1,16 +1,12 @@
 #include "Sobol.h"
 
 Sobol2D::Sobol2D(uint32_t seed)
-    : m_index(0)
+    : m_index(0), m_seed(seed)
 {
     m_state[0] = 0;
     m_state[1] = 0;
 
     initDirections();
-
-    // Owen scrambling: hash seed into per-dimension scramble values
-    m_scramble[0] = hash(seed, 0);
-    m_scramble[1] = hash(seed, 1);
 }
 
 void Sobol2D::reset()
@@ -20,14 +16,41 @@ void Sobol2D::reset()
     m_state[1] = 0;
 }
 
-uint32_t Sobol2D::hash(uint32_t seed, uint32_t dim)
+uint32_t Sobol2D::hash(uint32_t seed, uint32_t dim, uint32_t level,
+                       uint32_t prefix) const
 {
-    // Simple hash for scrambling
-    uint32_t h = seed * 2654435761u + dim * 2246822519u;
+    uint32_t h = seed ^ 0x9e3779b9u;
+    h ^= dim + 0x85ebca6bu + (h << 6) + (h >> 2);
+    h ^= level + 0xc2b2ae35u + (h << 6) + (h >> 2);
+    h ^= prefix + 0x27d4eb2fu + (h << 6) + (h >> 2);
     h ^= h >> 16;
-    h *= 0x45d9f3b;
+    h *= 0x7feb352du;
+    h ^= h >> 15;
+    h *= 0x846ca68bu;
     h ^= h >> 16;
     return h;
+}
+
+uint32_t Sobol2D::scrambleOwen(uint32_t value, uint32_t dim) const
+{
+    uint32_t out = 0;
+    uint32_t prefix = 0;
+
+    for (uint32_t level = 0; level < 32; ++level)
+    {
+        uint32_t shift = 31u - level;
+        uint32_t bit = (value >> shift) & 1u;
+
+        // Base-2 nested Owen scrambling: at every node of the binary
+        // prefix tree, choose a seed-dependent permutation of the next bit.
+        uint32_t flip = hash(m_seed, dim, level, prefix) & 1u;
+        uint32_t scrambledBit = bit ^ flip;
+
+        out |= scrambledBit << shift;
+        prefix = (prefix << 1) | bit;
+    }
+
+    return out;
 }
 
 void Sobol2D::initDirections()
@@ -65,9 +88,9 @@ void Sobol2D::next(double &x, double &y)
     m_state[1] ^= m_directions[1][c];
     ++m_index;
 
-    // Apply scramble and convert to [0,1)
-    uint32_t s0 = m_state[0] ^ m_scramble[0];
-    uint32_t s1 = m_state[1] ^ m_scramble[1];
+    // Apply nested Owen scrambling and convert to [0,1).
+    uint32_t s0 = scrambleOwen(m_state[0], 0);
+    uint32_t s1 = scrambleOwen(m_state[1], 1);
 
     x = (double)s0 / 4294967296.0; // 2^32
     y = (double)s1 / 4294967296.0;
