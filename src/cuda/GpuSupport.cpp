@@ -7,6 +7,10 @@
 #include <cuda_runtime.h>
 #endif
 
+#ifndef MBS_GPU_BUILD_ARCH
+#define MBS_GPU_BUILD_ARCH 0
+#endif
+
 bool CheckGpuRuntime(GpuDeviceInfo &info, std::string &error)
 {
 #ifndef USE_CUDA
@@ -53,12 +57,26 @@ bool CheckGpuRuntime(GpuDeviceInfo &info, std::string &error)
         error = std::string("cudaSetDevice failed: ") + cudaGetErrorString(err);
         return false;
     }
+    err = cudaFree(0);
+    if (err != cudaSuccess)
+    {
+        error = std::string("CUDA context initialization failed: ") + cudaGetErrorString(err);
+        return false;
+    }
+
+    int runtimeVersion = 0;
+    int driverVersion = 0;
+    cudaRuntimeGetVersion(&runtimeVersion);
+    cudaDriverGetVersion(&driverVersion);
 
     info.deviceId = deviceId;
     info.name = prop.name;
     info.totalGlobalMem = (long long)prop.totalGlobalMem;
     info.computeMajor = prop.major;
     info.computeMinor = prop.minor;
+    info.runtimeVersion = runtimeVersion;
+    info.driverVersion = driverVersion;
+    info.buildArch = MBS_GPU_BUILD_ARCH;
     return true;
 #endif
 }
@@ -69,5 +87,10 @@ std::string FormatGpuInfo(const GpuDeviceInfo &info)
     out << "CUDA device " << info.deviceId << ": " << info.name
         << ", cc " << info.computeMajor << "." << info.computeMinor
         << ", memory " << (info.totalGlobalMem / (1024LL * 1024LL)) << " MB";
+    if (info.buildArch > 0)
+        out << ", build sm_" << info.buildArch;
+    if (info.runtimeVersion > 0 || info.driverVersion > 0)
+        out << ", CUDA runtime " << info.runtimeVersion
+            << ", driver " << info.driverVersion;
     return out.str();
 }

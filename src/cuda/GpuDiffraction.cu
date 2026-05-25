@@ -505,6 +505,15 @@ static bool gpu_report_cuda_error(cudaError_t err, const char *where)
         return true;
     std::fprintf(stderr, "CUDA backend error at %s: %s\n",
                  where, cudaGetErrorString(err));
+    const char *allowFallback = std::getenv("MBS_GPU_ALLOW_FALLBACK");
+    if (!(allowFallback && allowFallback[0] == '1' && allowFallback[1] == '\0'))
+    {
+        std::fprintf(stderr,
+                     "FATAL: CUDA backend failed. Set MBS_GPU_ALLOW_FALLBACK=1 "
+                     "to allow the legacy CPU fallback after GPU errors.\n");
+        std::fflush(stderr);
+        std::exit(2);
+    }
     return false;
 }
 
@@ -2170,9 +2179,12 @@ bool HandlerPO::HandleBeamsToLocalGpu(const PreparedOrientation &prepared,
         ws.gridSignature = gridSignature;
     }
 
-    if (cudaMemcpy(ws.beams, hBeams.data(), hBeams.size() * sizeof(GpuBeam), cudaMemcpyHostToDevice) != cudaSuccess) return failSingle("copy-beams");
-    if (cudaMemset(ws.j, 0, hJ.size() * sizeof(GpuReal)) != cudaSuccess) return false;
-    if (cudaMemset(ws.jNoShadow, 0, hJns.size() * sizeof(GpuReal)) != cudaSuccess) return false;
+    cudaError_t errSingle = cudaMemcpy(ws.beams, hBeams.data(), hBeams.size() * sizeof(GpuBeam), cudaMemcpyHostToDevice);
+    if (!gpu_report_cuda_error(errSingle, "single copy-beams")) return failSingle("copy-beams");
+    errSingle = cudaMemset(ws.j, 0, hJ.size() * sizeof(GpuReal));
+    if (!gpu_report_cuda_error(errSingle, "single memset-j")) return failSingle("memset-j");
+    errSingle = cudaMemset(ws.jNoShadow, 0, hJns.size() * sizeof(GpuReal));
+    if (!gpu_report_cuda_error(errSingle, "single memset-j-ns")) return failSingle("memset-j-ns");
 
     long long total = (long long)nBeams * gridCount;
     int block = gpu_block_size();
@@ -2184,11 +2196,20 @@ bool HandlerPO::HandleBeamsToLocalGpu(const PreparedOrientation &prepared,
         real(m_invComplWave), imag(m_invComplWave),
         m_legacySign ? 1 : 0, ws.j, ws.jNoShadow);
 
-    if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess)
-        return false;
+    errSingle = cudaGetLastError();
+    if (!gpu_report_cuda_error(errSingle, "single diffraction kernel launch"))
+        return failSingle("kernel-launch");
+    errSingle = cudaDeviceSynchronize();
+    if (!gpu_report_cuda_error(errSingle, "single diffraction kernel sync"))
+        return failSingle("kernel-sync");
 
-    if (cudaMemcpy(hJ.data(), ws.j, hJ.size() * sizeof(GpuReal), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
-    if (computeNoShadow && cudaMemcpy(hJns.data(), ws.jNoShadow, hJns.size() * sizeof(GpuReal), cudaMemcpyDeviceToHost) != cudaSuccess) return false;
+    errSingle = cudaMemcpy(hJ.data(), ws.j, hJ.size() * sizeof(GpuReal), cudaMemcpyDeviceToHost);
+    if (!gpu_report_cuda_error(errSingle, "single copy-j-host")) return failSingle("copy-j-host");
+    if (computeNoShadow)
+    {
+        errSingle = cudaMemcpy(hJns.data(), ws.jNoShadow, hJns.size() * sizeof(GpuReal), cudaMemcpyDeviceToHost);
+        if (!gpu_report_cuda_error(errSingle, "single copy-j-ns-host")) return failSingle("copy-j-ns-host");
+    }
 
     add_mueller_from_jones(hJ, prepared.sinZenith, nAz, nZen, localM);
     if (computeNoShadow)
@@ -3496,14 +3517,22 @@ bool HandlerPO::DiffractThetasGpu(const std::vector<PreparedOrientation> &prepar
     if (!ensure_device_capacity(ws.vf, ws.vfCap, hVf.size())) return false;
     if (!ensure_device_capacity(ws.m, ws.mCap, (size_t)nPoints)) return false;
 
-    if (cudaMemcpy(ws.beams, ws.hBeams.data(), ws.hBeams.size() * sizeof(GpuBeam), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    if (cudaMemcpy(ws.weights, ws.hWeights.data(), ws.hWeights.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    if (cudaMemcpy(ws.sinTheta, hSinTheta.data(), hSinTheta.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    if (cudaMemcpy(ws.cosTheta, hCosTheta.data(), hCosTheta.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    if (cudaMemcpy(ws.sinPhi, hSinPhi.data(), hSinPhi.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    if (cudaMemcpy(ws.cosPhi, hCosPhi.data(), hCosPhi.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    if (cudaMemcpy(ws.vf, hVf.data(), hVf.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    if (cudaMemset(ws.m, 0, (size_t)nPoints * sizeof(GpuReal)) != cudaSuccess) return false;
+    cudaError_t errTheta = cudaMemcpy(ws.beams, ws.hBeams.data(), ws.hBeams.size() * sizeof(GpuBeam), cudaMemcpyHostToDevice);
+    if (!gpu_report_cuda_error(errTheta, "theta copy-beams")) return false;
+    errTheta = cudaMemcpy(ws.weights, ws.hWeights.data(), ws.hWeights.size() * sizeof(GpuReal), cudaMemcpyHostToDevice);
+    if (!gpu_report_cuda_error(errTheta, "theta copy-weights")) return false;
+    errTheta = cudaMemcpy(ws.sinTheta, hSinTheta.data(), hSinTheta.size() * sizeof(GpuReal), cudaMemcpyHostToDevice);
+    if (!gpu_report_cuda_error(errTheta, "theta copy-sintheta")) return false;
+    errTheta = cudaMemcpy(ws.cosTheta, hCosTheta.data(), hCosTheta.size() * sizeof(GpuReal), cudaMemcpyHostToDevice);
+    if (!gpu_report_cuda_error(errTheta, "theta copy-costheta")) return false;
+    errTheta = cudaMemcpy(ws.sinPhi, hSinPhi.data(), hSinPhi.size() * sizeof(GpuReal), cudaMemcpyHostToDevice);
+    if (!gpu_report_cuda_error(errTheta, "theta copy-sinphi")) return false;
+    errTheta = cudaMemcpy(ws.cosPhi, hCosPhi.data(), hCosPhi.size() * sizeof(GpuReal), cudaMemcpyHostToDevice);
+    if (!gpu_report_cuda_error(errTheta, "theta copy-cosphi")) return false;
+    errTheta = cudaMemcpy(ws.vf, hVf.data(), hVf.size() * sizeof(GpuReal), cudaMemcpyHostToDevice);
+    if (!gpu_report_cuda_error(errTheta, "theta copy-vf")) return false;
+    errTheta = cudaMemset(ws.m, 0, (size_t)nPoints * sizeof(GpuReal));
+    if (!gpu_report_cuda_error(errTheta, "theta memset-m")) return false;
 
     int block = gpu_block_size();
     long long total = (long long)nBeams * gridCount;
@@ -3516,11 +3545,16 @@ bool HandlerPO::DiffractThetasGpu(const std::vector<PreparedOrientation> &prepar
         real(m_invComplWave), imag(m_invComplWave),
         m_legacySign ? 1 : 0, ws.m);
 
-    if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess)
+    errTheta = cudaGetLastError();
+    if (!gpu_report_cuda_error(errTheta, "theta m11 kernel launch"))
+        return false;
+    errTheta = cudaDeviceSynchronize();
+    if (!gpu_report_cuda_error(errTheta, "theta m11 kernel sync"))
         return false;
 
     std::vector<GpuReal> hM11(nPoints);
-    if (cudaMemcpy(hM11.data(), ws.m, (size_t)nPoints * sizeof(GpuReal), cudaMemcpyDeviceToHost) != cudaSuccess)
+    errTheta = cudaMemcpy(hM11.data(), ws.m, (size_t)nPoints * sizeof(GpuReal), cudaMemcpyDeviceToHost);
+    if (!gpu_report_cuda_error(errTheta, "theta copy-m11-host"))
         return false;
     for (int i = 0; i < nPoints; ++i)
         m11_out[i] = hM11[i];

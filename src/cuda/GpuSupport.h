@@ -9,6 +9,9 @@ struct GpuDeviceInfo
     long long totalGlobalMem = 0;
     int computeMajor = 0;
     int computeMinor = 0;
+    int runtimeVersion = 0;
+    int driverVersion = 0;
+    int buildArch = 0;
 };
 
 bool CheckGpuRuntime(GpuDeviceInfo &info, std::string &error);

@@ -22,7 +22,7 @@ mpirun -np 4 cpu/bin/mbs_po_mpi --po --sobol 4096 ...
 
 # CUDA binary. GPU backend is enabled by default in this binary.
 PATH=/usr/local/cuda/bin:$PATH \
-make -C gpu -j NVCCFLAGS="-O3 -std=c++11 -arch=sm_86 -U_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700"
+make -C gpu -j
 gpu/bin/mbs_po_gpu_float_fast --po --fft --autofull 0.05 ...
 ```
 
@@ -31,6 +31,14 @@ The split builds keep object files out of `src`: CPU objects go to
 CLI implementation still live in `src/`, so the CPU and GPU binaries do not
 drift into two separate codebases. In the GPU split build `--gpu` is optional;
 use `--cpu` only to force the CPU backend from the GPU-capable binary.
+
+The GPU split build auto-detects the CUDA compute capability with
+`nvidia-smi` and falls back to `GPU_ARCH=86` when it cannot query a device.
+Override explicitly when needed, for example:
+
+```bash
+make -C gpu -j GPU_ARCH=86
+```
 
 | Script | Target CPU | Binary |
 |--------|-----------|--------|
@@ -90,6 +98,14 @@ default:
 bin/mbs_po_float_fast --po --pf particle.dat --k_eq 50 \
     --ri 1.6 0.002 -w 1.064 -n 14 \
     --oldauto 2 --grid 0 180 600 181 --gpu --fft --close
+```
+
+CUDA runtime errors are fatal by default in the GPU split build. This prevents a
+bad GPU binary from silently continuing on the CPU and producing misleading
+timings. For debugging only, restore the old fallback behavior with:
+
+```bash
+MBS_GPU_ALLOW_FALLBACK=1 gpu/bin/mbs_po_gpu_float_fast ...
 ```
 
 `--fft` first computes diffraction on a reduced uniform `phi` grid and then

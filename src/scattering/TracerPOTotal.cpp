@@ -4894,6 +4894,10 @@ void TracerPOTotal::TraceAdaptiveTheta(int nOrient, double betaSym, double gamma
     // Cache all PreparedOrientations (for DiffractAtThetas)
     std::vector<PreparedOrientation> allPrepared(nOrient);
     CalcTimer timer; timer.Start();
+    auto traceStart = std::chrono::high_resolution_clock::now();
+    int progressStep = std::max(1, nOrient / 10);
+    int nextProgress = progressStep;
+    size_t preparedBeamCount = 0;
     if (m_mpiRank == 0) {
         std::cout << "AdaptiveTheta: tracing " << nOrient << " orientations..." << std::endl;
         OutputStartTime(timer);
@@ -4905,10 +4909,34 @@ void TracerPOTotal::TraceAdaptiveTheta(int nOrient, double betaSym, double gamma
         m_particle->Rotate(beta, gamma, 0);
         if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
         bool ok = m_scattering->ScatterLight(0, 0, outBeams);
-        if (ok) hp->PrepareBeams(outBeams, weight, allPrepared[i]);
-        else    allPrepared[i].sinZenith = weight;
+        if (ok) {
+            hp->PrepareBeams(outBeams, weight, allPrepared[i]);
+            preparedBeamCount += allPrepared[i].beams.size();
+        }
+        else {
+            allPrepared[i].sinZenith = weight;
+        }
         m_incomingEnergy += m_scattering->GetIncedentEnergy() * weight;
         outBeams.clear();
+
+        int done = i + 1;
+        if (m_mpiRank == 0 && (done >= nextProgress || done == nOrient)) {
+            double elapsed = std::chrono::duration<double>(
+                std::chrono::high_resolution_clock::now() - traceStart).count();
+            double rate = (elapsed > 0.0) ? done / elapsed : 0.0;
+            double eta = (rate > 0.0) ? (nOrient - done) / rate : 0.0;
+            std::streamsize oldPrec = std::cout.precision();
+            std::ios::fmtflags oldFlags = std::cout.flags();
+            std::cout << "AdaptiveTheta trace: " << done << "/" << nOrient
+                      << " (" << std::fixed << std::setprecision(1)
+                      << (100.0 * done / std::max(1, nOrient)) << "%), elapsed "
+                      << elapsed << " s, ETA " << eta << " s, beams "
+                      << preparedBeamCount << std::endl;
+            std::cout.precision(oldPrec);
+            std::cout.flags(oldFlags);
+            while (nextProgress <= done)
+                nextProgress += progressStep;
+        }
     }
 
     auto t_trace_end = std::chrono::high_resolution_clock::now();
@@ -6281,6 +6309,15 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
 
     std::cout << "===== AUTOFULL: 3D sequential optimization =====" << std::endl;
     std::cout << "Target accuracy: " << eps*100 << "%" << std::endl;
+    std::cout << "Initial grid: N_theta=" << (nZen + 1)
+              << ", N_phi=" << nAz
+              << ", backend=" << (hp->IsGpuEnabled()
+                    ? (hp->IsFftEnabled() ? "CUDA FFT" : "CUDA")
+                    : "OpenMP")
+              << std::endl;
+#ifdef _OPENMP
+    std::cout << "OpenMP max threads: " << omp_get_max_threads() << std::endl;
+#endif
     std::cout << std::endl;
 
     // =========================================================================

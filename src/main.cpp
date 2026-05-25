@@ -240,6 +240,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("mirror_gamma", 0, true); // use mirror symmetry: gamma fundamental range is halved
     parser.AddRule("threads", 1, true); // OpenMP worker threads
     parser.AddRule("gpu", 0, true); // enable CUDA GPU backend
+    parser.AddRule("cpu", 0, true); // force CPU backend in GPU-default builds
     parser.AddRule("fft", 0, true); // enable experimental FFT angular interpolation backend
     parser.AddRule("coh_orient", 0, true); // coherent across orientations (legacy mode)
     parser.AddRule("pole", 0, true); // fast pole shortcut: one gamma value at beta poles
@@ -309,7 +310,8 @@ void PrintHelp()
 
          << "=== Optimization ===\n"
          << "  --threads N            OpenMP worker threads (default: physical cores)\n"
-         << "  --gpu                  Use CUDA GPU backend for diffraction (requires USE_CUDA=1 build)\n"
+         << "  --gpu                  Use CUDA GPU backend for diffraction (default in gpu/ build)\n"
+         << "  --cpu                  Force CPU backend in gpu/ build\n"
          << "  --fft                  With --gpu, use experimental cuFFT phi interpolation backend\n"
          << "                         Auto modes select phi factor from EPS/Nphi; env MBS_FFT_PHI_FACTOR=N overrides\n"
          << "  --beam_cutoff EPS      Set both relative beam cutoffs below; skip if either matches\n"
@@ -983,9 +985,18 @@ int main(int argc, const char* argv[])
     }
 
     // Check --help before full parse (avoids required arg errors)
+    bool rawGpu = false;
+    bool rawCpu = false;
     for (int i = 1; i < argc; ++i) {
         std::string a(argv[i]);
         if (a == "--help" || a == "-h") { PrintHelp(); return 0; }
+        if (a == "--gpu") rawGpu = true;
+        if (a == "--cpu") rawCpu = true;
+    }
+    if (rawGpu && rawCpu)
+    {
+        std::cerr << "ERROR: --gpu and --cpu are mutually exclusive." << std::endl;
+        return 1;
     }
 
     ArgPP args;
@@ -1003,21 +1014,35 @@ int main(int argc, const char* argv[])
         ConfigureOpenMPThreads(threads);
     }
 
-    if (args.IsCatched("gpu"))
+    if (args.IsCatched("gpu") && args.IsCatched("cpu"))
+    {
+        std::cerr << "ERROR: --gpu and --cpu are mutually exclusive." << std::endl;
+        return 1;
+    }
+
+#if defined(USE_CUDA) && defined(MBS_GPU_DEFAULT_ON)
+    const bool defaultGpu = true;
+#else
+    const bool defaultGpu = false;
+#endif
+    const bool useGpu = args.IsCatched("gpu") || (defaultGpu && !args.IsCatched("cpu"));
+
+    if (useGpu)
     {
         GpuDeviceInfo gpuInfo;
         std::string gpuError;
         if (!CheckGpuRuntime(gpuInfo, gpuError))
         {
-            std::cerr << "ERROR: --gpu requested but CUDA GPU is unavailable: "
+            std::cerr << "ERROR: CUDA GPU backend is unavailable: "
                       << gpuError << std::endl;
             return 1;
         }
 
-        std::cout << "GPU requested: " << FormatGpuInfo(gpuInfo) << std::endl;
+        std::cout << "GPU backend: " << FormatGpuInfo(gpuInfo)
+                  << (defaultGpu && !args.IsCatched("gpu") ? " (default)" : "")
+                  << std::endl;
     }
 
-    const bool useGpu = args.IsCatched("gpu");
     const bool useFft = args.IsCatched("fft");
     if (useFft && !useGpu)
     {
