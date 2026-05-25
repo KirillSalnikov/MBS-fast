@@ -118,13 +118,15 @@ void ApplyBeamCutoffOptions(const ArgPP &args, Handler *handler)
         handler->m_beamCutoffImportanceRel = args.GetDoubleValue("beam_cutoff_importance", 0);
 }
 
-void ApplyPOOutputOptions(const ArgPP &args, HandlerPO *handler)
+void ApplyPOOutputOptions(const ArgPP &args, HandlerPO *handler, double wave)
 {
     if (!handler)
         return;
     handler->SetFullOnly(!args.IsCatched("noshadow_output"));
-    if (args.IsCatched("ot_far_path"))
-        handler->m_otFarReferencePath = args.GetDoubleValue("ot_far_path", 0);
+    handler->m_otPhaseAverage = args.IsCatched("ot_phase_avg");
+    if (args.IsCatched("ot_phase_shift"))
+        handler->m_otFarReferencePath =
+            args.GetDoubleValue("ot_phase_shift", 0) * wave;
 }
 
 void ApplyTraceCutoffOptions(const ArgPP &args, Scattering *scattering)
@@ -214,7 +216,8 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("beam_cutoff_j", 1, true); // relative |J|^2 beam cutoff
     parser.AddRule("beam_cutoff_area", 1, true); // relative area beam cutoff
     parser.AddRule("beam_cutoff_importance", 1, true); // relative |J|^2*area beam cutoff
-    parser.AddRule("ot_far_path", 1, true); // optical-theorem far reference path
+    parser.AddRule("ot_phase_avg", 0, true); // average optical-theorem extinction over far-reference phase
+    parser.AddRule("ot_phase_shift", 1, true); // diagnostic OT far-reference phase shift in wavelengths
     parser.AddRule("trace_cutoff", 1, true); // common relative tracing prune cutoff
     parser.AddRule("trace_cutoff_j", 1, true); // relative |J|^2 tracing prune cutoff
     parser.AddRule("trace_cutoff_area", 1, true); // relative area tracing prune cutoff
@@ -323,7 +326,8 @@ void PrintHelp()
          << "  --beam_cutoff_j EPS    Skip beams with |J|^2/max < EPS (0 disables J test)\n"
          << "  --beam_cutoff_area EPS Skip beams with area/max < EPS (0 disables area test)\n"
          << "  --beam_cutoff_importance EPS Skip beams with |J|^2*area/max < EPS\n"
-         << "  --ot_far_path L        Far reference optical path for OT extinction (default 20000)\n"
+         << "  --ot_phase_avg         Average OT extinction over one far-reference phase period\n"
+         << "  --ot_phase_shift F     Diagnostic OT phase shift in wavelengths (default 0)\n"
          << "  --trace_cutoff EPS     Stop tracing internal beams if either relative test matches\n"
          << "  --trace_cutoff_j EPS   Trace prune by |J|^2/initial-max < EPS\n"
          << "  --trace_cutoff_area EPS Trace prune by area/initial-max < EPS\n"
@@ -1451,7 +1455,7 @@ int main(int argc, const char* argv[])
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
             handler->SetFftEnabled(useFft);
-            ApplyPOOutputOptions(args, handler);
+            ApplyPOOutputOptions(args, handler, wave);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             handler->outputJones = args.IsCatched("jones");
@@ -1633,7 +1637,7 @@ int main(int argc, const char* argv[])
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
             handler->SetFftEnabled(useFft);
-            ApplyPOOutputOptions(args, handler);
+            ApplyPOOutputOptions(args, handler, wave);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             ApplyNphiOverride(args, conus);
@@ -1847,7 +1851,7 @@ int main(int argc, const char* argv[])
                 handler->isCoh = !args.IsCatched("incoh");
                 handler->SetGpuEnabled(useGpu);
                 handler->SetFftEnabled(useFft);
-                ApplyPOOutputOptions(args, handler);
+                ApplyPOOutputOptions(args, handler, wave);
                 handler->m_legacySign = args.IsCatched("legacy_sign");
                 handler->useKarczewski = args.IsCatched("karczewski");
                 ApplyNphiOverride(args, conus);
@@ -1932,7 +1936,7 @@ int main(int argc, const char* argv[])
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
             handler->SetFftEnabled(useFft);
-            ApplyPOOutputOptions(args, handler);
+            ApplyPOOutputOptions(args, handler, wave);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             ApplyNphiOverride(args, conus);
             handler->SetScatteringSphere(conus);
@@ -1974,7 +1978,7 @@ int main(int argc, const char* argv[])
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
             handler->SetFftEnabled(useFft);
-            ApplyPOOutputOptions(args, handler);
+            ApplyPOOutputOptions(args, handler, wave);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             ApplyNphiOverride(args, conus);
@@ -2012,6 +2016,68 @@ int main(int argc, const char* argv[])
             bool isHammersley = args.IsCatched("hammersley");
             bool isLattice = args.IsCatched("lattice") || args.IsCatched("lattice_z");
             bool isEulerQuad = args.IsCatched("euler_quad");
+            bool oldAutoFullMultiSize = isOldAutoFull
+                && (args.IsCatched("multikeq") || args.IsCatched("multikeq_list")
+                    || args.IsCatched("multigrid"));
+            double oldAutoFullKRef = 0.0;
+            double oldAutoFullDRef = 0.0;
+            if (oldAutoFullMultiSize)
+            {
+                if (args.IsCatched("multikeq") || args.IsCatched("multikeq_list"))
+                {
+                    if (args.IsCatched("multikeq_list"))
+                    {
+                        std::vector<double> listed =
+                            ReadSizeList(args.GetStringValue("multikeq_list", 0));
+                        if (listed.empty())
+                        {
+                            std::cerr << "ERROR: --multikeq_list has no sizes." << std::endl;
+                            return 1;
+                        }
+                        oldAutoFullKRef =
+                            *std::max_element(listed.begin(), listed.end());
+                    }
+                    else
+                    {
+                        oldAutoFullKRef = args.GetDoubleValue("multikeq", 1);
+                    }
+                    if (oldAutoFullKRef <= 0 || wave <= 0)
+                    {
+                        std::cerr << "ERROR: --oldautofull multikeq requires positive Kmax/list max and wavelength." << std::endl;
+                        return 1;
+                    }
+                    double v = particle->Volume();
+                    double req = (v > 0)
+                        ? pow(3.0 * v / (4.0 * M_PI), 1.0 / 3.0) : 0.0;
+                    if (req <= DBL_EPSILON)
+                    {
+                        std::cerr << "ERROR: cannot apply --oldautofull multikeq because current equivalent radius is zero." << std::endl;
+                        return 1;
+                    }
+                    double targetReq = oldAutoFullKRef * wave / (2.0 * M_PI);
+                    double ratio = targetReq / req;
+                    particle->Resize(particle->MaximalDimention() * ratio);
+                    additionalSummary += "\tOldautofull multikeq reference resize: k_eq="
+                        + std::to_string(oldAutoFullKRef)
+                        + ", Dmax=" + std::to_string(particle->MaximalDimention())
+                        + ", resize factor=" + std::to_string(ratio) + "\n";
+                }
+                else
+                {
+                    oldAutoFullDRef = args.GetDoubleValue("multigrid", 1);
+                    if (oldAutoFullDRef <= 0)
+                    {
+                        std::cerr << "ERROR: --oldautofull multigrid requires positive Dmax." << std::endl;
+                        return 1;
+                    }
+                    double oldD = particle->MaximalDimention();
+                    particle->Resize(oldAutoFullDRef);
+                    additionalSummary += "\tOldautofull multigrid reference resize: Dmax="
+                        + std::to_string(oldAutoFullDRef)
+                        + ", resize factor=" + std::to_string(particle->MaximalDimention() / oldD)
+                        + "\n";
+                }
+            }
             if (isAdaptive)
                 additionalSummary += ", adaptive Sobol\n\n";
             else if (isSobolSeed)
@@ -2069,7 +2135,7 @@ int main(int argc, const char* argv[])
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
             handler->SetFftEnabled(useFft);
-            ApplyPOOutputOptions(args, handler);
+            ApplyPOOutputOptions(args, handler, wave);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             ApplyNphiOverride(args, conus);
@@ -2166,6 +2232,119 @@ int main(int argc, const char* argv[])
                 }
                 tracer->TraceAutoFull(epsAdapt, betaSym, gammaSym, maxOrientUser,
                                       particle, wave, conus, handler);
+                if (oldAutoFullMultiSize)
+                {
+                    if (!tracer->m_lastOldAutoFullGridValid)
+                    {
+                        std::cerr << "ERROR: --oldautofull did not produce a regular final grid for multigrid/multikeq." << std::endl;
+                        return 1;
+                    }
+
+                    AngleRange betaRange(0.0, tracer->m_lastOldAutoFullBetaSym,
+                                         tracer->m_lastOldAutoFullNBeta);
+                    AngleRange gammaRange(0.0, tracer->m_lastOldAutoFullGammaSym,
+                                          tracer->m_lastOldAutoFullNGamma);
+
+                    std::cout << std::endl
+                              << "Oldautofull shared multi-size: reusing tuned"
+                              << " reference grid n=" << tracer->m_lastOldAutoFullN
+                              << ", N_phi=" << tracer->m_lastOldAutoFullNphi
+                              << ", beta/gamma="
+                              << (tracer->m_lastOldAutoFullNBeta + 1)
+                              << " x " << tracer->m_lastOldAutoFullNGamma
+                              << " (div" << tracer->m_lastOldAutoFullDiv
+                              << ")" << std::endl;
+
+                    std::vector<double> xSizes;
+                    std::vector<std::string> labels;
+                    if (args.IsCatched("multikeq") || args.IsCatched("multikeq_list"))
+                    {
+                        std::vector<double> kSizes;
+                        std::string rangeText;
+                        if (args.IsCatched("multikeq_list"))
+                        {
+                            std::string listFile = args.GetStringValue("multikeq_list", 0);
+                            kSizes = ReadSizeList(listFile);
+                            if (kSizes.empty())
+                            {
+                                std::cerr << "ERROR: --multikeq_list has no sizes." << std::endl;
+                                return 1;
+                            }
+                            double Kmin = *std::min_element(kSizes.begin(), kSizes.end());
+                            double Kmax = *std::max_element(kSizes.begin(), kSizes.end());
+                            rangeText = std::to_string(Kmin) + ".."
+                                + std::to_string(Kmax) + " from " + listFile;
+                        }
+                        else
+                        {
+                            double Kmin = args.GetDoubleValue("multikeq", 0);
+                            double Kmax = args.GetDoubleValue("multikeq", 1);
+                            int nSizes = args.GetIntValue("multikeq", 2);
+                            if (Kmin <= 0 || Kmax <= 0)
+                            {
+                                std::cerr << "ERROR: --multikeq values must be positive." << std::endl;
+                                return 1;
+                            }
+                            kSizes = GenerateLogSizes(Kmin, Kmax, nSizes);
+                            rangeText = std::to_string(Kmin) + ".."
+                                + std::to_string(Kmax);
+                        }
+
+                        double currentVolumeForMulti = particle->Volume();
+                        double currentReqForMulti = (currentVolumeForMulti > 0)
+                            ? pow(3.0 * currentVolumeForMulti / (4.0 * M_PI), 1.0 / 3.0)
+                            : 0.0;
+                        double kRef = (wave > 0 && currentReqForMulti > 0)
+                            ? (2.0 * M_PI * currentReqForMulti / wave) : 0.0;
+                        double xRef = M_PI * particle->MaximalDimention() / wave;
+                        if (kRef <= 0 || xRef <= 0)
+                        {
+                            std::cerr << "ERROR: --oldautofull multikeq requires positive wavelength and particle volume." << std::endl;
+                            return 1;
+                        }
+                        xSizes.reserve(kSizes.size());
+                        labels.reserve(kSizes.size());
+                        for (double k : kSizes)
+                        {
+                            xSizes.push_back(xRef * (k / kRef));
+                            labels.push_back("keq" + SizeLabel(k));
+                        }
+                        std::cout << "Shared oldautofull multikeq: k_eq "
+                                  << rangeText << " (" << kSizes.size()
+                                  << " sizes), reference k_eq=" << kRef
+                                  << std::endl;
+                    }
+                    else
+                    {
+                        double Dmin = args.GetDoubleValue("multigrid", 0);
+                        double Dmax_mg = args.GetDoubleValue("multigrid", 1);
+                        int nSizes = args.GetIntValue("multigrid", 2);
+                        if (Dmin <= 0 || Dmax_mg <= 0)
+                        {
+                            std::cerr << "ERROR: --multigrid values must be positive." << std::endl;
+                            return 1;
+                        }
+                        std::vector<double> dSizes =
+                            GenerateLogSizes(Dmin, Dmax_mg, nSizes);
+                        double Dref = particle->MaximalDimention();
+                        double xRef = M_PI * Dref / wave;
+                        xSizes.reserve(dSizes.size());
+                        labels.reserve(dSizes.size());
+                        for (double d : dSizes)
+                        {
+                            xSizes.push_back(xRef * (d / Dref));
+                            labels.push_back("D" + SizeLabel(d));
+                        }
+                        std::cout << "Shared oldautofull multigrid: D "
+                                  << Dmin << ".." << Dmax_mg << " ("
+                                  << dSizes.size()
+                                  << " log sizes), reference Dmax=" << Dref
+                                  << std::endl;
+                    }
+
+                    tracer->TraceRandomMultiSize(betaRange, gammaRange,
+                                                 xSizes, labels);
+                }
             }
             else if (isAdaptive)
             {

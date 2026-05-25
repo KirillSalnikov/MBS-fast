@@ -7004,6 +7004,15 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
                                    ScatteringRange &conus,
                                    HandlerPOTotal *handler)
 {
+    m_lastOldAutoFullGridValid = false;
+    m_lastOldAutoFullN = 0;
+    m_lastOldAutoFullNphi = 0;
+    m_lastOldAutoFullNBeta = 0;
+    m_lastOldAutoFullNGamma = 0;
+    m_lastOldAutoFullDiv = 0;
+    m_lastOldAutoFullBetaSym = 0.0;
+    m_lastOldAutoFullGammaSym = 0.0;
+
     auto t_total_start = std::chrono::high_resolution_clock::now();
     HandlerPO *hp = dynamic_cast<HandlerPO*>(m_handler);
     if (!hp) { std::cerr << "Error: not HandlerPO" << std::endl; return; }
@@ -8045,6 +8054,14 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
 
             AngleRange betaRange(0.0, betaSym, est.nBeta);
             AngleRange gammaRange(0.0, gammaSym, est.nGamma);
+            m_lastOldAutoFullGridValid = true;
+            m_lastOldAutoFullN = n_opt;
+            m_lastOldAutoFullNphi = hp->m_sphere.nAzimuth;
+            m_lastOldAutoFullNBeta = est.nBeta;
+            m_lastOldAutoFullNGamma = est.nGamma;
+            m_lastOldAutoFullDiv = est.div;
+            m_lastOldAutoFullBetaSym = betaSym;
+            m_lastOldAutoFullGammaSym = gammaSym;
             TraceRandom(betaRange, gammaRange);
         }
         else
@@ -8155,6 +8172,6 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
     double total_time = std::chrono::duration<double>(t_total_end - t_total_start).count();
     std::cout << std::endl << "===== AUTOFULL TOTAL: " << std::fixed
               << std::setprecision(1) << total_time << " s =====" << std::endl;
-    std::cout << "Final: n=" << n_opt << ", N_phi=" << phi_opt
+    std::cout << "Final: n=" << n_opt << ", N_phi=" << hp->m_sphere.nAzimuth
               << ", N_theta=" << (hp->m_sphere.nZenith + 1) << std::endl;
 }

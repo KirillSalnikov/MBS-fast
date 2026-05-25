@@ -145,6 +145,17 @@ public:
     /// accepted it as the physics-based maximum instead of chasing noisy tails.
     bool m_lastAdaptiveAcceptedOldautoCap = false;
 
+    /// Last --oldautofull final regular-grid parameters.  Used to reuse the
+    /// strict grid for shared multikeq/multigrid after tuning on the largest size.
+    bool m_lastOldAutoFullGridValid = false;
+    int m_lastOldAutoFullN = 0;
+    int m_lastOldAutoFullNphi = 0;
+    int m_lastOldAutoFullNBeta = 0;
+    int m_lastOldAutoFullNGamma = 0;
+    int m_lastOldAutoFullDiv = 0;
+    double m_lastOldAutoFullBetaSym = 0.0;
+    double m_lastOldAutoFullGammaSym = 0.0;
+
     /// MPI rank and size (default: single process)
     int m_mpiRank = 0;
     int m_mpiSize = 1;

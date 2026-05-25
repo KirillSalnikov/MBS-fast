@@ -855,6 +855,7 @@ void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
     m_fftEnabled = source.m_fftEnabled;
     m_fftPhiFactor = source.m_fftPhiFactor;
     m_otFarReferencePath = source.m_otFarReferencePath;
+    m_otPhaseAverage = source.m_otPhaseAverage;
     isBackScatteringConusEnabled = source.isBackScatteringConusEnabled;
     backScatteringConus = source.backScatteringConus;
 }
@@ -1487,6 +1488,8 @@ double HandlerPO::ComputeForwardExtinctionOt(
 
     for (const PreparedBeam &pb : prepared.beams)
     {
+        if (m_otPhaseAverage && !pb.isExternal)
+            continue;
         if (!pb.edgeData.valid)
             continue;
 

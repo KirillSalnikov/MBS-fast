@@ -397,7 +397,8 @@ public:
     double m_outputEnergy = 0;
     double m_extinctionCrossSectionOt = 0;
     bool m_hasExtinctionOt = false;
-    double m_otFarReferencePath = 20000.0;
+    double m_otFarReferencePath = 0.0;
+    bool m_otPhaseAverage = false;
     std::string m_integralSummary;
 
     std::ofstream *betaFile;
