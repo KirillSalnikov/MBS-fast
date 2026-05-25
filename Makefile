@@ -59,6 +59,23 @@ GPU_TRACE_PROBE = bin/gpu_trace_projection_probe
 
 all: $(TARGET)
 
+cpu:
+	$(MAKE) -C cpu all
+
+gpu:
+	$(MAKE) -C gpu all
+
+gpu_float:
+	$(MAKE) -C gpu float
+
+gpu_float_fast:
+	$(MAKE) -C gpu float_fast
+
+gpu_double_fast:
+	$(MAKE) -C gpu double_fast
+
+split: cpu gpu_float_fast
+
 $(TARGET): $(OBJECTS)
 	@mkdir -p bin
 	@echo "CPU: $(CPU_MODEL)"
@@ -130,6 +147,6 @@ gpu_trace_probe:
 	@false
 endif
 
-.PHONY: all clean clean_cuda_objects cuda_float cuda_float_fast cuda_double_fast cuda_variants fft_probe gpu_trace_probe
+.PHONY: all cpu gpu gpu_float gpu_float_fast gpu_double_fast split clean clean_cuda_objects cuda_float cuda_float_fast cuda_double_fast cuda_variants fft_probe gpu_trace_probe
 
 -include $(DEPS)

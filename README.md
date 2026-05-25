@@ -13,6 +13,25 @@ OpenMP + MPI parallel. AVX-512/AVX2 SIMD. Adaptive grids. Auto beam cutoff.
 
 ## Build
 
+Preferred split builds:
+
+```bash
+# CPU cluster binary: MPI between processes, OpenMP inside each process.
+make -C cpu -j
+mpirun -np 4 cpu/bin/mbs_po_mpi --po --sobol 4096 ...
+
+# CUDA binary. GPU backend is enabled by default in this binary.
+PATH=/usr/local/cuda/bin:$PATH \
+make -C gpu -j NVCCFLAGS="-O3 -std=c++11 -arch=sm_86 -U_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700"
+gpu/bin/mbs_po_gpu_float_fast --po --fft --autofull 0.05 ...
+```
+
+The split builds keep object files out of `src`: CPU objects go to
+`cpu/build/`, CUDA objects go to `gpu/build/`. The shared physical model and
+CLI implementation still live in `src/`, so the CPU and GPU binaries do not
+drift into two separate codebases. In the GPU split build `--gpu` is optional;
+use `--cpu` only to force the CPU backend from the GPU-capable binary.
+
 | Script | Target CPU | Binary |
 |--------|-----------|--------|
 | `make` | Auto CPU flags (EPYC 7H12 -> Zen 2, otherwise native) | `bin/mbs_po` |
@@ -40,6 +59,60 @@ make cuda_float       # bin/mbs_po_float
 make cuda_float_fast  # bin/mbs_po_float_fast
 make cuda_double_fast # bin/mbs_po_double_fast
 ```
+
+CUDA precision builds:
+
+| Command | Binary | CUDA diffraction precision | Use case |
+|---------|--------|----------------------------|----------|
+| `make USE_CUDA=1` | `bin/mbs_po` | double | default CUDA build, safest |
+| `make cuda_float` | `bin/mbs_po_float` | float / FP32 | test FP32 without fast math |
+| `make cuda_float_fast` | `bin/mbs_po_float_fast` | float / FP32 + fast math | production fast GPU run on RTX cards |
+| `make cuda_double_fast` | `bin/mbs_po_double_fast` | double + fast math | reference/fallback GPU run |
+
+For RTX 3080 Ti / 4070 SUPER build the release binaries explicitly for
+Ampere-compatible `sm_86`:
+
+```bash
+PATH=/usr/local/cuda/bin:$PATH \
+make cuda_float_fast -j1 \
+    NVCCFLAGS="-O3 -std=c++11 -arch=sm_86 -U_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700"
+
+PATH=/usr/local/cuda/bin:$PATH \
+make cuda_double_fast -j1 \
+    NVCCFLAGS="-O3 -std=c++11 -arch=sm_86 -U_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700"
+```
+
+Legacy root CUDA builds still need `--gpu` to use CUDA and `--fft` to use the
+cuFFT phi-interpolation backend. The new `gpu/` split build enables CUDA by
+default:
+
+```bash
+bin/mbs_po_float_fast --po --pf particle.dat --k_eq 50 \
+    --ri 1.6 0.002 -w 1.064 -n 14 \
+    --oldauto 2 --grid 0 180 600 181 --gpu --fft --close
+```
+
+`--fft` first computes diffraction on a reduced uniform `phi` grid and then
+reconstructs the requested `Nphi` grid by Fourier zero-padding. For safer runs
+use global full-`Nphi` fallback on suspicious theta rows after the FFT pass:
+
+```bash
+bin/mbs_po_float_fast --po --pf particle.dat --k_eq 50 \
+    --ri 1.6 0.002 -w 1.064 -n 14 \
+    --oldauto 2 --grid 0 180 600 181 --gpu --fft \
+    --fft_auto_phi 1e-3 --fft_auto_phi_max_rows 16 --close
+```
+
+`--fft_auto_phi EPS` keeps the FFT acceleration for the main pass and then
+recomputes only suspicious final theta rows directly at the full requested
+`Nphi`. This global post-pass is much cheaper than refining inside every GPU
+orientation chunk. The older per-chunk detector remains available for debugging
+with `MBS_FFT_ADAPTIVE_PHI=1`.
+
+Production recommendation: use `bin/mbs_po_float_fast` for speed. If a point
+looks suspicious, rerun that case with `bin/mbs_po_double_fast`. The FP32 CUDA
+edge-integral tolerance can be overridden with `MBS_GPU_EPS1=...`; the default
+FP32 minimum is `1e-5`.
 
 The default optimized PO output writes only the full Mueller matrix. Add
 `--noshadow_output` to also write the legacy `_noshadow` matrix.
