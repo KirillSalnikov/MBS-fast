@@ -333,7 +333,7 @@ void Scattering::FormShadowBeam(std::vector<Beam> &scaterredBeams)
 
     shadowBeam.direction = m_incidentLight->direction;
     shadowBeam.polarizationBasis = m_incidentLight->polarizationBasis;
-    shadowBeam.opticalPath = 20000;
+    shadowBeam.opticalPath = 2.0 * splitting.FAR_ZONE_DISTANCE;
     shadowBeam.lastFacetId = __INT_MAX__;
     scaterredBeams.push_back(shadowBeam);
 }

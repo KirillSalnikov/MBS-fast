@@ -35,6 +35,12 @@ struct PreparedBeam
 
     // Original beam data needed for fallback path (non-valid edgeData)
     Beam   origBeam;
+
+    // Internal optical path samples used to reapply absorption when a
+    // prepared reference-size beam is rescaled in multikeq/multigrid.
+    std::vector<double> absorptionPaths;
+    double outputCrossSection = 0.0;
+    double outputMueller00 = 0.0;
 };
 
 /// All preprocessed beams from one orientation, ready for parallel processing.
@@ -42,6 +48,7 @@ struct PreparedOrientation
 {
     std::vector<PreparedBeam> beams;
     double sinZenith;  // weight for this orientation
+    double extinctionOt = 0.0;
 };
 
 class HandlerPO : public Handler
@@ -70,6 +77,7 @@ public:
     /// Must be called sequentially (uses m_isBadBeam, modifies beams).
     void PrepareBeams(std::vector<Beam> &beams, double sinZenith,
                       PreparedOrientation &out);
+    double ComputeForwardExtinctionOt(const PreparedOrientation &prepared) const;
 
     /// Copy immutable settings needed by PrepareBeams into a worker-local
     /// handler. The worker gets its own Scattering/Particle state.

@@ -123,6 +123,8 @@ void ApplyPOOutputOptions(const ArgPP &args, HandlerPO *handler)
     if (!handler)
         return;
     handler->SetFullOnly(!args.IsCatched("noshadow_output"));
+    if (args.IsCatched("ot_far_path"))
+        handler->m_otFarReferencePath = args.GetDoubleValue("ot_far_path", 0);
 }
 
 void ApplyTraceCutoffOptions(const ArgPP &args, Scattering *scattering)
@@ -212,6 +214,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("beam_cutoff_j", 1, true); // relative |J|^2 beam cutoff
     parser.AddRule("beam_cutoff_area", 1, true); // relative area beam cutoff
     parser.AddRule("beam_cutoff_importance", 1, true); // relative |J|^2*area beam cutoff
+    parser.AddRule("ot_far_path", 1, true); // optical-theorem far reference path
     parser.AddRule("trace_cutoff", 1, true); // common relative tracing prune cutoff
     parser.AddRule("trace_cutoff_j", 1, true); // relative |J|^2 tracing prune cutoff
     parser.AddRule("trace_cutoff_area", 1, true); // relative area tracing prune cutoff
@@ -230,6 +233,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("nphi", 1, true); // override N_phi (takes priority over --grid and --auto_phi)
     parser.AddRule("adaptive", 1, true); // adaptive convergence (target relative accuracy)
     parser.AddRule("autofull", 1, true); // full 3D sequential: n → N_phi → N_orient
+    parser.AddRule("oldautofull", 1, true); // autofull search + oldauto regular final grid
     parser.AddRule("owen_avg", 1, true); // --autofull final: average K nested Owen Sobol seeds
     parser.AddRule("owen_seeds", '+', true); // explicit seeds for --autofull final averaging
     parser.AddRule("auto", 1, true); // full auto: auto_tgrid + auto_phi + adaptive (one arg: eps)
@@ -283,7 +287,8 @@ void PrintHelp()
          << "  --adaptive EPS         Adaptive Sobol (converge to EPS relative accuracy)\n"
          << "  --auto EPS             Full auto: adaptive theta + phi + orientations\n"
          << "  --autofull EPS         Full auto including n search\n"
-         << "  --owen_avg K           With --autofull, average K nested Owen final seeds (default 3)\n"
+         << "  --oldautofull EPS      Autofull search, oldauto regular final orientation grid\n"
+         << "  --owen_avg K           With --autofull, average K nested Owen final seeds (default 5)\n"
          << "  --owen_seeds S...      Explicit final Owen seeds for --autofull averaging\n"
          << "  --oldauto DIV          Physics-based grid (div2/div4/div8 of diffraction limit)\n"
          << "  --ring_points N        Points per diffraction ring for orientation estimates (default 3)\n"
@@ -318,6 +323,7 @@ void PrintHelp()
          << "  --beam_cutoff_j EPS    Skip beams with |J|^2/max < EPS (0 disables J test)\n"
          << "  --beam_cutoff_area EPS Skip beams with area/max < EPS (0 disables area test)\n"
          << "  --beam_cutoff_importance EPS Skip beams with |J|^2*area/max < EPS\n"
+         << "  --ot_far_path L        Far reference optical path for OT extinction (default 20000)\n"
          << "  --trace_cutoff EPS     Stop tracing internal beams if either relative test matches\n"
          << "  --trace_cutoff_j EPS   Trace prune by |J|^2/initial-max < EPS\n"
          << "  --trace_cutoff_area EPS Trace prune by area/initial-max < EPS\n"
@@ -377,17 +383,84 @@ void PrintHelp()
          << endl;
 }
 
+static int RoundUpToMultiple(int value, int multiple)
+{
+    if (value <= 0 || multiple <= 1)
+        return value;
+    return ((value + multiple - 1) / multiple) * multiple;
+}
+
+static int MirrorSafePhiCount(ArgPP &parser, int nphi)
+{
+    if (nphi <= 0)
+        return nphi;
+    if (parser.IsCatched("mirror_gamma") || parser.IsCatched("fft"))
+    {
+        int rounded = RoundUpToMultiple(nphi, 6);
+        if (rounded != nphi)
+        {
+            std::cerr << "WARNING: "
+                      << (parser.IsCatched("mirror_gamma") ? "--mirror_gamma" : "--fft")
+                      << " requires N_phi divisible by 6 for exact phi-sector "
+                      << "mapping; using N_phi=" << rounded
+                      << " instead of " << nphi << std::endl;
+        }
+        return rounded;
+    }
+    if (nphi % 6 != 0)
+    {
+        std::cerr << "WARNING: N_phi=" << nphi
+                  << " is not divisible by 6. This is allowed for direct "
+                  << "calculation, but exact hexagonal phi-sector reuse "
+                  << "requires N_phi % 6 == 0." << std::endl;
+    }
+    return nphi;
+}
+
+static void SetRangeNphi(ArgPP &parser, ScatteringRange &range, int nphi)
+{
+    nphi = MirrorSafePhiCount(parser, nphi);
+    if (nphi > 0)
+    {
+        range.nAzimuth = nphi;
+        range.azinuthStep = 2.0 * M_PI / nphi;
+    }
+}
+
+static void MakeMirrorGammaRangeConsistent(ArgPP &parser, Particle *particle,
+                                           AngleRange &gamma)
+{
+    if (!parser.IsCatched("mirror_gamma"))
+        return;
+
+    if (!parser.IsCatched("g"))
+    {
+        gamma.min = 0.0;
+        gamma.max = 0.5 * particle->GetSymmetry().gamma;
+        gamma.norm = gamma.max - gamma.min;
+        gamma.step = gamma.norm / gamma.number;
+        std::cout << "Gamma mirror symmetry: random gamma range reduced to 0.."
+                  << RadToDeg(gamma.max) << " deg" << std::endl;
+    }
+
+    if (gamma.number % 2 != 0)
+    {
+        int old = gamma.number;
+        gamma.number += 1;
+        gamma.step = gamma.norm / gamma.number;
+        std::cerr << "WARNING: --mirror_gamma works best with an even number "
+                  << "of gamma points in the half-domain; using "
+                  << gamma.number << " instead of " << old << std::endl;
+    }
+}
+
 /// Apply --nphi override if present (highest priority for N_phi)
 void ApplyNphiOverride(ArgPP &parser, ScatteringRange &range)
 {
     if (parser.IsCatched("nphi"))
     {
         int nphi = parser.GetIntValue("nphi", 0);
-        if (nphi > 0)
-        {
-            range.nAzimuth = nphi;
-            range.azinuthStep = 2.0 * M_PI / nphi;
-        }
+        SetRangeNphi(parser, range, nphi);
     }
 }
 
@@ -431,7 +504,7 @@ ScatteringRange SetConus(ArgPP &parser)
     if (parser.GetArgNumber("grid") == 3)
     {
         double radius = parser.GetDoubleValue("grid", 0);
-        int nAz = parser.GetDoubleValue("grid", 1);
+        int nAz = MirrorSafePhiCount(parser, parser.GetDoubleValue("grid", 1));
         int nZen = parser.GetDoubleValue("grid", 2);
         range = ScatteringRange(M_PI - DegToRad(radius), M_PI, nAz, nZen);
     }
@@ -442,7 +515,7 @@ ScatteringRange SetConus(ArgPP &parser)
 
         if (zenStart < zenEnd)
         {
-            int nAz = parser.GetDoubleValue("grid", 2);
+            int nAz = MirrorSafePhiCount(parser, parser.GetDoubleValue("grid", 2));
             int nZen = parser.GetDoubleValue("grid", 3);
             range = ScatteringRange(DegToRad(zenStart), DegToRad(zenEnd), nAz, nZen);
         }
@@ -471,8 +544,7 @@ ScatteringRange SetConus(ArgPP &parser)
         // If --tgrid without --grid, set default N_phi=48
         if (!parser.IsCatched("grid"))
         {
-            range.nAzimuth = 48;
-            range.azinuthStep = 2.0 * M_PI / 48;
+            SetRangeNphi(parser, range, 48);
         }
         std::cout << "Non-uniform theta grid: " << (range.nZenith + 1)
                   << " points from " << RadToDeg(range.zenithStart)
@@ -627,7 +699,7 @@ std::vector<unsigned int> BuildOwenAverageSeeds(const ArgPP &args)
 
     if (!args.IsCatched("owen_avg"))
     {
-        int defaultCount = 3;
+        int defaultCount = 5;
         if (const char *env = std::getenv("MBS_AUTOFULL_DEFAULT_OWEN_AVG"))
         {
             char *end = nullptr;
@@ -1484,6 +1556,14 @@ int main(int argc, const char* argv[])
             int N_gamma = (N_gamma_full + div - 1) / div;
             if (N_beta < 3) N_beta = 3;
             if (N_gamma < 3) N_gamma = 3;
+            if (mirrorGamma && (N_gamma % 2 != 0))
+            {
+                int old = N_gamma;
+                ++N_gamma;
+                std::cerr << "WARNING: --mirror_gamma rounded oldauto gamma "
+                          << "points to an even half-domain count: "
+                          << old << " -> " << N_gamma << std::endl;
+            }
 
             // N_phi priority: --nphi > --grid > default 360.
             // --grid has two forms: radius Nphi Ntheta, or theta1 theta2 Nphi Ntheta.
@@ -1499,6 +1579,7 @@ int main(int argc, const char* argv[])
                     ? (int)args.GetDoubleValue("grid", 1)
                     : (int)args.GetDoubleValue("grid", 2);
             }
+            N_phi = MirrorSafePhiCount(args, N_phi);
 
             cout << "=== oldauto (physics-based) ===" << endl;
             cout << "  Dmax=" << L << " um, lambda=" << wave << " um" << endl;
@@ -1534,8 +1615,7 @@ int main(int argc, const char* argv[])
 
             // Set N_phi (only if --grid didn't set it explicitly)
             if (!args.IsCatched("grid")) {
-                conus.nAzimuth = N_phi;
-                conus.azinuthStep = 2.0 * M_PI / N_phi;
+                SetRangeNphi(args, conus, N_phi);
             }
 
             TracerPOTotal *tracer = new TracerPOTotal(particle, reflNum, dirName);
@@ -1663,11 +1743,13 @@ int main(int argc, const char* argv[])
         else if (args.IsCatched("random"))
         {
             // Warn if --auto/--adaptive also specified (random takes priority)
-            if (args.IsCatched("auto") || args.IsCatched("autofull") || args.IsCatched("adaptive"))
+            if (args.IsCatched("auto") || args.IsCatched("autofull")
+                || args.IsCatched("oldautofull") || args.IsCatched("adaptive"))
                 std::cerr << "WARNING: --random overrides --auto/--adaptive. Use --sobol instead." << std::endl;
             additionalSummary += ", random orientation\n\n";
             AngleRange beta = GetRange(args, "b", particle);
             AngleRange gamma = GetRange(args, "g", particle);
+            MakeMirrorGammaRangeConsistent(args, particle, gamma);
 
             HandlerPO *handler;
 
@@ -1815,7 +1897,16 @@ int main(int argc, const char* argv[])
             // montecarlo doesn't use --random, get ranges from particle symmetry
             double betaMax = particle->GetSymmetry().beta;
             double gammaMax = particle->GetSymmetry().gamma;
+            if (args.IsCatched("mirror_gamma"))
+                gammaMax *= 0.5;
             int nOr = args.GetIntValue("montecarlo", 0);
+            if (args.IsCatched("mirror_gamma") && (nOr % 2 != 0))
+            {
+                std::cerr << "WARNING: --mirror_gamma rounded montecarlo "
+                          << "gamma grid count to an even half-domain count: "
+                          << nOr << " -> " << (nOr + 1) << std::endl;
+                ++nOr;
+            }
             AngleRange beta(0, betaMax, nOr);
             AngleRange gamma(0, gammaMax, nOr);
 
@@ -1907,11 +1998,14 @@ int main(int argc, const char* argv[])
               || args.IsCatched("hammersley") || args.IsCatched("lattice")
               || args.IsCatched("lattice_z")
               || args.IsCatched("euler_quad")
-              || args.IsCatched("adaptive") || args.IsCatched("auto") || args.IsCatched("autofull"))
+              || args.IsCatched("adaptive") || args.IsCatched("auto")
+              || args.IsCatched("autofull") || args.IsCatched("oldautofull"))
         {
             // --auto EPS implies --adaptive EPS + --auto_tgrid + --auto_phi
-            bool isAuto = args.IsCatched("auto") || args.IsCatched("autofull");
-            bool isAutoFull = args.IsCatched("autofull");
+            bool isOldAutoFull = args.IsCatched("oldautofull");
+            bool isAuto = args.IsCatched("auto") || args.IsCatched("autofull")
+                || isOldAutoFull;
+            bool isAutoFull = args.IsCatched("autofull") || isOldAutoFull;
             bool isAdaptive = args.IsCatched("adaptive") || isAuto;
             bool isSobolSeed = args.IsCatched("sobol_seed");
             bool isSobolRing = args.IsCatched("sobol_ring");
@@ -1940,7 +2034,7 @@ int main(int argc, const char* argv[])
                 : ScatteringRange(0, M_PI, 1, 1);
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_oldAutoFullFinal = isOldAutoFull; tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
             tracer->m_scattering->m_wave = wave;
             ApplyTraceCutoffOptions(args, tracer->m_scattering);
             tracer->shadowOff = args.IsCatched("shadow_off");
@@ -1984,7 +2078,8 @@ int main(int argc, const char* argv[])
                 if (!HandlerPO::HasNumericFftPhiFactorOverride())
                 {
                     double fftEps = isAutoFull
-                        ? args.GetDoubleValue("autofull", 0)
+                        ? (isOldAutoFull ? args.GetDoubleValue("oldautofull", 0)
+                                         : args.GetDoubleValue("autofull", 0))
                         : args.GetDoubleValue("auto", 0);
                     int fftFactor = HandlerPO::SelectAutoFftPhiFactor(conus.nAzimuth, fftEps);
                     handler->SetFftPhiFactor(fftFactor);
@@ -2033,23 +2128,14 @@ int main(int argc, const char* argv[])
                               << std::endl;
             }
 
-            // Pass target accuracy to handler for beam cutoff.
-            // Explicit beam cutoff flags have priority over --auto/--adaptive eps.
-            bool explicitBeamCutoff = args.IsCatched("beam_cutoff")
-                || args.IsCatched("beam_cutoff_j")
-                || args.IsCatched("beam_cutoff_area")
-                || args.IsCatched("beam_cutoff_importance");
-            if (!explicitBeamCutoff && isAdaptive) {
-                double epsForCutoff = args.IsCatched("autofull")
-                    ? args.GetDoubleValue("autofull", 0)
-                    : (args.IsCatched("auto") ? args.GetDoubleValue("auto", 0)
-                    : (args.IsCatched("adaptive") ? args.GetDoubleValue("adaptive", 0) : 0.01));
-                handler->m_targetEps = epsForCutoff;
-            }
+            // Beam cutoff is opt-in only.  Autofull accuracy targets must not
+            // silently discard beams; use --beam_cutoff* explicitly.
 
             if (isAutoFull)
             {
-                double epsAdapt = args.GetDoubleValue("autofull", 0);
+                double epsAdapt = isOldAutoFull
+                    ? args.GetDoubleValue("oldautofull", 0)
+                    : args.GetDoubleValue("autofull", 0);
                 int maxOrientUser = args.IsCatched("maxorient")
                     ? args.GetIntValue("maxorient", 0) : 0;
                 tracer->m_owenAverageSeeds = BuildOwenAverageSeeds(args);
@@ -2059,6 +2145,24 @@ int main(int argc, const char* argv[])
                     for (unsigned int seed : tracer->m_owenAverageSeeds)
                         std::cout << ' ' << seed;
                     std::cout << std::endl;
+                }
+                if (isOldAutoFull)
+                    std::cout << "Oldautofull: final orientation averaging uses"
+                              << " regular oldauto beta/gamma grid" << std::endl;
+                if (isOldAutoFull && args.IsCatched("mirror_gamma"))
+                {
+                    gammaSym *= 0.5;
+                    std::cout << "Oldautofull mirror gamma: using 0.."
+                              << RadToDeg(gammaSym)
+                              << " deg half-domain for final regular grid"
+                              << std::endl;
+                }
+                else if (!isOldAutoFull && args.IsCatched("mirror_gamma"))
+                {
+                    std::cerr << "WARNING: --mirror_gamma with --autofull/Sobol "
+                              << "projects an irregular orientation set. Use "
+                              << "--oldautofull for regular oldauto-style "
+                              << "mirror averaging." << std::endl;
                 }
                 tracer->TraceAutoFull(epsAdapt, betaSym, gammaSym, maxOrientUser,
                                       particle, wave, conus, handler);
@@ -2379,6 +2483,7 @@ int main(int argc, const char* argv[])
             additionalSummary += ", random orientation, ";
             AngleRange beta = GetRange(args, "b", particle);
             AngleRange gamma = GetRange(args, "g", particle);
+            MakeMirrorGammaRangeConsistent(args, particle, gamma);
             additionalSummary += "grid: " + to_string(beta.number) + "x" + to_string(gamma.number) + "\n\n";
             cout << additionalSummary;
             tracer.m_summary = additionalSummary;
@@ -2389,7 +2494,16 @@ int main(int argc, const char* argv[])
             additionalSummary += ", Monte Carlo method, ";
             double betaMax = particle->GetSymmetry().beta;
             double gammaMax = particle->GetSymmetry().gamma;
+            if (args.IsCatched("mirror_gamma"))
+                gammaMax *= 0.5;
             int nOr = args.GetIntValue("montecarlo", 0);
+            if (args.IsCatched("mirror_gamma") && (nOr % 2 != 0))
+            {
+                std::cerr << "WARNING: --mirror_gamma rounded montecarlo "
+                          << "gamma grid count to an even half-domain count: "
+                          << nOr << " -> " << (nOr + 1) << std::endl;
+                ++nOr;
+            }
             AngleRange beta(0, betaMax, nOr);
             AngleRange gamma(0, gammaMax, nOr);
             cout << additionalSummary;
@@ -2410,7 +2524,8 @@ int main(int argc, const char* argv[])
             && !args.IsCatched("hammersley") && !args.IsCatched("lattice")
             && !args.IsCatched("lattice_z")
             && !args.IsCatched("euler_quad") && !args.IsCatched("adaptive")
-            && !args.IsCatched("auto") && !args.IsCatched("autofull"))
+            && !args.IsCatched("auto") && !args.IsCatched("autofull")
+            && !args.IsCatched("oldautofull"))
         {
             cerr << "\nWARNING: No computation mode specified. Nothing was computed.\n"
                  << "  Use --po for Physical Optics, or specify orientation mode:\n"

@@ -150,10 +150,13 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
         const double C_abs_raw = m_hasAbsorption ? (nrg - m_outputEnergy) : 0.0;
         const double absTol = std::max(1.0, nrg) * 1e-10;
         const double C_abs = (std::fabs(C_abs_raw) < absTol) ? 0.0 : C_abs_raw;
-        const double C_ext = C_sca + C_abs;
+        const double C_ext_legacy = C_sca + C_abs;
+        const double C_ext = m_hasExtinctionOt
+            ? m_extinctionCrossSectionOt : C_ext_legacy;
         const double Q_sca = C_sca / nrg;
         const double Q_abs = C_abs / nrg;
         const double Q_ext = C_ext / nrg;
+        const double Q_ext_legacy = C_ext_legacy / nrg;
         const std::string label =
             (destName.find("noshadow") != std::string::npos) ? "no-shadow" : "full";
         if (label == "full")
@@ -169,12 +172,29 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
         {
             log << "Outcoming energy = " << m_outputEnergy << "\n";
             log << "C_abs = A_proj - outcoming energy = " << C_abs << "\n";
-            log << "C_ext = C_sca + C_abs = " << C_ext << "\n";
+            if (m_hasExtinctionOt)
+            {
+                log << "C_ext_OT = optical theorem forward amplitude = "
+                    << m_extinctionCrossSectionOt << "\n";
+                log << "Q_ext_OT = C_ext_OT / A_proj = " << Q_ext << "\n";
+                log << "C_ext_legacy = C_sca + C_abs_GO = "
+                    << C_ext_legacy << "\n";
+                log << "Q_ext_legacy = C_ext_legacy / A_proj = "
+                    << Q_ext_legacy << "\n";
+            }
+            else
+            {
+                log << "C_ext = C_sca + C_abs = " << C_ext << "\n";
+            }
             log << "Q_abs = C_abs / A_proj = " << Q_abs << "\n";
             log << "Q_ext = C_ext / A_proj = " << Q_ext << "\n";
             log << "EFFICIENCY_SUMMARY "
                 << "Qext=" << Q_ext << ' '
                 << "Cext=" << C_ext << ' '
+                << "Qext_legacy=" << Q_ext_legacy << ' '
+                << "Cext_legacy=" << C_ext_legacy << ' '
+                << "Cext_OT=" << (m_hasExtinctionOt
+                    ? m_extinctionCrossSectionOt : 0.0) << ' '
                 << "Qabs=" << Q_abs << ' '
                 << "Qsca=" << Q_sca << ' '
                 << "Csca=" << C_sca << ' '

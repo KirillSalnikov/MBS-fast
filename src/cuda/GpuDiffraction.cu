@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <cfloat>
 #include <cstdio>
 #include <vector>
 #include <utility>
@@ -161,6 +162,22 @@ struct GpuWorkspace
 
 static GpuWorkspace g_gpuWorkspace;
 
+static inline double prepared_absorption_factor(const PreparedBeam &pb,
+                                                double scale,
+                                                double cAbs)
+{
+    if (pb.absorptionPaths.empty())
+        return 1.0;
+    double sum = 0.0;
+    int count = 0;
+    for (double path : pb.absorptionPaths)
+    {
+        sum += (path > DBL_EPSILON) ? std::exp(cAbs * path * scale) : 1.0;
+        ++count;
+    }
+    return count > 0 ? sum / count : 1.0;
+}
+
 template <typename BeamT, int MaxEdges>
 static inline void pack_prepared_gpu_beam(const PreparedBeam &pb,
                                           int orientation,
@@ -168,6 +185,7 @@ static inline void pack_prepared_gpu_beam(const PreparedBeam &pb,
                                           double scale2,
                                           bool scaleOnPack,
                                           double waveIndex,
+                                          double cAbs,
                                           BeamT &b)
 {
     b.nVertices = pb.edgeData.nVertices;
@@ -212,10 +230,11 @@ static inline void pack_prepared_gpu_beam(const PreparedBeam &pb,
             sign = -sign;
         if (!pb.isExternal && (pb.origBeam.nActs & 1))
             sign = -sign;
+        const double absorption = prepared_absorption_factor(pb, scale, cAbs);
         auto set_j = [&](const ::complex &jc, GpuReal &reOut, GpuReal &imOut)
         {
-            const double jr = real(jc);
-            const double ji = imag(jc);
+            const double jr = real(jc) * absorption;
+            const double ji = imag(jc) * absorption;
             reOut = (GpuReal)(sign * (jr * cs - ji * sn));
             imOut = (GpuReal)(sign * (jr * sn + ji * cs));
         };
@@ -239,6 +258,7 @@ static inline void pack_prepared_gpu_beam8(const PreparedBeam &pb,
                                            double scale2,
                                            bool scaleOnPack,
                                            double waveIndex,
+                                           double cAbs,
                                            GpuBeam8 &b)
 {
     b.nVertices = pb.edgeData.nVertices;
@@ -281,10 +301,11 @@ static inline void pack_prepared_gpu_beam8(const PreparedBeam &pb,
             sign = -sign;
         if (!pb.isExternal && (pb.origBeam.nActs & 1))
             sign = -sign;
+        const double absorption = prepared_absorption_factor(pb, scale, cAbs);
         auto set_j = [&](const ::complex &jc, GpuReal &reOut, GpuReal &imOut)
         {
-            const double jr = real(jc);
-            const double ji = imag(jc);
+            const double jr = real(jc) * absorption;
+            const double ji = imag(jc) * absorption;
             reOut = (GpuReal)(sign * (jr * cs - ji * sn));
             imOut = (GpuReal)(sign * (jr * sn + ji * cs));
         };
@@ -3108,10 +3129,12 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         {
             if (packBeam8)
                 pack_prepared_gpu_beam8(
-                    pb, oi, scale, scale2, scaleOnPack, waveIndex, hBeams8[out++]);
+                    pb, oi, scale, scale2, scaleOnPack, waveIndex,
+                    AbsorptionCoefficient(), hBeams8[out++]);
             else
                 pack_prepared_gpu_beam<GpuBeam, 32>(
-                    pb, oi, scale, scale2, scaleOnPack, waveIndex, hBeams[out++]);
+                    pb, oi, scale, scale2, scaleOnPack, waveIndex,
+                    AbsorptionCoefficient(), hBeams[out++]);
         }
     }
     if (beamStats)

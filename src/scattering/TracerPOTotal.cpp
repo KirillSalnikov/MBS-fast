@@ -44,6 +44,52 @@ static void ApplyMirrorGammaMueller(Arr2D &arr, int nAz, int nZen)
     arr = mirrored;
 }
 
+static bool OldautoGammaStaggerEnabled()
+{
+    const char *env = std::getenv("MBS_OLDAUTO_GAMMA_STAGGER");
+    if (!env || !*env)
+        return false;
+    return env[0] == '1' && env[1] == '\0';
+}
+
+static double OldautoGammaAngle(const AngleRange &gammaRange, int nGamma,
+                                int gammaIndex, int betaIndex,
+                                bool stagger)
+{
+    double unit = gammaIndex + 0.5;
+    if (stagger && nGamma > 1)
+    {
+        // Deterministic Cranley-Patterson shift per beta ring.  This keeps the
+        // midpoint rule in gamma but prevents every beta ring from sampling the
+        // same periodic phase, which can alias narrow specular events.
+        const double golden = 0.6180339887498948482;
+        double shift = std::fmod((betaIndex + 0.5) * golden, 1.0);
+        unit += shift;
+        unit -= std::floor(unit / nGamma) * nGamma;
+    }
+    return gammaRange.min + unit * gammaRange.step;
+}
+
+static bool OldautoBetaMidpointEnabled()
+{
+    const char *env = std::getenv("MBS_OLDAUTO_BETA_MIDPOINT");
+    if (!env || !*env)
+        return true;
+    return !(env[0] == '0' && env[1] == '\0');
+}
+
+static int OldautoBetaCount(const AngleRange &betaRange, bool midpoint)
+{
+    return midpoint ? betaRange.number : betaRange.number + 1;
+}
+
+static double OldautoBetaAngle(const AngleRange &betaRange, int betaIndex,
+                               bool midpoint)
+{
+    return betaRange.min + (betaIndex + (midpoint ? 0.5 : 0.0))
+        * betaRange.step;
+}
+
 static bool SharedFftGlobalRefineEnabled()
 {
     const char *env = std::getenv("MBS_FFT_GLOBAL_REFINE");
@@ -175,6 +221,19 @@ static double AutoFullRowOrientSafetyFactor(int zone)
                          0.5, 0.0, 1.0);
 }
 
+static bool AutoFullBackscatterConeControlEnabled()
+{
+    const char *env = std::getenv("MBS_AUTOFULL_BACK_CONE_CONTROL");
+    if (!env || !*env)
+        return true;
+    return !(env[0] == '0' && env[1] == '\0');
+}
+
+static double AutoFullBackscatterConeMinDeg()
+{
+    return ReadEnvDouble("MBS_AUTOFULL_BACK_CONE_DEG", 170.0, 120.0, 180.0);
+}
+
 static int AutoFullThetaZoneOrientLimit(int nOrient, int zone)
 {
     if (!AutoFullThetaZonesEnabled())
@@ -230,6 +289,59 @@ static AutoFullOldautoOrientEstimate AutoFullOldautoEstimate(
     est.nGamma = std::max(3, CeilDivInt(est.nGammaFull, est.div));
     est.total = ClampOrientCount((long long)est.nBeta * est.nGamma);
     return est;
+}
+
+static AutoFullOldautoOrientEstimate AutoFullOldautoEstimateForTarget(
+    double betaSym, double gammaSym, double wave, double Dmax,
+    int ringPoints, int targetOrient, bool evenGamma)
+{
+    AutoFullOldautoOrientEstimate best;
+    bool haveBest = false;
+    int bestActualTotal = 0;
+
+    for (int div = 1; div <= 4096; ++div)
+    {
+        AutoFullOldautoOrientEstimate est = AutoFullOldautoEstimate(
+            betaSym, gammaSym, wave, Dmax, ringPoints, div);
+        if (evenGamma && (est.nGamma % 2 != 0))
+            ++est.nGamma;
+        est.total = ClampOrientCount((long long)est.nBeta * est.nGamma);
+        const int actualTotal = ClampOrientCount(
+            (long long)(est.nBeta + 1) * est.nGamma);
+
+        if (actualTotal < targetOrient)
+            continue;
+        if (!haveBest || actualTotal < bestActualTotal)
+        {
+            best = est;
+            bestActualTotal = actualTotal;
+            haveBest = true;
+        }
+    }
+
+    if (!haveBest)
+    {
+        best = AutoFullOldautoEstimate(betaSym, gammaSym, wave, Dmax,
+                                       ringPoints, 1);
+        if (evenGamma && (best.nGamma % 2 != 0))
+            ++best.nGamma;
+        best.total = ClampOrientCount((long long)best.nBeta * best.nGamma);
+    }
+    return best;
+}
+
+static int OldAutoFullFinalTargetOrient(int adaptiveTarget)
+{
+    const double factor = ReadEnvDouble("MBS_OLDAUTOFULL_ORIENT_FACTOR",
+                                        8.0, 1.0, 64.0);
+    const long long target = (long long)std::ceil(
+        std::max(1, adaptiveTarget) * factor);
+    return ClampOrientCount(target);
+}
+
+static int OldAutoFullMinFinalNphi()
+{
+    return ReadEnvInt("MBS_OLDAUTOFULL_MIN_NPHI", 600, 36, 2400);
 }
 
 static double AutoFullThetaZoneCutoffMultiplier(int zone)
@@ -528,6 +640,102 @@ static double OwenMeanMuellerControlError(
     return maxEstimate;
 }
 
+static double OwenMeanMuellerSelectedRowsError(
+    const std::vector<std::vector<double>> &seedCtrl,
+    int ctrlRows,
+    const std::vector<int> &activeRows,
+    std::vector<double> *rowErrors,
+    std::vector<int> *rowElements,
+    int *worstRow,
+    int *worstElement)
+{
+    const int seedCount = (int)seedCtrl.size();
+    const int ctrlValues = ctrlRows * 16;
+    if (seedCount < 2 || ctrlRows <= 0 || activeRows.empty())
+        return 0.0;
+
+    std::vector<double> sum(ctrlValues, 0.0);
+    for (const std::vector<double> &ctrl : seedCtrl)
+    {
+        if ((int)ctrl.size() < ctrlValues)
+        {
+            if (rowErrors)
+                rowErrors->assign(ctrlRows,
+                                  std::numeric_limits<double>::infinity());
+            if (rowElements)
+                rowElements->assign(ctrlRows, 0);
+            if (worstRow)
+                *worstRow = activeRows.front();
+            if (worstElement)
+                *worstElement = 0;
+            return std::numeric_limits<double>::infinity();
+        }
+        for (int i = 0; i < ctrlValues; ++i)
+            sum[i] += ctrl[i];
+    }
+
+    std::vector<double> mean(ctrlValues, 0.0);
+    for (int i = 0; i < ctrlValues; ++i)
+        mean[i] = sum[i] / seedCount;
+
+    if (rowErrors)
+        rowErrors->assign(ctrlRows, 0.0);
+    if (rowElements)
+        rowElements->assign(ctrlRows, 0);
+
+    double maxEstimate = 0.0;
+    int maxRow = activeRows.front();
+    int maxElement = 0;
+    for (int row : activeRows)
+    {
+        if (row < 0 || row >= ctrlRows)
+            continue;
+        double rowSq = 0.0;
+        double rowWorstSeedErr = 0.0;
+        int rowWorstElement = 0;
+        const int base = row * 16;
+        for (int s = 0; s < seedCount; ++s)
+        {
+            double loo[16];
+            for (int e = 0; e < 16; ++e)
+                loo[e] = (sum[base + e] - seedCtrl[s][base + e])
+                    / (seedCount - 1);
+
+            int element = 0;
+            const double err = MuellerRowRelativeErrorValues(
+                &mean[base], loo, &element);
+            if (std::isfinite(err))
+            {
+                rowSq += err * err;
+                if (err > rowWorstSeedErr)
+                {
+                    rowWorstSeedErr = err;
+                    rowWorstElement = element;
+                }
+            }
+        }
+
+        const double estimate =
+            std::sqrt(rowSq / seedCount) / std::sqrt((double)seedCount);
+        if (rowErrors)
+            (*rowErrors)[row] = estimate;
+        if (rowElements)
+            (*rowElements)[row] = rowWorstElement;
+        if (std::isfinite(estimate) && estimate > maxEstimate)
+        {
+            maxEstimate = estimate;
+            maxRow = row;
+            maxElement = rowWorstElement;
+        }
+    }
+
+    if (worstRow)
+        *worstRow = maxRow;
+    if (worstElement)
+        *worstElement = maxElement;
+    return maxEstimate;
+}
+
 static double OwenMeanMuellerControlError(
     const std::vector<std::vector<double>> &seedCtrl,
     int ctrlRows,
@@ -606,11 +814,40 @@ static double AutoFullPhiSafetyFactor()
     return ReadEnvDouble("MBS_AUTOFULL_PHI_SAFETY", 0.85, 0.1, 1.0);
 }
 
+static bool AutoFullFullPhiValidationEnabled(double eps)
+{
+    const bool defaultEnabled = eps > 0.0 && eps <= 0.01;
+    const char *env = std::getenv("MBS_AUTOFULL_FULL_PHI_VALIDATE");
+    if (!env || !*env)
+        return defaultEnabled;
+    return !(env[0] == '0' && env[1] == '\0');
+}
+
+static bool AutoFullStrictFullPhiFinalEnabled(double eps)
+{
+    const bool defaultEnabled = eps > 0.0 && eps <= 0.01;
+    const char *env = std::getenv("MBS_AUTOFULL_STRICT_FULL_PHI");
+    if (!env || !*env)
+        return defaultEnabled;
+    return !(env[0] == '0' && env[1] == '\0');
+}
+
+static int AutoFullStrictMinFinalOrient(double eps)
+{
+    (void)eps;
+    return ReadEnvInt("MBS_AUTOFULL_MIN_FINAL_ORIENT", 0, 0, 1048576);
+}
+
+static int AutoFullOldautoActualOrient(const AutoFullOldautoOrientEstimate &est)
+{
+    return ClampOrientCount((long long)(est.nBeta + 1) * est.nGamma);
+}
+
 static bool AutoFullBeamCutoffAutoEnabled()
 {
     const char *env = std::getenv("MBS_AUTOFULL_BEAM_CUTOFF_AUTO");
     if (!env || !*env)
-        return true;
+        return false;
     return !(env[0] == '0' && env[1] == '\0');
 }
 
@@ -820,6 +1057,57 @@ static std::vector<int> BuildThetaControlIndices(const ScatteringRange &sphere,
     return indices;
 }
 
+static std::vector<int> BuildBackscatterConeControlRows(
+    const ScatteringRange &sphere,
+    const std::vector<int> &ctrlIdx)
+{
+    std::vector<int> rows;
+    if (!AutoFullBackscatterConeControlEnabled())
+        return rows;
+    const double minDeg = AutoFullBackscatterConeMinDeg();
+    for (int row = 0; row < (int)ctrlIdx.size(); ++row)
+    {
+        int idx = std::max(0, std::min(ctrlIdx[row], sphere.nZenith));
+        if (RadToDeg(sphere.GetZenith(idx)) >= minDeg)
+            rows.push_back(row);
+    }
+    if ((int)rows.size() < 2)
+        rows.clear();
+    return rows;
+}
+
+static std::vector<double> AggregateControlRows(
+    const std::vector<double> &values,
+    const std::vector<int> &rows)
+{
+    std::vector<double> out(16, 0.0);
+    if (rows.empty())
+        return out;
+    for (int row : rows)
+    {
+        const int base = row * 16;
+        if (base < 0 || base + 15 >= (int)values.size())
+            continue;
+        for (int e = 0; e < 16; ++e)
+            out[e] += values[base + e];
+    }
+    const double inv = 1.0 / (double)rows.size();
+    for (double &value : out)
+        value *= inv;
+    return out;
+}
+
+static std::vector<std::vector<double>> AggregateSeedControlRows(
+    const std::vector<std::vector<double>> &seedCtrl,
+    const std::vector<int> &rows)
+{
+    std::vector<std::vector<double>> out;
+    out.reserve(seedCtrl.size());
+    for (const std::vector<double> &ctrl : seedCtrl)
+        out.push_back(AggregateControlRows(ctrl, rows));
+    return out;
+}
+
 static void ApplyForwardPoleSymmetryLocal(matrix &m)
 {
     const double M00 = m[0][0];
@@ -928,6 +1216,25 @@ static double WriteOwenSpreadByThetaFile(
     double globalMeanM11 = 0.0;
     int globalMeanTheta = 0;
     int globalMeanElement = 0;
+    std::vector<int> backConeRows;
+    std::vector<char> isBackConeRow(sphere.nZenith + 1, 0);
+    if (AutoFullBackscatterConeControlEnabled())
+    {
+        const double minDeg = AutoFullBackscatterConeMinDeg();
+        for (int t = 0; t <= sphere.nZenith; ++t)
+        {
+            if (RadToDeg(sphere.GetZenith(t)) >= minDeg)
+            {
+                backConeRows.push_back(t);
+                isBackConeRow[t] = 1;
+            }
+        }
+        if ((int)backConeRows.size() < 2)
+        {
+            backConeRows.clear();
+            std::fill(isBackConeRow.begin(), isBackConeRow.end(), 0);
+        }
+    }
 
     for (int t = 0; t <= sphere.nZenith; ++t)
     {
@@ -1012,14 +1319,16 @@ static double WriteOwenSpreadByThetaFile(
                 / std::sqrt((double)seedCount);
         }
 
-        if (rowMueller > globalMueller)
+        const bool exactRowControlsGlobal =
+            t >= (int)isBackConeRow.size() || !isBackConeRow[t];
+        if (exactRowControlsGlobal && rowMueller > globalMueller)
         {
             globalMueller = rowMueller;
             globalM11 = rowM11;
             globalTheta = t;
             globalElement = rowElement;
         }
-        if (rowMeanMueller > globalMeanMueller)
+        if (exactRowControlsGlobal && rowMeanMueller > globalMeanMueller)
         {
             globalMeanMueller = rowMeanMueller;
             globalMeanM11 = rowMeanM11;
@@ -1034,6 +1343,124 @@ static double WriteOwenSpreadByThetaFile(
             << rowMeanM11 * 100.0 << ' '
             << rowMeanMueller * 100.0 << ' '
             << MuellerElementName(rowMeanElement) << '\n';
+    }
+
+    if (!backConeRows.empty())
+    {
+        std::vector<matrix> coneSeed;
+        coneSeed.reserve(seedRows.size());
+        for (size_t s = 0; s < seedRows.size(); ++s)
+            coneSeed.push_back(matrix(4, 4));
+        for (matrix &m : coneSeed)
+            m.Fill(0.0);
+        for (size_t s = 0; s < seedRows.size(); ++s)
+        {
+            for (int t : backConeRows)
+                coneSeed[s] += seedRows[s][t];
+            coneSeed[s] *= (1.0 / (double)backConeRows.size());
+        }
+
+        double coneM11 = 0.0;
+        double coneMueller = 0.0;
+        int coneElement = 0;
+        for (size_t a = 0; a < coneSeed.size(); ++a)
+            for (size_t b = a + 1; b < coneSeed.size(); ++b)
+            {
+                const matrix &ma = coneSeed[a];
+                const matrix &mb = coneSeed[b];
+                const double den = std::max(std::max(std::fabs(ma[0][0]),
+                                                     std::fabs(mb[0][0])),
+                                            1e-30);
+                coneM11 = std::max(coneM11,
+                    std::fabs(ma[0][0] - mb[0][0]) / den);
+                int element = 0;
+                const double err = MuellerMatrixRelativeError(ma, mb,
+                                                              &element);
+                if (std::isfinite(err) && err > coneMueller)
+                {
+                    coneMueller = err;
+                    coneElement = element;
+                }
+            }
+
+        double coneMeanM11 = 0.0;
+        double coneMeanMueller = 0.0;
+        int coneMeanElement = 0;
+        if (coneSeed.size() >= 3)
+        {
+            const int seedCount = (int)coneSeed.size();
+            double sum[16] = {0.0};
+            double mean[16] = {0.0};
+            for (const matrix &m : coneSeed)
+                for (int r = 0; r < 4; ++r)
+                    for (int c = 0; c < 4; ++c)
+                        sum[r * 4 + c] += m[r][c];
+            for (int e = 0; e < 16; ++e)
+                mean[e] = sum[e] / seedCount;
+
+            double m11Sq = 0.0;
+            double muellerSq = 0.0;
+            double worstSeedErr = 0.0;
+            for (const matrix &m : coneSeed)
+            {
+                double loo[16];
+                for (int r = 0; r < 4; ++r)
+                    for (int c = 0; c < 4; ++c)
+                    {
+                        const int e = r * 4 + c;
+                        loo[e] = (sum[e] - m[r][c]) / (seedCount - 1);
+                    }
+                const double denM11 = std::max(std::max(std::fabs(mean[0]),
+                                                        std::fabs(loo[0])),
+                                               1e-30);
+                const double m11Err = std::fabs(mean[0] - loo[0]) / denM11;
+                if (std::isfinite(m11Err))
+                    m11Sq += m11Err * m11Err;
+
+                int element = 0;
+                const double muellerErr =
+                    MuellerRowRelativeErrorValues(mean, loo, &element);
+                if (std::isfinite(muellerErr))
+                {
+                    muellerSq += muellerErr * muellerErr;
+                    if (muellerErr > worstSeedErr)
+                    {
+                        worstSeedErr = muellerErr;
+                        coneMeanElement = element;
+                    }
+                }
+            }
+            coneMeanM11 = std::sqrt(m11Sq / seedCount)
+                / std::sqrt((double)seedCount);
+            coneMeanMueller = std::sqrt(muellerSq / seedCount)
+                / std::sqrt((double)seedCount);
+        }
+
+        if (coneMueller > globalMueller)
+        {
+            globalMueller = coneMueller;
+            globalM11 = coneM11;
+            globalTheta = backConeRows.back();
+            globalElement = coneElement;
+        }
+        if (coneMeanMueller > globalMeanMueller)
+        {
+            globalMeanMueller = coneMeanMueller;
+            globalMeanM11 = coneMeanM11;
+            globalMeanTheta = backConeRows.back();
+            globalMeanElement = coneMeanElement;
+        }
+        out << "# backscatter_cone theta_min_deg "
+            << AutoFullBackscatterConeMinDeg()
+            << " rows " << backConeRows.size()
+            << " m11_pair_spread_pct " << coneM11 * 100.0
+            << " max_mueller_pair_spread_pct " << coneMueller * 100.0
+            << " pair_worst_element " << MuellerElementName(coneElement)
+            << " m11_mean_error_est_pct " << coneMeanM11 * 100.0
+            << " max_mueller_mean_error_est_pct "
+            << coneMeanMueller * 100.0
+            << " mean_worst_element "
+            << MuellerElementName(coneMeanElement) << '\n';
     }
     out.close();
 
@@ -1064,6 +1491,8 @@ static void WriteAveragedRowsFile(const std::string &destName,
                                   const std::vector<matrix> &rows,
                                   double incomingEnergy,
                                   double outputEnergy,
+                                  double cExtOt,
+                                  bool hasExtinctionOt,
                                   bool hasAbsorption,
                                   std::string &integralSummary)
 {
@@ -1090,10 +1519,12 @@ static void WriteAveragedRowsFile(const std::string &destName,
         const double cAbsRaw = hasAbsorption ? (incomingEnergy - outputEnergy) : 0.0;
         const double absTol = std::max(1.0, incomingEnergy) * 1e-10;
         const double cAbs = (std::fabs(cAbsRaw) < absTol) ? 0.0 : cAbsRaw;
-        const double cExt = csca + cAbs;
+        const double cExtLegacy = csca + cAbs;
+        const double cExt = hasExtinctionOt ? cExtOt : cExtLegacy;
         const double qSca = csca / incomingEnergy;
         const double qAbs = cAbs / incomingEnergy;
         const double qExt = cExt / incomingEnergy;
+        const double qExtLegacy = cExtLegacy / incomingEnergy;
 
         std::ostringstream log;
         log << std::fixed << std::setprecision(4);
@@ -1103,12 +1534,28 @@ static void WriteAveragedRowsFile(const std::string &destName,
         log << "Q_sca (full) = C_sca / A_proj = " << qSca << "\n";
         log << "Outcoming energy = " << outputEnergy << "\n";
         log << "C_abs = A_proj - outcoming energy = " << cAbs << "\n";
-        log << "C_ext = C_sca + C_abs = " << cExt << "\n";
+        if (hasExtinctionOt)
+        {
+            log << "C_ext_OT = optical theorem forward amplitude = "
+                << cExtOt << "\n";
+            log << "Q_ext_OT = C_ext_OT / A_proj = " << qExt << "\n";
+            log << "C_ext_legacy = C_sca + C_abs_GO = "
+                << cExtLegacy << "\n";
+            log << "Q_ext_legacy = C_ext_legacy / A_proj = "
+                << qExtLegacy << "\n";
+        }
+        else
+        {
+            log << "C_ext = C_sca + C_abs = " << cExt << "\n";
+        }
         log << "Q_abs = C_abs / A_proj = " << qAbs << "\n";
         log << "Q_ext = C_ext / A_proj = " << qExt << "\n";
         log << "EFFICIENCY_SUMMARY "
             << "Qext=" << qExt << ' '
             << "Cext=" << cExt << ' '
+            << "Qext_legacy=" << qExtLegacy << ' '
+            << "Cext_legacy=" << cExtLegacy << ' '
+            << "Cext_OT=" << (hasExtinctionOt ? cExtOt : 0.0) << ' '
             << "Qabs=" << qAbs << ' '
             << "Qsca=" << qSca << ' '
             << "Csca=" << csca << ' '
@@ -1196,7 +1643,7 @@ static void ProjectSeedRowsRandomOrientationMuellerSymmetry(
 
 static bool AutoFullRobustOwenOutputEnabled()
 {
-    return EnvFlagEnabled("MBS_AUTOFULL_ROBUST_OWEN_OUTPUT", true);
+    return EnvFlagEnabled("MBS_AUTOFULL_ROBUST_OWEN_OUTPUT", false);
 }
 
 static double MedianValue(std::vector<double> values)
@@ -1556,12 +2003,22 @@ static void MPI_ReduceMueller(HandlerPO *hp, int nAz, int nZen,
     double totalOutputEnergy = 0;
     MPI_Reduce(&hp->m_outputEnergy, &totalOutputEnergy, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     if (mpi_rank == 0) hp->m_outputEnergy = totalOutputEnergy;
+
+    double totalExtOt = 0;
+    MPI_Reduce(&hp->m_extinctionCrossSectionOt, &totalExtOt, 1,
+               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (mpi_rank == 0)
+    {
+        hp->m_extinctionCrossSectionOt = totalExtOt;
+        hp->m_hasExtinctionOt = true;
+    }
 #endif
 }
 
 static PreparedOrientation ScalePreparedOrientation(const PreparedOrientation &src,
                                                     double scale,
-                                                    double waveIndex)
+                                                    double waveIndex,
+                                                    double cAbs)
 {
     PreparedOrientation dst = src;
     const double scale2 = scale * scale;
@@ -1592,9 +2049,24 @@ static PreparedOrientation ScalePreparedOrientation(const PreparedOrientation &s
         pb.beam_area *= scale2;
         pb.origBeam.opticalPath *= scale;
 
+        ::complex absorption(1.0, 0.0);
+        if (!pb.absorptionPaths.empty())
+        {
+            double sum = 0.0;
+            int count = 0;
+            for (double path : pb.absorptionPaths)
+            {
+                sum += (path > DBL_EPSILON) ? std::exp(cAbs * path * scale) : 1.0;
+                ++count;
+            }
+            if (count > 0)
+                absorption = sum / count;
+        }
+
+        matrixC J_base = pb.origBeam.J * absorption;
         matrixC J_phased = pb.isExternal
             ? pb.origBeam.J * exp_im(waveIndex * pb.origBeam.opticalPath)
-            : pb.origBeam.J * exp_im(waveIndex * pb.info.projLenght);
+            : J_base * exp_im(waveIndex * pb.info.projLenght);
         if (pb.isExternal)
             J_phased *= -1.0;
         if (!pb.isExternal && (pb.origBeam.nActs & 1))
@@ -1608,6 +2080,37 @@ static PreparedOrientation ScalePreparedOrientation(const PreparedOrientation &s
         pb.jp11r = real(jp11); pb.jp11i = imag(jp11);
     }
     return dst;
+}
+
+static double PreparedAbsorptionFactor(const PreparedBeam &pb, double scale,
+                                       double cAbs)
+{
+    if (pb.absorptionPaths.empty())
+        return 1.0;
+    double sum = 0.0;
+    int count = 0;
+    for (double path : pb.absorptionPaths)
+    {
+        sum += (path > DBL_EPSILON) ? std::exp(cAbs * path * scale) : 1.0;
+        ++count;
+    }
+    return count > 0 ? sum / count : 1.0;
+}
+
+static double PreparedOutputEnergy(const PreparedOrientation &po, double scale,
+                                   double cAbs)
+{
+    const double scale2 = scale * scale;
+    double energy = 0.0;
+    for (const PreparedBeam &pb : po.beams)
+    {
+        if (pb.outputCrossSection <= 0.0 || pb.outputMueller00 == 0.0)
+            continue;
+        const double absorption = PreparedAbsorptionFactor(pb, scale, cAbs);
+        energy += pb.outputCrossSection * scale2 * pb.outputMueller00
+            * absorption * absorption * po.sinZenith;
+    }
+    return energy;
 }
 
 TracerPOTotal::TracerPOTotal(Particle *particle, int nActs,
@@ -1627,12 +2130,19 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
 
     m_incomingEnergy = 0;
     handlerPO->m_outputEnergy = 0;
+    handlerPO->m_extinctionCrossSectionOt = 0;
+    handlerPO->m_hasExtinctionOt = false;
     handlerPO->M.ClearArr();
     handlerPO->M_noshadow.ClearArr();
     handlerPO->CleanJ();
 
+    int nGamma = gammaRange.number; // MBS-raw: same as gammaRange.number
+    const bool betaMidpoint = OldautoBetaMidpointEnabled();
+    int nBeta = OldautoBetaCount(betaRange, betaMidpoint);
+    int nOrientations = nBeta * nGamma;
     int betaNorm = (m_symmetry.beta < M_PI_2+FLT_EPSILON && m_symmetry.beta > M_PI_2-FLT_EPSILON) ? 1 : 2;
     double normGamma = gammaRange.number * betaNorm; // MBS-raw: normalize by gammaRange.number
+    const bool gammaStagger = OldautoGammaStaggerEnabled();
 
     // --coh_orient: legacy mode — HandleBeams accumulates Jones coherently
     // across ALL orientations, then single AddToMueller at end.
@@ -1640,8 +2150,8 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     if (m_cohOrient) {
         m_handler->SetNormIndex(normGamma);
         vector<Beam> outBeams;
-        for (int i = 0; i <= betaRange.number; ++i) {
-            double beta = betaRange.min + i * betaRange.step;
+        for (int i = 0; i < nBeta; ++i) {
+            double beta = OldautoBetaAngle(betaRange, i, betaMidpoint);
             double dcos;
             CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
             const bool pole = (fabs(beta) <= FLT_EPSILON
@@ -1651,7 +2161,8 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             const double gammaWeight = fastPole ? dcos * gammaRange.number : dcos;
             m_handler->SetSinZenith(gammaWeight);
             for (int j = 0; j < gammaCount; ++j) {
-                double gamma = gammaRange.min + (j + 0.5) * gammaRange.step;
+                double gamma = OldautoGammaAngle(gammaRange, nGamma, j, i,
+                                                 gammaStagger && !fastPole);
                 m_particle->Rotate(beta, gamma, 0);
                 if (!shadowOff) m_scattering->FormShadowBeam(outBeams);
                 m_scattering->ScatterLight(0, 0, outBeams);
@@ -1663,16 +2174,12 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         m_handler->WriteTotalMatricesToFile(m_resultDirName);
         m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
         CalcTimer timer; timer.Start();
-        OutputStatisticsPO(timer, (betaRange.number+1)*gammaRange.number, m_resultDirName);
+        OutputStatisticsPO(timer, nOrientations, m_resultDirName);
         return;
     }
 
     // Default: incoherent per-orientation (physically correct)
     // Loop over beta explicitly — enables per-beta Mueller saving
-
-    int nGamma = gammaRange.number; // MBS-raw: same as gammaRange.number
-    int nBeta = betaRange.number + 1;
-    int nOrientations = nBeta * nGamma;
 
     if (m_mpiRank == 0)
         std::cout << "Random grid: " << nBeta << " x " << nGamma
@@ -1717,6 +2224,10 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         {
             line << "sequential tracing (1 thread)";
         }
+        if (gammaStagger)
+            line << "; gamma stagger enabled";
+        if (betaMidpoint)
+            line << "; beta midpoint enabled";
         std::cout << line.str() << std::endl;
         AppendTextLog(line.str() + "\n");
     }
@@ -1765,7 +2276,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         BetaBlock block;
         block.ib = ib;
         block.gammaStart = gammaStart;
-        block.beta = betaRange.min + ib * betaRange.step;
+        block.beta = OldautoBetaAngle(betaRange, ib, betaMidpoint);
         CalcCsBeta(betaNorm, block.beta, betaRange, gammaRange, normGamma, block.dcos);
         const bool pole = (fabs(block.beta) <= FLT_EPSILON
                            || fabs(block.beta - M_PI) <= FLT_EPSILON);
@@ -1805,7 +2316,9 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
                 for (int jj = 0; jj < block.gammaCount; ++jj)
                 {
                     int globalGamma = fastPole ? 0 : (block.gammaStart + jj);
-                    double gamma = gammaRange.min + (globalGamma + 0.5) * gammaRange.step;
+                    double gamma = OldautoGammaAngle(gammaRange, nGamma,
+                                                     globalGamma, ib,
+                                                     gammaStagger && !fastPole);
                     localParticle.Rotate(block.traceBeta, gamma, 0);
                     if (!shadowOff) localScatter->FormShadowBeam(localBeams);
                     bool ok = localScatter->ScatterLight(0, 0, localBeams);
@@ -1840,7 +2353,9 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             for (int jj = 0; jj < block.gammaCount; ++jj)
             {
                 int globalGamma = fastPole ? 0 : (block.gammaStart + jj);
-                double gamma = gammaRange.min + (globalGamma + 0.5) * gammaRange.step;
+                double gamma = OldautoGammaAngle(gammaRange, nGamma,
+                                                 globalGamma, ib,
+                                                 gammaStagger && !fastPole);
                 localParticle.Rotate(block.traceBeta, gamma, 0);
                 if (!shadowOff) localScatter->FormShadowBeam(localBeams);
                 bool ok = localScatter->ScatterLight(0, 0, localBeams);
@@ -1886,7 +2401,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         if (ib < myBetaStart || ib >= myBetaEnd)
             continue;
 
-        double beta = betaRange.min + ib * betaRange.step;
+        double beta = OldautoBetaAngle(betaRange, ib, betaMidpoint);
         double dcos = 0.0;
         CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
         const bool pole = (fabs(beta) <= FLT_EPSILON
@@ -1907,6 +2422,9 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
                 int globalGamma = fastPole ? 0 : (block.gammaStart + jj);
                 m_incomingEnergy += block.energies[jj];
                 handlerPO->m_outputEnergy += block.outputEnergies[jj];
+                handlerPO->m_extinctionCrossSectionOt +=
+                    chunkPrepared[jj].extinctionOt;
+                handlerPO->m_hasExtinctionOt = true;
                 ++count;
                 if (m_mpiRank == 0)
                     OutputProgress(nOrientations, count, ib*nGamma+globalGamma, 0,
@@ -2160,6 +2678,8 @@ void TracerPOTotal::TraceMonteCarlo(const AngleRange &betaRange,
 
     m_incomingEnergy = 0;
     handlerPO->m_outputEnergy = 0;
+    handlerPO->m_extinctionCrossSectionOt = 0;
+    handlerPO->m_hasExtinctionOt = false;
     handlerPO->M.ClearArr();
     handlerPO->M_noshadow.ClearArr();
     handlerPO->CleanJ();
@@ -2265,6 +2785,8 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
 
     m_incomingEnergy = 0;
     handlerPO->m_outputEnergy = 0;
+    handlerPO->m_extinctionCrossSectionOt = 0;
+    handlerPO->m_hasExtinctionOt = false;
     handlerPO->M.ClearArr();
     handlerPO->M_noshadow.ClearArr();
     handlerPO->CleanJ();
@@ -2729,11 +3251,13 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     }
 
     int nGamma = gammaRange.number;
-    int nBeta = betaRange.number + 1;
+    const bool betaMidpoint = OldautoBetaMidpointEnabled();
+    int nBeta = OldautoBetaCount(betaRange, betaMidpoint);
     int nOrientations = nBeta * nGamma;
     int betaNorm = (m_symmetry.beta < M_PI_2 + FLT_EPSILON
                     && m_symmetry.beta > M_PI_2 - FLT_EPSILON) ? 1 : 2;
     double normGamma = gammaRange.number * betaNorm;
+    const bool gammaStagger = OldautoGammaStaggerEnabled();
     double D_ref = m_particle->MaximalDimention();
     double x_ref = M_PI * D_ref / m_scattering->m_wave;
     int nAz = handlerPO->m_sphere.nAzimuth;
@@ -2760,7 +3284,10 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     }
 #endif
     std::cout << "Shared multikeq Phase 1: trace/prepare with "
-              << nThreads << " OpenMP threads" << std::endl;
+              << nThreads << " OpenMP threads"
+              << (gammaStagger ? "; gamma stagger enabled" : "")
+              << (betaMidpoint ? "; beta midpoint enabled" : "")
+              << std::endl;
 
     auto t1 = std::chrono::high_resolution_clock::now();
     long long count = 0;
@@ -2771,6 +3298,7 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     std::vector<Arr2D> results_M_ns;
     std::vector<double> results_energy(x_sizes.size(), 0.0);
     std::vector<double> results_output_energy(x_sizes.size(), 0.0);
+    std::vector<double> results_ext_ot(x_sizes.size(), 0.0);
     for (size_t s = 0; s < x_sizes.size(); ++s)
     {
         results_M.push_back(Arr2D(nAz + 1, nZen + 1, 4, 4));
@@ -2932,7 +3460,7 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
                 const int jg = globalIndex - ib * nGamma;
                 const int gi = localIndex;
 
-                double beta = betaRange.min + ib * betaRange.step;
+                double beta = OldautoBetaAngle(betaRange, ib, betaMidpoint);
                 double dcos = 0.0;
                 CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
                 const bool pole = (fabs(beta) <= FLT_EPSILON
@@ -2946,7 +3474,8 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
                         traceBeta = beta - 0.5 * betaRange.step;
                 }
 
-                double gamma = gammaRange.min + (jg + 0.5) * gammaRange.step;
+                double gamma = OldautoGammaAngle(gammaRange, nGamma, jg, ib,
+                                                 gammaStagger);
                 localParticle.Rotate(traceBeta, gamma, 0);
                 if (!shadowOff)
                     localScatter->FormShadowBeam(localBeams);
@@ -2989,13 +3518,21 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
         {
             double scale = x_sizes[s] / x_ref;
             double scale2 = scale * scale;
+            const double waveIndex = 2.0 * M_PI / m_scattering->m_wave;
+
+            for (const PreparedOrientation &po : group.prepared)
+            {
+                PreparedOrientation scaledForExt = ScalePreparedOrientation(
+                    po, scale, waveIndex, handlerPO->AbsorptionCoefficient());
+                results_ext_ot[s] +=
+                    handlerPO->ComputeForwardExtinctionOt(scaledForExt);
+            }
 
             Arr2D localM(nAz + 1, nZen + 1, 4, 4); localM.ClearArr();
             Arr2D localM_ns(nAz + 1, nZen + 1, 4, 4); localM_ns.ClearArr();
 
             if (handlerPO->IsGpuEnabled())
             {
-                const double waveIndex = 2.0 * M_PI / m_scattering->m_wave;
                 const std::vector<PreparedOrientation> *gpuPrepared = &group.prepared;
                 std::vector<PreparedOrientation> scaled;
                 double gpuScale = scale;
@@ -3004,7 +3541,8 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
                 {
                     scaled.reserve(group.prepared.size());
                     for (const PreparedOrientation &po : group.prepared)
-                        scaled.push_back(ScalePreparedOrientation(po, scale, waveIndex));
+                        scaled.push_back(ScalePreparedOrientation(
+                            po, scale, waveIndex, handlerPO->AbsorptionCoefficient()));
                     gpuPrepared = &scaled;
                     gpuScale = 1.0;
                     gpuWaveIndex = 0.0;
@@ -3036,7 +3574,8 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
                 scaled.reserve(group.prepared.size());
                 for (const PreparedOrientation &po : group.prepared)
                     scaled.push_back(ScalePreparedOrientation(
-                        po, scale, 2.0 * M_PI / m_scattering->m_wave));
+                        po, scale, 2.0 * M_PI / m_scattering->m_wave,
+                        handlerPO->AbsorptionCoefficient()));
 
                 #pragma omp parallel
                 {
@@ -3087,7 +3626,8 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
             }
             for (int i = 0; i < group.groupOrient; ++i) {
                 results_energy[s] += group.energies[i] * scale2;
-                results_output_energy[s] += group.outputEnergies[i] * scale2;
+                results_output_energy[s] += PreparedOutputEnergy(
+                    group.prepared[i], scale, handlerPO->AbsorptionCoefficient());
             }
         }
         phase2 += std::chrono::duration<double>(
@@ -3221,7 +3761,8 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
                     {
                         scaled.reserve(group.prepared.size());
                         for (const PreparedOrientation &po : group.prepared)
-                            scaled.push_back(ScalePreparedOrientation(po, scale, waveIndex));
+                            scaled.push_back(ScalePreparedOrientation(
+                                po, scale, waveIndex, handlerPO->AbsorptionCoefficient()));
                         gpuPrepared = &scaled;
                         gpuScale = 1.0;
                         gpuWaveIndex = 0.0;
@@ -3320,11 +3861,15 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     Arr2D savedM = handlerPO->M;
     Arr2D savedMns = handlerPO->M_noshadow;
     double savedOutEnergy = handlerPO->m_outputEnergy;
+    double savedExtOt = handlerPO->m_extinctionCrossSectionOt;
+    bool savedHasExtOt = handlerPO->m_hasExtinctionOt;
     for (size_t s = 0; s < x_sizes.size(); ++s)
     {
         handlerPO->M = results_M[s];
         m_incomingEnergy = results_energy[s];
         handlerPO->m_outputEnergy = results_output_energy[s];
+        handlerPO->m_extinctionCrossSectionOt = results_ext_ot[s];
+        handlerPO->m_hasExtinctionOt = true;
         std::string suffix = (s < labels.size() && !labels[s].empty())
             ? labels[s]
             : ("x" + std::to_string((int)x_sizes[s]));
@@ -3342,6 +3887,8 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     handlerPO->M = savedM;
     handlerPO->M_noshadow = savedMns;
     handlerPO->m_outputEnergy = savedOutEnergy;
+    handlerPO->m_extinctionCrossSectionOt = savedExtOt;
+    handlerPO->m_hasExtinctionOt = savedHasExtOt;
 }
 
 void TracerPOTotal::TraceSobolMultiSize(int nOrient, double betaSym, double gammaSym,
@@ -3843,6 +4390,8 @@ void TracerPOTotal::TraceWeightedOrientations(
 
     m_incomingEnergy = 0;
     handlerPO->m_outputEnergy = 0;
+    handlerPO->m_extinctionCrossSectionOt = 0;
+    handlerPO->m_hasExtinctionOt = false;
     handlerPO->M.ClearArr();
     handlerPO->M_noshadow.ClearArr();
     handlerPO->CleanJ();
@@ -3953,6 +4502,9 @@ void TracerPOTotal::TraceWeightedOrientations(
         for (int i = 0; i < thisChunk; ++i) {
             m_incomingEnergy += chunkEnergies[i];
             handlerPO->m_outputEnergy += chunkOutputEnergies[i];
+            handlerPO->m_extinctionCrossSectionOt +=
+                chunkPrepared[i].extinctionOt;
+            handlerPO->m_hasExtinctionOt = true;
             count++;
         }
         phase1_total += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - tp1).count();
@@ -4415,6 +4967,8 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
 
     m_incomingEnergy = 0.0;
     handlerPO->m_outputEnergy = 0.0;
+    handlerPO->m_extinctionCrossSectionOt = 0.0;
+    handlerPO->m_hasExtinctionOt = false;
     const bool computeNoShadow = handlerPO->ComputeNoShadow();
     const double weight = 1.0 / ((double)nOrient * (double)seedCount);
 
@@ -4527,6 +5081,9 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
             {
                 m_incomingEnergy += chunkEnergies[i];
                 handlerPO->m_outputEnergy += chunkOutputEnergies[i];
+                handlerPO->m_extinctionCrossSectionOt +=
+                    chunkPrepared[i].extinctionOt;
+                handlerPO->m_hasExtinctionOt = true;
                 ++count;
             }
             phase1 += std::chrono::duration<double>(
@@ -4785,6 +5342,14 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
                    MPI_SUM, 0, MPI_COMM_WORLD);
         if (m_mpiRank == 0)
             handlerPO->m_outputEnergy = totalOutput;
+        double totalExtOt = 0.0;
+        MPI_Reduce(&handlerPO->m_extinctionCrossSectionOt, &totalExtOt, 1,
+                   MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        if (m_mpiRank == 0)
+        {
+            handlerPO->m_extinctionCrossSectionOt = totalExtOt;
+            handlerPO->m_hasExtinctionOt = true;
+        }
     }
 #endif
 
@@ -4852,6 +5417,8 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
 
         WriteAveragedRowsFile(m_resultDirName, outputSphere, rows,
                               m_incomingEnergy, handlerPO->m_outputEnergy,
+                              handlerPO->m_extinctionCrossSectionOt,
+                              handlerPO->m_hasExtinctionOt,
                               handlerPO->HasAbsorptionAccounting(),
                               handlerPO->m_integralSummary);
         double finalMeanError = 0.0;
@@ -4868,6 +5435,8 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
             std::string dummySummary;
             WriteAveragedRowsFile(nsName, outputSphere, rowsNoShadow,
                                   m_incomingEnergy, handlerPO->m_outputEnergy,
+                                  handlerPO->m_extinctionCrossSectionOt,
+                                  handlerPO->m_hasExtinctionOt,
                                   false, dummySummary);
         }
         OutputStatisticsPO(timer, totalOrientationWork, m_resultDirName);
@@ -5329,6 +5898,19 @@ int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
     std::vector<int> ctrlIdx = BuildThetaControlIndices(hp->m_sphere, eps);
     if (ctrlIdx.empty())
         ctrlIdx.push_back(nZen);
+    std::vector<int> backConeCtrlRows =
+        BuildBackscatterConeControlRows(hp->m_sphere, ctrlIdx);
+    std::vector<int> nonBackConeCtrlRows;
+    std::vector<char> isBackConeCtrlRow(ctrlIdx.size(), 0);
+    if (!backConeCtrlRows.empty())
+    {
+        for (int row : backConeCtrlRows)
+            if (row >= 0 && row < (int)isBackConeCtrlRow.size())
+                isBackConeCtrlRow[row] = 1;
+    }
+    for (int row = 0; row < (int)ctrlIdx.size(); ++row)
+        if (row >= (int)isBackConeCtrlRow.size() || !isBackConeCtrlRow[row])
+            nonBackConeCtrlRows.push_back(row);
     ScatteringRange fullSphereForControls = hp->m_sphere;
     ScatteringRange ctrlSphere = fullSphereForControls;
     ctrlSphere.nAzimuth = controlAz;
@@ -5351,6 +5933,8 @@ int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
     const bool projectSymmetryInError =
         AutoFullSymmetryErrorProjectionEnabled(betaSym, gammaSym);
     m_lastAdaptiveRowOrient.assign(nZen + 1, 0);
+    m_lastAdaptiveRowOrientError.assign(nZen + 1, 0.0);
+    m_lastAdaptiveRowOrientElement.assign(nZen + 1, 0);
     m_lastAdaptiveAcceptedOldautoCap = false;
     if (m_mpiRank == 0)
     {
@@ -5368,6 +5952,14 @@ int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
                       << " M13/M14/M23/M24/M31/M32/M41/M42"
                       << " (MBS_AUTOFULL_SYMMETRY_ERROR_PROJECT=0 disables)"
                       << std::endl;
+        if (!backConeCtrlRows.empty())
+        {
+            std::cout << "  Backscatter convergence uses cone estimator theta>="
+                      << AutoFullBackscatterConeMinDeg() << " deg ("
+                      << backConeCtrlRows.size()
+                      << " control rows; MBS_AUTOFULL_BACK_CONE_CONTROL=0"
+                      << " disables)" << std::endl;
+        }
     }
 
     // =========================================================================
@@ -5556,6 +6148,8 @@ int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
         int lastCtrlIdx = ctrlIdx.empty() ? 0 : ctrlIdx[0];
         int lastCtrlElement = 0;
         std::vector<int> rowOrientRequirement(nZen + 1, 0);
+        std::vector<double> lastRowCtrlErrors(ctrlRows, 0.0);
+        std::vector<int> lastRowCtrlElements(ctrlRows, 0);
         std::vector<double> previousSeedMean;
         int previousSeedMeanOrient = 0;
         const bool incrementalOwen =
@@ -5676,6 +6270,22 @@ int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
                         &previousSeedMean[row * 16],
                         &element);
                 }
+                if (!backConeCtrlRows.empty())
+                {
+                    std::vector<double> coneMean =
+                        AggregateControlRows(seedMean, backConeCtrlRows);
+                    std::vector<double> conePrev =
+                        AggregateControlRows(previousSeedMean,
+                                             backConeCtrlRows);
+                    int coneElement = 0;
+                    const double coneStep = MuellerRowRelativeErrorValues(
+                        coneMean.data(), conePrev.data(), &coneElement);
+                    for (int row : backConeCtrlRows)
+                    {
+                        if (row >= 0 && row < (int)rowStepErrors.size())
+                            rowStepErrors[row] = coneStep;
+                    }
+                }
             }
 
             const bool meanErrorCriterion = seedCtrl.size() >= 3;
@@ -5683,14 +6293,48 @@ int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
             {
                 dEnergyMax = OwenMeanScalarRelativeError(seedEnergy);
                 int dCtrlMaxRow = 0;
-                dCtrlMax = OwenMeanMuellerControlError(
-                    seedCtrl, ctrlRows, &rowCtrlErrors, &rowCtrlElements,
-                    &dCtrlMaxRow, &dCtrlMaxElement);
+                if (backConeCtrlRows.empty())
+                {
+                    dCtrlMax = OwenMeanMuellerControlError(
+                        seedCtrl, ctrlRows, &rowCtrlErrors, &rowCtrlElements,
+                        &dCtrlMaxRow, &dCtrlMaxElement);
+                }
+                else
+                {
+                    dCtrlMax = OwenMeanMuellerSelectedRowsError(
+                        seedCtrl, ctrlRows, nonBackConeCtrlRows,
+                        &rowCtrlErrors, &rowCtrlElements,
+                        &dCtrlMaxRow, &dCtrlMaxElement);
+                    std::vector<std::vector<double>> coneSeedCtrl =
+                        AggregateSeedControlRows(seedCtrl, backConeCtrlRows);
+                    int coneElement = 0;
+                    const double coneErr = OwenMeanMuellerControlError(
+                        coneSeedCtrl, 1, nullptr, nullptr, nullptr,
+                        &coneElement);
+                    for (int row : backConeCtrlRows)
+                    {
+                        if (row >= 0 && row < ctrlRows)
+                        {
+                            rowCtrlErrors[row] = coneErr;
+                            rowCtrlElements[row] = coneElement;
+                        }
+                    }
+                    if (std::isfinite(coneErr) && coneErr > dCtrlMax)
+                    {
+                        dCtrlMax = coneErr;
+                        dCtrlMaxRow = backConeCtrlRows.back();
+                        dCtrlMaxElement = coneElement;
+                    }
+                }
                 dCtrlMaxIdx = ctrlIdx[std::max(0,
                     std::min(dCtrlMaxRow, (int)ctrlIdx.size() - 1))];
             }
             else
             {
+                std::vector<std::vector<double>> coneSeedCtrl;
+                if (!backConeCtrlRows.empty())
+                    coneSeedCtrl =
+                        AggregateSeedControlRows(seedCtrl, backConeCtrlRows);
                 for (size_t a = 0; a < seedCtrl.size(); ++a)
                 {
                     for (size_t b = a + 1; b < seedCtrl.size(); ++b)
@@ -5705,6 +6349,9 @@ int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
 
                         for (int row = 0; row < ctrlRows; ++row)
                         {
+                            if (row < (int)isBackConeCtrlRow.size()
+                                && isBackConeCtrlRow[row])
+                                continue;
                             int worstElement = 0;
                             double d = MuellerRowRelativeErrorValues(
                                 &seedCtrl[a][row * 16],
@@ -5720,6 +6367,29 @@ int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
                             {
                                 rowCtrlErrors[row] = d;
                                 rowCtrlElements[row] = worstElement;
+                            }
+                        }
+                        if (!coneSeedCtrl.empty())
+                        {
+                            int worstElement = 0;
+                            double d = MuellerRowRelativeErrorValues(
+                                coneSeedCtrl[a].data(),
+                                coneSeedCtrl[b].data(),
+                                &worstElement);
+                            for (int row : backConeCtrlRows)
+                            {
+                                if (row >= 0 && row < ctrlRows
+                                    && d > rowCtrlErrors[row])
+                                {
+                                    rowCtrlErrors[row] = d;
+                                    rowCtrlElements[row] = worstElement;
+                                }
+                            }
+                            if (d > dCtrlMax)
+                            {
+                                dCtrlMax = d;
+                                dCtrlMaxIdx = ctrlIdx[backConeCtrlRows.back()];
+                                dCtrlMaxElement = worstElement;
                             }
                         }
                     }
@@ -5747,6 +6417,8 @@ int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
             }
             previousSeedMean.swap(seedMean);
             previousSeedMeanOrient = totalOrient;
+            lastRowCtrlErrors = rowCtrlErrors;
+            lastRowCtrlElements = rowCtrlElements;
 
             double dMax = std::max(dEnergyMax, dCtrlMax);
             lastDMax = dMax;
@@ -5883,8 +6555,34 @@ int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
                 continue;
             if (rowOrientRequirement[globalRow] == 0)
                 rowOrientRequirement[globalRow] = totalOrient;
+            if (row < (int)lastRowCtrlErrors.size())
+                m_lastAdaptiveRowOrientError[globalRow] = lastRowCtrlErrors[row];
+            if (row < (int)lastRowCtrlElements.size())
+                m_lastAdaptiveRowOrientElement[globalRow] =
+                    lastRowCtrlElements[row];
         }
         m_lastAdaptiveRowOrient.swap(rowOrientRequirement);
+        if (m_mpiRank == 0)
+        {
+            const std::string orientMapName =
+                m_resultDirName + "_autofull_orient_by_theta.dat";
+            std::ofstream orientMap(orientMapName.c_str(), std::ios::out);
+            orientMap << std::setprecision(10);
+            orientMap << "# theta_deg required_Norient last_orient_error_pct"
+                      << " worst_element\n";
+            for (int t = 0; t <= nZen; ++t)
+            {
+                orientMap << RadToDeg(hp->m_sphere.GetZenith(t)) << ' '
+                          << m_lastAdaptiveRowOrient[t] << ' '
+                          << m_lastAdaptiveRowOrientError[t] * 100.0 << ' '
+                          << MuellerElementName(
+                                 m_lastAdaptiveRowOrientElement[t])
+                          << '\n';
+            }
+            orientMap.close();
+            std::cout << "Adaptive orientation map written: "
+                      << orientMapName << std::endl;
+        }
         if (m_mpiRank == 0)
         {
             int knownRows = 0;
@@ -5928,6 +6626,8 @@ int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
         hp->CleanJ();
         m_incomingEnergy = 0;
         hp->m_outputEnergy = 0;
+        hp->m_extinctionCrossSectionOt = 0;
+        hp->m_hasExtinctionOt = false;
         TraceFromSobolSeed(totalOrient, m_owenAverageSeeds.front(),
                            betaSym, gammaSym);
         return totalOrient;
@@ -5946,6 +6646,8 @@ int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
     hp->CleanJ();
     m_incomingEnergy = 0;
     hp->m_outputEnergy = 0;
+    hp->m_extinctionCrossSectionOt = 0;
+    hp->m_hasExtinctionOt = false;
 
     double prevEnergy = 0;
     std::vector<double> prevCtrl(ctrlValues, 0.0);
@@ -6122,6 +6824,9 @@ int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
         int dCtrlMaxElement = 0;
         for (int row = 0; row < ctrlRows; ++row)
         {
+            if (row < (int)isBackConeCtrlRow.size()
+                && isBackConeCtrlRow[row])
+                continue;
             int worstElement = 0;
             double d = (iter > 0)
                 ? MuellerRowRelativeErrorValues(&ctrlAvg[row * 16],
@@ -6132,6 +6837,22 @@ int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
             {
                 dCtrlMax = d;
                 dCtrlMaxIdx = ctrlIdx[row];
+                dCtrlMaxElement = worstElement;
+            }
+        }
+        if (iter > 0 && !backConeCtrlRows.empty())
+        {
+            std::vector<double> coneCurrent =
+                AggregateControlRows(ctrlAvg, backConeCtrlRows);
+            std::vector<double> conePrevious =
+                AggregateControlRows(prevCtrl, backConeCtrlRows);
+            int worstElement = 0;
+            double d = MuellerRowRelativeErrorValues(
+                coneCurrent.data(), conePrevious.data(), &worstElement);
+            if (d > dCtrlMax)
+            {
+                dCtrlMax = d;
+                dCtrlMaxIdx = ctrlIdx[backConeCtrlRows.back()];
                 dCtrlMaxElement = worstElement;
             }
         }
@@ -6247,6 +6968,8 @@ int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
     hp->CleanJ();
     m_incomingEnergy = 0;
     hp->m_outputEnergy = 0;
+    hp->m_extinctionCrossSectionOt = 0;
+    hp->m_hasExtinctionOt = false;
 
     // TraceFromSobol handles file output, MPI reduce, and cleanup.
     // It re-traces all orientations (Sobol deterministic → same results)
@@ -6328,6 +7051,7 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
 
     int n_opt = 4;
     double prev_qsca_n = 0;
+    std::vector<double> prevM11ControlsN;
     int n_converged_count = 0;
     const int nPilotN = 128;
     const bool nSearchLowAverage = AutoFullLowPhiAverageEnabled(hp, eps);
@@ -6348,6 +7072,8 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
         // forced CPU diffraction and dominated --autofull startup time.
         hp->M.ClearArr(); hp->M_noshadow.ClearArr(); hp->CleanJ();
         m_incomingEnergy = 0; hp->m_outputEnergy = 0;
+        hp->m_extinctionCrossSectionOt = 0;
+        hp->m_hasExtinctionOt = false;
 
         Sobol2D sobol(42);
         std::vector<double> su, sv;
@@ -6472,12 +7198,40 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
 
         double qsca = (incomingEnergy > 0) ? csca / incomingEnergy : 0;
         double dq = (prev_qsca_n > 0) ? fabs(qsca - prev_qsca_n) / prev_qsca_n : 1.0;
+        std::vector<int> nCtrlIdx = BuildThetaControlIndices(nSphere, eps);
+        std::vector<double> m11Controls;
+        m11Controls.reserve(nCtrlIdx.size());
+        for (int idx : nCtrlIdx)
+        {
+            matrix averaged = AzimuthAverageOutputMatrix(
+                localM, nSphere, nCalcAz, idx);
+            m11Controls.push_back(averaged[0][0]);
+        }
+        double dM11 = prevM11ControlsN.empty() ? 1.0 : 0.0;
+        if (!prevM11ControlsN.empty())
+        {
+            const int nCtrl =
+                std::min((int)m11Controls.size(),
+                         (int)prevM11ControlsN.size());
+            for (int i = 0; i < nCtrl; ++i)
+            {
+                const double den = std::max(
+                    std::max(std::fabs(m11Controls[i]),
+                             std::fabs(prevM11ControlsN[i])),
+                    1e-30);
+                const double err =
+                    std::fabs(m11Controls[i] - prevM11ControlsN[i]) / den;
+                if (std::isfinite(err))
+                    dM11 = std::max(dM11, err);
+            }
+        }
 
         std::cout << "  n=" << n_test << " Q_sca=" << std::fixed << std::setprecision(4)
                   << qsca << " dQ=" << std::setprecision(2) << dq*100 << "%"
+                  << " dM11ctrl=" << dM11 * 100 << "%"
                   << (usedGpu ? " GPU" : " CPU") << std::endl;
 
-        if (dq < eps && n_test > 4) n_converged_count++;
+        if (dq < eps && dM11 < eps && n_test > 4) n_converged_count++;
         else n_converged_count = 0;
 
         if (n_converged_count >= 2) {
@@ -6486,6 +7240,7 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
             break;
         }
         prev_qsca_n = qsca;
+        prevM11ControlsN.swap(m11Controls);
         n_opt = n_test;
     }
     m_scattering->SetMaxReflections(n_opt);
@@ -6517,12 +7272,16 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
         hp->CleanJ();
         m_incomingEnergy = 0;
         hp->m_outputEnergy = 0;
+        hp->m_extinctionCrossSectionOt = 0;
+        hp->m_hasExtinctionOt = false;
         TraceAdaptiveTheta(nProbe, betaSym, gammaSym, thetaEps, 8, true);
         conus = hp->m_sphere;
         nAz = hp->m_sphere.nAzimuth;
         nZen = hp->m_sphere.nZenith;
         m_incomingEnergy = 0;
         hp->m_outputEnergy = 0;
+        hp->m_extinctionCrossSectionOt = 0;
+        hp->m_hasExtinctionOt = false;
         hp->M.ClearArr();
         hp->M_noshadow.ClearArr();
         hp->CleanJ();
@@ -6581,13 +7340,22 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
     std::vector<int> rowLastPassPhi(nZen + 1, 0);
     std::vector<double> rowLastError(nZen + 1, 1.0);
     std::vector<MuellerRowAverage> prevRows;
+    std::map<int, std::vector<MuellerRowAverage>> rowsByPhi;
     int prevPhi = 0;
     int phi_opt = phiCandidates.back();
     const bool phiSearchLowAverage = AutoFullLowPhiAverageEnabled(hp, eps);
+    const bool fullPhiValidation = AutoFullFullPhiValidationEnabled(eps);
     if (phiSearchLowAverage)
     {
         std::cout << "  Phi search uses low-phi azimuth averages "
                   << "(MBS_AUTOFULL_FINAL_LOWPHI_AVG=0 disables)" << std::endl;
+    }
+    if (fullPhiValidation)
+    {
+        std::cout << "  Full-phi validation enabled: selected rows will be"
+                  << " checked against N_phi=" << maxNphi
+                  << " (MBS_AUTOFULL_FULL_PHI_VALIDATE=0 disables)"
+                  << std::endl;
     }
 
     for (int phi_test : phiCandidates)
@@ -6695,6 +7463,7 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
                 for (int c = 0; c < 4; ++c)
                     rows[t].v[r * 4 + c] = averaged[r][c];
         }
+        rowsByPhi[phi_test] = rows;
 
         double maxRowErr = prevRows.empty() ? 1.0 : 0.0;
         int newlyConverged = 0;
@@ -6755,13 +7524,74 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
                 break;
             }
         }
-        if (allResolved)
+        if (allResolved && !fullPhiValidation)
             break;
     }
 
     for (int t = 0; t <= nZen; ++t)
         if (rowRequired[t] == 0)
             rowRequired[t] = prevPhi > 0 ? prevPhi : maxNphi;
+
+    if (fullPhiValidation)
+    {
+        auto refIt = rowsByPhi.find(maxNphi);
+        if (refIt == rowsByPhi.end() && !rowsByPhi.empty())
+            refIt = rowsByPhi.find(rowsByPhi.rbegin()->first);
+        int liftedRows = 0;
+        double maxValidationErr = 0.0;
+        int worstValidationRow = 0;
+        if (refIt != rowsByPhi.end())
+        {
+            const int refPhi = refIt->first;
+            for (int t = 0; t <= nZen; ++t)
+            {
+                int required = rowRequired[t] > 0 ? rowRequired[t] : refPhi;
+                auto rowIt = rowsByPhi.find(required);
+                if (rowIt == rowsByPhi.end())
+                    continue;
+                const double err = MuellerRowRelativeError(
+                    rowIt->second[t], refIt->second[t]);
+                if (std::isfinite(err) && err > maxValidationErr)
+                {
+                    maxValidationErr = err;
+                    worstValidationRow = t;
+                }
+                if (std::isfinite(err) && err > phiPassEps)
+                {
+                    rowRequired[t] = refPhi;
+                    rowLastError[t] = err;
+                    ++liftedRows;
+                }
+            }
+            std::cout << "  Full-phi validation: max selected-row error="
+                      << std::fixed << std::setprecision(3)
+                      << maxValidationErr * 100.0 << "% @ "
+                      << RadToDeg(conus.GetZenith(worstValidationRow))
+                      << " deg; lifted " << liftedRows
+                      << " rows to N_phi=" << refPhi << std::endl;
+        }
+    }
+
+    if (AutoFullStrictFullPhiFinalEnabled(eps))
+    {
+        int liftedRows = 0;
+        for (int t = 0; t <= nZen; ++t)
+        {
+            if (rowRequired[t] < maxNphi)
+            {
+                rowRequired[t] = maxNphi;
+                ++liftedRows;
+            }
+        }
+        if (liftedRows > 0)
+        {
+            std::cout << "  Strict full-phi final: lifted " << liftedRows
+                      << " rows to N_phi=" << maxNphi
+                      << " for eps<=" << 0.01
+                      << " (MBS_AUTOFULL_STRICT_FULL_PHI=0 disables)"
+                      << std::endl;
+        }
+    }
 
     if (phiSearchLowAverage)
     {
@@ -7144,8 +7974,9 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
     }
     else if (!AutoFullBeamCutoffAutoEnabled())
     {
-        std::cout << "--- Step 3b: row-wise beam cutoff disabled by"
-                  << " MBS_AUTOFULL_BEAM_CUTOFF_AUTO=0 ---"
+        std::cout << "--- Step 3b: row-wise beam cutoff disabled"
+                  << " (opt-in: MBS_AUTOFULL_BEAM_CUTOFF_AUTO=1"
+                  << " plus explicit --beam_cutoff_importance) ---"
                   << std::endl << std::endl;
     }
 
@@ -7158,81 +7989,159 @@ void TracerPOTotal::TraceAutoFull(double eps, double betaSym, double gammaSym,
     // Clean and run adaptive
     hp->M.ClearArr(); hp->M_noshadow.ClearArr(); hp->CleanJ();
     m_incomingEnergy = 0; hp->m_outputEnergy = 0;
+    hp->m_extinctionCrossSectionOt = 0;
+    hp->m_hasExtinctionOt = false;
 
     bool variablePhiFinal = true;
     if (const char *env = std::getenv("MBS_AUTOFULL_VARIABLE_PHI"))
         variablePhiFinal = !(env[0] == '0' && env[1] == '\0');
+    if (m_oldAutoFullFinal)
+        variablePhiFinal = true;
     if (variablePhiFinal)
     {
         int finalOrient = TraceAdaptive(eps, betaSym, gammaSym,
                                         maxOrientOverride, false, true);
-        double finalMeanError = TraceFromSobolVariablePhi(
-            finalOrient, betaSym, gammaSym, rowRequired,
-            m_lastAdaptiveRowOrient, phi_opt, eps,
-            m_owenAverageSeeds, rowBeamCutoff);
-        if (m_owenAverageSeeds.size() >= 3 && eps > 0.0
-            && finalMeanError > eps)
+        if (m_oldAutoFullFinal)
         {
-            bool hasReducedOrient = false;
-            for (int value : m_lastAdaptiveRowOrient)
+            const int oldAutoFullTarget =
+                OldAutoFullFinalTargetOrient(finalOrient);
+            AutoFullOldautoOrientEstimate est =
+                AutoFullOldautoEstimateForTarget(
+                    betaSym, gammaSym, wave, m_particle->MaximalDimention(),
+                    m_ringPoints, oldAutoFullTarget, m_mirrorGamma);
+            const int actualOrient = (est.nBeta + 1) * est.nGamma;
+            std::cout << "Oldautofull final: regular oldauto grid "
+                      << (est.nBeta + 1) << " x " << est.nGamma
+                      << " = " << actualOrient
+                      << " orientations (adaptive target N=" << finalOrient
+                      << ", oldautofull target N=" << oldAutoFullTarget
+                      << ", MBS_OLDAUTOFULL_ORIENT_FACTOR="
+                      << ReadEnvDouble("MBS_OLDAUTOFULL_ORIENT_FACTOR",
+                                       8.0, 1.0, 64.0)
+                      << ", div" << est.div << ")" << std::endl;
+
+            hp->M.ClearArr();
+            hp->M_noshadow.ClearArr();
+            hp->CleanJ();
+            m_incomingEnergy = 0;
+            hp->m_outputEnergy = 0;
+            hp->m_extinctionCrossSectionOt = 0;
+            hp->m_hasExtinctionOt = false;
+
+            const int minOldAutoFullNphi = OldAutoFullMinFinalNphi();
+            if (hp->m_sphere.nAzimuth < minOldAutoFullNphi)
             {
-                if (value > 0 && value < finalOrient)
-                {
-                    hasReducedOrient = true;
-                    break;
-                }
+                ScatteringRange finalSphere = hp->m_sphere;
+                finalSphere.nAzimuth = minOldAutoFullNphi;
+                finalSphere.azinuthStep = M_2PI / finalSphere.nAzimuth;
+                finalSphere.ComputeSphereDirections(m_incidentLight);
+                hp->SetScatteringSphere(finalSphere);
+                nAz = hp->m_sphere.nAzimuth;
+                std::cout << "Oldautofull final: raised N_phi to "
+                          << nAz << " for regular-grid accuracy"
+                          << " (MBS_OLDAUTOFULL_MIN_NPHI="
+                          << minOldAutoFullNphi << ")" << std::endl;
             }
-            bool hasExtraCutoff = false;
-            for (double value : rowBeamCutoff)
+
+            AngleRange betaRange(0.0, betaSym, est.nBeta);
+            AngleRange gammaRange(0.0, gammaSym, est.nGamma);
+            TraceRandom(betaRange, gammaRange);
+        }
+        else
+        {
+            AutoFullOldautoOrientEstimate oldauto4 =
+                AutoFullOldautoEstimate(
+                    betaSym, gammaSym, wave, m_particle->MaximalDimention(),
+                    m_ringPoints, 4);
+            if (m_mirrorGamma && (oldauto4.nGamma % 2 != 0))
+                ++oldauto4.nGamma;
+            oldauto4.total = ClampOrientCount(
+                (long long)oldauto4.nBeta * oldauto4.nGamma);
+            const int oldauto4Orient = AutoFullOldautoActualOrient(oldauto4);
+            const int minFinalOrient = std::max(
+                oldauto4Orient, AutoFullStrictMinFinalOrient(eps));
+            if (minFinalOrient > finalOrient)
             {
-                if (value > 0.0)
-                {
-                    hasExtraCutoff = true;
-                    break;
-                }
-            }
-            const bool retryConservative =
-                EnvFlagEnabled("MBS_AUTOFULL_FINAL_CONSERVATIVE_RETRY", true)
-                && (hasReducedOrient || hasExtraCutoff);
-            if (retryConservative)
-            {
-                std::cout << "Final Owen estimate exceeded target after"
-                          << " accelerated final pass ("
-                          << finalMeanError * 100.0 << "% > "
-                          << eps * 100.0
-                          << "%). Retrying once with full per-theta"
-                          << " N_orient and base beam cutoff."
+                std::cout << "Autofull strict final orientations: "
+                          << finalOrient << " -> " << minFinalOrient
+                          << " (minimum oldauto div4 grid "
+                          << (oldauto4.nBeta + 1) << " x "
+                          << oldauto4.nGamma << " = " << oldauto4Orient
+                          << "; MBS_AUTOFULL_MIN_FINAL_ORIENT can raise it)"
                           << std::endl;
-                std::vector<int> fullRowOrient(conus.nZenith + 1,
-                                               finalOrient);
-                std::vector<double> noExtraBeamCutoff;
-                finalMeanError = TraceFromSobolVariablePhi(
-                    finalOrient, betaSym, gammaSym, rowRequired,
-                    fullRowOrient, phi_opt, eps,
-                    m_owenAverageSeeds, noExtraBeamCutoff);
+                finalOrient = minFinalOrient;
+                for (int &value : m_lastAdaptiveRowOrient)
+                    if (value > 0)
+                        value = finalOrient;
             }
-            if (finalMeanError > eps)
+            double finalMeanError = TraceFromSobolVariablePhi(
+                finalOrient, betaSym, gammaSym, rowRequired,
+                m_lastAdaptiveRowOrient, phi_opt, eps,
+                m_owenAverageSeeds, rowBeamCutoff);
+            if (m_owenAverageSeeds.size() >= 3 && eps > 0.0
+                && finalMeanError > eps)
             {
-                const bool acceptOldautoCap =
-                    m_lastAdaptiveAcceptedOldautoCap
-                    && EnvFlagEnabled("MBS_AUTOFULL_ACCEPT_OLDAUTO_CAP", true);
-                if (acceptOldautoCap)
+                bool hasReducedOrient = false;
+                for (int value : m_lastAdaptiveRowOrient)
                 {
-                    std::cout << "WARNING: AUTOFULL final Owen mean-error"
-                              << " estimate " << finalMeanError * 100.0
-                              << "% exceeds target " << eps * 100.0
-                              << "%, but oldauto-based orientation cap was"
-                              << " reached. Keeping the oldauto-cap result."
-                              << std::endl;
+                    if (value > 0 && value < finalOrient)
+                    {
+                        hasReducedOrient = true;
+                        break;
+                    }
                 }
-                else
+                bool hasExtraCutoff = false;
+                for (double value : rowBeamCutoff)
                 {
-                    std::cerr << "ERROR: AUTOFULL final Owen mean-error estimate "
-                              << finalMeanError * 100.0
-                              << "% exceeds target " << eps * 100.0
-                              << "%. Increase --maxorient"
-                              << " or loosen --autofull eps." << std::endl;
-                    std::exit(2);
+                    if (value > 0.0)
+                    {
+                        hasExtraCutoff = true;
+                        break;
+                    }
+                }
+                const bool retryConservative =
+                    EnvFlagEnabled("MBS_AUTOFULL_FINAL_CONSERVATIVE_RETRY", true)
+                    && (hasReducedOrient || hasExtraCutoff);
+                if (retryConservative)
+                {
+                    std::cout << "Final Owen estimate exceeded target after"
+                              << " accelerated final pass ("
+                              << finalMeanError * 100.0 << "% > "
+                              << eps * 100.0
+                              << "%). Retrying once with full per-theta"
+                              << " N_orient and base beam cutoff."
+                              << std::endl;
+                    std::vector<int> fullRowOrient(conus.nZenith + 1,
+                                                   finalOrient);
+                    std::vector<double> noExtraBeamCutoff;
+                    finalMeanError = TraceFromSobolVariablePhi(
+                        finalOrient, betaSym, gammaSym, rowRequired,
+                        fullRowOrient, phi_opt, eps,
+                        m_owenAverageSeeds, noExtraBeamCutoff);
+                }
+                if (finalMeanError > eps)
+                {
+                    const bool acceptOldautoCap =
+                        m_lastAdaptiveAcceptedOldautoCap
+                        && EnvFlagEnabled("MBS_AUTOFULL_ACCEPT_OLDAUTO_CAP", true);
+                    if (acceptOldautoCap)
+                    {
+                        std::cout << "WARNING: AUTOFULL final Owen mean-error"
+                                  << " estimate " << finalMeanError * 100.0
+                                  << "% exceeds target " << eps * 100.0
+                                  << "%, but oldauto-based orientation cap was"
+                                  << " reached. Keeping the oldauto-cap result."
+                                  << std::endl;
+                    }
+                    else
+                    {
+                        std::cerr << "ERROR: AUTOFULL final Owen mean-error estimate "
+                                  << finalMeanError * 100.0
+                                  << "% exceeds target " << eps * 100.0
+                                  << "%. Increase --maxorient"
+                                  << " or loosen --autofull eps." << std::endl;
+                        std::exit(2);
+                    }
                 }
             }
         }

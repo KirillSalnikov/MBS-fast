@@ -130,8 +130,16 @@ public:
     /// Optional final averaging seeds for --autofull nested Owen Sobol.
     std::vector<unsigned int> m_owenAverageSeeds;
 
+    /// Use --autofull search steps, but finish with regular oldauto-style
+    /// beta/gamma quadrature instead of Sobol/Owen orientations.
+    bool m_oldAutoFullFinal = false;
+
     /// Last adaptive run's per-theta orientation requirements. 0 means unknown.
     std::vector<int> m_lastAdaptiveRowOrient;
+
+    /// Last adaptive run's per-theta orientation error diagnostics.
+    std::vector<double> m_lastAdaptiveRowOrientError;
+    std::vector<int> m_lastAdaptiveRowOrientElement;
 
     /// True when --autofull reached the oldauto-based orientation ceiling and
     /// accepted it as the physics-based maximum instead of chasing noisy tails.

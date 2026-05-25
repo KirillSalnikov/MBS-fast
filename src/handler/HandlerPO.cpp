@@ -854,6 +854,7 @@ void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
     m_gpuEnabled = source.m_gpuEnabled;
     m_fftEnabled = source.m_fftEnabled;
     m_fftPhiFactor = source.m_fftPhiFactor;
+    m_otFarReferencePath = source.m_otFarReferencePath;
     isBackScatteringConusEnabled = source.isBackScatteringConusEnabled;
     backScatteringConus = source.backScatteringConus;
 }
@@ -1289,6 +1290,7 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
     out.beams.clear();
     out.beams.reserve(beams.size());
     out.sinZenith = sinZenith;
+    out.extinctionOt = 0.0;
 
     // Pass 1: compute max |J|^2 and max area for relative cutoffs.
     double maxJnorm = 0, maxArea = 0, maxImportance = 0;
@@ -1336,9 +1338,39 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         if (info.isBad)
             continue;
 
+        Beam originalBeam = beam;
+        std::vector<double> absorptionPaths;
+        const bool hasInternalPath =
+            m_hasAbsorption && HasInternalOpticalPath(beam);
+        if (hasInternalPath)
+        {
+            std::vector<int> tr;
+            Tracks::RecoverTrack(beam, m_particle->nFacets, tr);
+            auto addPathAt = [&](const Point3f &point)
+            {
+                absorptionPaths.push_back(
+                    m_scattering->ComputeInternalOpticalPath(beam, point, tr));
+            };
+            if (m_absorptionPointCount == 1 || beam.nVertices <= 0)
+            {
+                addPathAt(beam.Center());
+            }
+            else
+            {
+                int count = (m_absorptionPointCount == -1)
+                    ? beam.nVertices
+                    : std::min(m_absorptionPointCount, beam.nVertices);
+                for (int i = 0; i < count; ++i)
+                {
+                    int idx = (i * beam.nVertices) / count;
+                    addPathAt(beam.arr[idx]);
+                }
+            }
+        }
+
         // Apply absorption only to beams with an internal path. nActs == 0 is
         // the primary external reflection, which never enters the particle.
-        if (m_hasAbsorption && HasInternalOpticalPath(beam))
+        if (hasInternalPath)
             ApplyAbsorption(beam);
 
         if (beam.lastFacetId != __INT_MAX__)
@@ -1367,6 +1399,13 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
 
         PreparedBeam pb;
         pb.info = info;
+        pb.absorptionPaths = absorptionPaths;
+        if (beam.lastFacetId != __INT_MAX__)
+        {
+            pb.outputCrossSection = BeamCrossSection(originalBeam);
+            matrix unabsorbedM = Mueller(originalBeam.J);
+            pb.outputMueller00 = unabsorbedM[0][0];
+        }
 
         // Precompute edge and pol data
         PrecomputeEdgeData(info, beam, pb.edgeData);
@@ -1401,12 +1440,16 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         pb.jp10r = real(jp10); pb.jp10i = imag(jp10);
         pb.jp11r = real(jp11); pb.jp11i = imag(jp11);
 
-        // Store original beam for fallback path
-        pb.origBeam = beam;
+        // Store the unabsorbed beam.  Multikeq/multigrid rescaling reapplies
+        // absorption for each target size from pb.absorptionPaths.
+        pb.origBeam = originalBeam;
 
         out.beams.push_back(pb);
     }
 
+    out.extinctionOt = ComputeForwardExtinctionOt(out);
+    m_extinctionCrossSectionOt += out.extinctionOt;
+    m_hasExtinctionOt = true;
     m_outputEnergy += localEnergy;
 
     // Log beam cutoff statistics (first call only)
@@ -1423,6 +1466,189 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
                   << ")" << std::endl;
         logged = true;
     }
+}
+
+double HandlerPO::ComputeForwardExtinctionOt(
+    const PreparedOrientation &prepared) const
+{
+    complex f00(0.0, 0.0), f01(0.0, 0.0);
+    complex f10(0.0, 0.0), f11(0.0, 0.0);
+
+    const double sin_t = 0.0;
+    const double cos_t = 1.0;
+    const double cp = 1.0;
+    const double sp = 0.0;
+    const double dx = 0.0;
+    const double dy = 0.0;
+    const double dz = -1.0;
+    const double vfx = 0.0;
+    const double vfy = 1.0;
+    const double vfz = 0.0;
+
+    for (const PreparedBeam &pb : prepared.beams)
+    {
+        if (!pb.edgeData.valid)
+            continue;
+
+        ThetaCoeffs tc;
+        precompute_theta_coeffs(
+            pb.edgeData.x, pb.edgeData.y, pb.edgeData.nVertices,
+            pb.horAx, pb.horAy, pb.horAz,
+            pb.verAx, pb.verAy, pb.verAz,
+            pb.bdx, pb.bdy, pb.bdz,
+            pb.cenx, pb.ceny, pb.cenz,
+            cp, sp, m_waveIndex,
+            pb.pNTx, pb.pNTy, pb.pNTz,
+            pb.pNPx, pb.pNPy, pb.pNPz,
+            pb.pnxDTx, pb.pnxDTy, pb.pnxDTz,
+            pb.pnxDPx, pb.pnxDPy, pb.pnxDPz,
+            tc);
+
+        const double A = cos_t * tc.a_cos + tc.a0;
+        const double B = cos_t * tc.b_cos + tc.b0;
+        const double absA = std::fabs(A);
+        const double absB = std::fabs(B);
+
+        complex fresnel;
+        if (absA < m_eps2 && absB < m_eps2)
+        {
+            fresnel = (m_legacySign ? m_invComplWave : -m_invComplWave)
+                * pb.beam_area;
+        }
+        else
+        {
+            const int nv = tc.nv;
+            if (nv <= 0)
+                continue;
+            std::vector<double> phases(nv), vc(nv), vs(nv);
+            for (int v = 0; v < nv; ++v)
+                phases[v] = cos_t * tc.pcos[v] + tc.p0[v];
+            for (int v = 0; v < nv; ++v)
+                fast_sincos(phases[v], vs[v], vc[v]);
+
+            double sr = 0.0, si = 0.0;
+            if (absB > absA)
+            {
+                for (int e = 0; e < nv; ++e)
+                {
+                    if (!pb.edgeData.edge_valid_x[e])
+                        continue;
+                    int en = (e + 1 < nv) ? e + 1 : 0;
+                    double Ci = A + pb.edgeData.slope_yx[e] * B;
+                    double absCi = std::fabs(Ci);
+                    double inv = (absCi > m_eps1) ? 1.0 / Ci : 0.0;
+                    sr += (vc[en] - vc[e]) * inv;
+                    si += (vs[en] - vs[e]) * inv;
+                    if (__builtin_expect(absCi <= m_eps1, 0))
+                    {
+                        double p1x = pb.edgeData.x[e];
+                        double p2x = pb.edgeData.x[en];
+                        double tr = -m_wi2 * Ci * (p2x * p2x - p1x * p1x)
+                            * 0.5;
+                        double ti = m_waveIndex * (p2x - p1x);
+                        sr += vc[e] * tr - vs[e] * ti;
+                        si += vc[e] * ti + vs[e] * tr;
+                    }
+                }
+                if (std::fabs(B) <= m_eps1)
+                    continue;
+                sr /= B;
+                si /= B;
+            }
+            else
+            {
+                for (int e = 0; e < nv; ++e)
+                {
+                    if (!pb.edgeData.edge_valid_y[e])
+                        continue;
+                    int en = (e + 1 < nv) ? e + 1 : 0;
+                    double Ei = A * pb.edgeData.slope_xy[e] + B;
+                    double absEi = std::fabs(Ei);
+                    double inv = (absEi > m_eps1) ? 1.0 / Ei : 0.0;
+                    sr += (vc[en] - vc[e]) * inv;
+                    si += (vs[en] - vs[e]) * inv;
+                    if (__builtin_expect(absEi <= m_eps1, 0))
+                    {
+                        double p1y = pb.edgeData.y[e];
+                        double p2y = pb.edgeData.y[en];
+                        double tr = -m_wi2 * Ei * (p2y * p2y - p1y * p1y)
+                            * 0.5;
+                        double ti = m_waveIndex * (p2y - p1y);
+                        sr += vc[e] * tr - vs[e] * ti;
+                        si += vc[e] * ti + vs[e] * tr;
+                    }
+                }
+                if (std::fabs(A) <= m_eps1)
+                    continue;
+                double invNegA = -1.0 / A;
+                sr *= invNegA;
+                si *= invNegA;
+            }
+            fresnel = m_complWave * complex(sr, si);
+        }
+        if (std::isnan(real(fresnel)))
+            continue;
+
+        double phaseReference = pb.isExternal
+            ? pb.origBeam.opticalPath
+            : m_otFarReferencePath;
+
+        double dpr = 1.0, dpi = 0.0;
+        if (!pb.isExternal)
+        {
+            double dpArg = -m_waveIndex * (cos_t * tc.dp_cos + phaseReference);
+            fast_sincos(dpArg, dpi, dpr);
+        }
+        else if (phaseReference != 0.0)
+        {
+            double dpArg = -m_waveIndex * phaseReference;
+            fast_sincos(dpArg, dpi, dpr);
+        }
+
+        double r00, r01, r10, r11;
+        rotate_jones_inline(
+            pb.pNTx, pb.pNTy, pb.pNTz,
+            pb.pNPx, pb.pNPy, pb.pNPz,
+            pb.pnxDTx, pb.pnxDTy, pb.pnxDTz,
+            pb.pnxDPx, pb.pnxDPy, pb.pnxDPz,
+            vfx, vfy, vfz, dx, dy, dz,
+            r00, r01, r10, r11);
+
+        const double fr = real(fresnel);
+        const double fi = imag(fresnel);
+        const double cpr = fr * dpr - fi * dpi;
+        const double cpi = fr * dpi + fi * dpr;
+        const double sr00r = cpr * r00, sr00i = cpi * r00;
+        const double sr01r = cpr * r01, sr01i = cpi * r01;
+        const double sr10r = cpr * r10, sr10i = cpi * r10;
+        const double sr11r = cpr * r11, sr11i = cpi * r11;
+
+        const double jp00r = pb.jp00r, jp00i = pb.jp00i;
+        const double jp01r = pb.jp01r, jp01i = pb.jp01i;
+        const double jp10r = pb.jp10r, jp10i = pb.jp10i;
+        const double jp11r = pb.jp11r, jp11i = pb.jp11i;
+
+        f00 += complex(sr00r * jp00r - sr00i * jp00i
+                       + sr01r * jp10r - sr01i * jp10i,
+                       sr00r * jp00i + sr00i * jp00r
+                       + sr01r * jp10i + sr01i * jp10r);
+        f01 += complex(sr00r * jp01r - sr00i * jp01i
+                       + sr01r * jp11r - sr01i * jp11i,
+                       sr00r * jp01i + sr00i * jp01r
+                       + sr01r * jp11i + sr01i * jp11r);
+        f10 += complex(sr10r * jp00r - sr10i * jp00i
+                       + sr11r * jp10r - sr11i * jp10i,
+                       sr10r * jp00i + sr10i * jp00r
+                       + sr11r * jp10i + sr11i * jp10r);
+        f11 += complex(sr10r * jp01r - sr10i * jp01i
+                       + sr11r * jp11r - sr11i * jp11i,
+                       sr10r * jp01i + sr10i * jp01r
+                       + sr11r * jp11i + sr11i * jp11r);
+    }
+
+    const double cext = m_wavelength * imag(f00 + f11)
+        * prepared.sinZenith;
+    return std::isfinite(cext) ? cext : 0.0;
 }
 
 // =============================================================================

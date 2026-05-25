@@ -376,6 +376,7 @@ public:
     virtual void WriteTotalMatricesToFile(const std::string &destName);
     void SetAbsorptionAccounting(bool value);
     void SetAbsorptionPointCount(int value);
+    double AbsorptionCoefficient() const { return m_cAbs; }
     virtual void SetScatteringSphere(const ScatteringRange &grid);
 
     void SetNormIndex(double value);
@@ -394,6 +395,9 @@ public:
     ScatteringRange m_sphere;
     double normIndexGamma;
     double m_outputEnergy = 0;
+    double m_extinctionCrossSectionOt = 0;
+    bool m_hasExtinctionOt = false;
+    double m_otFarReferencePath = 20000.0;
     std::string m_integralSummary;
 
     std::ofstream *betaFile;
