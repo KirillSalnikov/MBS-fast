@@ -2259,14 +2259,46 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     };
 
     int gammaChunk = nGamma;
+    const double effectiveJCutoff =
+        (handlerPO->m_beamCutoffJRel >= 0) ? handlerPO->m_beamCutoffJRel
+                                           : handlerPO->m_targetEps;
+    const double effectiveAreaCutoff =
+        (handlerPO->m_beamCutoffAreaRel >= 0) ? handlerPO->m_beamCutoffAreaRel
+                                             : handlerPO->m_targetEps;
+    const bool noBeamCutoff =
+        effectiveJCutoff <= 0.0
+        && effectiveAreaCutoff <= 0.0
+        && handlerPO->m_beamCutoffImportanceRel <= 0.0
+        && handlerPO->m_beamCutoff <= 0.0;
+    bool autoGammaChunk = false;
     if (m_sobolChunkSize > 0)
+    {
         gammaChunk = std::max(1, std::min(nGamma, m_sobolChunkSize));
+    }
+    else if (handlerPO->IsGpuEnabled() && noBeamCutoff)
+    {
+        int defaultChunk = 8;
+        const char *chunkEnv = std::getenv("MBS_OLDAUTO_GAMMA_CHUNK");
+        if (chunkEnv && *chunkEnv)
+        {
+            char *end = nullptr;
+            long value = std::strtol(chunkEnv, &end, 10);
+            if (end && *end == '\0' && value > 0)
+                defaultChunk = (int)value;
+        }
+        gammaChunk = std::max(1, std::min(nGamma, defaultChunk));
+        autoGammaChunk = gammaChunk < nGamma;
+    }
 
     if (m_mpiRank == 0 && gammaChunk < nGamma)
     {
         std::ostringstream line;
         line << "Oldauto/random memory: gamma chunk=" << gammaChunk
-             << "/" << nGamma << " per beta (--chunk)";
+             << "/" << nGamma << " per beta";
+        if (autoGammaChunk)
+            line << " (auto no-cutoff GPU; override with --chunk or MBS_OLDAUTO_GAMMA_CHUNK)";
+        else
+            line << " (--chunk)";
         std::cout << line.str() << std::endl;
         AppendTextLog(line.str() + "\n");
     }
