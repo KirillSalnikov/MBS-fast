@@ -38,6 +38,15 @@ public:
                               const std::vector<double> &x_sizes,
                               const std::vector<std::string> &labels);
 
+    /// Conservative multi-size regular beta/gamma grid: resize and retrace
+    /// every size independently.  This is slower than TraceRandomMultiSize
+    /// but avoids reusing reference-size beam topology for non-convex shapes.
+    void TraceRandomMultiSizeIndependent(const AngleRange &betaRange,
+                                         const AngleRange &gammaRange,
+                                         const std::vector<double> &x_sizes,
+                                         const std::vector<std::string> &labels,
+                                         double x_ref);
+
     /// Sobol quasi-random orientation averaging with particle symmetry
     void TraceFromSobol(int nOrient, double betaSym, double gammaSym);
     void TraceFromSobolSeed(int nOrient, unsigned int seed,

@@ -2342,8 +2342,30 @@ int main(int argc, const char* argv[])
                                   << std::endl;
                     }
 
-                    tracer->TraceRandomMultiSize(betaRange, gammaRange,
-                                                 xSizes, labels);
+                    const bool useSharedOldAutoFullMulti =
+                        std::getenv("MBS_OLDAUTOFULL_SHARED_MULTI")
+                        && std::atoi(std::getenv(
+                            "MBS_OLDAUTOFULL_SHARED_MULTI")) != 0;
+                    if (useSharedOldAutoFullMulti)
+                    {
+                        std::cerr << "WARNING: MBS_OLDAUTOFULL_SHARED_MULTI=1 "
+                                  << "uses experimental reference-size beam "
+                                  << "cache reuse for --oldautofull "
+                                  << "multikeq/multigrid. For non-convex file "
+                                  << "particles this can be inaccurate; the "
+                                  << "release default is independent retrace."
+                                  << std::endl;
+                        tracer->TraceRandomMultiSize(betaRange, gammaRange,
+                                                     xSizes, labels);
+                    }
+                    else
+                    {
+                        const double xRefIndependent =
+                            M_PI * particle->MaximalDimention() / wave;
+                        tracer->TraceRandomMultiSizeIndependent(
+                            betaRange, gammaRange, xSizes, labels,
+                            xRefIndependent);
+                    }
                 }
             }
             else if (isAdaptive)

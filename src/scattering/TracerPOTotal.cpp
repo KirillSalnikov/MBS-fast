@@ -3891,6 +3891,87 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     handlerPO->m_hasExtinctionOt = savedHasExtOt;
 }
 
+void TracerPOTotal::TraceRandomMultiSizeIndependent(
+    const AngleRange &betaRange,
+    const AngleRange &gammaRange,
+    const std::vector<double> &x_sizes,
+    const std::vector<std::string> &labels,
+    double x_ref)
+{
+    HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
+    if (!handlerPO)
+    {
+        std::cerr << "Error! Handler is not HandlerPO in "
+                  << "TraceRandomMultiSizeIndependent" << std::endl;
+        throw std::exception();
+    }
+    if (x_sizes.empty())
+        return;
+    if (x_ref <= 0.0)
+    {
+        std::cerr << "ERROR: independent multikeq requires positive "
+                  << "reference size." << std::endl;
+        throw std::runtime_error("invalid independent multikeq reference");
+    }
+
+    const double D_ref = m_particle->MaximalDimention();
+    const int nAz = handlerPO->m_sphere.nAzimuth;
+    const int nZen = handlerPO->m_sphere.nZenith;
+    const std::string baseName = m_resultDirName;
+
+    if (m_mpiRank == 0)
+    {
+        std::cout << "Conservative multikeq: retrace each size independently "
+                  << "on " << x_sizes.size() << " sizes"
+                  << " (set MBS_OLDAUTOFULL_SHARED_MULTI=1 to use the "
+                  << "experimental shared reference cache)" << std::endl;
+    }
+
+    auto tTotalStart = std::chrono::high_resolution_clock::now();
+    for (size_t s = 0; s < x_sizes.size(); ++s)
+    {
+        const double D_target = D_ref * (x_sizes[s] / x_ref);
+        m_particle->Resize(D_target);
+
+        handlerPO->M = Arr2D(nAz + 1, nZen + 1, 4, 4);
+        handlerPO->M_noshadow = Arr2D(nAz + 1, nZen + 1, 4, 4);
+        handlerPO->M.ClearArr();
+        handlerPO->M_noshadow.ClearArr();
+        handlerPO->CleanJ();
+        m_incomingEnergy = 0.0;
+        handlerPO->m_outputEnergy = 0.0;
+        handlerPO->m_extinctionCrossSectionOt = 0.0;
+        handlerPO->m_hasExtinctionOt = false;
+
+        const std::string suffix =
+            (s < labels.size() && !labels[s].empty())
+                ? labels[s]
+                : ("x" + std::to_string((int)x_sizes[s]));
+        const std::string savedName = m_resultDirName;
+        m_resultDirName = baseName + "_" + suffix;
+
+        if (m_mpiRank == 0)
+        {
+            std::cout << "  Independent size " << (s + 1) << "/"
+                      << x_sizes.size() << ": "
+                      << suffix << ", Dmax="
+                      << m_particle->MaximalDimention() << std::endl;
+        }
+        TraceRandom(betaRange, gammaRange);
+        m_resultDirName = savedName;
+    }
+
+    m_particle->Resize(D_ref);
+
+    auto tTotalEnd = std::chrono::high_resolution_clock::now();
+    const double totalSeconds =
+        std::chrono::duration<double>(tTotalEnd - tTotalStart).count();
+    if (m_mpiRank == 0)
+        std::cout << "Conservative multikeq total: " << std::fixed
+                  << std::setprecision(2) << totalSeconds << " s for "
+                  << x_sizes.size() << " sizes" << std::endl;
+}
+
 void TracerPOTotal::TraceSobolMultiSize(int nOrient, double betaSym, double gammaSym,
                                          const std::vector<double> &x_sizes, double x_ref)
 {
