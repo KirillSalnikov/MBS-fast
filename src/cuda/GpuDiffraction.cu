@@ -1441,11 +1441,12 @@ __global__ void theta_m11_kernel(const GpuBeam *__restrict__ beams,
                                  GpuReal invComplWaveR,
                                  GpuReal invComplWaveI,
                                  int legacySign,
+                                 long long startIdx,
                                  GpuReal *__restrict__ m11)
 {
     int gridCount = nAz * nTheta;
     long long total = (long long)nBeams * gridCount;
-    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    long long idx = startIdx + (long long)blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= total) return;
 
     int grid = (int)(idx % gridCount);
@@ -3577,21 +3578,37 @@ bool HandlerPO::DiffractThetasGpu(const std::vector<PreparedOrientation> &prepar
 
     int block = gpu_block_size();
     long long total = (long long)nBeams * gridCount;
-    int launchGrid = (int)((total + block - 1) / block);
-    theta_m11_kernel<<<launchGrid, block>>>(
-        ws.beams, (int)nBeams, ws.weights,
-        ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi, ws.vf,
-        nAz, nPoints, m_waveIndex, m_wi2, gpu_effective_eps1(m_eps1), m_eps2,
-        real(m_complWave), imag(m_complWave),
-        real(m_invComplWave), imag(m_invComplWave),
-        m_legacySign ? 1 : 0, ws.m);
+    cudaDeviceProp prop;
+    int maxGridX = 2147483647;
+    int dev = 0;
+    if (cudaGetDevice(&dev) == cudaSuccess
+        && cudaGetDeviceProperties(&prop, dev) == cudaSuccess
+        && prop.maxGridSize[0] > 0)
+        maxGridX = prop.maxGridSize[0];
+    const long long maxBlocksPerLaunch =
+        std::min<long long>(maxGridX, 2147483000LL);
+    const long long maxWorkPerLaunch = maxBlocksPerLaunch * block;
+    for (long long startIdx = 0; startIdx < total; startIdx += maxWorkPerLaunch)
+    {
+        const long long remaining = total - startIdx;
+        const int launchGrid =
+            (int)std::min(maxBlocksPerLaunch,
+                          (remaining + block - 1) / block);
+        theta_m11_kernel<<<launchGrid, block>>>(
+            ws.beams, (int)nBeams, ws.weights,
+            ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi, ws.vf,
+            nAz, nPoints, m_waveIndex, m_wi2, gpu_effective_eps1(m_eps1), m_eps2,
+            real(m_complWave), imag(m_complWave),
+            real(m_invComplWave), imag(m_invComplWave),
+            m_legacySign ? 1 : 0, startIdx, ws.m);
 
-    errTheta = cudaGetLastError();
-    if (!gpu_report_cuda_error(errTheta, "theta m11 kernel launch"))
-        return false;
-    errTheta = cudaDeviceSynchronize();
-    if (!gpu_report_cuda_error(errTheta, "theta m11 kernel sync"))
-        return false;
+        errTheta = cudaGetLastError();
+        if (!gpu_report_cuda_error(errTheta, "theta m11 kernel launch"))
+            return false;
+        errTheta = cudaDeviceSynchronize();
+        if (!gpu_report_cuda_error(errTheta, "theta m11 kernel sync"))
+            return false;
+    }
 
     std::vector<GpuReal> hM11(nPoints);
     errTheta = cudaMemcpy(hM11.data(), ws.m, (size_t)nPoints * sizeof(GpuReal), cudaMemcpyDeviceToHost);
