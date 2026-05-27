@@ -40,6 +40,18 @@ __device__ inline void gpu_sincos(GpuReal x, GpuReal *s, GpuReal *c)
 #endif
 }
 
+__device__ inline void gpu_sincos_phase(double x, GpuReal *s, GpuReal *c)
+{
+#ifdef MBS_GPU_FLOAT
+    double sd, cd;
+    sincos(x, &sd, &cd);
+    *s = (GpuReal)sd;
+    *c = (GpuReal)cd;
+#else
+    sincos(x, s, c);
+#endif
+}
+
 __device__ inline void gpu_atomic_add(GpuReal *address, GpuReal value)
 {
     atomicAdd(address, value);
@@ -718,10 +730,12 @@ __device__ __noinline__ bool compute_beam_integral_cached_gpu(const BeamT &b,
     GpuReal vc[MaxVertices], vs[MaxVertices];
     for (int v = 0; v < nv; ++v)
     {
-        GpuReal psin = waveIndex * (a_sin * b.x[v] + b_sin * b.y[v]);
-        GpuReal pcos = waveIndex * (a_cos * b.x[v] + b_cos * b.y[v]);
-        GpuReal p0 = waveIndex * (a0 * b.x[v] + b0 * b.y[v]);
-        gpu_sincos(sin_t * psin + cos_t * pcos + p0, &vs[v], &vc[v]);
+        const double x = (double)b.x[v];
+        const double y = (double)b.y[v];
+        const double psin = (double)waveIndex * ((double)a_sin * x + (double)b_sin * y);
+        const double pcos = (double)waveIndex * ((double)a_cos * x + (double)b_cos * y);
+        const double p0 = (double)waveIndex * ((double)a0 * x + (double)b0 * y);
+        gpu_sincos_phase((double)sin_t * psin + (double)cos_t * pcos + p0, &vs[v], &vc[v]);
     }
 
     GpuReal sr = 0.0, si = 0.0;
@@ -950,10 +964,12 @@ __device__ inline void beam_vertex_sincos_gpu(const GpuBeam &b,
                                               GpuReal *vs,
                                               GpuReal *vc)
 {
-    GpuReal psin = waveIndex * (a_sin * b.x[v] + b_sin * b.y[v]);
-    GpuReal pcos = waveIndex * (a_cos * b.x[v] + b_cos * b.y[v]);
-    GpuReal p0 = waveIndex * (a0 * b.x[v] + b0 * b.y[v]);
-    gpu_sincos(sin_t * psin + cos_t * pcos + p0, vs, vc);
+    const double x = (double)b.x[v];
+    const double y = (double)b.y[v];
+    const double psin = (double)waveIndex * ((double)a_sin * x + (double)b_sin * y);
+    const double pcos = (double)waveIndex * ((double)a_cos * x + (double)b_cos * y);
+    const double p0 = (double)waveIndex * ((double)a0 * x + (double)b0 * y);
+    gpu_sincos_phase((double)sin_t * psin + (double)cos_t * pcos + p0, vs, vc);
 }
 
 __device__ inline bool compute_beam_jones_nocache_gpu(const GpuBeam &b,
@@ -1298,10 +1314,12 @@ __global__ void diffraction_kernel(const GpuBeam *__restrict__ beams, int nBeams
         GpuReal vc[32], vs[32];
         for (int v = 0; v < nv; ++v)
         {
-            GpuReal psin = waveIndex * (a_sin * b.x[v] + b_sin * b.y[v]);
-            GpuReal pcos = waveIndex * (a_cos * b.x[v] + b_cos * b.y[v]);
-            GpuReal p0 = waveIndex * (a0 * b.x[v] + b0 * b.y[v]);
-            gpu_sincos(sin_t * psin + cos_t * pcos + p0, &vs[v], &vc[v]);
+            const double x = (double)b.x[v];
+            const double y = (double)b.y[v];
+            const double psin = (double)waveIndex * ((double)a_sin * x + (double)b_sin * y);
+            const double pcos = (double)waveIndex * ((double)a_cos * x + (double)b_cos * y);
+            const double p0 = (double)waveIndex * ((double)a0 * x + (double)b0 * y);
+            gpu_sincos_phase((double)sin_t * psin + (double)cos_t * pcos + p0, &vs[v], &vc[v]);
         }
 
         GpuReal sr = 0.0, si = 0.0;
