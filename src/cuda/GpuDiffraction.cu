@@ -413,7 +413,7 @@ static GpuReal gpu_effective_eps1(double eps1)
             value = parsed;
     }
 #ifdef MBS_GPU_FLOAT
-    value = std::max(value, 1e-5);
+    value = std::max(value, 3e-5);
 #endif
     return (GpuReal)value;
 }
