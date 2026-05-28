@@ -91,8 +91,9 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
     int &nZen = m_sphere.nZenith;
     int &nAz = m_sphere.nAzimuth;
 
-    // Accumulate C_sca = integral of M11 * 2pi*dcos over zenith bins
-    double C_sca = 0.0;
+    // Diagnostic angular integral of M11. The physical scattering cross section
+    // reported below is computed from C_ext - C_abs when OT extinction exists.
+    double C_sca_integral = 0.0;
 
     for (int iZen = 0; iZen <= nZen; ++iZen)
 //    for (int iZen = nZen; iZen >= 0; --iZen)
@@ -135,8 +136,8 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
             ApplyForwardPoleSymmetry(Msum);
         }
 
-        // Accumulate C_sca from azimuth-averaged M11
-        C_sca += Msum[0][0] * _2Pi_dcos;
+        // Diagnostic angular integral from azimuth-averaged M11.
+        C_sca_integral += Msum[0][0] * _2Pi_dcos;
 
         outFile << std::endl << RadToDeg(radZen) << ' ' << _2Pi_dcos << ' ' /*<< nrg << ' '*/;
         outFile << Msum;
@@ -150,10 +151,14 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
         const double C_abs_raw = m_hasAbsorption ? (nrg - m_outputEnergy) : 0.0;
         const double absTol = std::max(1.0, nrg) * 1e-10;
         const double C_abs = (std::fabs(C_abs_raw) < absTol) ? 0.0 : C_abs_raw;
-        const double C_ext_legacy = C_sca + C_abs;
+        const double C_ext_legacy = C_sca_integral + C_abs;
         const double C_ext = m_hasExtinctionOt
             ? m_extinctionCrossSectionOt : C_ext_legacy;
+        double C_sca = m_hasExtinctionOt ? (C_ext - C_abs) : C_sca_integral;
+        if (std::fabs(C_sca) < absTol)
+            C_sca = 0.0;
         const double Q_sca = C_sca / nrg;
+        const double Q_sca_integral = C_sca_integral / nrg;
         const double Q_abs = C_abs / nrg;
         const double Q_ext = C_ext / nrg;
         const double Q_ext_legacy = C_ext_legacy / nrg;
@@ -165,27 +170,31 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
         std::ostringstream log;
         log << std::fixed << std::setprecision(4);
         log << "\n===== SCATTERING EFFICIENCY: " << label << " =====\n";
-        log << "C_sca = " << C_sca << "\n";
         log << "A_proj (incoming energy) = " << nrg << "\n";
-        log << "Q_sca (" << label << ") = C_sca / A_proj = " << Q_sca << "\n";
         if (label == "full")
         {
             log << "Outcoming energy = " << m_outputEnergy << "\n";
             log << "C_abs = A_proj - outcoming energy = " << C_abs << "\n";
             if (m_hasExtinctionOt)
             {
-                log << "C_ext_OT = optical theorem forward amplitude = "
+                log << "C_ext = C_ext_OT (optical theorem forward amplitude) = "
                     << m_extinctionCrossSectionOt << "\n";
-                log << "Q_ext_OT = C_ext_OT / A_proj = " << Q_ext << "\n";
-                log << "C_ext_legacy = C_sca + C_abs_GO = "
+                log << "C_sca = C_ext - C_abs = " << C_sca << "\n";
+                log << "C_sca_integral = integral(M11 dOmega) = "
+                    << C_sca_integral << "\n";
+                log << "Q_sca_integral = C_sca_integral / A_proj = "
+                    << Q_sca_integral << "\n";
+                log << "C_ext_legacy = C_sca_integral + C_abs_GO = "
                     << C_ext_legacy << "\n";
                 log << "Q_ext_legacy = C_ext_legacy / A_proj = "
                     << Q_ext_legacy << "\n";
             }
             else
             {
-                log << "C_ext = C_sca + C_abs = " << C_ext << "\n";
+                log << "C_sca = C_sca_integral = " << C_sca << "\n";
+                log << "C_ext = C_sca_integral + C_abs = " << C_ext << "\n";
             }
+            log << "Q_sca = C_sca / A_proj = " << Q_sca << "\n";
             log << "Q_abs = C_abs / A_proj = " << Q_abs << "\n";
             log << "Q_ext = C_ext / A_proj = " << Q_ext << "\n";
             log << "EFFICIENCY_SUMMARY "
@@ -198,12 +207,14 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
                 << "Qabs=" << Q_abs << ' '
                 << "Qsca=" << Q_sca << ' '
                 << "Csca=" << C_sca << ' '
+                << "Qsca_integral=" << Q_sca_integral << ' '
+                << "Csca_integral=" << C_sca_integral << ' '
                 << "Cabs=" << C_abs << "\n";
         }
-        if (Q_sca > 2.5)
+        if (Q_sca_integral > 2.5)
         {
-            log << "WARNING: Q_sca = " << Q_sca
-                << " > 2. PO overestimates scattering at this size parameter.\n"
+            log << "WARNING: Q_sca_integral = " << Q_sca_integral
+                << " > 2. Angular M11 integral may overestimate scattering at this size parameter.\n"
                 << "  Physical limit (extinction paradox): Q_ext -> 2 for large x.\n"
                 << "  This is a known PO limitation.\n";
         }

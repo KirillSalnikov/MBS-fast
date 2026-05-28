@@ -1504,11 +1504,11 @@ static void WriteAveragedRowsFile(const std::string &destName,
             << "M31 M32 M33 M34 "
             << "M41 M42 M43 M44";
 
-    double csca = 0.0;
+    double cscaIntegral = 0.0;
     for (int t = 0; t <= sphere.nZenith; ++t)
     {
         double dcos = sphere.Compute2PiDcos(t);
-        csca += rows[t][0][0] * dcos;
+        cscaIntegral += rows[t][0][0] * dcos;
         outFile << '\n' << RadToDeg(sphere.GetZenith(t)) << ' ' << dcos << ' ';
         outFile << rows[t];
     }
@@ -1519,9 +1519,13 @@ static void WriteAveragedRowsFile(const std::string &destName,
         const double cAbsRaw = hasAbsorption ? (incomingEnergy - outputEnergy) : 0.0;
         const double absTol = std::max(1.0, incomingEnergy) * 1e-10;
         const double cAbs = (std::fabs(cAbsRaw) < absTol) ? 0.0 : cAbsRaw;
-        const double cExtLegacy = csca + cAbs;
+        const double cExtLegacy = cscaIntegral + cAbs;
         const double cExt = hasExtinctionOt ? cExtOt : cExtLegacy;
+        double csca = hasExtinctionOt ? (cExt - cAbs) : cscaIntegral;
+        if (std::fabs(csca) < absTol)
+            csca = 0.0;
         const double qSca = csca / incomingEnergy;
+        const double qScaIntegral = cscaIntegral / incomingEnergy;
         const double qAbs = cAbs / incomingEnergy;
         const double qExt = cExt / incomingEnergy;
         const double qExtLegacy = cExtLegacy / incomingEnergy;
@@ -1529,25 +1533,29 @@ static void WriteAveragedRowsFile(const std::string &destName,
         std::ostringstream log;
         log << std::fixed << std::setprecision(4);
         log << "\n===== SCATTERING EFFICIENCY: full =====\n";
-        log << "C_sca = " << csca << "\n";
         log << "A_proj (incoming energy) = " << incomingEnergy << "\n";
-        log << "Q_sca (full) = C_sca / A_proj = " << qSca << "\n";
         log << "Outcoming energy = " << outputEnergy << "\n";
         log << "C_abs = A_proj - outcoming energy = " << cAbs << "\n";
         if (hasExtinctionOt)
         {
-            log << "C_ext_OT = optical theorem forward amplitude = "
+            log << "C_ext = C_ext_OT (optical theorem forward amplitude) = "
                 << cExtOt << "\n";
-            log << "Q_ext_OT = C_ext_OT / A_proj = " << qExt << "\n";
-            log << "C_ext_legacy = C_sca + C_abs_GO = "
+            log << "C_sca = C_ext - C_abs = " << csca << "\n";
+            log << "C_sca_integral = integral(M11 dOmega) = "
+                << cscaIntegral << "\n";
+            log << "Q_sca_integral = C_sca_integral / A_proj = "
+                << qScaIntegral << "\n";
+            log << "C_ext_legacy = C_sca_integral + C_abs_GO = "
                 << cExtLegacy << "\n";
             log << "Q_ext_legacy = C_ext_legacy / A_proj = "
                 << qExtLegacy << "\n";
         }
         else
         {
-            log << "C_ext = C_sca + C_abs = " << cExt << "\n";
+            log << "C_sca = C_sca_integral = " << csca << "\n";
+            log << "C_ext = C_sca_integral + C_abs = " << cExt << "\n";
         }
+        log << "Q_sca = C_sca / A_proj = " << qSca << "\n";
         log << "Q_abs = C_abs / A_proj = " << qAbs << "\n";
         log << "Q_ext = C_ext / A_proj = " << qExt << "\n";
         log << "EFFICIENCY_SUMMARY "
@@ -1559,6 +1567,8 @@ static void WriteAveragedRowsFile(const std::string &destName,
             << "Qabs=" << qAbs << ' '
             << "Qsca=" << qSca << ' '
             << "Csca=" << csca << ' '
+            << "Qsca_integral=" << qScaIntegral << ' '
+            << "Csca_integral=" << cscaIntegral << ' '
             << "Cabs=" << cAbs << ' '
             << "Aproj=" << incomingEnergy << ' '
             << "Eout=" << outputEnergy << "\n";
