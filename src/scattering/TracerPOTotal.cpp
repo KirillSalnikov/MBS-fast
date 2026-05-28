@@ -2684,8 +2684,14 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         const bool fastPole = false;
         const int gammaFullCount = fastPole ? 1 : nGamma;
 
+        const bool computeNoShadow = handlerPO->ComputeNoShadow();
         Arr2D betaM(nAz+1, nZen+1, 4, 4); betaM.ClearArr();
-        Arr2D betaM_ns(nAz+1, nZen+1, 4, 4); betaM_ns.ClearArr();
+        Arr2D betaM_ns(computeNoShadow ? nAz+1 : 0,
+                       computeNoShadow ? nZen+1 : 0,
+                       computeNoShadow ? 4 : 0,
+                       computeNoShadow ? 4 : 0);
+        if (computeNoShadow)
+            betaM_ns.ClearArr();
 
         auto processBlock = [&](BetaBlock &block)
         {
@@ -2713,7 +2719,12 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             if (handlerPO->IsGpuEnabled())
             {
                 Arr2D localM(nAz+1, nZen+1, 4, 4); localM.ClearArr();
-                Arr2D localM_ns(nAz+1, nZen+1, 4, 4); localM_ns.ClearArr();
+                Arr2D localM_ns(computeNoShadow ? nAz+1 : 0,
+                                computeNoShadow ? nZen+1 : 0,
+                                computeNoShadow ? 4 : 0,
+                                computeNoShadow ? 4 : 0);
+                if (computeNoShadow)
+                    localM_ns.ClearArr();
                 for (int gpuStart = 0; gpuStart < gammaCount; )
                 {
                     int gpuBatchSize = handlerPO->SelectGpuOrientationBatchSize(
@@ -2736,7 +2747,8 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
                 }
                 for (int p=0;p<nAz;++p) for (int t=0;t<=nZen;++t) {
                     betaM.insert(p,t,localM(p,t));
-                    betaM_ns.insert(p,t,localM_ns(p,t));
+                    if (computeNoShadow)
+                        betaM_ns.insert(p,t,localM_ns(p,t));
                 }
             }
             else
@@ -2744,28 +2756,39 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
                 #pragma omp parallel
                 {
                     Arr2D localM(nAz+1, nZen+1, 4, 4); localM.ClearArr();
-                    Arr2D localM_ns(nAz+1, nZen+1, 4, 4); localM_ns.ClearArr();
+                    Arr2D localM_ns(computeNoShadow ? nAz+1 : 0,
+                                    computeNoShadow ? nZen+1 : 0,
+                                    computeNoShadow ? 4 : 0,
+                                    computeNoShadow ? 4 : 0);
+                    if (computeNoShadow)
+                        localM_ns.ClearArr();
                     std::vector<Arr2DC> localJ, localJ_ns;
                     if (handlerPO->isCoh) {
                         Arr2DC t1(nAz+1,nZen+1,2,2); t1.ClearArr(); localJ.push_back(t1);
-                        Arr2DC t2(nAz+1,nZen+1,2,2); t2.ClearArr(); localJ_ns.push_back(t2);
+                        if (computeNoShadow) {
+                            Arr2DC t2(nAz+1,nZen+1,2,2); t2.ClearArr(); localJ_ns.push_back(t2);
+                        }
                     }
                     #pragma omp for schedule(dynamic, 1)
                     for (int i = 0; i < gammaCount; ++i) {
                         if (!chunkPrepared[i].beams.empty())
                             handlerPO->HandleBeamsToLocal(chunkPrepared[i], localM, localJ,
-                                                           handlerPO->isCoh ? &localJ_ns : nullptr);
+                                                           (handlerPO->isCoh && computeNoShadow) ? &localJ_ns : nullptr);
                         if (handlerPO->isCoh && !localJ.empty()) {
                             double w = chunkPrepared[i].sinZenith;
                             HandlerPO::AddToMuellerLocal(localJ, w, localM, nAz, nZen);
-                            HandlerPO::AddToMuellerLocal(localJ_ns, w, localM_ns, nAz, nZen);
-                            localJ[0].ClearArr(); localJ_ns[0].ClearArr();
+                            if (computeNoShadow)
+                                HandlerPO::AddToMuellerLocal(localJ_ns, w, localM_ns, nAz, nZen);
+                            localJ[0].ClearArr();
+                            if (computeNoShadow)
+                                localJ_ns[0].ClearArr();
                         }
                     }
                     #pragma omp critical
                     { for (int p=0;p<nAz;++p) for (int t=0;t<=nZen;++t) {
                         betaM.insert(p,t,localM(p,t));
-                        betaM_ns.insert(p,t,localM_ns(p,t));
+                        if (computeNoShadow)
+                            betaM_ns.insert(p,t,localM_ns(p,t));
                     } }
                 }
             }
@@ -2814,14 +2837,15 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         if (m_mirrorGamma)
         {
             ApplyMirrorGammaMueller(betaM, nAz, nZen);
-            if (handlerPO->ComputeNoShadow())
+            if (computeNoShadow)
                 ApplyMirrorGammaMueller(betaM_ns, nAz, nZen);
         }
 
         // Accumulate into global Mueller
         for (int p=0;p<nAz;++p) for (int t=0;t<=nZen;++t) {
             handlerPO->M.insert(p,t,betaM(p,t));
-            handlerPO->M_noshadow.insert(p,t,betaM_ns(p,t));
+            if (computeNoShadow)
+                handlerPO->M_noshadow.insert(p,t,betaM_ns(p,t));
         }
 
         // --save_betas: write per-beta Mueller (phi-averaged)

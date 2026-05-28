@@ -2801,7 +2801,12 @@ bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOri
     lowSphere.ComputeSphereDirections(*m_incidentLight);
 
     Arr2D lowM(nLow + 1, nZenLow + 1, 4, 4); lowM.ClearArr();
-    Arr2D lowMns(nLow + 1, nZenLow + 1, 4, 4); lowMns.ClearArr();
+    Arr2D lowMns(computeNoShadow ? nLow + 1 : 0,
+                 computeNoShadow ? nZenLow + 1 : 0,
+                 computeNoShadow ? 4 : 0,
+                 computeNoShadow ? 4 : 0);
+    if (computeNoShadow)
+        lowMns.ClearArr();
 
     bool savedFft = m_fftEnabled;
     m_fftEnabled = false;
