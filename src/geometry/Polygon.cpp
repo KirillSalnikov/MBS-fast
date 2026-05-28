@@ -4,13 +4,6 @@
 
 #define EPS_NORMAL 0.1
 
-Polygon::Polygon()
-{
-
-}
-
-Polygon::Polygon(int size) : nVertices(size) {}
-
 Polygon::Polygon(const Polygon &other)
 {
 	nVertices = other.nVertices;

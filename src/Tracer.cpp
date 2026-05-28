@@ -5,6 +5,7 @@
 #include <iostream>
 #include <fstream>
 #include <algorithm>
+#include <cstdlib>
 #include <assert.h>
 #ifdef _OPENMP
 #include <omp.h>
@@ -87,6 +88,23 @@ void Tracer::OutputProgress(int nOrientation, long long count,
                             int zenith, int azimuth, CalcTimer &timer, int nBeams)
 {
     string split = "\t";
+
+    if (m_logTime != 0)
+    {
+        static const int pollStride = []() {
+            const char *value = std::getenv("MBS_PROGRESS_POLL_STRIDE");
+            if (!value || !*value)
+                return 16;
+            char *end = nullptr;
+            long parsed = std::strtol(value, &end, 10);
+            return (end && *end == '\0' && parsed > 0) ? (int)parsed : 16;
+        }();
+        if ((++m_progressPollCounter % pollStride) != 0
+            && count < nOrientation)
+        {
+            return;
+        }
+    }
 
     auto now = timer.SecondsElapsed();
     bool ok = now - m_timeElapsed > m_logTime;

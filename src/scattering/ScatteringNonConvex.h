@@ -84,9 +84,11 @@ protected:
 
 private:
     PolygonArray m_polygonBuffer;
+    PolygonArray m_polygonResultBuffer;
     int m_visibleFacetCache[2][MAX_FACET_NUM][MAX_FACET_NUM];
     size_t m_visibleFacetCacheSize[2][MAX_FACET_NUM];
     double m_facetProjectionBounds[3][MAX_FACET_NUM][4];
+    int m_facetProjectionDrop[2][MAX_FACET_NUM];
     const ScatteringNonConvex *m_visibilityCacheOwner = nullptr;
     bool m_visibilityCacheBuilt = false;
 };

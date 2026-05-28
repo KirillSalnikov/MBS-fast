@@ -58,7 +58,18 @@ Scattering::~Scattering()
 bool Scattering::EnsureBeamTree()
 {
     if (m_beamTree.capacity() == 0)
-        m_beamTree.reserve(4096);
+    {
+        const char *value = std::getenv("MBS_TRACE_TREE_RESERVE");
+        long reserve = 65536;
+        if (value && *value)
+        {
+            char *end = nullptr;
+            long parsed = std::strtol(value, &end, 10);
+            if (end && *end == '\0' && parsed > 0)
+                reserve = parsed;
+        }
+        m_beamTree.reserve((size_t)reserve);
+    }
     return true;
 }
 
@@ -626,6 +637,11 @@ void Scattering::Intersect(int facetID, const Beam &beam, Polygon &intersection)
             _s_point = _e_point;
             isInsideS = isInsideE;
         }
+
+        if (outputSize < MIN_VERTEX_NUM)
+        {
+            return;
+        }
     }
 
     SetOutputPolygon(_output_ptr, outputSize, intersection);
@@ -634,6 +650,12 @@ void Scattering::Intersect(int facetID, const Beam &beam, Polygon &intersection)
 void Scattering::SetOutputPolygon(__m128 *_output_points, int outputSize,
                                   Polygon &polygon) const
 {
+    if (outputSize <= 0)
+    {
+        polygon.nVertices = 0;
+        return;
+    }
+
     Point3f p;
 
     __m128 eps = _mm_load_ps1(&EPS_MERGE);

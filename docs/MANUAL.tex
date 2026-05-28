@@ -811,16 +811,38 @@ Quality/debug environment variables:
   a pair to reduce duplicated FFT setup.
 \end{itemize}
 
-For non-convex CPU tracing, \texttt{MBS\_TRACE\_CPU\_PREFILTER=1} enables a
-conservative projected bounding-box prefilter before the exact polygon
-intersection.  A beam is projected onto the candidate facet plane along its
-propagation direction; if the expanded 2D boxes do not overlap, the exact
-intersection is skipped.  \texttt{MBS\_TRACE\_CPU\_PREFILTER\_MARGIN} sets the
-expansion margin; the default is 10 in particle length units.  The release
-default keeps this prefilter off because the benefit is particle-dependent.
+For non-convex CPU tracing, a conservative projected bounding-box prefilter is
+enabled by default before the exact polygon intersection. Set
+\texttt{MBS\_TRACE\_CPU\_PREFILTER=0} to disable it. A beam is projected onto
+the candidate facet plane along its propagation direction; if the expanded 2D
+boxes do not overlap, the exact intersection is skipped.
+\texttt{MBS\_TRACE\_CPU\_PREFILTER\_MARGIN} sets the expansion margin; the
+default is 8 in particle length units. This default is intentionally
+conservative; reduce it only after checking the Mueller matrix against a
+no-prefilter reference for the specific particle.
+\texttt{MBS\_TRACE\_TREE\_RESERVE} controls the initial
+\texttt{std::vector<Beam>} capacity for the non-convex beam stack. The default
+is 16384, which reduces reallocations and beam copies in deep non-convex
+traces. Lower it only if memory is tight; raise it if logs show much larger
+per-orientation beam counts.
 For non-absorbing particles (\(\Im m=0\)) BigInteger trace IDs are skipped by
 default because absorption path recovery does not use them; set
 \texttt{MBS\_FORCE\_TRACK\_IDS=1} for debug or explicit track-output workflows.
+
+\texttt{--gpu\_trace} is not completed full GPU ray tracing. It is only an
+experimental CUDA broad-phase candidate prefilter for non-convex tracing:
+candidate beam/facet pairs may be projected and rejected on the GPU, but all
+surviving pairs still use the exact CPU polygon intersection. For large
+non-convex particles, Phase~1 can still be the main bottleneck because
+geometric tracing, beam splitting, internal-reflection expansion, and exact
+intersections remain CPU-side. The production CUDA backend accelerates
+diffraction, not the full tracing stack.
+
+The CUDA prefilter is intentionally conservative in production builds:
+\texttt{MBS\_GPU\_TRACE\_MIN\_CANDIDATES} defaults to 65536, and with
+OpenMP tracing (\texttt{--threads > 1}) it is disabled unless
+\texttt{MBS\_GPU\_TRACE\_OPENMP=1}.  This avoids the pathological case where
+many CPU threads launch small CUDA prefilter batches and serialize Phase~1.
 
 \subsection{Beam and trace cutoffs}
 

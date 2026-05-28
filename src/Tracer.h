@@ -64,6 +64,7 @@ protected:
     bool isOutputGroups = false;
 
     long long m_timeElapsed = 0;
+    long long m_progressPollCounter = 0;
 
 protected:
     void OutputStartTime(CalcTimer &timer);

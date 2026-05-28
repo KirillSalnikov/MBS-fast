@@ -12,6 +12,16 @@
 #include <cerrno>
 #include <cstdlib>
 
+static double ReadEnvDoubleNoClamp(const char *name, double fallback)
+{
+    const char *env = std::getenv(name);
+    if (!env || !*env)
+        return fallback;
+    char *end = nullptr;
+    double value = std::strtod(env, &end);
+    return (end && *end == '\0' && std::isfinite(value)) ? value : fallback;
+}
+
 bool HandlerPO::IsParticleBeam(const Beam &beam)
 {
     return beam.lastFacetId != __INT_MAX__ && beam.lastFacetId != -1;
@@ -855,6 +865,7 @@ void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
     m_fftEnabled = source.m_fftEnabled;
     m_fftPhiFactor = source.m_fftPhiFactor;
     m_otFarReferencePath = source.m_otFarReferencePath;
+    m_otPingDistance = source.m_otPingDistance;
     m_otPhaseAverage = source.m_otPhaseAverage;
     isBackScatteringConusEnabled = source.isBackScatteringConusEnabled;
     backScatteringConus = source.backScatteringConus;
@@ -1293,25 +1304,31 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
     out.sinZenith = sinZenith;
     out.extinctionOt = 0.0;
 
+    double jRel = (m_beamCutoffJRel >= 0) ? m_beamCutoffJRel : m_targetEps;
+    double areaRel = (m_beamCutoffAreaRel >= 0) ? m_beamCutoffAreaRel : m_targetEps;
+    double importanceRel = m_beamCutoffImportanceRel;
+    const bool useBeamCutoff = (jRel > 0.0) || (areaRel > 0.0)
+                            || (importanceRel > 0.0);
+
     // Pass 1: compute max |J|^2 and max area for relative cutoffs.
     double maxJnorm = 0, maxArea = 0, maxImportance = 0;
-    for (Beam &beam : beams)
+    if (useBeamCutoff)
     {
-        if (beam.lastFacetId != __INT_MAX__)
+        for (Beam &beam : beams)
         {
-            double jn = beam.J.Norm();  // |J|^2 (Frobenius norm^2)
-            double ar = beam.Area();
-            double importance = jn * ar;
-            if (jn > maxJnorm) maxJnorm = jn;
-            if (ar > maxArea) maxArea = ar;
-            if (importance > maxImportance) maxImportance = importance;
+            if (beam.lastFacetId != __INT_MAX__)
+            {
+                double jn = beam.J.Norm();  // |J|^2 (Frobenius norm^2)
+                double ar = beam.Area();
+                double importance = jn * ar;
+                if (jn > maxJnorm) maxJnorm = jn;
+                if (ar > maxArea) maxArea = ar;
+                if (importance > maxImportance) maxImportance = importance;
+            }
         }
     }
     // Two independent relative tests. A beam is skipped if either enabled
     // ratio is small. Ratios are dimensionless and independent of size scale.
-    double jRel = (m_beamCutoffJRel >= 0) ? m_beamCutoffJRel : m_targetEps;
-    double areaRel = (m_beamCutoffAreaRel >= 0) ? m_beamCutoffAreaRel : m_targetEps;
-    double importanceRel = m_beamCutoffImportanceRel;
     double jThreshold = maxJnorm * jRel;
     double areaThreshold = maxArea * areaRel;
     double importanceThreshold = maxImportance * importanceRel;
@@ -1383,18 +1400,21 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
             double ar = info.area;
             double importance = jn * ar;
             totalImportance += importance;
-            bool smallJ = (jRel > 0 && jn < jThreshold);
-            bool smallArea = (areaRel > 0 && ar < areaThreshold);
-            bool smallImportance = (importanceRel > 0 && importance < importanceThreshold);
-            if (smallJ || smallArea || smallImportance)
+            if (useBeamCutoff)
             {
-                skippedBeams++;
-                skippedImportance += importance;
-                if (smallJ) skippedJ++;
-                if (smallArea) skippedArea++;
-                if (smallImportance) skippedImportanceCount++;
-                if (smallJ && smallArea) skippedBoth++;
-                continue;
+                bool smallJ = (jRel > 0 && jn < jThreshold);
+                bool smallArea = (areaRel > 0 && ar < areaThreshold);
+                bool smallImportance = (importanceRel > 0 && importance < importanceThreshold);
+                if (smallJ || smallArea || smallImportance)
+                {
+                    skippedBeams++;
+                    skippedImportance += importance;
+                    if (smallJ) skippedJ++;
+                    if (smallArea) skippedArea++;
+                    if (smallImportance) skippedImportanceCount++;
+                    if (smallJ && smallArea) skippedBoth++;
+                    continue;
+                }
             }
         }
 
@@ -1649,7 +1669,19 @@ double HandlerPO::ComputeForwardExtinctionOt(
                        + sr11r * jp11i + sr11i * jp11r);
     }
 
-    const double cext = m_wavelength * imag(f00 + f11)
+    const complex forward = f00 + f11;
+    double forwardExtinctionAmplitude = imag(forward);
+    const double pingD = (m_otPingDistance != 0.0)
+        ? m_otPingDistance
+        : ReadEnvDoubleNoClamp("MBS_OT_PING_D", 0.0);
+    if (pingD != 0.0)
+    {
+        const double phase = 2.0 * m_waveIndex * pingD;
+        double sn = 0.0, cs = 1.0;
+        fast_sincos(phase, sn, cs);
+        forwardExtinctionAmplitude = imag(forward) * cs - real(forward) * sn;
+    }
+    const double cext = m_wavelength * forwardExtinctionAmplitude
         * prepared.sinZenith;
     return std::isfinite(cext) ? cext : 0.0;
 }

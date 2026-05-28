@@ -13,6 +13,7 @@ Droxtal::Droxtal(const complex &refrIndex,
 
 	SetSize(midRadius*2, halfHeight*2);
 	Init(20, refrIndex);
+	SetSymmetry(M_PI/2, M_PI/3);
 
 	defaultFacets[0] = CreateBase(6, topRadius, halfHeight);
 	defaultFacets[19] = CreateBase(6, topRadius, -halfHeight);

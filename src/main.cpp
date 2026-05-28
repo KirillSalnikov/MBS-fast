@@ -127,6 +127,8 @@ void ApplyPOOutputOptions(const ArgPP &args, HandlerPO *handler, double wave)
     if (args.IsCatched("ot_phase_shift"))
         handler->m_otFarReferencePath =
             args.GetDoubleValue("ot_phase_shift", 0) * wave;
+    if (args.IsCatched("ot_ping"))
+        handler->m_otPingDistance = args.GetDoubleValue("ot_ping", 0);
 }
 
 void ApplyTraceCutoffOptions(const ArgPP &args, Scattering *scattering)
@@ -218,6 +220,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("beam_cutoff_importance", 1, true); // relative |J|^2*area beam cutoff
     parser.AddRule("ot_phase_avg", 0, true); // average optical-theorem extinction over far-reference phase
     parser.AddRule("ot_phase_shift", 1, true); // diagnostic OT far-reference phase shift in wavelengths
+    parser.AddRule("ot_ping", 1, true); // Ping-style OT phase correction distance
     parser.AddRule("trace_cutoff", 1, true); // common relative tracing prune cutoff
     parser.AddRule("trace_cutoff_j", 1, true); // relative |J|^2 tracing prune cutoff
     parser.AddRule("trace_cutoff_area", 1, true); // relative area tracing prune cutoff
@@ -329,13 +332,16 @@ void PrintFullHelp()
          << "  --beam_cutoff_importance EPS Skip beams with |J|^2*area/max < EPS\n"
          << "  --ot_phase_avg         Average OT extinction over one far-reference phase period\n"
          << "  --ot_phase_shift F     Diagnostic OT phase shift in wavelengths (default 0)\n"
+         << "  --ot_ping D            Ping-style OT: Im(F)*cos(2kD)-Re(F)*sin(2kD)\n"
          << "  --trace_cutoff EPS     Stop tracing internal beams if either relative test matches\n"
          << "  --trace_cutoff_j EPS   Trace prune by |J|^2/initial-max < EPS\n"
          << "  --trace_cutoff_area EPS Trace prune by area/initial-max < EPS\n"
          << "  --trace_cutoff_importance EPS Trace prune by |J|^2*area/max < EPS\n"
          << "  --trace_max_beams N    Abort one orientation after N traced beam nodes (0 disables)\n"
          << "  --gpu_trace            Experimental CUDA prefilter for nonconvex tracing candidates\n"
-         << "                         Env: MBS_GPU_TRACE_BATCH_BEAMS=1024, MBS_GPU_TRACE_MIN_CANDIDATES=8192\n"
+         << "                         Not full GPU tracing; exact intersections remain CPU-side\n"
+         << "                         Env: MBS_GPU_TRACE_BATCH_BEAMS=1024, MBS_GPU_TRACE_MIN_CANDIDATES=65536\n"
+         << "                         Disabled with OpenMP>1 unless MBS_GPU_TRACE_OPENMP=1\n"
          << "  -r RATIO               Beam area restriction ratio (default 100)\n"
          << "  --sym Sb Sg            Override symmetry: beta/Sb, 360/Sg degrees\n"
          << "  --filter DEG           Restrict output to backscattering cone\n"

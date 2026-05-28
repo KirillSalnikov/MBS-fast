@@ -623,9 +623,10 @@ large cases without allocating the full orientation set on the GPU at once.
 #### `--gpu_trace`
 
 Enable the experimental CUDA prefilter for non-convex tracing candidates.
-This does not replace the exact CPU polygon intersection. CUDA only projects
-beam/facet pairs and rejects pairs whose 2D bounding boxes cannot overlap;
-all surviving pairs still go through the existing CPU `Intersect()` path.
+This is not full GPU ray tracing. It does not replace the exact CPU polygon
+intersection. CUDA only projects beam/facet pairs and rejects pairs whose 2D
+bounding boxes cannot overlap; all surviving pairs still go through the
+existing CPU `Intersect()` path.
 
 The implementation batches many beams from one tracing stack layer, copies
 beam records, facet records, and compact `(beam, facet)` index pairs to the
@@ -635,19 +636,29 @@ thread-local so OpenMP tracing can call the prefilter safely.
 Environment controls:
 
 ```
-MBS_TRACE_CPU_PREFILTER=1          # enable conservative projected CPU prefilter
-MBS_TRACE_CPU_PREFILTER_MARGIN=10  # projected bounding-box margin, default 10
+MBS_TRACE_CPU_PREFILTER=0          # disable conservative projected CPU prefilter
+MBS_TRACE_CPU_PREFILTER_MARGIN=8   # projected bounding-box margin, default 8
+MBS_TRACE_TREE_RESERVE=16384       # initial non-convex beam-tree capacity
 MBS_GPU_TRACE_BATCH_BEAMS=1024      # beams collected per CUDA prefilter batch
-MBS_GPU_TRACE_MIN_CANDIDATES=8192   # below this, skip CUDA and use CPU path
+MBS_GPU_TRACE_MIN_CANDIDATES=65536  # below this, skip CUDA and use CPU path
+MBS_GPU_TRACE_OPENMP=1              # allow CUDA prefilter inside OpenMP tracing
 MBS_FORCE_TRACK_IDS=1              # keep BigInteger track IDs even when Im(ri)=0
 ```
 
-For non-convex particles `MBS_TRACE_CPU_PREFILTER=1` enables a broad-phase test:
+For non-convex particles the conservative projected CPU prefilter is enabled
+by default. Set `MBS_TRACE_CPU_PREFILTER=0` to disable it. The prefilter is a
+broad-phase test:
 the CPU tracer checks whether the projection of a beam onto a candidate facet
 plane can overlap the facet bounding box. If the expanded boxes are disjoint,
 the expensive exact polygon intersection is skipped. Increasing the margin makes
-the test less aggressive. The default release path keeps this off because the
-benefit is particle-dependent.
+the test less aggressive. The default margin is intentionally conservative
+(`8` in particle length units); reduce it only after checking the Mueller
+matrix against a no-prefilter reference for the specific particle.
+
+`MBS_TRACE_TREE_RESERVE` controls the initial `std::vector<Beam>` capacity for
+the non-convex beam stack. The default `16384` reduces reallocations and beam
+copies in deep non-convex traces. Lower it only if memory is tight; raise it if
+logs show much larger per-orientation beam counts.
 
 For non-absorbing particles (`Im(ri)=0`) the tracer skips BigInteger track-id
 updates by default because absorption path recovery does not need them. This is
@@ -658,6 +669,14 @@ Current status: this is a correctness-checked experimental path, not a default
 speed path. It is useful as groundwork for a full GPU tracing layer, but on
 small and medium Afine30 tests the CPU tracer is still faster because the
 remaining exact intersection and CPU/GPU synchronization dominate.
+With OpenMP tracing (`--threads > 1`) the CUDA prefilter is disabled unless
+`MBS_GPU_TRACE_OPENMP=1`, because many CPU threads launching small CUDA
+batches serialize and can be much slower than the CPU path.
+
+For large non-convex particles, Phase 1 can still be the main bottleneck:
+the current GPU backend accelerates diffraction, while geometric ray tracing,
+beam splitting, internal-reflection expansion, and exact polygon intersections
+remain CPU-side. Full CUDA tracing has not been completed yet.
 
 #### `--fft`
 
@@ -685,7 +704,7 @@ MBS_FFT_PHI_FACTOR=10     # force output/direct ratio
 MBS_FFT_CHECK=1           # optional diagnostics/check path
 MBS_GPU_NO_ATOMICS=1      # use orientation-grid CUDA reduction path
 MBS_GPU_MEM_FRACTION=0.8  # fraction of free GPU memory available to batches
-MBS_GPU_BLOCK=128|256|512 # CUDA block size for diffraction kernels, default 256
+MBS_GPU_BLOCK=128|256|512 # CUDA block size for diffraction kernels, default 128
 MBS_SHARED_PIPELINE=1     # overlap CPU trace and GPU diffraction in shared multikeq
 MBS_SHARED_ORIENT_CHUNK=64 # global scheduler chunk size for shared multikeq
 ```
@@ -927,7 +946,9 @@ Recommended heavy-case starting point:
 Maximum orientation/gamma chunk size for memory-aware streaming modes. Smaller
 chunks reduce RAM pressure and make checkpointing/resume safer; larger chunks
 reduce overhead. In GPU oldauto/random runs without beam cutoffs the automatic
-default is 16 gamma orientations per beta ring; `--chunk` overrides it.
+default is 64 gamma orientations per beta ring; `--chunk` overrides it. Use a
+smaller value if RAM pressure appears, or a larger value if the particle is
+simple and memory is still far from the limit.
 
 Memory is approximately:
 

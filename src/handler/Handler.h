@@ -398,6 +398,7 @@ public:
     double m_extinctionCrossSectionOt = 0;
     bool m_hasExtinctionOt = false;
     double m_otFarReferencePath = 0.0;
+    double m_otPingDistance = 0.0;
     bool m_otPhaseAverage = false;
     std::string m_integralSummary;
 

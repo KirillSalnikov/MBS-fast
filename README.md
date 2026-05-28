@@ -271,6 +271,9 @@ See `tests/reference_test/RESULTS.md` and comparison plots in `tests/reference_t
 - **5 convergence controls**: Q_sca, M₁₁(22°), M₁₁(46°), M₁₁(90°), M₁₁(180°)
 - **Auto beam cutoff**: two dimensionless thresholds (|J|²/max < eps AND area/max < eps). Protects forward peak and strong beams, skips 45-80% of negligible beams
 - **CUDA diffraction**: `--gpu`; add `--fft` for cuFFT phi interpolation backend
+- **Non-convex tracing status**: ray tracing is still CPU-side; `--gpu_trace`
+  is only an experimental CUDA candidate prefilter, not completed full GPU
+  tracing. Large non-convex particles can therefore remain Phase-1 limited.
 - **Multi-size**: `--multigrid`, `--multikeq`, `--multikeq_list` — trace once at the largest size, recompute diffraction for all sizes
 - **GPU batching controls**: `MBS_SHARED_BETA_GROUP=N`, `MBS_GPU_NO_ATOMICS=1`, `MBS_GPU_MEM_FRACTION=...`
 - **Per-beta save**: `--save_betas` — write intermediate Mueller per beta (backup/resume)

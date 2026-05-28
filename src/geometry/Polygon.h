@@ -12,8 +12,8 @@ public:
     Point3f arr[MAX_VERTEX_NUM];
     int nVertices = 0;
 
-    Polygon();
-    explicit Polygon(int nVertices);
+    Polygon() {}
+    explicit Polygon(int nVertices) : nVertices(nVertices) {}
     Polygon(const Polygon &other);
     Polygon(Polygon &&other);
 

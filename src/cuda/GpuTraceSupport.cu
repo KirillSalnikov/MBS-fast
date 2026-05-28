@@ -58,15 +58,15 @@ struct GpuTraceWorkspace
 
 static thread_local GpuTraceWorkspace g_traceWorkspace;
 
-static float gpu_trace_margin()
+static double gpu_trace_margin_override()
 {
     const char *value = std::getenv("MBS_GPU_TRACE_MARGIN");
     if (!value || !*value)
-        return 1.0f;
+        return -1.0;
     char *end = nullptr;
-    float parsed = std::strtof(value, &end);
-    if (!end || *end != '\0' || parsed < 0.0f)
-        return 1.0f;
+    double parsed = std::strtod(value, &end);
+    if (!end || *end != '\0' || parsed < 0.0)
+        return -1.0;
     return parsed;
 }
 
@@ -154,6 +154,7 @@ static bool upload_trace_facets_if_needed(const Facet *facets, int maxFacetId)
         return true;
 
     std::vector<GpuTraceFacetRecord> hostFacets((size_t)maxFacetId + 1);
+    const double marginOverride = gpu_trace_margin_override();
     for (int facetId = 0; facetId <= maxFacetId; ++facetId)
     {
         const Facet &facet = facets[facetId];
@@ -166,10 +167,25 @@ static bool upload_trace_facets_if_needed(const Facet *facets, int maxFacetId)
             record.normalIn[k] = facet.in_normal.coordinates[k];
             record.normalOut[k] = facet.ex_normal.coordinates[k];
         }
-        record.margin = gpu_trace_margin();
+        double minCoord[3] = {1e300, 1e300, 1e300};
+        double maxCoord[3] = {-1e300, -1e300, -1e300};
         for (int v = 0; v < record.nVertices; ++v)
+        {
             for (int k = 0; k < 4; ++k)
                 record.vertices[v][k] = facet.arr[v].coordinates[k];
+            for (int k = 0; k < 3; ++k)
+            {
+                const double c = record.vertices[v][k];
+                minCoord[k] = std::min(minCoord[k], c);
+                maxCoord[k] = std::max(maxCoord[k], c);
+            }
+        }
+        double span = 0.0;
+        for (int k = 0; k < 3; ++k)
+            span = std::max(span, maxCoord[k] - minCoord[k]);
+        record.margin = (marginOverride >= 0.0)
+                      ? marginOverride
+                      : std::max(1e-9, span * 1e-7);
     }
 
     if (!trace_cuda_ok(cudaMemcpy(g_traceWorkspace.facets, hostFacets.data(),
@@ -328,11 +344,11 @@ static int gpu_trace_threshold()
 {
     const char *value = std::getenv("MBS_GPU_TRACE_MIN_CANDIDATES");
     if (!value || !*value)
-        return 8192;
+        return 65536;
     char *end = nullptr;
     long parsed = std::strtol(value, &end, 10);
     if (!end || *end != '\0' || parsed < 1)
-        return 8192;
+        return 65536;
     return (int)parsed;
 }
 
