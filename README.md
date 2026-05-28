@@ -3,6 +3,11 @@
 Fast Kirchhoff diffraction code for light scattering by non-spherical ice particles.
 OpenMP + MPI parallel. AVX-512/AVX2 SIMD. Adaptive grids. Auto beam cutoff.
 
+The detailed implementation manual is in [`docs/MANUAL.pdf`](docs/MANUAL.pdf)
+with source in [`docs/MANUAL.tex`](docs/MANUAL.tex). It documents every public
+mode/flag, the actual averaging formulas, CUDA/FFT behavior, cutoffs,
+checkpointing, and the exact integral-characteristic formulas used in the code.
+
 ## Requirements
 
 - **GCC >= 9** (or Clang >= 14)

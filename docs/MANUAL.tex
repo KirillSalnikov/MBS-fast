@@ -22,9 +22,9 @@
 \usepackage{enumitem}
 \setlist{nosep}
 
-\title{\textbf{MBS-raw: Physical Optics for Ice Crystals}\\[4pt]\large Manual}
+\title{\textbf{MBS-fast: Physical Optics for Ice Crystals}\\[4pt]\large Implementation Manual}
 \author{}
-\date{2026-03-22}
+\date{2026-05-28}
 
 \begin{document}
 \maketitle
@@ -34,26 +34,31 @@
 %======================================================================
 \section{Overview}
 
-MBS-raw computes light scattering by non-spherical particles using the Physical Optics (PO) method.
+MBS-fast computes light scattering by non-spherical particles using the Physical Optics (PO) method.
 It traces geometric optics rays through the particle (reflections, refractions),
 then applies Kirchhoff diffraction to each output beam to obtain the far-field Mueller matrix.
 
-\textbf{Optimized version}: $\sim$70$\times$ faster than original. AVX-512/AVX2 SIMD, OpenMP parallel,
-Sobol quasi-random orientations. Builds for Intel, AMD Zen\,2 (EPYC 7H12), and AMD Zen\,4 (Ryzen 7000 / EPYC Genoa).
+This manual describes the current code, including CPU, MPI/OpenMP, CUDA,
+FFT angular interpolation, automatic averaging modes, cutoffs, checkpointing,
+and the integral characteristics printed in the logs.  Formula names match the
+variables in \texttt{src/handler/HandlerPOTotal.cpp},
+\texttt{src/scattering/TracerPOTotal.cpp}, and
+\texttt{src/cuda/GpuDiffraction.cu}.
 
 %======================================================================
 \section{Quick Start}
 
 \begin{lstlisting}
-# Simple run: hex column, Sobol orientations, auto theta grid
-mbs_po --po --sobol 1024 --auto_tgrid \
+# Simple CPU run: hex column, Sobol orientations, adaptive theta grid
+cpu/bin/mbs_po_mpi --po --sobol 1024 --auto_tgrid 0.05 \
     -p 1 10 10 -w 0.532 --ri 1.31 0 -n 12 \
     --grid 0 180 48 180 --close
 
-# Fully adaptive (auto everything)
-mbs_po --po --adaptive 0.01 --auto_tgrid \
-    -p 1 10 10 -w 0.532 --ri 1.31 0 -n 12 \
-    --grid 0 180 48 180 --close
+# GPU production-style file-particle run
+gpu/bin/mbs_po_gpu_float_fast --po --pf Afine30.dat --k_eq 58.81 \
+    --ri 1.6 0.002 -w 1.064 -n 14 \
+    --oldauto 2 --grid 0 180 600 180 \
+    --threads 12 --gpu --fft --checkpoint --close
 \end{lstlisting}
 
 %======================================================================
@@ -82,7 +87,9 @@ Type & Shape & Parameters \\
 \textbf{Symmetry}: auto-detected. Hex column: $\beta_\text{sym}=\pi/2$, $\gamma_\text{sym}=\pi/3$ $\to$ 12$\times$ reduction.
 
 \subsubsection{\texttt{--pf FILENAME}}
-Load particle geometry from file. \texttt{-p} argument provides the filename.
+Load particle geometry from file.  The geometry is loaded, optionally resized
+by \texttt{--rs} or \texttt{--k\_eq}, and then written to
+\texttt{particle\_for\_check.dat} for verification.
 
 \subsubsection{\texttt{--rs SIZE}}
 Resize particle loaded with \texttt{--pf} to maximal dimension SIZE ($\mu$m).
@@ -97,8 +104,14 @@ Force convex or non-convex tracing algorithm.
 Wavelength in micrometers. Examples: \texttt{-w 0.532} (green), \texttt{-w 1.064} (NIR).
 
 \subsubsection{\texttt{--ri N\_REAL N\_IMAG}}
-Complex refractive index $m = n_\text{re} + i\,n_\text{im}$.\\
-\textbf{Important}: Without \texttt{--abs}, imaginary part is forced to zero.
+Complex refractive index $m = n_\text{re} + i\,n_\text{im}$.  In the current
+code absorption accounting is enabled automatically when $n_\text{im}\ne0$:
+\[
+  \texttt{isAbs} = \texttt{--abs} \;\lor\; (n_\text{im}\ne0).
+\]
+For $n_\text{im}=0$, physical absorption is reported as zero even if the
+diagnostic angular integral of $M_{11}$ does not exactly match the optical
+theorem.
 
 \subsubsection{\texttt{--abs}}
 Enable absorption. Requires \texttt{-w}. Uses \texttt{DiffractInclineAbs}.
@@ -168,7 +181,7 @@ Example: \texttt{--sym 6 2} $\to$ $\beta\in[0,30^\circ]$, $\gamma\in[0,180^\circ
 \subsubsection{\texttt{--grid T1 T2 N\_PHI N\_THETA}}
 Uniform grid. \textbf{Use $N_\phi \geq 48$}; $N_\phi=6$ causes 50--200\% error.
 
-\subsubsection{\texttt{--auto\_tgrid} (recommended)}
+\subsubsection{\texttt{--auto\_tgrid EPS} (recommended)}
 Auto non-uniform $\theta$ grid with 5 adaptive zones:
 
 \begin{tabular}{llll}
@@ -196,7 +209,10 @@ Small $x$ has coarser steps (broad peak); large $x$ needs fine steps near $\thet
 \end{figure}
 
 \subsubsection{\texttt{--auto\_phi}}
-Auto-select $N_\phi$ based on $x$: $N_\phi = \max(48,\; 6\lceil\sqrt{x}/1.5\rceil)$.
+Auto-select $N_\phi$ based on the current size.  The exact formula is selected
+in \texttt{main.cpp}; when \texttt{--mirror\_gamma} or \texttt{--fft} is active
+the final value is rounded upward to a multiple of 6 by
+\texttt{MirrorSafePhiCount()}.
 
 \begin{figure}[h]\centering
 \includegraphics[width=\textwidth]{docs/figures/fig_auto_phi.pdf}
@@ -210,14 +226,18 @@ Right: $Q_\text{sca}$ error vs $N_\phi$ for different sizes—larger $x$ needs m
 Custom $\theta$ grid from file (degrees, one per line).
 
 %----------------------------------------------------------------------
-\subsection{Multi-Size (\texttt{--sizefile})}
+\subsection{Multi-Size}
 
 \begin{lstlisting}
---sizefile sizes.txt   # one x = pi*D/lambda per line
+--multigrid Dmin Dmax N       # logarithmic Dmax scan
+--multikeq Kmin Kmax N        # logarithmic k_eq scan
+--multikeq_list file.txt      # exact k_eq values, one per line
 \end{lstlisting}
 
-Traces beams once, caches geometry, recomputes diffraction for each size.
-Output: \texttt{M\_x10.dat}, \texttt{M\_x20.dat}, etc.
+With \texttt{--oldauto} the largest size is used as the shared reference for
+tracing.  Beam geometry is cached at that reference size and diffraction is
+recomputed for each requested size.  \texttt{--multigrid\_parallel} instead
+starts independent child processes.
 
 %----------------------------------------------------------------------
 \subsection{Performance Options}
@@ -349,14 +369,23 @@ Total: 13.71 s
 
 \subsubsection{Scattering efficiency (always printed)}
 \begin{lstlisting}[basicstyle=\ttfamily\scriptsize]
-===== SCATTERING EFFICIENCY =====
-C_sca = 160.0398
-A_proj (incoming energy) = 93.0208
-Q_sca = C_sca / A_proj = 1.7205
-=================================
+===== SCATTERING EFFICIENCY: full =====
+A_proj (incoming energy) = ...
+Outcoming energy = ...
+C_abs_GO = A_proj - outcoming energy = ...
+C_ext = C_ext_OT (optical theorem forward amplitude) = ...
+C_sca = ...
+C_abs = ...
+Q_sca = C_sca / A_proj = ...
+Q_abs = C_abs / A_proj = ...
+Q_ext = C_ext / A_proj = ...
+EFFICIENCY_SUMMARY Qext=... Cext=... Qabs=... Cabs=...
 \end{lstlisting}
 
-If $Q_\text{sca} > 2.5$: \texttt{WARNING: Q\_sca > 2. PO overestimates at this size.}
+The exact formulas and the non-absorbing special case are described in
+Section~\ref{sec:integral-characteristics}.  If the diagnostic
+$Q_\text{sca,integral}>2.5$, the code prints a warning because the angular
+integral of a narrow $M_{11}$ peak is not reliable on a coarse theta grid.
 
 \subsection{Console output (stderr)}
 
@@ -379,6 +408,554 @@ HandleBeams total:    69.255 s
 
 ``Unaccounted'' = the optimized inline loop (batched sincos + edge loop + rotate\_jones).
 Not instrumented to avoid timing overhead.
+
+%======================================================================
+\section{Current Implementation Reference}
+\label{sec:implementation-reference}
+
+This section is the exact operational model used by the current code.  It is
+intended to answer ``what does this flag actually do'' rather than describe an
+idealized method.
+
+\subsection{Particle size, equivalent radius, and \texttt{--k\_eq}}
+
+For every particle the code computes volume $V$, surface area $S$, maximal
+dimension $D_{\max}$, equivalent-volume radius $r_\mathrm{eq}$, and equivalent
+size parameter $k_\mathrm{eq}$:
+\[
+  r_\mathrm{eq} = \left(\frac{3V}{4\pi}\right)^{1/3},
+  \qquad
+  k_\mathrm{eq} = \frac{2\pi r_\mathrm{eq}}{\lambda}.
+\]
+\texttt{--rs SIZE} rescales a file particle so that
+$D_{\max}=\texttt{SIZE}$.  \texttt{--k\_eq K} rescales it so that
+$k_\mathrm{eq}=K$.  The scale ratio is
+\[
+  a = \frac{K\lambda/(2\pi)}{r_\mathrm{eq,current}},
+  \qquad
+  D_{\max,new}=aD_{\max,current}.
+\]
+The log prints both \texttt{r\_eq} and \texttt{k\_eq}; this is the same
+definition used in ADDA-style comparisons.
+
+\subsection{Mueller output and azimuth averaging}
+
+For each output scattering angle $\theta_j$, the code stores a full
+$N_\varphi\times N_\theta$ Mueller accumulator $M(p,j)$.  The written
+one-dimensional matrix is an azimuth average.  Away from the poles it applies
+the rotation matrix \texttt{Lp}:
+\[
+  L_p(\varphi)=
+  \begin{pmatrix}
+  1&0&0&0\\
+  0&\cos2\varphi&\sin2\varphi&0\\
+  0&-\sin2\varphi&\cos2\varphi&0\\
+  0&0&0&1
+  \end{pmatrix},
+\]
+\[
+  \bar M(\theta_j)
+  =\frac{1}{N_\varphi}\sum_{p=0}^{N_\varphi-1}
+     M(p,j)L_p(\varphi_p).
+\]
+At $\theta=0$ and $\theta=\pi$ the code first averages without $L_p$ and then
+projects onto the pole-symmetric Mueller form using
+\texttt{ApplyForwardPoleSymmetry()} or \texttt{ApplyBackwardPoleSymmetry()}.
+
+\subsection{Solid-angle weights}
+
+The second column in every \texttt{.dat} file is exactly the value returned by
+\texttt{ScatteringRange::Compute2PiDcos(j)}.  For a uniform theta grid with
+step $\Delta\theta$:
+\[
+  w_j = 2\pi\,\Delta\cos_j.
+\]
+For pole rows:
+\[
+  w_0 = w_N = 2\pi\left(1-\cos\frac{\Delta\theta}{2}\right).
+\]
+For interior rows:
+\[
+  w_j = 2\pi\left[
+    \cos\left((j-\tfrac12)\Delta\theta\right)
+    -\cos\left((j+\tfrac12)\Delta\theta\right)
+  \right].
+\]
+For a non-uniform \texttt{--tgrid}/\texttt{--auto\_tgrid} grid, bin boundaries
+are midpoints between neighboring theta values:
+\[
+  w_j = 2\pi\left(\cos\theta_{j,-}-\cos\theta_{j,+}\right).
+\]
+
+\subsection{Integral characteristics}
+\label{sec:integral-characteristics}
+
+The following quantities are printed by \texttt{HandlerPOTotal::WriteMatricesToFile}
+and \texttt{WriteAveragedRowsFile}.  They are intentionally separated because
+they answer different questions.
+
+\paragraph{Projected area / incoming energy.}
+\[
+  A_\mathrm{proj} =
+  \sum_{\mathrm{orientations}} A_\mathrm{illuminated}(\Omega_i)\,w_i.
+\]
+This is printed as \texttt{A\_proj (incoming energy)} and is the denominator
+for all efficiencies:
+\[
+  Q_x=\frac{C_x}{A_\mathrm{proj}}.
+\]
+
+\paragraph{Angular scattering integral.}
+\[
+  C_{\mathrm{sca,integral}} =
+    \sum_j \bar M_{11}(\theta_j)\,w_j.
+\]
+This is a numerical angular integral of the written $M_{11}$ curve.  It is
+very sensitive to the theta grid near a narrow forward peak.  On a coarse grid
+it can be much larger or smaller than the optical-theorem value; the code then
+prints it as a diagnostic rather than silently using it as a physical truth.
+
+\paragraph{Geometrical-optics energy balance.}
+If absorption accounting is enabled, the code also accumulates outgoing beam
+energy from traced beams:
+\[
+  C_{\mathrm{abs,GO}} = A_\mathrm{proj}-E_\mathrm{out}.
+\]
+If absorption is not enabled, the code sets
+$C_{\mathrm{abs,GO}}=0$.  This is printed as \texttt{C\_abs\_GO}; it is a
+diagnostic of the ray/beam energy balance and is not used to overwrite the
+optical-theorem extinction.
+
+\paragraph{Optical-theorem extinction.}
+For each prepared orientation the code evaluates the forward diffraction
+amplitude and accumulates
+\[
+  C_{\mathrm{ext,OT}} =
+    \lambda\,\operatorname{Im}(f_{00}+f_{11})\,w_i,
+\]
+where $w_i$ is the orientation weight stored as
+\texttt{PreparedOrientation::sinZenith}.  The global printed value is the sum
+over all orientations.  The implementation is
+\texttt{HandlerPO::ComputeForwardExtinctionOt()}.
+
+\paragraph{Reported cross sections.}
+The final reported values are:
+\[
+  C_{\mathrm{ext,legacy}} =
+    C_{\mathrm{sca,integral}} + C_{\mathrm{abs,GO}}.
+\]
+If optical-theorem extinction is available:
+\[
+  C_\mathrm{ext}=C_{\mathrm{ext,OT}}.
+\]
+If OT is not available:
+\[
+  C_\mathrm{ext}=C_{\mathrm{ext,legacy}}.
+\]
+For absorbing particles ($\operatorname{Im}m\ne0$):
+\[
+  C_\mathrm{sca}=C_{\mathrm{sca,integral}},
+  \qquad
+  C_\mathrm{abs}=C_{\mathrm{ext,OT}}-C_{\mathrm{sca,integral}}.
+\]
+For non-absorbing particles ($\operatorname{Im}m=0$) and available OT:
+\[
+  C_\mathrm{abs}=0,
+  \qquad
+  C_\mathrm{sca}=C_{\mathrm{ext,OT}}.
+\]
+The angular integral remains in the log as
+\texttt{Csca\_integral}.  If
+$|C_{\mathrm{sca,integral}}-C_{\mathrm{ext,OT}}|/|C_{\mathrm{ext,OT}}|>1\%$,
+the code prints a mismatch warning.  This is expected on too-coarse theta grids.
+
+\subsection{Physical optics diffraction per beam}
+
+For each geometric beam the code stores a Jones matrix $J$, polygon area,
+edge data, local polarization bases, optical path, and projected length.  The
+far-field Jones contribution is a product of:
+\[
+  J_\mathrm{sca}(\theta,\varphi)
+  = R(\theta,\varphi)\,F_\mathrm{Kirchhoff}(\theta,\varphi)\,
+    e^{i\Phi(\theta,\varphi)}\,J_\mathrm{beam}.
+\]
+The hot loop evaluates the polygon Kirchhoff integral through precomputed edge
+slopes.  If both phase coefficients $A$ and $B$ are near zero, the analytic
+limit is used:
+\[
+  F_\mathrm{Kirchhoff}
+  = \pm \frac{i}{\lambda}\,A_\mathrm{beam},
+\]
+with the current default sign chosen by the forward-direction bugfix.  The
+\texttt{--legacy\_sign} flag restores the older sign convention.
+
+The Jones-to-Mueller conversion in \texttt{AddToMuellerLocal()} uses the code's
+explicit component formulas.  For example:
+\[
+  M_{11}=\frac12\left(|J_{00}|^2+|J_{10}|^2
+                    +|J_{01}|^2+|J_{11}|^2\right).
+\]
+Default mode sums beams coherently within one orientation and then converts to
+Mueller.  \texttt{--incoh} converts each beam to Mueller first and sums
+intensities.  \texttt{--coh\_orient} is a legacy mode that coherently sums
+Jones amplitudes across all orientations before converting; it is not the
+default physical orientation average.
+
+\subsection{Orientation weights and averaging modes}
+
+\paragraph{\texttt{--fixed BETA GAMMA}.}
+Runs one body orientation.  Angles are degrees.
+
+\paragraph{\texttt{--random Nb Ng}.}
+Uses a regular beta/gamma product grid over the particle symmetry domain.
+The current oldauto/random path uses beta midpoints by default:
+\[
+  \beta_i = \beta_{\min} + (i+\tfrac12)\Delta\beta,
+\]
+unless environment variable \texttt{MBS\_OLDAUTO\_BETA\_MIDPOINT=0} is set.
+Gamma points are
+\[
+  \gamma_j=\gamma_{\min}+j\Delta\gamma,
+\]
+with an optional deterministic stagger in oldauto/random.  The beta weight is
+computed by \texttt{CalcCsBeta()} from the cosine interval, and gamma is
+normalized by the number of gamma samples and the beta symmetry factor.
+
+\paragraph{\texttt{--oldauto DIV}.}
+This is the production regular-grid mode used for strict ADDA comparisons.
+It derives orientation density from a diffraction angular step:
+\[
+  \Delta\theta_\mathrm{diff}
+    = 0.69\,\frac{\lambda}{D_{\max}}\frac{180}{\pi}
+    \quad\mathrm{degrees}.
+\]
+The orientation step is
+\[
+  \Delta\theta_\mathrm{orient}
+    = \frac{\Delta\theta_\mathrm{diff}}{\texttt{--ring\_points}},
+  \qquad \texttt{--ring\_points default}=3.
+\]
+For particle symmetry ranges $\beta_\mathrm{sym}$ and $\gamma_\mathrm{sym}$:
+\[
+  N_{\beta,\mathrm{full}}
+    = \left\lceil\frac{\beta_\mathrm{sym}[\deg]}
+                       {\Delta\theta_\mathrm{orient}}\right\rceil,
+  \quad
+  N_{\gamma,\mathrm{full}}
+    = \left\lceil\frac{\gamma_\mathrm{range}[\deg]}
+                       {\Delta\theta_\mathrm{orient}}\right\rceil.
+\]
+\[
+  N_\beta = \max\left(3,\left\lceil
+      \frac{N_{\beta,\mathrm{full}}}{\texttt{DIV}}\right\rceil\right),
+  \quad
+  N_\gamma = \max\left(3,\left\lceil
+      \frac{N_{\gamma,\mathrm{full}}}{\texttt{DIV}}\right\rceil\right).
+\]
+\texttt{--oldauto 2} is stricter than \texttt{--oldauto 4}; \texttt{--oldauto 1}
+is the reference-level regular grid.
+
+\paragraph{\texttt{--sobol N}, \texttt{--sobol\_seed N S}.}
+Uses a Sobol low-discrepancy sequence on the symmetry-reduced orientation
+domain.  \texttt{--sobol} uses seed 42.  \texttt{--sobol\_seed} uses an
+explicit nested Owen scramble seed.  Output weights are equal after mapping to
+the symmetry domain.
+
+\paragraph{\texttt{--sobol\_ring Nb Ng}.}
+Uses a Sobol-like beta distribution combined with a uniform shifted gamma ring.
+This is useful when gamma periodicity aliases specular events.
+
+\paragraph{\texttt{--hammersley}, \texttt{--lattice}, \texttt{--lattice\_z}.}
+Alternative low-discrepancy orientation rules.  \texttt{--lattice\_z N Z}
+uses explicit rank-1 generator $Z$; \texttt{--lattice N} normalizes/selects
+the generator internally.
+
+\paragraph{\texttt{--euler\_quad Nb Ng}.}
+Uses high-order quadrature in $\cos\beta$ and periodic gamma points.  It is
+slower than Sobol for broad scans but useful as a deterministic quadrature
+reference.
+
+\paragraph{\texttt{--adaptive EPS}.}
+Starts from an oldauto-based estimate, evaluates control quantities, and
+increases Sobol orientation count until relative changes are below EPS or the
+oldauto-derived cap is reached.  The control includes the angular integral and
+selected $M_{11}$ rows, especially near backscatter.
+
+\paragraph{\texttt{--auto EPS}.}
+Convenience mode: implies adaptive theta grid, auto phi grid, and adaptive
+Sobol orientations.  It does not use a final regular oldauto grid.
+
+\paragraph{\texttt{--autofull EPS}.}
+Sequentially tunes:
+\[
+  n \;\rightarrow\; N_\varphi \;\rightarrow\; N_\mathrm{orient}.
+\]
+It is intended to search parameters, not to be the fastest production mode.
+It writes maps such as \texttt{\_autofull\_phi\_by\_theta.dat} and
+\texttt{\_autofull\_orient\_by\_theta.dat}.
+
+\paragraph{\texttt{--oldautofull EPS}.}
+Uses the autofull search but finishes with a regular oldauto-style
+$\beta\times\gamma$ grid.  This was added because irregular Sobol/adaptive
+orientation sets interact poorly with mirror-sector reuse and some multigrid
+comparisons.  The final orientation count is selected by
+\texttt{AutoFullOldautoEstimateForTarget()} and is at least an oldauto div4
+grid in strict mode.
+
+\paragraph{\texttt{--owen\_avg K}, \texttt{--owen\_seeds S...}.}
+Only affects \texttt{--autofull} final averaging.  It repeats the final Sobol
+average over $K$ nested Owen seeds or over the explicit seed list.
+
+\subsection{Symmetry and mirror gamma}
+
+Particle classes provide a symmetry domain:
+\[
+  \beta\in[0,\beta_\mathrm{sym}],
+  \qquad
+  \gamma\in[0,\gamma_\mathrm{sym}].
+\]
+\texttt{--sym Sb Sg} overrides this as:
+\[
+  \beta_\mathrm{sym}=\pi/S_b,\qquad
+  \gamma_\mathrm{sym}=2\pi/S_g.
+\]
+\texttt{--mirror\_gamma} halves the gamma domain:
+\[
+  \gamma_\mathrm{range}=\gamma_\mathrm{sym}/2.
+\]
+If it controls a regular gamma grid, the code rounds the gamma count to an
+even number.  If \texttt{--mirror\_gamma} or \texttt{--fft} is active,
+$N_\varphi$ is rounded upward to a multiple of 6.  This is required for exact
+hexagonal phi-sector mapping; direct non-FFT calculations merely warn when
+$N_\varphi\bmod6\ne0$.
+
+\subsection{Scattering theta/phi grid flags}
+
+\paragraph{\texttt{--grid T1 T2 Nphi Ntheta}.}
+Uniform full theta interval in degrees.  The fourth argument is the number of
+theta intervals, so output has $N_\theta+1$ rows.  Example
+\texttt{--grid 0 180 600 180} writes 181 theta rows.
+
+\paragraph{\texttt{--grid R Nphi Ntheta}.}
+Backscatter cone grid from $\theta=\pi-R$ to $\theta=\pi$.
+
+\paragraph{\texttt{--tgrid FILE}.}
+Reads non-uniform theta values in degrees, one per line.  These values become
+the exact output rows and the integration weights are midpoint-cell weights.
+
+\paragraph{\texttt{--auto\_tgrid EPS}.}
+Performs recursive bisection using pilot $M_{11}$ values.  For an interval
+$(\theta_a,\theta_b)$ it computes the midpoint and compares it with linear
+interpolation:
+\[
+  e = \frac{|M_{11}(\theta_m)-M_{11}^{lin}(\theta_m)|}
+           {\max(1, |M_{11}(\theta_m)|, |M_{11}^{lin}(\theta_m)|)}.
+\]
+If $e>\texttt{EPS}$ and the maximum depth/step limits allow it, the interval is
+split.  The final full run uses the resulting non-uniform theta grid.
+
+\paragraph{\texttt{--auto\_phi}, \texttt{--nphi}.}
+\texttt{--nphi} has highest priority.  \texttt{--auto\_phi} chooses an
+internally estimated value and then applies the multiple-of-6 rule when needed.
+
+\subsection{CUDA backend}
+
+\texttt{--gpu} moves Phase~2 diffraction to CUDA.  The CPU still performs:
+particle rotations, shadow construction, geometric tracing, beam splitting,
+beam filtering, and prepared-beam packing.  CUDA processes prepared beams over
+the output angular grid.  The GPU build has two precision variants:
+\begin{itemize}
+\item \texttt{gpu/bin/mbs\_po\_gpu\_float\_fast}: single-precision CUDA
+  diffraction; fastest on consumer GPUs.  The near-singularity epsilon is
+  clamped to at least $3\times10^{-5}$ in \texttt{MBS\_GPU\_FLOAT}.
+\item \texttt{gpu/bin/mbs\_po\_gpu\_double\_fast}: double-precision CUDA
+  diffraction; slower on consumer GPUs, often competitive on V100-class cards.
+\end{itemize}
+If CUDA errors occur the default behavior is fatal.  Set
+\texttt{MBS\_GPU\_ALLOW\_FALLBACK=1} only for debugging, because then a failed
+GPU calculation can silently continue on CPU.
+
+\subsection{FFT angular interpolation}
+
+\texttt{--fft} is an angular Fourier interpolation in output azimuth
+$\varphi$, not a spatial pFFT/FMM.  The code computes diffraction directly on a
+reduced uniform phi grid of size
+\[
+  N_{\varphi,low} = N_{\varphi,full}/F,
+\]
+transforms rows by cuFFT, zero-pads Fourier modes, inverse-transforms to
+$N_{\varphi,full}$, and adds the interpolated Mueller arrays to the final
+accumulator.
+
+Default factor selection in \texttt{choose\_fft\_phi\_factor()}:
+\[
+F=\begin{cases}
+8, & N_{\varphi,full}\ge2400,\\
+6, & N_{\varphi,full}\ge600,\\
+3, & N_{\varphi,full}\ge240,\\
+2, & \text{otherwise.}
+\end{cases}
+\]
+\texttt{MBS\_FFT\_PHI\_FACTOR=N} overrides this.  \texttt{MBS\_FFT\_THETA\_FACTOR}
+can enable experimental theta interpolation for uniform compatible grids.
+
+Quality/debug environment variables:
+\begin{itemize}
+\item \texttt{MBS\_FFT\_CHECK=1}: also computes a denser/direct reference and
+  prints max/RMS relative errors.  This is a diagnostic and costs time.
+\item \texttt{MBS\_FFT\_ADAPTIVE\_PHI=1}: detects suspicious theta rows after
+  FFT interpolation and recomputes selected rows directly.
+\item \texttt{MBS\_FFT\_ADAPTIVE\_PHI\_THRESHOLD}: default 0.04.
+\item \texttt{MBS\_FFT\_ADAPTIVE\_PHI\_MAX\_ROWS}: default 8.
+\item \texttt{MBS\_GPU\_FFT\_PAIR=1}: interpolates full and no-shadow arrays as
+  a pair to reduce duplicated FFT setup.
+\end{itemize}
+
+\subsection{Beam and trace cutoffs}
+
+Beam cutoff happens after tracing, before diffraction.  For one orientation the
+code computes:
+\[
+  J_{\max}=\max_b \|J_b\|^2,\qquad
+  A_{\max}=\max_b A_b,\qquad
+  I_{\max}=\max_b(\|J_b\|^2 A_b).
+\]
+A prepared beam is skipped if any enabled test is true:
+\[
+  \|J_b\|^2 < \epsilon_J J_{\max},
+  \quad
+  A_b < \epsilon_A A_{\max},
+  \quad
+  \|J_b\|^2A_b < \epsilon_I I_{\max}.
+\]
+Flags:
+\begin{itemize}
+\item \texttt{--beam\_cutoff EPS}: shorthand for the J and area thresholds
+  unless the separate flags override them.
+\item \texttt{--beam\_cutoff\_j EPS}: sets $\epsilon_J$.
+\item \texttt{--beam\_cutoff\_area EPS}: sets $\epsilon_A$.
+\item \texttt{--beam\_cutoff\_importance EPS}: sets $\epsilon_I$.
+\end{itemize}
+Trace cutoff happens earlier while expanding internal beams.  It has analogous
+flags \texttt{--trace\_cutoff\_j}, \texttt{--trace\_cutoff\_area}, and
+\texttt{--trace\_cutoff\_importance}; \texttt{--trace\_cutoff EPS} sets the J
+and area tests.  \texttt{--trace\_max\_beams N} aborts expansion for an
+orientation after $N$ traced beam nodes.  Cutoffs are speed/accuracy tradeoffs;
+for strict reference runs use zero cutoffs.
+
+\subsection{Multigrid and multikeq}
+
+\texttt{--multigrid Dmin Dmax N} generates $N$ logarithmically spaced $D_{\max}$
+values.  \texttt{--multikeq Kmin Kmax N} generates logarithmically spaced
+$k_\mathrm{eq}$ values.  \texttt{--multikeq\_list FILE} uses exact values from
+the file.
+
+With \texttt{--oldauto}, the particle is first resized to the largest requested
+size.  The largest size determines the oldauto orientation grid and the shared
+beam cache.  Smaller sizes reuse the traced topology and rescale diffraction
+phases.  This is fast, but for non-convex particles it assumes that the
+reference-size beam topology is acceptable for all smaller sizes.  For maximum
+robustness use separate single-size runs or \texttt{--multigrid\_parallel}.
+
+\texttt{--multigrid\_parallel J} starts up to $J$ child processes.  In GPU
+workflows this is useful for filling one GPU with multiple independent small
+jobs, but two heavy jobs on one GPU can reduce throughput.  Use
+\texttt{--multigrid\_threads T} to set OpenMP threads per child.
+
+\subsection{Checkpointing}
+
+\texttt{--checkpoint} is opt-in.  For \texttt{--orientfile} it writes
+\texttt{\_checkpoint.bin} after each chunk.  For \texttt{--oldauto}/
+\texttt{--random} it writes \texttt{\_oldauto\_checkpoint.bin} after each
+completed beta ring.  The checkpoint stores accumulated Mueller arrays,
+incoming energy, outgoing energy, OT extinction, flags, and a parameter hash.
+On restart with the same \texttt{-o} path and matching hash the run resumes
+from the next beta ring.  Oldauto/random checkpointing is disabled under MPI.
+
+\subsection{Threading, MPI, and scheduling}
+
+\texttt{--threads N} sets OpenMP worker threads.  By default the program sets
+OpenMP to physical cores, not hyperthreads.  In \texttt{--oldauto --gpu} runs,
+CPU threads trace gamma chunks while the GPU diffracts prepared chunks.  The
+log line
+\begin{lstlisting}
+Oldauto/random memory: gamma chunk=8/303 per beta
+\end{lstlisting}
+means that only 8 gamma orientations are prepared at a time for that beta ring.
+\texttt{--chunk N} overrides this chunk size.  MPI, when enabled in the CPU
+binary, splits beta rings across ranks for oldauto/random and reduces Mueller
+arrays and energies at the end.
+
+\subsection{All command-line flags}
+
+\begin{longtable}{p{0.29\textwidth}p{0.66\textwidth}}
+\toprule
+Flag & Current effect \\
+\midrule
+\endhead
+\texttt{-p TYPE ...} & Built-in particle: hex, bullet, rosette, droxtal, concave hex, aggregate. \\
+\texttt{--pf FILE} & Load particle geometry from file. \\
+\texttt{--rs SIZE} & Resize file particle to $D_{\max}=\texttt{SIZE}$. \\
+\texttt{--k\_eq K} & Resize file particle to $2\pi r_\mathrm{eq}/\lambda=K$. \\
+\texttt{--ri Re Im} & Refractive index; nonzero Im enables absorption accounting. \\
+\texttt{-w LAMBDA} & Wavelength in micrometers. \\
+\texttt{-n N} & Maximum internal reflection/refraction depth. \\
+\texttt{--po}, \texttt{--go} & Physical optics or geometrical optics mode. \\
+\texttt{--fixed B G} & Single orientation in degrees. \\
+\texttt{--random Nb Ng} & Regular beta/gamma grid. \\
+\texttt{--oldauto DIV} & Physics-based regular grid from diffraction step, divided by DIV. \\
+\texttt{--ring\_points N} & Points per diffraction ring in oldauto estimates; default 3. \\
+\texttt{--sobol N} & Sobol low-discrepancy orientations. \\
+\texttt{--sobol\_seed N S} & Sobol with explicit nested Owen seed. \\
+\texttt{--sobol\_ring Nb Ng} & Sobol beta with shifted uniform gamma ring. \\
+\texttt{--hammersley N} & Hammersley orientations. \\
+\texttt{--lattice N}, \texttt{--lattice\_z N Z} & Rank-1 lattice orientations. \\
+\texttt{--euler\_quad Nb Ng} & Gauss/periodic Euler quadrature. \\
+\texttt{--montecarlo N} & Random Monte Carlo orientations. \\
+\texttt{--orientfile FILE} & Read beta/gamma orientations from file. \\
+\texttt{-b B1 B2}, \texttt{-g G1 G2} & Override beta/gamma ranges in degrees. \\
+\texttt{--sym Sb Sg} & Override symmetry domain: $\pi/S_b$, $2\pi/S_g$. \\
+\texttt{--mirror\_gamma} & Halve gamma domain and enforce compatible counts. \\
+\texttt{--adaptive EPS} & Adaptive Sobol orientation convergence. \\
+\texttt{--auto EPS} & Auto theta, auto phi, adaptive orientations. \\
+\texttt{--autofull EPS} & Search $n$, $N_\varphi$, and orientations. \\
+\texttt{--oldautofull EPS} & Autofull search followed by regular oldauto final grid. \\
+\texttt{--owen\_avg K}, \texttt{--owen\_seeds ...} & Repeat autofull final Sobol averaging over Owen seeds. \\
+\texttt{--maxorient N} & Cap adaptive orientation count. \\
+\texttt{--grid T1 T2 Nphi Ntheta} & Uniform output theta range and phi count. \\
+\texttt{--grid R Nphi Ntheta} & Backscatter cone output grid. \\
+\texttt{--tgrid FILE} & Explicit non-uniform theta grid. \\
+\texttt{--auto\_tgrid EPS} & Adaptive theta bisection by $M_{11}$ interpolation error. \\
+\texttt{--auto\_phi} & Automatic $N_\varphi$ estimate. \\
+\texttt{--nphi N} & Highest-priority phi count override. \\
+\texttt{--threads N} & OpenMP threads. \\
+\texttt{--gpu}, \texttt{--cpu} & CUDA diffraction or forced CPU in GPU build. \\
+\texttt{--fft} & cuFFT angular phi interpolation. \\
+\texttt{--beam\_cutoff*} & Post-trace beam skip thresholds. \\
+\texttt{--trace\_cutoff*} & During-trace beam expansion thresholds. \\
+\texttt{--trace\_max\_beams N} & Max traced beam nodes per orientation. \\
+\texttt{--gpu\_trace} & Experimental CUDA prefilter for non-convex tracing candidates. \\
+\texttt{--multigrid}, \texttt{--multikeq}, \texttt{--multikeq\_list} & Multi-size scans. \\
+\texttt{--multigrid\_parallel J}, \texttt{--multigrid\_threads T} & Independent child-process size parallelism. \\
+\texttt{--checkpoint} & Save/resume long orientfile and oldauto/random runs. \\
+\texttt{--save\_betas} & Write per-beta and cumulative beta Mueller files. \\
+\texttt{--full\_only} & Default: only full output. \\
+\texttt{--noshadow\_output} & Also compute/write no-shadow output. \\
+\texttt{--shadow\_off} & Disable shadow beam; debug only. \\
+\texttt{--incoh}, \texttt{--coh\_orient} & Incoherent per-beam or legacy coherent-across-orientations mode. \\
+\texttt{--abs}, \texttt{--abs\_points N|all} & Force absorption and choose path sampling points. \\
+\texttt{--ot\_phase\_shift F}, \texttt{--ot\_phase\_avg} & Diagnostic OT far-reference phase controls. \\
+\texttt{--karczewski} & Use Karczewski polarization matrix option. \\
+\texttt{--legacy\_sign} & Restore old Fresnel sign convention. \\
+\texttt{--pole} & Fast pole gamma shortcut. \\
+\texttt{--forced\_convex}, \texttt{--forced\_nonconvex} & Force tracing branch. \\
+\texttt{-r RATIO} & Legacy small-beam restriction ratio. \\
+\texttt{--filter DEG}, \texttt{--point} & Legacy/backscatter restricted output options. \\
+\texttt{--tr FILE}, \texttt{--all}, \texttt{--gr} & Trajectory-group diagnostics. \\
+\texttt{-o NAME}, \texttt{--close}, \texttt{--log SEC} & Output path, exit after run, progress interval. \\
+\texttt{--jones} & Write Jones matrices where supported. \\
+\bottomrule
+\end{longtable}
 
 %======================================================================
 \section{Build}
