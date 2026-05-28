@@ -33,6 +33,10 @@ DEPS := $(OBJECTS:.o=.d)
 
 all: $(TARGET)
 
+debug:
+	$(MAKE) TARGET=bin/mbs_po_mpi_debug OBJDIR=build/debug/obj \
+		CXXFLAGS="$(CXXFLAGS) -DMBS_DEBUG_HELP" all
+
 $(TARGET): $(OBJECTS)
 	@mkdir -p $(dir $@)
 	@echo "CPU MPI/OpenMP build"
@@ -56,6 +60,6 @@ $(OBJDIR)/cpu/%.o: %.cpp
 clean:
 	rm -rf build bin
 
-.PHONY: all clean
+.PHONY: all debug clean
 
 -include $(DEPS)

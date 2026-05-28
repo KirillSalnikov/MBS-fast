@@ -31,6 +31,18 @@ make -C gpu -j
 gpu/bin/mbs_po_gpu_float_fast --po --fft --autofull 0.05 ...
 ```
 
+Debug/experimental help builds:
+
+```bash
+make -C cpu debug          # cpu/bin/mbs_po_mpi_debug
+make -C gpu float_debug    # gpu/bin/mbs_po_gpu_float_debug
+make -C gpu double_debug   # gpu/bin/mbs_po_gpu_double_debug
+```
+
+Release binaries show the short production-safe `--help`. All flags are still
+parsed for backward compatibility, but experimental/legacy flags are documented
+in `--help-debug` and are shown by default in the debug binaries.
+
 The split builds keep object files out of `src`: CPU objects go to
 `cpu/build/`, CUDA objects go to `gpu/build/`. The shared physical model and
 CLI implementation still live in `src/`, so the CPU and GPU binaries do not

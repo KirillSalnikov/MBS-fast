@@ -254,9 +254,10 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("legacy_sign", 0, true); // use old (+) Fresnel sign for forward direction
     parser.AddRule("sym", 2, true); // symmetry override: beta_factor gamma_factor (e.g. --sym 2 6)
     parser.AddRule("help", 0, true); // print help
+    parser.AddRule("help-debug", 0, true); // print full debug/experimental help
 }
 
-void PrintHelp()
+void PrintFullHelp()
 {
     using namespace std;
     cout << "MBS-fast: Physical Optics for Ice Crystals\n"
@@ -385,6 +386,106 @@ void PrintHelp()
          << "  # Physics-based grid\n"
          << "  mbs_po --po --oldauto 8 -p 1 200 25 -w 0.532 --ri 1.31 0 -n 4 ...\n"
          << endl;
+}
+
+void PrintReleaseHelp()
+{
+    using namespace std;
+    cout << "MBS-fast: Physical Optics for Ice Crystals\n"
+         << "Usage:\n"
+         << "  mbs_po --po [particle] [orientation] [grid] [options] -o OUT --close\n\n"
+
+         << "=== Particle ===\n"
+         << "  -p TYPE L D [extra]    Built-in particle: 1=hex, 2=bullet, 3=rosette,\n"
+         << "                         4=droxtal, 10=concave hex, 12=hex aggregate\n"
+         << "  --pf FILE              Particle from file\n"
+         << "  --rs SIZE              Resize file particle to Dmax=SIZE\n"
+         << "  --k_eq X               Resize particle so 2*pi*r_eq/lambda = X\n"
+         << "  --ri Re Im             Refractive index\n"
+         << "  -w LAMBDA              Wavelength in um\n"
+         << "  -n N                   Max internal reflections/refractions\n\n"
+
+         << "=== Method ===\n"
+         << "  --po                   Physical optics\n"
+         << "  --go                   Geometrical optics\n"
+         << "  --incoh                Incoherent per-beam Mueller sum\n"
+         << "  --karczewski           Karczewski polarization matrix option\n\n"
+
+         << "=== Orientation ===\n"
+         << "  --oldauto DIV          Recommended regular grid from diffraction step\n"
+         << "  --ring_points N        Points per diffraction ring for oldauto (default 3)\n"
+         << "  --random Nb Ng         Manual regular beta x gamma grid\n"
+         << "  --fixed BETA GAMMA     Single orientation, degrees\n"
+         << "  --orientfile FILE      Orientations from file\n"
+         << "  --sobol N              Sobol orientations\n"
+         << "  --sobol_seed N S       Sobol with explicit Owen seed\n"
+         << "  --sobol_ring Nb Ng     Sobol beta x uniform gamma ring\n"
+         << "  --euler_quad Nb Ng     Euler/Gauss quadrature\n"
+         << "  --mirror_gamma         Use mirror gamma half-domain\n"
+         << "  --sym Sb Sg            Override symmetry domain\n\n"
+
+         << "=== Scattering grid ===\n"
+         << "  --grid T1 T2 Nphi Nth  Full theta range; output has Nth+1 theta rows\n"
+         << "  --grid R Nphi Nth      Backscatter cone of radius R deg\n"
+         << "  --tgrid FILE           Non-uniform theta grid, degrees\n"
+         << "  --nphi N               Override phi grid size\n\n"
+
+         << "=== Acceleration ===\n"
+         << "  --threads N            OpenMP worker threads\n"
+         << "  --gpu                  CUDA diffraction backend\n"
+         << "  --cpu                  Force CPU backend in GPU-capable binary\n"
+         << "  --fft                  cuFFT angular phi interpolation\n"
+         << "  --chunk N              Orientation/gamma chunk size\n"
+         << "  --beam_cutoff EPS      Beam J/area cutoff shorthand\n"
+         << "  --beam_cutoff_j EPS    Skip beams by relative |J|^2\n"
+         << "  --beam_cutoff_area EPS Skip beams by relative area\n"
+         << "  --beam_cutoff_importance EPS  Skip beams by |J|^2*area\n"
+         << "  --trace_cutoff EPS     Trace J/area cutoff shorthand\n"
+         << "  --trace_cutoff_j EPS   Trace cutoff by relative |J|^2\n"
+         << "  --trace_cutoff_area EPS Trace cutoff by relative area\n"
+         << "  --trace_cutoff_importance EPS Trace cutoff by |J|^2*area\n"
+         << "  --trace_max_beams N    Max traced beam nodes per orientation\n\n"
+
+         << "=== Multi-size ===\n"
+         << "  --multigrid Dmin Dmax N     Log-spaced Dmax scan\n"
+         << "  --multikeq Kmin Kmax N      Log-spaced k_eq scan\n"
+         << "  --multikeq_list FILE        Exact k_eq values, one per line\n"
+         << "  --multigrid_parallel N      Run sizes as child processes\n"
+         << "  --multigrid_threads N       Threads per child process\n\n"
+
+         << "=== Output / diagnostics kept in release ===\n"
+         << "  -o NAME                Output path/name\n"
+         << "  --close                Exit after computation\n"
+         << "  --log SEC              Progress output interval\n"
+         << "  --checkpoint           Save/resume oldauto/random and orientfile runs\n"
+         << "  --noshadow_output      Also compute _noshadow output\n"
+         << "  --full_only            Only full output (default)\n"
+         << "  --save_betas           Save per-beta Mueller files\n"
+         << "  --jones                Output Jones matrices where supported\n"
+         << "  --shadow               Legacy release-visible flag\n"
+         << "  --abs                  Force absorption accounting\n\n"
+
+         << "=== Examples ===\n"
+         << "  gpu/bin/mbs_po_gpu_float_fast --po --pf Afine30.dat --k_eq 58.81 \\\n"
+         << "      --ri 1.6 0.002 -w 1.064 -n 14 --oldauto 2 \\\n"
+         << "      --grid 0 180 600 180 --gpu --fft --threads 12 --close -o out\n\n"
+         << "  cpu/bin/mbs_po_mpi --po -p 1 100 70 --ri 1.31 0 -w 0.532 \\\n"
+         << "      -n 8 --oldauto 2 --grid 0 180 600 180 --close -o out\n\n"
+         << "Full debug/experimental help: --help-debug\n";
+}
+
+void PrintHelp()
+{
+#ifdef MBS_DEBUG_HELP
+    PrintFullHelp();
+#else
+    PrintReleaseHelp();
+#endif
+}
+
+void PrintDebugHelp()
+{
+    PrintFullHelp();
 }
 
 static int RoundUpToMultiple(int value, int multiple)
@@ -1066,6 +1167,7 @@ int main(int argc, const char* argv[])
     for (int i = 1; i < argc; ++i) {
         std::string a(argv[i]);
         if (a == "--help" || a == "-h") { PrintHelp(); return 0; }
+        if (a == "--help-debug") { PrintDebugHelp(); return 0; }
         if (a == "--gpu") rawGpu = true;
         if (a == "--cpu") rawCpu = true;
     }

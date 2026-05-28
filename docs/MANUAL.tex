@@ -888,6 +888,12 @@ arrays and energies at the end.
 
 \subsection{All command-line flags}
 
+Release binaries intentionally show a shortened production-safe \texttt{--help}.
+The full list below is available with \texttt{--help-debug} or from binaries
+built with \texttt{make -C cpu debug}, \texttt{make -C gpu float\_debug}, or
+\texttt{make -C gpu double\_debug}.  Hidden flags are still parsed in release
+binaries for backward compatibility with old scripts.
+
 \begin{longtable}{p{0.29\textwidth}p{0.66\textwidth}}
 \toprule
 Flag & Current effect \\

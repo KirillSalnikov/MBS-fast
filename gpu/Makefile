@@ -79,9 +79,21 @@ float_fast:
 double_fast:
 	$(MAKE) GPU_PRECISION=double GPU_FAST_MATH=1 TARGET=bin/mbs_po_gpu_double_fast all
 
+float_debug:
+	$(MAKE) GPU_PRECISION=float GPU_FAST_MATH=1 \
+		TARGET=bin/mbs_po_gpu_float_debug \
+		OBJDIR=build/float_debug/obj \
+		CXXFLAGS="$(CXXFLAGS) -DMBS_DEBUG_HELP" all
+
+double_debug:
+	$(MAKE) GPU_PRECISION=double GPU_FAST_MATH=1 \
+		TARGET=bin/mbs_po_gpu_double_debug \
+		OBJDIR=build/double_debug/obj \
+		CXXFLAGS="$(CXXFLAGS) -DMBS_DEBUG_HELP" all
+
 clean:
 	rm -rf build bin
 
-.PHONY: all float float_fast double_fast clean
+.PHONY: all float float_fast double_fast float_debug double_debug clean
 
 -include $(DEPS)
