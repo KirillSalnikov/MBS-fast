@@ -257,7 +257,7 @@ See `tests/reference_test/RESULTS.md` and comparison plots in `tests/reference_t
 - **Multi-size**: `--multigrid`, `--multikeq`, `--multikeq_list` — trace once at the largest size, recompute diffraction for all sizes
 - **GPU batching controls**: `MBS_SHARED_BETA_GROUP=N`, `MBS_GPU_NO_ATOMICS=1`, `MBS_GPU_MEM_FRACTION=...`
 - **Per-beta save**: `--save_betas` — write intermediate Mueller per beta (backup/resume)
-- **Opt-in checkpoint**: `--checkpoint` — save/resume long `--orientfile` runs; off by default to avoid extra I/O
+- **Opt-in checkpoint**: `--checkpoint` — save/resume long `--orientfile` and `--oldauto`/`--random` runs; off by default to avoid extra I/O. For oldauto/random, the checkpoint is written after each completed beta ring and the same `-o` folder is reused on restart.
 - **Dual output**: M.dat (with shadow) + M_noshadow.dat (without) at no extra cost
 - **Memory-aware chunking**: auto-sizes orientation batches to fit in RAM
 - **MPI + OpenMP hybrid**: distributed across nodes, threaded within node

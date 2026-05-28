@@ -362,8 +362,8 @@ mbs_po --po --fixed 45 30 \
 
 Read (beta, gamma) pairs in radians from text file (one pair per line). Comments with `#`.
 
-Use `--checkpoint` with very long orientation-file runs to save and resume
-chunked progress. Checkpointing is disabled by default to avoid extra I/O in
+Use `--checkpoint` with very long orientation-file or oldauto/random runs to save and resume
+chunked/beta-ring progress. Checkpointing is disabled by default to avoid extra I/O in
 ordinary runs.
 
 #### `--sym B G`
@@ -953,9 +953,13 @@ Progress output interval in seconds. The program prints progress information (or
 
 #### `--checkpoint`
 
-Enable checkpoint save/resume for `--orientfile` runs. The checkpoint file is
-written after each completed orientation chunk and removed after successful
-completion. Disabled by default.
+Enable checkpoint save/resume for `--orientfile` and `--oldauto`/`--random`
+runs. For `--orientfile`, the checkpoint is written after each completed
+orientation chunk. For `--oldauto`/`--random`, it is written after each completed
+beta ring and stores the accumulated Mueller matrices plus energy/extinction
+accounting. On restart with the same command and `-o`, the existing output folder
+is reused and completed beta rings are skipped. The checkpoint is removed after
+successful completion. Disabled by default.
 
 #### `--tr FILENAME`
 
@@ -1235,7 +1239,7 @@ mbs_po --po --all --tr tracks.dat --gr \
 | `--montecarlo` | N | Orientations | Monte Carlo random orientations |
 | `--fixed` | BETA GAMMA | Orientations | Single orientation (degrees) |
 | `--orientfile` | FILENAME | Orientations | Orientations from file (radians) |
-| `--checkpoint` | (none) | Orientations | Save/resume long `--orientfile` runs |
+| `--checkpoint` | (none) | Orientations | Save/resume long `--orientfile` and `--oldauto`/`--random` runs |
 | `--chunk` | N | Orientations | Max orientation/gamma chunk size |
 | `--sym` | B G | Orientations | Symmetry override: beta/B, gamma/(2pi/G) |
 | `-b` | MIN MAX | Orientations | Beta range override (degrees) |

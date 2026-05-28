@@ -210,7 +210,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("multigrid_parallel", 1, true); // run multigrid sizes as child processes
     parser.AddRule("multigrid_threads", 1, true); // per-child OpenMP threads for multigrid_parallel
     parser.AddRule("save_betas", 0, true); // save intermediate Mueller for each beta to betas/ subfolder
-    parser.AddRule("checkpoint", 0, true); // enable checkpoint save/resume for long orientfile runs
+    parser.AddRule("checkpoint", 0, true); // enable checkpoint save/resume for long orientfile and oldauto/random runs
     parser.AddRule("tgrid", 1, true); // non-uniform theta grid file
     parser.AddRule("beam_cutoff", 1, true); // common relative beam cutoff
     parser.AddRule("beam_cutoff_j", 1, true); // relative |J|^2 beam cutoff
@@ -365,7 +365,7 @@ void PrintHelp()
          << "  -o NAME                Output path/name\n"
          << "  --close                Exit after computation\n"
          << "  --save_betas           Save per-beta Mueller to _betas/ folder\n"
-         << "  --checkpoint           Enable checkpoint save/resume for --orientfile\n"
+         << "  --checkpoint           Enable checkpoint save/resume for --orientfile and --oldauto/--random\n"
          << "  --incoh                Incoherent per-beam Mueller (no Jones sum)\n"
          << "  --jones                Output Jones matrices\n"
          << "  --abs                  Enable absorption (requires Im(ri) > 0)\n"
@@ -1370,7 +1370,22 @@ int main(int argc, const char* argv[])
     // Create output folder once, before any tracer runs
     {
         string dir;
-        if (mpi_rank == 0) dir = CreateFolder(dirName);
+        if (mpi_rank == 0) {
+            struct stat st;
+            if (args.IsCatched("checkpoint") && stat(dirName.c_str(), &st) == 0
+                && S_ISDIR(st.st_mode))
+            {
+                string fullDir = dirName;
+                size_t slash = fullDir.rfind('/');
+                dirName = (slash == string::npos) ? fullDir : fullDir.substr(slash + 1);
+                dir = fullDir + "/";
+                cout << "Checkpoint resume: reusing output folder " << fullDir << endl;
+            }
+            else
+            {
+                dir = CreateFolder(dirName);
+            }
+        }
 #ifdef USE_MPI
         if (mpi_size > 1) {
             int dirLen = dir.size();

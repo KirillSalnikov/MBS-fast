@@ -1912,19 +1912,27 @@ static bool LoadCheckpoint(const std::string &path, Arr2D &M, Arr2D &M_ns,
     // Load M
     for (int p = 0; p < nAz; ++p)
         for (int t = 0; t < nZen; ++t)
+        {
+            matrix m(4, 4);
             for (int r = 0; r < 4; ++r)
                 for (int c = 0; c < 4; ++c) {
                     double v; f.read((char*)&v, 8);
-                    M(p, t)[r][c] = v;
+                    m[r][c] = v;
                 }
+            M.replace(p, t, m);
+        }
     // Load M_noshadow
     for (int p = 0; p < nAz; ++p)
         for (int t = 0; t < nZen; ++t)
+        {
+            matrix m(4, 4);
             for (int r = 0; r < 4; ++r)
                 for (int c = 0; c < 4; ++c) {
                     double v; f.read((char*)&v, 8);
-                    M_ns(p, t)[r][c] = v;
+                    m[r][c] = v;
                 }
+            M_ns.replace(p, t, m);
+        }
     completedOrient = storedCompleted;
     f.close();
     return true;
@@ -1938,6 +1946,137 @@ static unsigned long HashParams(double wave, double ri_re, double ri_im, int nAc
     auto mixi = [&](int v) { h ^= std::hash<int>{}(v) + 0x9e3779b9 + (h<<6) + (h>>2); };
     mix(wave); mix(ri_re); mix(ri_im); mixi(nActs); mixi(nOrient); mix(L); mix(D); mixi(nAz); mixi(nZen);
     return h;
+}
+
+static void MixHashDouble(unsigned long &h, double v)
+{
+    h ^= std::hash<double>{}(v) + 0x9e3779b9 + (h << 6) + (h >> 2);
+}
+
+static void MixHashInt(unsigned long &h, int v)
+{
+    h ^= std::hash<int>{}(v) + 0x9e3779b9 + (h << 6) + (h >> 2);
+}
+
+static void SaveOldautoCheckpoint(const std::string &path,
+                                  const Arr2D &M, const Arr2D &M_ns,
+                                  double energy, double outputEnergy,
+                                  double extinctionOt, bool hasExtinctionOt,
+                                  int completedBeta, int nBeta, int nGamma,
+                                  unsigned long paramHash, int nAz, int nZen)
+{
+    std::string tmp = path + ".tmp";
+    std::ofstream f(tmp, std::ios::binary);
+    if (!f.is_open()) return;
+    uint32_t magic = 0x4D425341; // "MBSA" oldauto checkpoint
+    uint32_t version = 1;
+    int hasExt = hasExtinctionOt ? 1 : 0;
+    int completedOrient = completedBeta * nGamma;
+    int totalOrient = nBeta * nGamma;
+    f.write((char*)&magic, 4);
+    f.write((char*)&version, 4);
+    f.write((char*)&paramHash, sizeof(paramHash));
+    f.write((char*)&completedBeta, sizeof(completedBeta));
+    f.write((char*)&nBeta, sizeof(nBeta));
+    f.write((char*)&nGamma, sizeof(nGamma));
+    f.write((char*)&completedOrient, sizeof(completedOrient));
+    f.write((char*)&totalOrient, sizeof(totalOrient));
+    f.write((char*)&energy, sizeof(energy));
+    f.write((char*)&outputEnergy, sizeof(outputEnergy));
+    f.write((char*)&extinctionOt, sizeof(extinctionOt));
+    f.write((char*)&hasExt, sizeof(hasExt));
+    f.write((char*)&nAz, 4);
+    f.write((char*)&nZen, 4);
+    for (int p = 0; p < nAz; ++p)
+        for (int t = 0; t < nZen; ++t) {
+            matrix m = M(p, t);
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c) {
+                    double v = m[r][c];
+                    f.write((char*)&v, 8);
+                }
+        }
+    for (int p = 0; p < nAz; ++p)
+        for (int t = 0; t < nZen; ++t) {
+            matrix m = M_ns(p, t);
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c) {
+                    double v = m[r][c];
+                    f.write((char*)&v, 8);
+                }
+        }
+    f.close();
+    if (f.good())
+        std::rename(tmp.c_str(), path.c_str());
+    else
+        std::remove(tmp.c_str());
+}
+
+static bool LoadOldautoCheckpoint(const std::string &path,
+                                  Arr2D &M, Arr2D &M_ns,
+                                  double &energy, double &outputEnergy,
+                                  double &extinctionOt, bool &hasExtinctionOt,
+                                  int &completedBeta, int nBeta, int nGamma,
+                                  unsigned long paramHash)
+{
+    std::ifstream f(path, std::ios::binary);
+    if (!f.is_open()) return false;
+    uint32_t magic = 0, version = 0;
+    f.read((char*)&magic, 4);
+    f.read((char*)&version, 4);
+    if (magic != 0x4D425341 || version != 1) return false;
+    unsigned long storedHash = 0;
+    f.read((char*)&storedHash, sizeof(storedHash));
+    if (storedHash != paramHash) {
+        std::cerr << "Oldauto checkpoint param mismatch, ignoring" << std::endl;
+        return false;
+    }
+    int storedCompletedBeta = 0, storedBeta = 0, storedGamma = 0;
+    int completedOrient = 0, totalOrient = 0;
+    f.read((char*)&storedCompletedBeta, sizeof(storedCompletedBeta));
+    f.read((char*)&storedBeta, sizeof(storedBeta));
+    f.read((char*)&storedGamma, sizeof(storedGamma));
+    f.read((char*)&completedOrient, sizeof(completedOrient));
+    f.read((char*)&totalOrient, sizeof(totalOrient));
+    if (storedBeta != nBeta || storedGamma != nGamma || totalOrient != nBeta * nGamma)
+        return false;
+    f.read((char*)&energy, sizeof(energy));
+    f.read((char*)&outputEnergy, sizeof(outputEnergy));
+    f.read((char*)&extinctionOt, sizeof(extinctionOt));
+    int hasExt = 0;
+    f.read((char*)&hasExt, sizeof(hasExt));
+    int nAz = 0, nZen = 0;
+    f.read((char*)&nAz, 4);
+    f.read((char*)&nZen, 4);
+    for (int p = 0; p < nAz; ++p)
+        for (int t = 0; t < nZen; ++t)
+        {
+            matrix m(4, 4);
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c) {
+                    double v = 0.0;
+                    f.read((char*)&v, 8);
+                    m[r][c] = v;
+                }
+            M.replace(p, t, m);
+        }
+    for (int p = 0; p < nAz; ++p)
+        for (int t = 0; t < nZen; ++t)
+        {
+            matrix m(4, 4);
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 4; ++c) {
+                    double v = 0.0;
+                    f.read((char*)&v, 8);
+                    m[r][c] = v;
+                }
+            M_ns.replace(p, t, m);
+        }
+    if (!f.good()) return false;
+    completedBeta = storedCompletedBeta;
+    hasExtinctionOt = hasExt != 0;
+    return completedBeta >= 0 && completedBeta <= nBeta
+        && completedOrient == completedBeta * nGamma;
 }
 #ifdef _OPENMP
 #include <omp.h>
@@ -2193,6 +2332,55 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
 
     int nAz = handlerPO->m_sphere.nAzimuth;
     int nZen = handlerPO->m_sphere.nZenith;
+    long long count = 0;
+    bool oldautoCheckpoint = m_enableCheckpoint;
+    if (oldautoCheckpoint && m_mpiSize > 1)
+    {
+        if (m_mpiRank == 0)
+            std::cerr << "WARNING: --checkpoint for oldauto/random is disabled under MPI; "
+                      << "use single-process runs or --save_betas for per-rank diagnostics."
+                      << std::endl;
+        oldautoCheckpoint = false;
+    }
+    std::string oldautoCkptPath = m_resultDirName + "_oldauto_checkpoint.bin";
+    const ::complex ri = m_particle->GetRefractiveIndex();
+    unsigned long oldautoParamHash = HashParams(m_scattering->m_wave,
+        real(ri), imag(ri), m_scattering->GetMaxReflections(), nOrientations,
+        m_particle->MaximalDimention(), 0, nAz + 1, nZen + 1);
+    MixHashDouble(oldautoParamHash, betaRange.min);
+    MixHashDouble(oldautoParamHash, betaRange.max);
+    MixHashDouble(oldautoParamHash, betaRange.step);
+    MixHashInt(oldautoParamHash, betaRange.number);
+    MixHashDouble(oldautoParamHash, gammaRange.min);
+    MixHashDouble(oldautoParamHash, gammaRange.max);
+    MixHashDouble(oldautoParamHash, gammaRange.step);
+    MixHashInt(oldautoParamHash, gammaRange.number);
+    MixHashInt(oldautoParamHash, betaMidpoint ? 1 : 0);
+    MixHashInt(oldautoParamHash, gammaStagger ? 1 : 0);
+    MixHashInt(oldautoParamHash, m_mirrorGamma ? 1 : 0);
+    MixHashInt(oldautoParamHash, shadowOff ? 1 : 0);
+    MixHashInt(oldautoParamHash, handlerPO->IsGpuEnabled() ? 1 : 0);
+    MixHashInt(oldautoParamHash, handlerPO->IsFftEnabled() ? 1 : 0);
+    int resumeBeta = 0;
+    if (oldautoCheckpoint && m_mpiRank == 0)
+    {
+        if (LoadOldautoCheckpoint(oldautoCkptPath,
+                                  handlerPO->M, handlerPO->M_noshadow,
+                                  m_incomingEnergy, handlerPO->m_outputEnergy,
+                                  handlerPO->m_extinctionCrossSectionOt,
+                                  handlerPO->m_hasExtinctionOt,
+                                  resumeBeta, nBeta, nGamma,
+                                  oldautoParamHash))
+        {
+            count = (long long)resumeBeta * nGamma;
+            std::ostringstream line;
+            line << "*** RESUMED oldauto checkpoint: beta " << resumeBeta
+                 << "/" << nBeta << ", orientations " << count
+                 << "/" << nOrientations;
+            std::cout << line.str() << std::endl;
+            AppendTextLog(line.str() + "\n");
+        }
+    }
     int nThreads = 1;
 #ifdef _OPENMP
     #pragma omp parallel
@@ -2240,7 +2428,6 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     }
 
     double phase1_total = 0, phase2_total = 0;
-    long long count = 0;
 
     struct BetaBlock
     {
@@ -2430,6 +2617,8 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     // Inside a beta, gamma is streamed in chunks to bound per-rank memory.
     for (int ib = 0; ib < nBeta; ++ib)
     {
+        if (ib < resumeBeta)
+            continue;
         if (ib < myBetaStart || ib >= myBetaEnd)
             continue;
 
@@ -2637,6 +2826,21 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             }
             cf.close();
         }
+
+        if (oldautoCheckpoint && m_mpiRank == 0)
+        {
+            SaveOldautoCheckpoint(oldautoCkptPath,
+                                  handlerPO->M, handlerPO->M_noshadow,
+                                  m_incomingEnergy, handlerPO->m_outputEnergy,
+                                  handlerPO->m_extinctionCrossSectionOt,
+                                  handlerPO->m_hasExtinctionOt,
+                                  ib + 1, nBeta, nGamma,
+                                  oldautoParamHash, nAz + 1, nZen + 1);
+            std::ostringstream line;
+            line << "Oldauto checkpoint saved: beta " << (ib + 1)
+                 << "/" << nBeta << " -> " << oldautoCkptPath;
+            AppendTextLog(line.str() + "\n");
+        }
     }
 
     MPI_ReduceMueller(handlerPO, nAz, nZen, m_incomingEnergy, m_mpiRank);
@@ -2667,6 +2871,8 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             std::swap(handlerPO->M, handlerPO->M_noshadow);
         }
         OutputStatisticsPO(timer, nOrientations, m_resultDirName);
+        if (oldautoCheckpoint)
+            std::remove(oldautoCkptPath.c_str());
     }
 }
 
