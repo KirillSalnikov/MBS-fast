@@ -462,7 +462,7 @@ void PrintReleaseHelp()
          << "  --full_only            Only full output (default)\n"
          << "  --save_betas           Save per-beta Mueller files\n"
          << "  --jones                Output Jones matrices where supported\n"
-         << "  --shadow               Legacy release-visible flag\n"
+         << "  --shadow               Legacy flag; currently no effect\n"
          << "  --abs                  Force absorption accounting\n\n"
 
          << "=== Examples ===\n"

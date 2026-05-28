@@ -161,8 +161,6 @@ void Tracer::OutputStatisticsPO(CalcTimer &timer, long long orNumber, const stri
                  + "\nTotal time  : " + totalTime
                  + "\nTotal number of body orientations: " + to_string(orNumber);
 
-    double passedEnergy = (m_handler->m_outputEnergy/m_incomingEnergy)*100;
-
 //    m_summary += "\nTotal incoming energy = " + to_string(m_incomingEnergy)
 //                 + "\nTotal outcoming energy (GO) = " + to_string(m_handler->m_outputEnergy)
 //                 + " (S/4 = " + to_string(m_particle->Area()/4)

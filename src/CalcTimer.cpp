@@ -36,7 +36,7 @@ std::string CalcTimer::Elapsed()
 
 	auto SetUnitValue = [](int &unitVal, int &lessUnitVal, int lim)
 	{
-		if (lessUnitVal > lim)
+		if (lessUnitVal >= lim)
 		{
 			unitVal = lessUnitVal/lim;
 			lessUnitVal %= lim;
@@ -82,7 +82,7 @@ void CalcTimer::Left(const long long &ms)
 
 	auto SetUnitValue = [](int &unitVal, int &lessUnitVal, int lim)
 	{
-		if (lessUnitVal > lim)
+		if (lessUnitVal >= lim)
 		{
 			unitVal = lessUnitVal/lim;
 			lessUnitVal %= lim;
@@ -152,6 +152,9 @@ std::string CalcTimer::ToString()
 		strTime.append(std::to_string(m_seconds));
 		strTime.append("s ");
 	}
+
+	if (strTime.empty())
+		strTime = "0s ";
 
 	return strTime;
 }
