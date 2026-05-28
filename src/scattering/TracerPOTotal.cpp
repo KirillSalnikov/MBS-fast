@@ -1516,17 +1516,21 @@ static void WriteAveragedRowsFile(const std::string &destName,
 
     if (incomingEnergy > 0.0)
     {
-        const double cAbsRaw = hasAbsorption ? (incomingEnergy - outputEnergy) : 0.0;
+        const double cAbsGoRaw =
+            hasAbsorption ? (incomingEnergy - outputEnergy) : 0.0;
         const double absTol = std::max(1.0, incomingEnergy) * 1e-10;
-        const double cAbs = (std::fabs(cAbsRaw) < absTol) ? 0.0 : cAbsRaw;
-        const double cExtLegacy = cscaIntegral + cAbs;
+        const double cAbsGo =
+            (std::fabs(cAbsGoRaw) < absTol) ? 0.0 : cAbsGoRaw;
+        const double csca = cscaIntegral;
+        const double cExtLegacy = cscaIntegral + cAbsGo;
         const double cExt = hasExtinctionOt ? cExtOt : cExtLegacy;
-        double csca = hasExtinctionOt ? (cExt - cAbs) : cscaIntegral;
-        if (std::fabs(csca) < absTol)
-            csca = 0.0;
+        double cAbs = hasExtinctionOt ? (cExt - csca) : cAbsGo;
+        if (std::fabs(cAbs) < absTol)
+            cAbs = 0.0;
         const double qSca = csca / incomingEnergy;
         const double qScaIntegral = cscaIntegral / incomingEnergy;
         const double qAbs = cAbs / incomingEnergy;
+        const double qAbsGo = cAbsGo / incomingEnergy;
         const double qExt = cExt / incomingEnergy;
         const double qExtLegacy = cExtLegacy / incomingEnergy;
 
@@ -1535,25 +1539,27 @@ static void WriteAveragedRowsFile(const std::string &destName,
         log << "\n===== SCATTERING EFFICIENCY: full =====\n";
         log << "A_proj (incoming energy) = " << incomingEnergy << "\n";
         log << "Outcoming energy = " << outputEnergy << "\n";
-        log << "C_abs = A_proj - outcoming energy = " << cAbs << "\n";
+        log << "C_abs_GO = A_proj - outcoming energy = " << cAbsGo << "\n";
+        log << "Q_abs_GO = C_abs_GO / A_proj = " << qAbsGo << "\n";
         if (hasExtinctionOt)
         {
             log << "C_ext = C_ext_OT (optical theorem forward amplitude) = "
                 << cExtOt << "\n";
-            log << "C_sca = C_ext - C_abs = " << csca << "\n";
-            log << "C_sca_integral = integral(M11 dOmega) = "
-                << cscaIntegral << "\n";
+            log << "C_sca = C_sca_integral = integral(M11 dOmega) = "
+                << csca << "\n";
+            log << "C_abs = C_ext - C_sca = " << cAbs << "\n";
             log << "Q_sca_integral = C_sca_integral / A_proj = "
                 << qScaIntegral << "\n";
-            log << "C_ext_legacy = C_sca_integral + C_abs_GO = "
+            log << "C_ext_legacy_GO = C_sca_integral + C_abs_GO = "
                 << cExtLegacy << "\n";
-            log << "Q_ext_legacy = C_ext_legacy / A_proj = "
+            log << "Q_ext_legacy_GO = C_ext_legacy_GO / A_proj = "
                 << qExtLegacy << "\n";
         }
         else
         {
             log << "C_sca = C_sca_integral = " << csca << "\n";
-            log << "C_ext = C_sca_integral + C_abs = " << cExt << "\n";
+            log << "C_abs = C_abs_GO (OT unavailable) = " << cAbs << "\n";
+            log << "C_ext = C_sca_integral + C_abs_GO = " << cExt << "\n";
         }
         log << "Q_sca = C_sca / A_proj = " << qSca << "\n";
         log << "Q_abs = C_abs / A_proj = " << qAbs << "\n";
@@ -1565,11 +1571,13 @@ static void WriteAveragedRowsFile(const std::string &destName,
             << "Cext_legacy=" << cExtLegacy << ' '
             << "Cext_OT=" << (hasExtinctionOt ? cExtOt : 0.0) << ' '
             << "Qabs=" << qAbs << ' '
+            << "Cabs=" << cAbs << ' '
+            << "Qabs_GO=" << qAbsGo << ' '
+            << "Cabs_GO=" << cAbsGo << ' '
             << "Qsca=" << qSca << ' '
             << "Csca=" << csca << ' '
             << "Qsca_integral=" << qScaIntegral << ' '
             << "Csca_integral=" << cscaIntegral << ' '
-            << "Cabs=" << cAbs << ' '
             << "Aproj=" << incomingEnergy << ' '
             << "Eout=" << outputEnergy << "\n";
         std::ofstream logFile(destName + "_log.txt", std::ios::app);

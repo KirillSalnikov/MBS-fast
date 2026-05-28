@@ -148,18 +148,22 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
     // Compute efficiencies. nrg is the orientation-averaged projected area.
     if (nrg > 0)
     {
-        const double C_abs_raw = m_hasAbsorption ? (nrg - m_outputEnergy) : 0.0;
+        const double C_abs_go_raw =
+            m_hasAbsorption ? (nrg - m_outputEnergy) : 0.0;
         const double absTol = std::max(1.0, nrg) * 1e-10;
-        const double C_abs = (std::fabs(C_abs_raw) < absTol) ? 0.0 : C_abs_raw;
-        const double C_ext_legacy = C_sca_integral + C_abs;
+        const double C_abs_GO =
+            (std::fabs(C_abs_go_raw) < absTol) ? 0.0 : C_abs_go_raw;
+        const double C_sca = C_sca_integral;
+        const double C_ext_legacy = C_sca_integral + C_abs_GO;
         const double C_ext = m_hasExtinctionOt
             ? m_extinctionCrossSectionOt : C_ext_legacy;
-        double C_sca = m_hasExtinctionOt ? (C_ext - C_abs) : C_sca_integral;
-        if (std::fabs(C_sca) < absTol)
-            C_sca = 0.0;
+        double C_abs = m_hasExtinctionOt ? (C_ext - C_sca) : C_abs_GO;
+        if (std::fabs(C_abs) < absTol)
+            C_abs = 0.0;
         const double Q_sca = C_sca / nrg;
         const double Q_sca_integral = C_sca_integral / nrg;
         const double Q_abs = C_abs / nrg;
+        const double Q_abs_GO = C_abs_GO / nrg;
         const double Q_ext = C_ext / nrg;
         const double Q_ext_legacy = C_ext_legacy / nrg;
         const std::string label =
@@ -174,25 +178,27 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
         if (label == "full")
         {
             log << "Outcoming energy = " << m_outputEnergy << "\n";
-            log << "C_abs = A_proj - outcoming energy = " << C_abs << "\n";
+            log << "C_abs_GO = A_proj - outcoming energy = " << C_abs_GO << "\n";
+            log << "Q_abs_GO = C_abs_GO / A_proj = " << Q_abs_GO << "\n";
             if (m_hasExtinctionOt)
             {
                 log << "C_ext = C_ext_OT (optical theorem forward amplitude) = "
                     << m_extinctionCrossSectionOt << "\n";
-                log << "C_sca = C_ext - C_abs = " << C_sca << "\n";
-                log << "C_sca_integral = integral(M11 dOmega) = "
-                    << C_sca_integral << "\n";
+                log << "C_sca = C_sca_integral = integral(M11 dOmega) = "
+                    << C_sca << "\n";
+                log << "C_abs = C_ext - C_sca = " << C_abs << "\n";
                 log << "Q_sca_integral = C_sca_integral / A_proj = "
                     << Q_sca_integral << "\n";
-                log << "C_ext_legacy = C_sca_integral + C_abs_GO = "
+                log << "C_ext_legacy_GO = C_sca_integral + C_abs_GO = "
                     << C_ext_legacy << "\n";
-                log << "Q_ext_legacy = C_ext_legacy / A_proj = "
+                log << "Q_ext_legacy_GO = C_ext_legacy_GO / A_proj = "
                     << Q_ext_legacy << "\n";
             }
             else
             {
                 log << "C_sca = C_sca_integral = " << C_sca << "\n";
-                log << "C_ext = C_sca_integral + C_abs = " << C_ext << "\n";
+                log << "C_abs = C_abs_GO (OT unavailable) = " << C_abs << "\n";
+                log << "C_ext = C_sca_integral + C_abs_GO = " << C_ext << "\n";
             }
             log << "Q_sca = C_sca / A_proj = " << Q_sca << "\n";
             log << "Q_abs = C_abs / A_proj = " << Q_abs << "\n";
@@ -205,11 +211,13 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
                 << "Cext_OT=" << (m_hasExtinctionOt
                     ? m_extinctionCrossSectionOt : 0.0) << ' '
                 << "Qabs=" << Q_abs << ' '
+                << "Cabs=" << C_abs << ' '
+                << "Qabs_GO=" << Q_abs_GO << ' '
+                << "Cabs_GO=" << C_abs_GO << ' '
                 << "Qsca=" << Q_sca << ' '
                 << "Csca=" << C_sca << ' '
                 << "Qsca_integral=" << Q_sca_integral << ' '
-                << "Csca_integral=" << C_sca_integral << ' '
-                << "Cabs=" << C_abs << "\n";
+                << "Csca_integral=" << C_sca_integral << "\n";
         }
         if (Q_sca_integral > 2.5)
         {
