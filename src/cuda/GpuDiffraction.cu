@@ -3089,7 +3089,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     const int packNoVertexCacheMode = gpu_no_vertex_cache_mode();
     const bool packNoVertexCache = (packNoVertexCacheMode >= 0)
         ? (packNoVertexCacheMode != 0)
-        : (nOrient < 512);
+        : false;
     const bool packBeam8 = allBeam8 && packFusedMueller && !computeNoShadow
         && !packStageMueller && !packNoVertexCache;
     if (packBeam8)
@@ -3223,7 +3223,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     const int noVertexCacheMode = gpu_no_vertex_cache_mode();
     const bool noVertexCache = (noVertexCacheMode >= 0)
         ? (noVertexCacheMode != 0)
-        : (nOrient < 512);
+        : false;
     const bool useBeam8 = packBeam8 && fusedMueller && !computeNoShadow
         && !stageMueller && !noVertexCache;
     t0 = timing ? gpu_now_ms() : 0.0;
