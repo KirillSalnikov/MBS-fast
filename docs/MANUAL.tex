@@ -879,9 +879,9 @@ OpenMP to physical cores, not hyperthreads.  In \texttt{--oldauto --gpu} runs,
 CPU threads trace gamma chunks while the GPU diffracts prepared chunks.  The
 log line
 \begin{lstlisting}
-Oldauto/random memory: gamma chunk=8/303 per beta
+Oldauto/random memory: gamma chunk=16/303 per beta
 \end{lstlisting}
-means that only 8 gamma orientations are prepared at a time for that beta ring.
+means that only 16 gamma orientations are prepared at a time for that beta ring.
 \texttt{--chunk N} overrides this chunk size.  MPI, when enabled in the CPU
 binary, splits beta rings across ranks for oldauto/random and reduces Mueller
 arrays and energies at the end.

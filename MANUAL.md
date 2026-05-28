@@ -911,7 +911,8 @@ Recommended heavy-case starting point:
 
 Maximum orientation/gamma chunk size for memory-aware streaming modes. Smaller
 chunks reduce RAM pressure and make checkpointing/resume safer; larger chunks
-reduce overhead.
+reduce overhead. In GPU oldauto/random runs without beam cutoffs the automatic
+default is 16 gamma orientations per beta ring; `--chunk` overrides it.
 
 Memory is approximately:
 

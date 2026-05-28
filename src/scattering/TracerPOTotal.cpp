@@ -2518,7 +2518,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     }
     else if (handlerPO->IsGpuEnabled() && noBeamCutoff)
     {
-        int defaultChunk = 8;
+        int defaultChunk = 16;
         const char *chunkEnv = std::getenv("MBS_OLDAUTO_GAMMA_CHUNK");
         if (chunkEnv && *chunkEnv)
         {
