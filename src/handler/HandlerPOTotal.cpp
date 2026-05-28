@@ -153,11 +153,27 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
         const double absTol = std::max(1.0, nrg) * 1e-10;
         const double C_abs_GO =
             (std::fabs(C_abs_go_raw) < absTol) ? 0.0 : C_abs_go_raw;
-        const double C_sca = C_sca_integral;
         const double C_ext_legacy = C_sca_integral + C_abs_GO;
         const double C_ext = m_hasExtinctionOt
             ? m_extinctionCrossSectionOt : C_ext_legacy;
-        double C_abs = m_hasExtinctionOt ? (C_ext - C_sca) : C_abs_GO;
+        double C_abs = 0.0;
+        double C_sca = C_sca_integral;
+        if (m_hasExtinctionOt)
+        {
+            if (m_hasAbsorption)
+            {
+                C_abs = C_ext - C_sca_integral;
+            }
+            else
+            {
+                C_abs = 0.0;
+                C_sca = C_ext;
+            }
+        }
+        else
+        {
+            C_abs = C_abs_GO;
+        }
         if (std::fabs(C_abs) < absTol)
             C_abs = 0.0;
         const double Q_sca = C_sca / nrg;
@@ -184,9 +200,20 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
             {
                 log << "C_ext = C_ext_OT (optical theorem forward amplitude) = "
                     << m_extinctionCrossSectionOt << "\n";
-                log << "C_sca = C_sca_integral = integral(M11 dOmega) = "
-                    << C_sca << "\n";
-                log << "C_abs = C_ext - C_sca = " << C_abs << "\n";
+                if (m_hasAbsorption)
+                {
+                    log << "C_sca = C_sca_integral = integral(M11 dOmega) = "
+                        << C_sca << "\n";
+                    log << "C_abs = C_ext - C_sca_integral = " << C_abs << "\n";
+                }
+                else
+                {
+                    log << "C_abs = 0 (non-absorbing refractive index)\n";
+                    log << "C_sca = C_ext_OT (non-absorbing energy balance) = "
+                        << C_sca << "\n";
+                    log << "C_sca_integral = integral(M11 dOmega), diagnostic = "
+                        << C_sca_integral << "\n";
+                }
                 log << "Q_sca_integral = C_sca_integral / A_proj = "
                     << Q_sca_integral << "\n";
                 log << "C_ext_legacy_GO = C_sca_integral + C_abs_GO = "
@@ -225,6 +252,15 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
                 << " > 2. Angular M11 integral may overestimate scattering at this size parameter.\n"
                 << "  Physical limit (extinction paradox): Q_ext -> 2 for large x.\n"
                 << "  This is a known PO limitation.\n";
+        }
+        if (label == "full" && m_hasExtinctionOt && !m_hasAbsorption)
+        {
+            const double mismatch = (std::fabs(C_ext) > 0.0)
+                ? std::fabs(C_sca_integral - C_ext) / std::fabs(C_ext) : 0.0;
+            if (mismatch > 1e-2)
+                log << "WARNING: non-absorbing OT/integral mismatch = "
+                    << mismatch * 100.0
+                    << "%. C_sca_integral is diagnostic; physical C_abs is fixed to zero.\n";
         }
         log << "=========================================\n";
         std::cerr << log.str();

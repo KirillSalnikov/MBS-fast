@@ -1521,10 +1521,26 @@ static void WriteAveragedRowsFile(const std::string &destName,
         const double absTol = std::max(1.0, incomingEnergy) * 1e-10;
         const double cAbsGo =
             (std::fabs(cAbsGoRaw) < absTol) ? 0.0 : cAbsGoRaw;
-        const double csca = cscaIntegral;
         const double cExtLegacy = cscaIntegral + cAbsGo;
         const double cExt = hasExtinctionOt ? cExtOt : cExtLegacy;
-        double cAbs = hasExtinctionOt ? (cExt - csca) : cAbsGo;
+        double cAbs = 0.0;
+        double csca = cscaIntegral;
+        if (hasExtinctionOt)
+        {
+            if (hasAbsorption)
+            {
+                cAbs = cExt - cscaIntegral;
+            }
+            else
+            {
+                cAbs = 0.0;
+                csca = cExt;
+            }
+        }
+        else
+        {
+            cAbs = cAbsGo;
+        }
         if (std::fabs(cAbs) < absTol)
             cAbs = 0.0;
         const double qSca = csca / incomingEnergy;
@@ -1545,9 +1561,20 @@ static void WriteAveragedRowsFile(const std::string &destName,
         {
             log << "C_ext = C_ext_OT (optical theorem forward amplitude) = "
                 << cExtOt << "\n";
-            log << "C_sca = C_sca_integral = integral(M11 dOmega) = "
-                << csca << "\n";
-            log << "C_abs = C_ext - C_sca = " << cAbs << "\n";
+            if (hasAbsorption)
+            {
+                log << "C_sca = C_sca_integral = integral(M11 dOmega) = "
+                    << csca << "\n";
+                log << "C_abs = C_ext - C_sca_integral = " << cAbs << "\n";
+            }
+            else
+            {
+                log << "C_abs = 0 (non-absorbing refractive index)\n";
+                log << "C_sca = C_ext_OT (non-absorbing energy balance) = "
+                    << csca << "\n";
+                log << "C_sca_integral = integral(M11 dOmega), diagnostic = "
+                    << cscaIntegral << "\n";
+            }
             log << "Q_sca_integral = C_sca_integral / A_proj = "
                 << qScaIntegral << "\n";
             log << "C_ext_legacy_GO = C_sca_integral + C_abs_GO = "
@@ -1580,6 +1607,15 @@ static void WriteAveragedRowsFile(const std::string &destName,
             << "Csca_integral=" << cscaIntegral << ' '
             << "Aproj=" << incomingEnergy << ' '
             << "Eout=" << outputEnergy << "\n";
+        if (hasExtinctionOt && !hasAbsorption)
+        {
+            const double mismatch = (std::fabs(cExt) > 0.0)
+                ? std::fabs(cscaIntegral - cExt) / std::fabs(cExt) : 0.0;
+            if (mismatch > 1e-2)
+                log << "WARNING: non-absorbing OT/integral mismatch = "
+                    << mismatch * 100.0
+                    << "%. C_sca_integral is diagnostic; physical C_abs is fixed to zero.\n";
+        }
         std::ofstream logFile(destName + "_log.txt", std::ios::app);
         if (logFile.is_open())
             logFile << log.str();
