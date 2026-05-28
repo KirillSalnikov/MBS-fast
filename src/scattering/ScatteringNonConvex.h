@@ -86,6 +86,7 @@ private:
     PolygonArray m_polygonBuffer;
     int m_visibleFacetCache[2][MAX_FACET_NUM][MAX_FACET_NUM];
     size_t m_visibleFacetCacheSize[2][MAX_FACET_NUM];
+    double m_facetProjectionBounds[3][MAX_FACET_NUM][4];
     const ScatteringNonConvex *m_visibilityCacheOwner = nullptr;
     bool m_visibilityCacheBuilt = false;
 };

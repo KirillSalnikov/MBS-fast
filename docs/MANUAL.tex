@@ -811,6 +811,17 @@ Quality/debug environment variables:
   a pair to reduce duplicated FFT setup.
 \end{itemize}
 
+For non-convex CPU tracing, \texttt{MBS\_TRACE\_CPU\_PREFILTER=1} enables a
+conservative projected bounding-box prefilter before the exact polygon
+intersection.  A beam is projected onto the candidate facet plane along its
+propagation direction; if the expanded 2D boxes do not overlap, the exact
+intersection is skipped.  \texttt{MBS\_TRACE\_CPU\_PREFILTER\_MARGIN} sets the
+expansion margin; the default is 10 in particle length units.  The release
+default keeps this prefilter off because the benefit is particle-dependent.
+For non-absorbing particles (\(\Im m=0\)) BigInteger trace IDs are skipped by
+default because absorption path recovery does not use them; set
+\texttt{MBS\_FORCE\_TRACK\_IDS=1} for debug or explicit track-output workflows.
+
 \subsection{Beam and trace cutoffs}
 
 Beam cutoff happens after tracing, before diffraction.  For one orientation the

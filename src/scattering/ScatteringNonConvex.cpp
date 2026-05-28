@@ -42,7 +42,9 @@ bool CpuTraceProjectedPrefilterEnabled()
 {
     static const bool enabled = []() {
         const char *value = std::getenv("MBS_TRACE_CPU_PREFILTER");
-        return value && *value == '1';
+        if (!value || !*value)
+            return false;
+        return value[0] == '1' && value[1] == '\0';
     }();
     return enabled;
 }
@@ -52,7 +54,7 @@ double CpuTraceProjectedPrefilterMargin()
     static const double margin = []() {
         const char *value = std::getenv("MBS_TRACE_CPU_PREFILTER_MARGIN");
         if (!value || !*value)
-            return 1.0;
+            return 10.0;
         char *end = nullptr;
         double parsed = std::strtod(value, &end);
         if (!end || *end != '\0' || parsed < 0.0)
@@ -714,9 +716,22 @@ bool ScatteringNonConvex::MayBeamIntersectFacetProjected(const Beam &beam, int f
         addPoint(p - beam.direction * t, bMinU, bMaxU, bMinV, bMaxV);
     }
 
-    const Facet &facet = m_facets[facetId];
-    for (int i = 0; i < facet.nVertices; ++i)
-        addPoint(facet.arr[i], fMinU, fMaxU, fMinV, fMaxV);
+    const ScatteringNonConvex &cache =
+        m_visibilityCacheOwner ? *m_visibilityCacheOwner : *this;
+    if (cache.m_visibilityCacheBuilt)
+    {
+        const double *bounds = cache.m_facetProjectionBounds[drop][facetId];
+        fMinU = bounds[0];
+        fMaxU = bounds[1];
+        fMinV = bounds[2];
+        fMaxV = bounds[3];
+    }
+    else
+    {
+        const Facet &facet = m_facets[facetId];
+        for (int i = 0; i < facet.nVertices; ++i)
+            addPoint(facet.arr[i], fMinU, fMaxU, fMinV, fMaxV);
+    }
 
     const double margin = CpuTraceProjectedPrefilterMargin();
     return !(bMaxU < fMinU - margin || fMaxU < bMinU - margin ||
@@ -726,6 +741,30 @@ bool ScatteringNonConvex::MayBeamIntersectFacetProjected(const Beam &beam, int f
 void ScatteringNonConvex::BuildFacetVisibilityCache()
 {
     m_visibilityCacheOwner = nullptr;
+    if (CpuTraceProjectedPrefilterEnabled())
+        for (int drop = 0; drop < 3; ++drop)
+        {
+            for (int facetId = 0; facetId < m_particle->nFacets; ++facetId)
+            {
+                const Facet &facet = m_facets[facetId];
+                double minU = DBL_MAX, maxU = -DBL_MAX;
+                double minV = DBL_MAX, maxV = -DBL_MAX;
+                for (int i = 0; i < facet.nVertices; ++i)
+                {
+                    const Point3f &p = facet.arr[i];
+                    const double u = (drop == 0) ? p.cy : p.cx;
+                    const double v = (drop == 2) ? p.cy : p.cz;
+                    minU = std::min(minU, u);
+                    maxU = std::max(maxU, u);
+                    minV = std::min(minV, v);
+                    maxV = std::max(maxV, v);
+                }
+                m_facetProjectionBounds[drop][facetId][0] = minU;
+                m_facetProjectionBounds[drop][facetId][1] = maxU;
+                m_facetProjectionBounds[drop][facetId][2] = minV;
+                m_facetProjectionBounds[drop][facetId][3] = maxV;
+            }
+        }
     for (int locInt = 0; locInt < 2; ++locInt)
     {
         Location loc = locInt == 0 ? Location::In : Location::Out;

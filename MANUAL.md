@@ -635,9 +635,24 @@ thread-local so OpenMP tracing can call the prefilter safely.
 Environment controls:
 
 ```
+MBS_TRACE_CPU_PREFILTER=1          # enable conservative projected CPU prefilter
+MBS_TRACE_CPU_PREFILTER_MARGIN=10  # projected bounding-box margin, default 10
 MBS_GPU_TRACE_BATCH_BEAMS=1024      # beams collected per CUDA prefilter batch
 MBS_GPU_TRACE_MIN_CANDIDATES=8192   # below this, skip CUDA and use CPU path
+MBS_FORCE_TRACK_IDS=1              # keep BigInteger track IDs even when Im(ri)=0
 ```
+
+For non-convex particles `MBS_TRACE_CPU_PREFILTER=1` enables a broad-phase test:
+the CPU tracer checks whether the projection of a beam onto a candidate facet
+plane can overlap the facet bounding box. If the expanded boxes are disjoint,
+the expensive exact polygon intersection is skipped. Increasing the margin makes
+the test less aggressive. The default release path keeps this off because the
+benefit is particle-dependent.
+
+For non-absorbing particles (`Im(ri)=0`) the tracer skips BigInteger track-id
+updates by default because absorption path recovery does not need them. This is
+mathematically neutral for Mueller output and speeds up deep non-convex tracing.
+Set `MBS_FORCE_TRACK_IDS=1` for debugging or explicit track-output workflows.
 
 Current status: this is a correctness-checked experimental path, not a default
 speed path. It is useful as groundwork for a full GPU tracing layer, but on

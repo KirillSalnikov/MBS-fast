@@ -3,6 +3,7 @@
 #include <float.h>
 #include <assert.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 
 #include "geometry_lib.h"
@@ -19,6 +20,15 @@ static bool DisableTraceTrackIds()
         return value != nullptr && value[0] == '1' && value[1] == '\0';
     }();
     return disabled;
+}
+
+static bool ForceTraceTrackIds()
+{
+    static const bool forced = []() {
+        const char *value = std::getenv("MBS_FORCE_TRACK_IDS");
+        return value != nullptr && value[0] == '1' && value[1] == '\0';
+    }();
+    return forced;
 }
 
 Scattering::Scattering(Particle *particle, Light *incidentLight, bool isOpticalPath,
@@ -66,6 +76,9 @@ void Scattering::CopyRuntimeOptionsFrom(const Scattering &source)
 IdType Scattering::Scattering::RecomputeTrackId(const IdType &oldId, int facetId)
 {
     if (DisableTraceTrackIds())
+        return 0;
+    if (!ForceTraceTrackIds()
+        && std::fabs(imag(m_particle->GetRefractiveIndex())) <= DBL_EPSILON)
         return 0;
 
     return (oldId + (facetId + 1)) * (m_particle->nFacets + 1);
