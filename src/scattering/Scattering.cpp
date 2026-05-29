@@ -82,6 +82,9 @@ void Scattering::CopyRuntimeOptionsFrom(const Scattering &source)
     m_traceCutoffImportanceRel = source.m_traceCutoffImportanceRel;
     m_traceMaxBeams = source.m_traceMaxBeams;
     m_gpuTracePrefilter = source.m_gpuTracePrefilter;
+    m_traceCpuProjectedPrefilter = source.m_traceCpuProjectedPrefilter;
+    m_traceCpuProjectedPrefilterMargin = source.m_traceCpuProjectedPrefilterMargin;
+    m_tracePrefilterStats = source.m_tracePrefilterStats;
 }
 
 IdType Scattering::Scattering::RecomputeTrackId(const IdType &oldId, int facetId)

@@ -33,6 +33,7 @@ private:
     void FindVisibleFacets(const Beam &beam, IntArray &facetIds);
     void FindVisibleFacetsForLight(IntArray &facetIDs);
     void BuildFacetVisibilityCache();
+    void BuildFacetProjectionCache();
     void CopyVisibilityCacheFrom(const ScatteringNonConvex &source);
 
     void SelectVisibleFacets(const Beam &beam, IntArray &facetIDs);

@@ -1334,17 +1334,26 @@ See `BUGFIX_forward_direction_sign.md` for full details.
 
 ## Known Limitations
 
-1. **Q_sca > 2 at large x**: PO does not enforce the optical theorem. Q_sca grows with x instead of approaching 2. Use IGOM correction or renormalize.
+1. **Optical-theorem phase convention**: by default `C_ext_OT` is computed from
+   the object-centered spherical-wave forward amplitude `S`:
+   `C_ext_OT = lambda * Im(f00 + f11) * w_orient`.  This matches the
+   Gao/Yang/Kattawar optical-theorem convention after removing the far-screen
+   `exp(i k (r-z))` factor.  `--ot_ping D` is a legacy compatibility rotation
+   for old files that stored the far-screen amplitude:
+   `Im(F) cos(2 k D) - Re(F) sin(2 k D)`.  It is not a physical particle
+   parameter.
 
-2. **Polarization elements M33, M34, M44**: MBS-raw's RotateJones and GOAD's Karczewski matrix have the same norm but different structure. M11 agrees between codes, but M33/M34/M44 differ.
+2. **Q_sca > 2 at large x**: PO does not enforce the optical theorem. Q_sca grows with x instead of approaching 2. Use IGOM correction or renormalize.
 
-3. **Small particles (x < 20)**: PO is not valid. Use ADDA or T-matrix methods.
+3. **Polarization elements M33, M34, M44**: MBS-raw's RotateJones and GOAD's Karczewski matrix have the same norm but different structure. M11 agrees between codes, but M33/M34/M44 differ.
 
-4. **Backscattering convergence**: M11(180 deg) requires 10-100x more orientations than forward scattering.
+4. **Small particles (x < 20)**: PO is not valid. Use ADDA or T-matrix methods.
 
-5. **LTO**: `-flto` causes ~20% regression on current code due to GCC inlining heuristics interacting poorly with the hand-inlined hot loop. Do not use.
+5. **Backscattering convergence**: M11(180 deg) requires 10-100x more orientations than forward scattering.
 
-5. **Absorption**: DiffractInclineAbs is optimized but not as fast as the non-absorbing path.
+6. **LTO**: `-flto` causes ~20% regression on current code due to GCC inlining heuristics interacting poorly with the hand-inlined hot loop. Do not use.
+
+7. **Absorption**: DiffractInclineAbs is optimized but not as fast as the non-absorbing path.
 
 ---
 

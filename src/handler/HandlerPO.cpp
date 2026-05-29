@@ -12,16 +12,6 @@
 #include <cerrno>
 #include <cstdlib>
 
-static double ReadEnvDoubleNoClamp(const char *name, double fallback)
-{
-    const char *env = std::getenv(name);
-    if (!env || !*env)
-        return fallback;
-    char *end = nullptr;
-    double value = std::strtod(env, &end);
-    return (end && *end == '\0' && std::isfinite(value)) ? value : fallback;
-}
-
 bool HandlerPO::IsParticleBeam(const Beam &beam)
 {
     return beam.lastFacetId != __INT_MAX__ && beam.lastFacetId != -1;
@@ -843,7 +833,7 @@ bool HandlerPO::HasAbsorptionAccounting() const
 }
 
 void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
-                                               Scattering *scattering)
+                                                Scattering *scattering)
 {
     m_scattering = scattering;
     m_sphere = source.m_sphere;
@@ -1669,14 +1659,16 @@ double HandlerPO::ComputeForwardExtinctionOt(
                        + sr11r * jp11i + sr11i * jp11r);
     }
 
+    // Canonical optical-theorem amplitude: this is the object-centered
+    // spherical-wave S amplitude of Gao/Yang/Kattawar Eq. (9), not a
+    // far-screen field amplitude.  Therefore the physical default is Im(S).
+    // --ot_ping is kept only to reproduce legacy files where the reported
+    // forward amplitude still carried an exp(i k (r-z)) far-reference phase.
     const complex forward = f00 + f11;
     double forwardExtinctionAmplitude = imag(forward);
-    const double pingD = (m_otPingDistance != 0.0)
-        ? m_otPingDistance
-        : ReadEnvDoubleNoClamp("MBS_OT_PING_D", 0.0);
-    if (pingD != 0.0)
+    if (m_otPingDistance != 0.0)
     {
-        const double phase = 2.0 * m_waveIndex * pingD;
+        const double phase = 2.0 * m_waveIndex * m_otPingDistance;
         double sn = 0.0, cs = 1.0;
         fast_sincos(phase, sn, cs);
         forwardExtinctionAmplitude = imag(forward) * cs - real(forward) * sn;

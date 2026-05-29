@@ -149,6 +149,15 @@ void ApplyTraceCutoffOptions(const ArgPP &args, Scattering *scattering)
         scattering->m_traceMaxBeams = args.GetIntValue("trace_max_beams", 0);
     if (args.IsCatched("gpu_trace"))
         scattering->m_gpuTracePrefilter = true;
+    if (args.IsCatched("trace_prefilter"))
+        scattering->m_traceCpuProjectedPrefilter = true;
+    if (args.IsCatched("no_trace_prefilter"))
+        scattering->m_traceCpuProjectedPrefilter = false;
+    if (args.IsCatched("trace_prefilter_margin"))
+        scattering->m_traceCpuProjectedPrefilterMargin =
+            args.GetDoubleValue("trace_prefilter_margin", 0);
+    if (args.IsCatched("trace_prefilter_stats"))
+        scattering->m_tracePrefilterStats = true;
 }
 
 enum class ParticleType : int
@@ -220,13 +229,17 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("beam_cutoff_importance", 1, true); // relative |J|^2*area beam cutoff
     parser.AddRule("ot_phase_avg", 0, true); // average optical-theorem extinction over far-reference phase
     parser.AddRule("ot_phase_shift", 1, true); // diagnostic OT far-reference phase shift in wavelengths
-    parser.AddRule("ot_ping", 1, true); // Ping-style OT phase correction distance
+    parser.AddRule("ot_ping", 1, true); // legacy far-screen OT phase correction distance
     parser.AddRule("trace_cutoff", 1, true); // common relative tracing prune cutoff
     parser.AddRule("trace_cutoff_j", 1, true); // relative |J|^2 tracing prune cutoff
     parser.AddRule("trace_cutoff_area", 1, true); // relative area tracing prune cutoff
     parser.AddRule("trace_cutoff_importance", 1, true); // relative |J|^2*area tracing prune cutoff
     parser.AddRule("trace_max_beams", 1, true); // max traced beam nodes per orientation
     parser.AddRule("gpu_trace", 0, true); // experimental CUDA tracing prefilter
+    parser.AddRule("trace_prefilter", 0, true); // enable CPU projected AABB prefilter for nonconvex tracing
+    parser.AddRule("no_trace_prefilter", 0, true); // disable CPU projected AABB prefilter
+    parser.AddRule("trace_prefilter_margin", 1, true); // projected AABB margin for nonconvex CPU trace prefilter
+    parser.AddRule("trace_prefilter_stats", 0, true); // print CPU/GPU trace prefilter counters
     parser.AddRule("sobol", 1, true); // Sobol quasi-random orientations (number, power of 2)
     parser.AddRule("sobol_seed", 2, true); // Sobol orientations with nested Owen scramble seed (N seed)
     parser.AddRule("sobol_ring", 2, true); // Sobol beta x uniform gamma ring (Nbeta Ngamma)
@@ -332,13 +345,17 @@ void PrintFullHelp()
          << "  --beam_cutoff_importance EPS Skip beams with |J|^2*area/max < EPS\n"
          << "  --ot_phase_avg         Average OT extinction over one far-reference phase period\n"
          << "  --ot_phase_shift F     Diagnostic OT phase shift in wavelengths (default 0)\n"
-         << "  --ot_ping D            Ping-style OT: Im(F)*cos(2kD)-Re(F)*sin(2kD)\n"
+         << "  --ot_ping D            Legacy far-screen OT phase rotation for old Ping-style files\n"
          << "  --trace_cutoff EPS     Stop tracing internal beams if either relative test matches\n"
          << "  --trace_cutoff_j EPS   Trace prune by |J|^2/initial-max < EPS\n"
          << "  --trace_cutoff_area EPS Trace prune by area/initial-max < EPS\n"
          << "  --trace_cutoff_importance EPS Trace prune by |J|^2*area/max < EPS\n"
          << "  --trace_max_beams N    Abort one orientation after N traced beam nodes (0 disables)\n"
          << "  --gpu_trace            Experimental CUDA prefilter for nonconvex tracing candidates\n"
+         << "  --trace_prefilter      Enable CPU projected AABB prefilter for nonconvex tracing\n"
+         << "  --no_trace_prefilter   Disable CPU projected AABB prefilter\n"
+         << "  --trace_prefilter_margin M Projected AABB margin (default 8)\n"
+         << "  --trace_prefilter_stats Print trace prefilter candidate counters\n"
          << "                         Not full GPU tracing; exact intersections remain CPU-side\n"
          << "                         Env: MBS_GPU_TRACE_BATCH_BEAMS=1024, MBS_GPU_TRACE_MIN_CANDIDATES=65536\n"
          << "                         Disabled with OpenMP>1 unless MBS_GPU_TRACE_OPENMP=1\n"

@@ -75,6 +75,9 @@ public:
     double m_traceCutoffImportanceRel = 0;
     int m_traceMaxBeams = 0;
     bool m_gpuTracePrefilter = false;
+    bool m_traceCpuProjectedPrefilter = true;
+    double m_traceCpuProjectedPrefilterMargin = 8.0;
+    bool m_tracePrefilterStats = false;
     void CopyRuntimeOptionsFrom(const Scattering &source);
 
     virtual bool ScatterLight(double /*beta*/, double /*gamma*/, std::vector<Beam> &/*scaterredBeams*/)

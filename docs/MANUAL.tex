@@ -537,6 +537,16 @@ where $w_i$ is the orientation weight stored as
 \texttt{PreparedOrientation::sinZenith}.  The global printed value is the sum
 over all orientations.  The implementation is
 \texttt{HandlerPO::ComputeForwardExtinctionOt()}.
+The default amplitude is the object-centered spherical-wave amplitude $S$ in
+the convention of Gao/Yang/Kattawar Eq. (9), not the far-screen field
+$\tilde S$.  Therefore no hidden far-zone phase correction is applied in the
+default optical theorem.  The diagnostic flag \texttt{--ot\_ping D} only
+reproduces legacy files whose saved forward amplitude still contained the
+far-screen phase:
+\[
+  \operatorname{Im}S \rightarrow
+  \operatorname{Im}S\cos(2kD)-\operatorname{Re}S\sin(2kD).
+\]
 
 \paragraph{Reported cross sections.}
 The final reported values are:
@@ -983,7 +993,7 @@ Flag & Current effect \\
 \texttt{--shadow\_off} & Disable shadow beam; debug only. \\
 \texttt{--incoh}, \texttt{--coh\_orient} & Incoherent per-beam or legacy coherent-across-orientations mode. \\
 \texttt{--abs}, \texttt{--abs\_points N|all} & Force absorption and choose path sampling points. \\
-\texttt{--ot\_phase\_shift F}, \texttt{--ot\_phase\_avg} & Diagnostic OT far-reference phase controls. \\
+\texttt{--ot\_phase\_shift F}, \texttt{--ot\_phase\_avg}, \texttt{--ot\_ping D} & Diagnostic/legacy OT far-reference phase controls. \\
 \texttt{--karczewski} & Use Karczewski polarization matrix option. \\
 \texttt{--legacy\_sign} & Restore old Fresnel sign convention. \\
 \texttt{--pole} & Fast pole gamma shortcut. \\

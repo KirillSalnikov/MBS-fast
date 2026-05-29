@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -56,17 +57,6 @@ bool GpuTraceRuntimeEnabled()
 #endif
 
 namespace {
-bool CpuTraceProjectedPrefilterEnabled()
-{
-    static const bool enabled = []() {
-        const char *value = std::getenv("MBS_TRACE_CPU_PREFILTER");
-        if (!value || !*value)
-            return true;
-        return !(value[0] == '0' && value[1] == '\0');
-    }();
-    return enabled;
-}
-
 double CpuTraceProjectedPrefilterMargin()
 {
     static const double margin = []() {
@@ -104,6 +94,8 @@ bool ScatteringNonConvex::ScatterLight(double beta, double gamma,
                            + std::max(8192, 4 * m_particle->nFacets));
     if (!m_visibilityCacheBuilt)
         BuildFacetVisibilityCache();
+    if (m_traceCpuProjectedPrefilter)
+        BuildFacetProjectionCache();
 #ifdef USE_CUDA
     if (m_gpuTracePrefilter)
         GpuTraceInvalidateFacetCache();
@@ -478,9 +470,36 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
 {
     bool ok = true;
     int processedBeams = 0;
-    auto processBeam = [this, &scaterredBeams, &ok](Beam &beam,
-                                                    const IntArray *readyFacetIds,
-                                                    const std::vector<unsigned char> *mayIntersect) -> bool
+    size_t traceCandidateTests = 0;
+    size_t traceGpuPrefilterSkipped = 0;
+    size_t traceCpuPrefilterSkipped = 0;
+    size_t traceIntersectCalls = 0;
+    double traceSelectTime = 0.0;
+    double traceAabbTime = 0.0;
+    double traceIntersectTime = 0.0;
+    double traceSplitTime = 0.0;
+    double traceOutgoingTime = 0.0;
+    const auto traceNow = []() {
+        return std::chrono::high_resolution_clock::now();
+    };
+    const auto traceSeconds = [](const std::chrono::high_resolution_clock::time_point &a,
+                                 const std::chrono::high_resolution_clock::time_point &b) {
+        return std::chrono::duration<double>(b - a).count();
+    };
+    auto processBeam = [this, &scaterredBeams, &ok,
+                        &traceCandidateTests,
+                        &traceGpuPrefilterSkipped,
+                        &traceCpuPrefilterSkipped,
+                        &traceIntersectCalls,
+                        &traceSelectTime,
+                        &traceAabbTime,
+                        &traceIntersectTime,
+                        &traceSplitTime,
+                        &traceOutgoingTime,
+                        &traceNow,
+                        &traceSeconds](Beam &beam,
+                                               const IntArray *readyFacetIds,
+                                               const std::vector<unsigned char> *mayIntersect) -> bool
     {
         if (!IsTerminalAct(beam)) // REF, OPT: перенести проверку во все места, где пучок закидывается в дерево, чтобы пучки заранее не закидывались в него
         {
@@ -488,7 +507,16 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
             const IntArray *facetIds = readyFacetIds;
             if (facetIds == nullptr)
             {
-                SelectVisibleFacets(beam, localFacetIds);
+                if (m_tracePrefilterStats)
+                {
+                    auto t0 = traceNow();
+                    SelectVisibleFacets(beam, localFacetIds);
+                    traceSelectTime += traceSeconds(t0, traceNow());
+                }
+                else
+                {
+                    SelectVisibleFacets(beam, localFacetIds);
+                }
                 facetIds = &localFacetIds;
             }
 
@@ -496,19 +524,63 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
 
             for (unsigned i = 0; (i < facetIds->size) && !isDivided; ++i)// OPT: move this loop to SplitBeamByFacet
             {
+                if (m_tracePrefilterStats)
+                    ++traceCandidateTests;
                 if (mayIntersect != nullptr && !mayIntersect->empty() && !(*mayIntersect)[i])
+                {
+                    if (m_tracePrefilterStats)
+                        ++traceGpuPrefilterSkipped;
                     continue;
+                }
                 int facetId = facetIds->arr[i];
-                if (CpuTraceProjectedPrefilterEnabled()
-                    && !MayBeamIntersectFacetProjected(beam, facetId))
-                    continue;
+                if (m_traceCpuProjectedPrefilter
+                    )
+                {
+                    bool mayIntersectProjected;
+                    if (m_tracePrefilterStats)
+                    {
+                        auto t0 = traceNow();
+                        mayIntersectProjected = MayBeamIntersectFacetProjected(beam, facetId);
+                        traceAabbTime += traceSeconds(t0, traceNow());
+                    }
+                    else
+                    {
+                        mayIntersectProjected = MayBeamIntersectFacetProjected(beam, facetId);
+                    }
+                    if (!mayIntersectProjected)
+                    {
+                        if (m_tracePrefilterStats)
+                            ++traceCpuPrefilterSkipped;
+                        continue;
+                    }
+                }
 
                 Polygon intersection;
-                Intersect(facetId, beam, intersection);
+                if (m_tracePrefilterStats)
+                    ++traceIntersectCalls;
+                if (m_tracePrefilterStats)
+                {
+                    auto tIntersect0 = traceNow();
+                    Intersect(facetId, beam, intersection);
+                    traceIntersectTime += traceSeconds(tIntersect0, traceNow());
+                }
+                else
+                {
+                    Intersect(facetId, beam, intersection);
+                }
 
                 if (intersection.nVertices >= MIN_VERTEX_NUM)
                 {
-                    isDivided = SplitBeamByFacet(intersection, facetId, beam, ok);
+                    if (m_tracePrefilterStats)
+                    {
+                        auto tSplit0 = traceNow();
+                        isDivided = SplitBeamByFacet(intersection, facetId, beam, ok);
+                        traceSplitTime += traceSeconds(tSplit0, traceNow());
+                    }
+                    else
+                    {
+                        isDivided = SplitBeamByFacet(intersection, facetId, beam, ok);
+                    }
 
                     if (!ok)
                     {
@@ -524,7 +596,17 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
 
             if (IsOutgoingBeam(beam))
             {	// посылаем обрезанный всеми гранями внешний пучок на сферу
-                double path = splitting.ComputeOutgoingOpticalPath(beam); // добираем оптический путь
+                double path;
+                if (m_tracePrefilterStats)
+                {
+                    auto tOut0 = traceNow();
+                    path = splitting.ComputeOutgoingOpticalPath(beam); // добираем оптический путь
+                    traceOutgoingTime += traceSeconds(tOut0, traceNow());
+                }
+                else
+                {
+                    path = splitting.ComputeOutgoingOpticalPath(beam); // добираем оптический путь
+                }
                 beam.opticalPath += path;
 #ifdef _DEBUG // DEB
     beam.ops.push_back(path);
@@ -536,7 +618,16 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
         }
         else if (beam.location == Location::Out)
         {
-            CutExternalBeam(beam, scaterredBeams);
+            if (m_tracePrefilterStats)
+            {
+                auto tOut0 = traceNow();
+                CutExternalBeam(beam, scaterredBeams);
+                traceOutgoingTime += traceSeconds(tOut0, traceNow());
+            }
+            else
+            {
+                CutExternalBeam(beam, scaterredBeams);
+            }
         }
         return true;
     };
@@ -615,6 +706,21 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
 #endif
         if (!processBeam(beam, nullptr, nullptr))
             return false;
+    }
+
+    if (m_tracePrefilterStats)
+    {
+        std::cout << "Trace prefilter stats: candidates=" << traceCandidateTests
+                  << " gpu_skip=" << traceGpuPrefilterSkipped
+                  << " cpu_aabb_skip=" << traceCpuPrefilterSkipped
+                  << " intersect_calls=" << traceIntersectCalls
+                  << std::endl;
+        std::cout << "Trace timing stats: select_sort=" << traceSelectTime
+                  << " aabb=" << traceAabbTime
+                  << " intersect=" << traceIntersectTime
+                  << " split=" << traceSplitTime
+                  << " outgoing=" << traceOutgoingTime
+                  << std::endl;
     }
 
     return true;
@@ -722,109 +828,66 @@ bool ScatteringNonConvex::MayBeamIntersectFacetProjected(const Beam &beam, int f
     if (std::fabs(dp) < EPS_PROJECTION)
         return false;
 
-    const ScatteringNonConvex &cache =
-        m_visibilityCacheOwner ? *m_visibilityCacheOwner : *this;
     const int locInt = beam.location == Location::In ? 0 : 1;
-    int drop;
-    if (cache.m_visibilityCacheBuilt)
-    {
-        drop = cache.m_facetProjectionDrop[locInt][facetId];
-    }
-    else
-    {
-        const double ax = std::fabs(normal.cx);
-        const double ay = std::fabs(normal.cy);
-        const double az = std::fabs(normal.cz);
-        drop = (ax > ay && ax > az) ? 0 : ((ay > az) ? 1 : 2);
-    }
+    const int drop = m_facetProjectionDrop[locInt][facetId];
 
     double bMinU = DBL_MAX, bMaxU = -DBL_MAX;
     double bMinV = DBL_MAX, bMaxV = -DBL_MAX;
-    double fMinU = DBL_MAX, fMaxU = -DBL_MAX;
-    double fMinV = DBL_MAX, fMaxV = -DBL_MAX;
 
-    auto addPoint = [drop](const Point3f &p,
-                           double &minU, double &maxU,
-                           double &minV, double &maxV)
+    if (drop == 0)
     {
-        const double u = (drop == 0) ? p.cy : p.cx;
-        const double v = (drop == 2) ? p.cy : p.cz;
-        minU = std::min(minU, u);
-        maxU = std::max(maxU, u);
-        minV = std::min(minV, v);
-        maxV = std::max(maxV, v);
-    };
-
-    for (int i = 0; i < beam.nVertices; ++i)
-    {
-        const Point3f &p = beam.arr[i];
-        const double t = (DotProduct(p, normal) + normal.d_param) / dp;
-        addPoint(p - beam.direction * t, bMinU, bMaxU, bMinV, bMaxV);
+        for (int i = 0; i < beam.nVertices; ++i)
+        {
+            const Point3f &p = beam.arr[i];
+            const double t = (DotProduct(p, normal) + normal.d_param) / dp;
+            const double u = p.cy - beam.direction.cy * t;
+            const double v = p.cz - beam.direction.cz * t;
+            if (u < bMinU) bMinU = u;
+            if (u > bMaxU) bMaxU = u;
+            if (v < bMinV) bMinV = v;
+            if (v > bMaxV) bMaxV = v;
+        }
     }
-
-    if (cache.m_visibilityCacheBuilt)
+    else if (drop == 1)
     {
-        const double *bounds = cache.m_facetProjectionBounds[drop][facetId];
-        fMinU = bounds[0];
-        fMaxU = bounds[1];
-        fMinV = bounds[2];
-        fMaxV = bounds[3];
+        for (int i = 0; i < beam.nVertices; ++i)
+        {
+            const Point3f &p = beam.arr[i];
+            const double t = (DotProduct(p, normal) + normal.d_param) / dp;
+            const double u = p.cx - beam.direction.cx * t;
+            const double v = p.cz - beam.direction.cz * t;
+            if (u < bMinU) bMinU = u;
+            if (u > bMaxU) bMaxU = u;
+            if (v < bMinV) bMinV = v;
+            if (v > bMaxV) bMaxV = v;
+        }
     }
     else
     {
-        const Facet &facet = m_facets[facetId];
-        for (int i = 0; i < facet.nVertices; ++i)
-            addPoint(facet.arr[i], fMinU, fMaxU, fMinV, fMaxV);
+        for (int i = 0; i < beam.nVertices; ++i)
+        {
+            const Point3f &p = beam.arr[i];
+            const double t = (DotProduct(p, normal) + normal.d_param) / dp;
+            const double u = p.cx - beam.direction.cx * t;
+            const double v = p.cy - beam.direction.cy * t;
+            if (u < bMinU) bMinU = u;
+            if (u > bMaxU) bMaxU = u;
+            if (v < bMinV) bMinV = v;
+            if (v > bMaxV) bMaxV = v;
+        }
     }
 
-    const double margin = CpuTraceProjectedPrefilterMargin();
-    return !(bMaxU < fMinU - margin || fMaxU < bMinU - margin ||
-             bMaxV < fMinV - margin || fMaxV < bMinV - margin);
+    const double *bounds = m_facetProjectionBounds[drop][facetId];
+    const double margin = m_traceCpuProjectedPrefilterMargin >= 0.0
+        ? m_traceCpuProjectedPrefilterMargin
+        : CpuTraceProjectedPrefilterMargin();
+    return !(bMaxU < bounds[0] - margin || bounds[1] < bMinU - margin ||
+             bMaxV < bounds[2] - margin || bounds[3] < bMinV - margin);
 }
 
 void ScatteringNonConvex::BuildFacetVisibilityCache()
 {
     m_visibilityCacheOwner = nullptr;
-    if (CpuTraceProjectedPrefilterEnabled())
-    {
-        for (int locInt = 0; locInt < 2; ++locInt)
-        {
-            for (int facetId = 0; facetId < m_particle->nFacets; ++facetId)
-            {
-                const Point3f &normal = (locInt == 0)
-                                      ? m_facets[facetId].in_normal
-                                      : m_facets[facetId].ex_normal;
-                const double ax = std::fabs(normal.cx);
-                const double ay = std::fabs(normal.cy);
-                const double az = std::fabs(normal.cz);
-                m_facetProjectionDrop[locInt][facetId] =
-                    (ax > ay && ax > az) ? 0 : ((ay > az) ? 1 : 2);
-            }
-        }
-        for (int drop = 0; drop < 3; ++drop)
-        {
-            for (int facetId = 0; facetId < m_particle->nFacets; ++facetId)
-            {
-                const Facet &facet = m_facets[facetId];
-                double minU = DBL_MAX, maxU = -DBL_MAX;
-                double minV = DBL_MAX, maxV = -DBL_MAX;
-                for (int i = 0; i < facet.nVertices; ++i)
-                {
-                    const Point3f &p = facet.arr[i];
-                    const double u = (drop == 0) ? p.cy : p.cx;
-                    const double v = (drop == 2) ? p.cy : p.cz;
-                    minU = std::min(minU, u);
-                    maxU = std::max(maxU, u);
-                    minV = std::min(minV, v);
-                    maxV = std::max(maxV, v);
-                }
-                m_facetProjectionBounds[drop][facetId][0] = minU;
-                m_facetProjectionBounds[drop][facetId][1] = maxU;
-                m_facetProjectionBounds[drop][facetId][2] = minV;
-                m_facetProjectionBounds[drop][facetId][3] = maxV;
-            }
-        }
-    }
     for (int locInt = 0; locInt < 2; ++locInt)
     {
         Location loc = locInt == 0 ? Location::In : Location::Out;
@@ -854,6 +917,53 @@ void ScatteringNonConvex::BuildFacetVisibilityCache()
         }
     }
     m_visibilityCacheBuilt = true;
+}
+
+void ScatteringNonConvex::BuildFacetProjectionCache()
+{
+    for (int locInt = 0; locInt < 2; ++locInt)
+    {
+        for (int facetId = 0; facetId < m_particle->nFacets; ++facetId)
+        {
+            const Point3f &normal = (locInt == 0)
+                                  ? m_facets[facetId].in_normal
+                                  : m_facets[facetId].ex_normal;
+            const double ax = std::fabs(normal.cx);
+            const double ay = std::fabs(normal.cy);
+            const double az = std::fabs(normal.cz);
+            m_facetProjectionDrop[locInt][facetId] =
+                (ax > ay && ax > az) ? 0 : ((ay > az) ? 1 : 2);
+        }
+    }
+    for (int facetId = 0; facetId < m_particle->nFacets; ++facetId)
+    {
+        const Facet &facet = m_facets[facetId];
+        double minX = DBL_MAX, maxX = -DBL_MAX;
+        double minY = DBL_MAX, maxY = -DBL_MAX;
+        double minZ = DBL_MAX, maxZ = -DBL_MAX;
+        for (int i = 0; i < facet.nVertices; ++i)
+        {
+            const Point3f &p = facet.arr[i];
+            if (p.cx < minX) minX = p.cx;
+            if (p.cx > maxX) maxX = p.cx;
+            if (p.cy < minY) minY = p.cy;
+            if (p.cy > maxY) maxY = p.cy;
+            if (p.cz < minZ) minZ = p.cz;
+            if (p.cz > maxZ) maxZ = p.cz;
+        }
+        m_facetProjectionBounds[0][facetId][0] = minY;
+        m_facetProjectionBounds[0][facetId][1] = maxY;
+        m_facetProjectionBounds[0][facetId][2] = minZ;
+        m_facetProjectionBounds[0][facetId][3] = maxZ;
+        m_facetProjectionBounds[1][facetId][0] = minX;
+        m_facetProjectionBounds[1][facetId][1] = maxX;
+        m_facetProjectionBounds[1][facetId][2] = minZ;
+        m_facetProjectionBounds[1][facetId][3] = maxZ;
+        m_facetProjectionBounds[2][facetId][0] = minX;
+        m_facetProjectionBounds[2][facetId][1] = maxX;
+        m_facetProjectionBounds[2][facetId][2] = minY;
+        m_facetProjectionBounds[2][facetId][3] = maxY;
+    }
 }
 
 void ScatteringNonConvex::PrepareForParallelTrace()
