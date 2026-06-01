@@ -77,6 +77,7 @@ bool CheckGpuRuntime(GpuDeviceInfo &info, std::string &error)
     info.runtimeVersion = runtimeVersion;
     info.driverVersion = driverVersion;
     info.buildArch = MBS_GPU_BUILD_ARCH;
+    info.visibleDeviceCount = count;
     return true;
 #endif
 }
@@ -87,6 +88,9 @@ std::string FormatGpuInfo(const GpuDeviceInfo &info)
     out << "CUDA device " << info.deviceId << ": " << info.name
         << ", cc " << info.computeMajor << "." << info.computeMinor
         << ", memory " << (info.totalGlobalMem / (1024LL * 1024LL)) << " MB";
+    if (info.visibleDeviceCount > 1)
+        out << ", visible devices " << info.visibleDeviceCount
+            << " (auto multi-GPU)";
     if (info.buildArch > 0)
         out << ", build sm_" << info.buildArch;
     if (info.runtimeVersion > 0 || info.driverVersion > 0)

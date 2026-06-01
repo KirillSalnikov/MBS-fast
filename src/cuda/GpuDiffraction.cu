@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <vector>
 #include <utility>
+#include <future>
 
 #ifdef MBS_GPU_FLOAT
 using GpuReal = float;
@@ -175,7 +176,8 @@ struct GpuWorkspace
     std::vector<GpuComplex> hFftFull;
 };
 
-static GpuWorkspace g_gpuWorkspace;
+static thread_local GpuWorkspace g_gpuWorkspace;
+static thread_local bool g_gpuMultiWorker = false;
 
 static inline double prepared_absorption_factor(const PreparedBeam &pb,
                                                 double scale,
@@ -472,6 +474,43 @@ static bool gpu_fft_pair_enabled()
 static bool gpu_fft_debug_enabled()
 {
     const char *value = std::getenv("MBS_FFT_DEBUG");
+    return value && value[0] == '1' && value[1] == '\0';
+}
+
+static int gpu_multi_device_count(int workCount)
+{
+    if (workCount <= 1)
+        return 1;
+    const char *value = std::getenv("MBS_GPU_MULTI");
+    if (value && value[0] == '0' && value[1] == '\0')
+        return 1;
+
+    int count = 0;
+    if (cudaGetDeviceCount(&count) != cudaSuccess || count <= 1)
+        return 1;
+
+    int limit = count;
+    if (value && *value)
+    {
+        char *end = nullptr;
+        long parsed = std::strtol(value, &end, 10);
+        if (end && *end == '\0' && parsed > 0)
+            limit = (int)parsed;
+    }
+    if (const char *capEnv = std::getenv("MBS_GPU_MULTI_MAX"))
+    {
+        char *end = nullptr;
+        long parsed = std::strtol(capEnv, &end, 10);
+        if (end && *end == '\0' && parsed > 0)
+            limit = std::min(limit, (int)parsed);
+    }
+
+    return std::max(1, std::min(std::min(count, limit), workCount));
+}
+
+static bool gpu_multi_debug_enabled()
+{
+    const char *value = std::getenv("MBS_GPU_MULTI_DEBUG");
     return value && value[0] == '1' && value[1] == '\0';
 }
 
@@ -2459,7 +2498,14 @@ int HandlerPO::SelectGpuOrientationBatchSize(const std::vector<PreparedOrientati
         ++count;
     }
 
-    return std::max(1, count);
+    int selected = std::max(1, count);
+    if (!g_gpuMultiWorker)
+    {
+        const int nDevices = gpu_multi_device_count(maxCount);
+        if (nDevices > 1)
+            selected = std::min(maxCount, selected * nDevices);
+    }
+    return selected;
 }
 
 static void add_arr2d_inplace(const Arr2D &src, int nAz, int nZen, Arr2D &dst)
@@ -3182,6 +3228,83 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     if (nOrient == 0 || gridCount == 0)
         return true;
     const bool computeNoShadow = ComputeNoShadow();
+
+    if (!g_gpuMultiWorker)
+    {
+        const int nDevices = gpu_multi_device_count(nOrient);
+        if (nDevices > 1)
+        {
+            int savedDevice = 0;
+            cudaGetDevice(&savedDevice);
+            static bool printedMulti = false;
+            if (!printedMulti || gpu_multi_debug_enabled())
+            {
+                std::fprintf(stderr,
+                             "GPU multi-device: using %d visible CUDA devices for %d orientations in this batch "
+                             "(disable with MBS_GPU_MULTI=0, cap with MBS_GPU_MULTI_MAX=N).\n",
+                             nDevices, nOrient);
+                printedMulti = true;
+            }
+
+            std::vector<Arr2D> partialM;
+            std::vector<Arr2D> partialMns;
+            partialM.reserve(nDevices);
+            partialMns.reserve(nDevices);
+            for (int i = 0; i < nDevices; ++i)
+            {
+                partialM.emplace_back(nAz + 1, nZen + 1, 4, 4);
+                partialM.back().ClearArr();
+                if (computeNoShadow)
+                {
+                    partialMns.emplace_back(nAz + 1, nZen + 1, 4, 4);
+                    partialMns.back().ClearArr();
+                }
+                else
+                {
+                    partialMns.emplace_back(0, 0, 0, 0);
+                }
+            }
+
+            std::vector<std::future<bool>> jobs;
+            jobs.reserve(nDevices);
+            for (int dev = 0; dev < nDevices; ++dev)
+            {
+                const int begin = start + (nOrient * dev) / nDevices;
+                const int end = start + (nOrient * (dev + 1)) / nDevices;
+                const int subCount = end - begin;
+                jobs.push_back(std::async(std::launch::async,
+                    [this, &prepared, &partialM, &partialMns, dev, begin, subCount,
+                     scale, waveIndex]() -> bool {
+                        if (subCount <= 0)
+                            return true;
+                        if (cudaSetDevice(dev) != cudaSuccess)
+                            return false;
+                        g_gpuMultiWorker = true;
+                        bool ok = this->HandleOrientationsToLocalGpu(
+                            prepared, begin, subCount, partialM[dev],
+                            partialMns[dev], scale, waveIndex);
+                        g_gpuMultiWorker = false;
+                        return ok;
+                    }));
+            }
+
+            bool ok = true;
+            for (auto &job : jobs)
+                ok = job.get() && ok;
+            cudaSetDevice(savedDevice);
+            if (!ok)
+                return false;
+
+            for (int dev = 0; dev < nDevices; ++dev)
+            {
+                add_arr2d_inplace(partialM[dev], nAz, nZen, localM);
+                if (computeNoShadow)
+                    add_arr2d_inplace(partialMns[dev], nAz, nZen, localM_noshadow);
+            }
+            return true;
+        }
+    }
+
     const bool timing = gpu_timing_enabled();
     const double tStart = timing ? gpu_now_ms() : 0.0;
     double tCount = 0.0, tPack = 0.0, tEnsure = 0.0, tGrid = 0.0;
@@ -3309,7 +3432,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     if (packMixedBeam8)
         hBeamOffsets8[nOrient] = (int)bi8;
 
-#pragma omp parallel for schedule(static) if(nOrient >= 256)
+#pragma omp parallel for schedule(static) if(nOrient >= 256 && !g_gpuMultiWorker)
     for (int oi = 0; oi < nOrient; ++oi)
     {
         size_t out = (size_t)hBeamOffsets[oi];

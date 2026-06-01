@@ -12,6 +12,7 @@ struct GpuDeviceInfo
     int runtimeVersion = 0;
     int driverVersion = 0;
     int buildArch = 0;
+    int visibleDeviceCount = 0;
 };
 
 bool CheckGpuRuntime(GpuDeviceInfo &info, std::string &error);
