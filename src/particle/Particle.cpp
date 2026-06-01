@@ -132,7 +132,18 @@ void Particle::Rotate(double beta, double gamma, double alpha)
 {
     rotAngle = Angle{alpha, beta, gamma};
     SetRotateMatrix(beta, gamma, alpha);
+    ApplyRotateMatrix();
+}
 
+void Particle::RotateQuaternion(double qx, double qy, double qz, double qw)
+{
+    rotAngle = Angle{0.0, 0.0, 0.0};
+    SetRotateMatrixFromQuaternion(qx, qy, qz, qw);
+    ApplyRotateMatrix();
+}
+
+void Particle::ApplyRotateMatrix()
+{
     // REF: слить всё в один цикл
     for (int i = 0; i < nFacets; ++i)
     {
@@ -640,6 +651,39 @@ void Particle::SetRotateMatrix(double beta, double gamma, double alpha)
     m_rotMatrix[0][2] = cosA*sinB;
     m_rotMatrix[1][2] = sinA*sinB;
     m_rotMatrix[2][2] = cosB;
+}
+
+void Particle::SetRotateMatrixFromQuaternion(double qx, double qy, double qz, double qw)
+{
+    double norm = sqrt(qx*qx + qy*qy + qz*qz + qw*qw);
+    if (norm <= DBL_EPSILON)
+    {
+        qx = qy = qz = 0.0;
+        qw = 1.0;
+    }
+    else
+    {
+        qx /= norm;
+        qy /= norm;
+        qz /= norm;
+        qw /= norm;
+    }
+
+    const double xx = qx*qx, yy = qy*qy, zz = qz*qz;
+    const double xy = qx*qy, xz = qx*qz, yz = qy*qz;
+    const double wx = qw*qx, wy = qw*qy, wz = qw*qz;
+
+    m_rotMatrix[0][0] = 1.0 - 2.0*(yy + zz);
+    m_rotMatrix[0][1] = 2.0*(xy - wz);
+    m_rotMatrix[0][2] = 2.0*(xz + wy);
+
+    m_rotMatrix[1][0] = 2.0*(xy + wz);
+    m_rotMatrix[1][1] = 1.0 - 2.0*(xx + zz);
+    m_rotMatrix[1][2] = 2.0*(yz - wx);
+
+    m_rotMatrix[2][0] = 2.0*(xz - wy);
+    m_rotMatrix[2][1] = 2.0*(yz + wx);
+    m_rotMatrix[2][2] = 1.0 - 2.0*(xx + yy);
 }
 
 void Particle::RemoveWalls()

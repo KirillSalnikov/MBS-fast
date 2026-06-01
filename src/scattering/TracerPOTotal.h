@@ -49,6 +49,7 @@ public:
 
     /// Sobol quasi-random orientation averaging with particle symmetry
     void TraceFromSobol(int nOrient, double betaSym, double gammaSym);
+    void TraceFromSO3Quaternion(int nOrient);
     void TraceFromSobolSeed(int nOrient, unsigned int seed,
                             double betaSym, double gammaSym);
     void TraceFromSobolRing(int nBeta, int nGamma,
@@ -59,6 +60,8 @@ public:
                                    double betaSym, double gammaSym);
     void TraceFromEulerQuadrature(int nBeta, int nGamma,
                                   double betaSym, double gammaSym);
+    void TraceFromEulerAdaptiveGamma(int nBeta, int nGammaMax,
+                                     double betaSym, double gammaSym);
     double TraceFromSobolVariablePhi(int nOrient, double betaSym, double gammaSym,
                                      const std::vector<int> &rowNphi,
                                      const std::vector<int> &rowNorient,
@@ -89,7 +92,27 @@ private:
     {
         double beta;
         double gamma;
+        double alpha;
+        double qx;
+        double qy;
+        double qz;
+        double qw;
         double weight;
+        bool useQuaternion;
+
+        WeightedOrientation()
+            : beta(0), gamma(0), alpha(0),
+              qx(0), qy(0), qz(0), qw(1),
+              weight(1), useQuaternion(false) {}
+        WeightedOrientation(double beta_, double gamma_, double weight_)
+            : beta(beta_), gamma(gamma_), alpha(0),
+              qx(0), qy(0), qz(0), qw(1),
+              weight(weight_), useQuaternion(false) {}
+        WeightedOrientation(double qx_, double qy_, double qz_, double qw_,
+                            double weight_)
+            : beta(0), gamma(0), alpha(0),
+              qx(qx_), qy(qy_), qz(qz_), qw(qw_),
+              weight(weight_), useQuaternion(true) {}
     };
 
     void TraceWeightedOrientations(const std::vector<WeightedOrientation> &orientations,

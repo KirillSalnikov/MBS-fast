@@ -4743,6 +4743,20 @@ static double RadicalInverseBase2(uint32_t value)
     return (double)value / 4294967296.0;
 }
 
+static double RadicalInverseBase(uint32_t value, uint32_t base)
+{
+    double invBase = 1.0 / (double)base;
+    double inv = invBase;
+    double result = 0.0;
+    while (value > 0)
+    {
+        result += (double)(value % base) * inv;
+        value /= base;
+        inv *= invBase;
+    }
+    return result;
+}
+
 static int GcdInt(int a, int b)
 {
     a = std::abs(a);
@@ -4791,6 +4805,42 @@ static int NormalizeLatticeGenerator(int n, int generator)
 void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
 {
     TraceFromSobolSeed(nOrient, 42u, betaSym, gammaSym);
+}
+
+void TracerPOTotal::TraceFromSO3Quaternion(int nOrient)
+{
+    if (nOrient <= 0)
+        throw std::invalid_argument("SO(3) quaternion orientation count must be positive");
+
+    const double weight = 1.0 / nOrient;
+    std::vector<WeightedOrientation> orientations;
+    orientations.reserve(nOrient);
+
+    for (int i = 0; i < nOrient; ++i)
+    {
+        const double u1 = (i + 0.5) / nOrient;
+        const double u2 = RadicalInverseBase2((uint32_t)i);
+        const double u3 = RadicalInverseBase((uint32_t)i, 3);
+        const double r1 = std::sqrt(std::max(0.0, 1.0 - u1));
+        const double r2 = std::sqrt(u1);
+        const double a = 2.0 * M_PI * u2;
+        const double b = 2.0 * M_PI * u3;
+
+        // Shoemake uniform unit quaternion on SO(3).  Stored directly and
+        // converted to the particle rotation matrix immediately before tracing.
+        const double qx = r1 * std::sin(a);
+        const double qy = r1 * std::cos(a);
+        const double qz = r2 * std::sin(b);
+        const double qw = r2 * std::cos(b);
+        orientations.push_back(WeightedOrientation(qx, qy, qz, qw, weight));
+    }
+
+    if (m_mpiRank == 0)
+        std::cout << "SO(3) quaternion Hammersley: " << nOrient
+                  << " orientations, full rotation group, no beta/gamma symmetry"
+                  << std::endl;
+
+    TraceWeightedOrientations(orientations, "SO(3) quaternion", M_PI, 2.0*M_PI);
 }
 
 void TracerPOTotal::TraceFromSobolSeed(int nOrient, unsigned int seed,
@@ -4978,6 +5028,95 @@ void TracerPOTotal::TraceFromEulerQuadrature(int nBeta, int nGamma,
     TraceWeightedOrientations(orientations, "Euler quadrature", betaSym, gammaSym);
 }
 
+void TracerPOTotal::TraceFromEulerAdaptiveGamma(int nBeta, int nGammaMax,
+                                                double betaSym, double gammaSym)
+{
+    if (nBeta <= 0 || nGammaMax <= 0)
+        throw std::invalid_argument("--euler_adapt requires positive Nbeta and NgammaMax");
+
+    double muMin = std::cos(betaSym);
+    double muMax = 1.0;
+    if (muMin > muMax)
+        std::swap(muMin, muMax);
+
+    std::vector<double> mu;
+    std::vector<double> muWeights;
+    BuildGaussLegendreInterval(nBeta, muMin, muMax, mu, muWeights);
+
+    const double muSpan = muMax - muMin;
+    std::vector<double> betas(nBeta, 0.0);
+    double maxRing = 0.0;
+    for (int ib = 0; ib < nBeta; ++ib)
+    {
+        double clampedMu = std::max(-1.0, std::min(1.0, mu[ib]));
+        betas[ib] = std::acos(clampedMu);
+        maxRing = std::max(maxRing, std::sin(betas[ib]));
+    }
+    if (maxRing <= DBL_EPSILON)
+        maxRing = 1.0;
+
+    int minGamma = std::max(6, nGammaMax / 4);
+    minGamma = ((minGamma + 5) / 6) * 6;
+    nGammaMax = ((nGammaMax + 5) / 6) * 6;
+    if (nGammaMax < minGamma)
+        nGammaMax = minGamma;
+
+    std::vector<WeightedOrientation> orientations;
+    orientations.reserve((size_t)nBeta * (size_t)nGammaMax);
+    std::vector<int> gammaCounts(nBeta, 0);
+
+    for (int ib = 0; ib < nBeta; ++ib)
+    {
+        double betaWeight = (muSpan > 0.0)
+            ? muWeights[ib] / muSpan
+            : 1.0 / nBeta;
+
+        int nGamma = (int)std::ceil(nGammaMax * std::sin(betas[ib]) / maxRing);
+        nGamma = std::max(minGamma, nGamma);
+        nGamma = ((nGamma + 5) / 6) * 6;
+        nGamma = std::min(nGammaMax, nGamma);
+        gammaCounts[ib] = nGamma;
+
+        for (int ig = 0; ig < nGamma; ++ig)
+        {
+            double gamma = gammaSym * (ig + 0.5) / nGamma;
+            orientations.push_back(WeightedOrientation(
+                betas[ib], gamma, betaWeight / nGamma));
+        }
+    }
+
+    double weightSum = 0.0;
+    for (const WeightedOrientation &orientation : orientations)
+        weightSum += orientation.weight;
+    if (weightSum > 0.0)
+        for (WeightedOrientation &orientation : orientations)
+            orientation.weight /= weightSum;
+
+    if (m_mpiRank == 0)
+    {
+        int minUsed = gammaCounts.empty() ? 0 : gammaCounts[0];
+        int maxUsed = gammaCounts.empty() ? 0 : gammaCounts[0];
+        long long sumUsed = 0;
+        for (int n : gammaCounts)
+        {
+            minUsed = std::min(minUsed, n);
+            maxUsed = std::max(maxUsed, n);
+            sumUsed += n;
+        }
+        std::cout << "Euler adaptive gamma: Gauss-Legendre in cos(beta), "
+                  << "Nbeta=" << nBeta << ", NgammaMax=" << nGammaMax
+                  << ", Ngamma range=" << minUsed << ".." << maxUsed
+                  << ", total=" << orientations.size()
+                  << " orientations, saved="
+                  << (100.0 * (1.0 - (double)orientations.size()
+                              / std::max(1.0, (double)nBeta * nGammaMax)))
+                  << "% vs fixed" << std::endl;
+    }
+
+    TraceWeightedOrientations(orientations, "Euler adaptive gamma",
+                              betaSym, gammaSym);
+}
+
 void TracerPOTotal::TraceWeightedOrientations(
     const std::vector<WeightedOrientation> &orientations,
     const std::string &label, double betaSym, double gammaSym)
@@ -5090,7 +5229,12 @@ void TracerPOTotal::TraceWeightedOrientations(
                 int idx = iStart + i;
                 const WeightedOrientation &orientation = orientations[idx];
                 double weight = orientation.weight;
-                localParticle.Rotate(orientation.beta, orientation.gamma, 0);
+                if (orientation.useQuaternion)
+                    localParticle.RotateQuaternion(orientation.qx, orientation.qy,
+                                                   orientation.qz, orientation.qw);
+                else
+                    localParticle.Rotate(orientation.beta, orientation.gamma,
+                                         orientation.alpha);
                 if (!shadowOff) localScatter->FormShadowBeam(localBeams);
                 bool ok = localScatter->ScatterLight(0, 0, localBeams);
                 if (ok)

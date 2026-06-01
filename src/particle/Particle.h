@@ -30,6 +30,7 @@ public:
     void SetFromFile(const std::string &filename);
 
     void Rotate(double beta, double gamma, double alpha);
+    void RotateQuaternion(double qx, double qy, double qz, double qw);
     void Move(float dx, float dy, float dz);
     void Fix();
     void Resize(double size);
@@ -102,10 +103,12 @@ protected:
     void SetDParams();
 
 private:
+    void ApplyRotateMatrix();
     void RotateNormals();
     void RotatePoint(const Point3f &point, Point3f &result);
     void RotateCenters();
     void SetRotateMatrix(double beta, double gamma, double alpha);
+    void SetRotateMatrixFromQuaternion(double qx, double qy, double qz, double qw);
     void RemoveWalls();
     std::vector<Facet> ConnectBases(const Facet &top, const Facet &bottom);
     void FindFlippedFacets(std::vector<unsigned> &facetIndices) const;
@@ -115,4 +118,3 @@ private:
     void ReadSymmetry(const int bufSize, char *trash, char *buff,
                       std::ifstream pfile, char *ptr);
 };
-

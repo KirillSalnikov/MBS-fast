@@ -246,12 +246,14 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("trace_prefilter_margin", 1, true); // projected AABB margin for nonconvex CPU trace prefilter
     parser.AddRule("trace_prefilter_stats", 0, true); // print CPU/GPU trace prefilter counters
     parser.AddRule("sobol", 1, true); // Sobol quasi-random orientations (number, power of 2)
+    parser.AddRule("so3_quat", 1, true); // Hammersley orientations directly on SO(3) as quaternions
     parser.AddRule("sobol_seed", 2, true); // Sobol orientations with nested Owen scramble seed (N seed)
     parser.AddRule("sobol_ring", 2, true); // Sobol beta x uniform gamma ring (Nbeta Ngamma)
     parser.AddRule("hammersley", 1, true); // Hammersley orientation set (N)
     parser.AddRule("lattice", 1, true); // rank-1 lattice orientation set (N)
     parser.AddRule("lattice_z", 2, true); // rank-1 lattice with explicit generator (N Z)
     parser.AddRule("euler_quad", 2, true); // high-order Euler quadrature (Nbeta Ngamma)
+    parser.AddRule("euler_adapt", 2, true); // Gauss beta with adaptive gamma count (Nbeta NgammaMax)
     parser.AddRule("auto_tgrid", 1, true); // adaptive theta grid (arg: tolerance, e.g. 0.05)
     parser.AddRule("auto_phi", 0, true); // auto-select N_phi based on size parameter
     parser.AddRule("nphi", 1, true); // override N_phi (takes priority over --grid and --auto_phi)
@@ -302,12 +304,14 @@ void PrintFullHelp()
          << "  --fixed BETA GAMMA     Single orientation (degrees)\n"
          << "  --random Nb Ng         Regular beta x gamma grid\n"
          << "  --sobol N              Sobol quasi-random (N orientations)\n"
+         << "  --so3_quat N           Hammersley on full SO(3), stored as quaternions\n"
          << "  --sobol_seed N S       Sobol with nested Owen scramble seed S\n"
          << "  --sobol_ring Nb Ng     Sobol beta x shifted uniform gamma ring\n"
          << "  --hammersley N         Hammersley low-discrepancy orientations\n"
          << "  --lattice N            Rank-1 lattice orientations\n"
          << "  --lattice_z N Z        Rank-1 lattice with explicit generator Z\n"
          << "  --euler_quad Nb Ng     High-order: Gauss in cos(beta) x periodic gamma\n"
+         << "  --euler_adapt Nb NgMax Gauss beta x adaptive gamma per beta ring\n"
          << "  --montecarlo N         Monte Carlo random (N orientations)\n"
          << "  --adaptive EPS         Adaptive Sobol (converge to EPS relative accuracy)\n"
          << "  --auto EPS             Full auto: adaptive theta + phi + orientations\n"
@@ -458,9 +462,11 @@ void PrintReleaseHelp()
          << "  --fixed BETA GAMMA     Single orientation, degrees\n"
          << "  --orientfile FILE      Orientations from file\n"
          << "  --sobol N              Sobol orientations\n"
+         << "  --so3_quat N           Full SO(3) quaternion orientations\n"
          << "  --sobol_seed N S       Sobol with explicit Owen seed\n"
          << "  --sobol_ring Nb Ng     Sobol beta x uniform gamma ring\n"
          << "  --euler_quad Nb Ng     Euler/Gauss quadrature\n"
+         << "  --euler_adapt Nb NgMax Euler/Gauss with adaptive gamma count\n"
          << "  --mirror_gamma         Use mirror gamma half-domain\n"
          << "  --sym Sb Sg            Override symmetry domain\n\n"
 
@@ -2453,11 +2459,12 @@ int main(int argc, const char* argv[])
 
             delete handler;
         }
-        else if (args.IsCatched("sobol") || args.IsCatched("sobol_seed")
+        else if (args.IsCatched("sobol") || args.IsCatched("so3_quat")
+              || args.IsCatched("sobol_seed")
               || args.IsCatched("sobol_ring")
               || args.IsCatched("hammersley") || args.IsCatched("lattice")
               || args.IsCatched("lattice_z")
-              || args.IsCatched("euler_quad")
+              || args.IsCatched("euler_quad") || args.IsCatched("euler_adapt")
               || args.IsCatched("adaptive") || args.IsCatched("auto")
               || args.IsCatched("autofull") || args.IsCatched("oldautofull"))
         {
@@ -2468,10 +2475,12 @@ int main(int argc, const char* argv[])
             bool isAutoFull = args.IsCatched("autofull") || isOldAutoFull;
             bool isAdaptive = args.IsCatched("adaptive") || isAuto;
             bool isSobolSeed = args.IsCatched("sobol_seed");
+            bool isSO3Quat = args.IsCatched("so3_quat");
             bool isSobolRing = args.IsCatched("sobol_ring");
             bool isHammersley = args.IsCatched("hammersley");
             bool isLattice = args.IsCatched("lattice") || args.IsCatched("lattice_z");
             bool isEulerQuad = args.IsCatched("euler_quad");
+            bool isEulerAdapt = args.IsCatched("euler_adapt");
             bool oldAutoFullMultiSize = isOldAutoFull
                 && (args.IsCatched("multikeq") || args.IsCatched("multikeq_list")
                     || args.IsCatched("multigrid"));
@@ -2536,6 +2545,8 @@ int main(int argc, const char* argv[])
             }
             if (isAdaptive)
                 additionalSummary += ", adaptive Sobol\n\n";
+            else if (isSO3Quat)
+                additionalSummary += ", SO(3) quaternion orientations\n\n";
             else if (isSobolSeed)
                 additionalSummary += ", Sobol nested Owen seed\n\n";
             else if (isSobolRing)
@@ -2544,6 +2555,8 @@ int main(int argc, const char* argv[])
                 additionalSummary += ", Hammersley orientations\n\n";
             else if (isLattice)
                 additionalSummary += ", rank-1 lattice orientations\n\n";
+            else if (isEulerAdapt)
+                additionalSummary += ", Euler adaptive gamma quadrature\n\n";
             else if (isEulerQuad)
                 additionalSummary += ", Euler high-order quadrature\n\n";
             else
@@ -2827,10 +2840,11 @@ int main(int argc, const char* argv[])
             else if (isAdaptive)
             {
                 if (args.IsCatched("sobol") || args.IsCatched("sobol_seed")
+                    || args.IsCatched("so3_quat")
                     || args.IsCatched("sobol_ring")
                     || args.IsCatched("hammersley") || args.IsCatched("lattice")
                     || args.IsCatched("lattice_z")
-                    || args.IsCatched("euler_quad"))
+                    || args.IsCatched("euler_quad") || args.IsCatched("euler_adapt"))
                     std::cerr << "WARNING: explicit orientation rule ignored (--auto/--adaptive overrides with adaptive orientations)." << std::endl;
                 double epsAdapt = isAuto ? args.GetDoubleValue("auto", 0)
                                          : args.GetDoubleValue("adaptive", 0);
@@ -2860,15 +2874,40 @@ int main(int argc, const char* argv[])
             else
             {
                 bool useSobolSeed = args.IsCatched("sobol_seed");
+                bool useSO3Quat = args.IsCatched("so3_quat");
                 bool useSobolRing = args.IsCatched("sobol_ring");
                 bool useHammersley = args.IsCatched("hammersley");
                 bool useLattice = args.IsCatched("lattice") || args.IsCatched("lattice_z");
                 bool useEulerQuad = args.IsCatched("euler_quad");
+                bool useEulerAdapt = args.IsCatched("euler_adapt");
                 int nSobol = args.IsCatched("sobol") ? args.GetIntValue("sobol", 0) : 0;
 
-                if (useSobolSeed)
+                if (useSO3Quat)
                 {
-                    if (args.IsCatched("sobol") || args.IsCatched("euler_quad"))
+                    if (args.IsCatched("sobol") || args.IsCatched("sobol_seed")
+                        || args.IsCatched("sobol_ring") || args.IsCatched("euler_quad")
+                        || args.IsCatched("euler_adapt")
+                        || args.IsCatched("hammersley") || args.IsCatched("lattice")
+                        || args.IsCatched("lattice_z"))
+                        std::cerr << "WARNING: other explicit orientation rules ignored because --so3_quat is selected." << std::endl;
+                    if (args.IsCatched("mirror_gamma") || args.IsCatched("sym"))
+                        std::cerr << "WARNING: --so3_quat samples the full SO(3); --mirror_gamma/--sym do not reduce it." << std::endl;
+                    if (args.IsCatched("multigrid"))
+                        std::cerr << "WARNING: --so3_quat currently runs single-size; --multigrid ignored." << std::endl;
+                    int nOrient = args.GetIntValue("so3_quat", 0);
+                    if (args.IsCatched("auto_tgrid") && !args.IsCatched("grid") && !args.IsCatched("tgrid"))
+                    {
+                        double tgridEps = args.GetDoubleValue("auto_tgrid", 0);
+                        if (tgridEps <= 0) tgridEps = 0.05;
+                        tracer->TraceAdaptiveTheta(std::max(64, nOrient), M_PI, 2.0*M_PI,
+                                                   tgridEps, 8, true);
+                    }
+                    tracer->TraceFromSO3Quaternion(nOrient);
+                }
+                else if (useSobolSeed)
+                {
+                    if (args.IsCatched("sobol") || args.IsCatched("euler_quad")
+                        || args.IsCatched("euler_adapt"))
                         std::cerr << "WARNING: --sobol/--euler_quad ignored because --sobol_seed is selected." << std::endl;
                     if (args.IsCatched("multigrid"))
                         std::cerr << "WARNING: --sobol_seed currently runs single-size; --multigrid ignored." << std::endl;
@@ -2884,7 +2923,8 @@ int main(int argc, const char* argv[])
                 }
                 else if (useSobolRing)
                 {
-                    if (args.IsCatched("sobol") || args.IsCatched("euler_quad"))
+                    if (args.IsCatched("sobol") || args.IsCatched("euler_quad")
+                        || args.IsCatched("euler_adapt"))
                         std::cerr << "WARNING: --sobol/--euler_quad ignored because --sobol_ring is selected." << std::endl;
                     if (args.IsCatched("multigrid"))
                         std::cerr << "WARNING: --sobol_ring currently runs single-size; --multigrid ignored." << std::endl;
@@ -2902,6 +2942,7 @@ int main(int argc, const char* argv[])
                 else if (useHammersley)
                 {
                     if (args.IsCatched("sobol") || args.IsCatched("euler_quad")
+                        || args.IsCatched("euler_adapt")
                         || args.IsCatched("lattice"))
                         std::cerr << "WARNING: other explicit orientation rules ignored because --hammersley is selected." << std::endl;
                     if (args.IsCatched("multigrid"))
@@ -2917,7 +2958,8 @@ int main(int argc, const char* argv[])
                 }
                 else if (useLattice)
                 {
-                    if (args.IsCatched("sobol") || args.IsCatched("euler_quad"))
+                    if (args.IsCatched("sobol") || args.IsCatched("euler_quad")
+                        || args.IsCatched("euler_adapt"))
                         std::cerr << "WARNING: other explicit orientation rules ignored because --lattice is selected." << std::endl;
                     bool explicitGenerator = args.IsCatched("lattice_z");
                     int nOrient = explicitGenerator
@@ -2972,6 +3014,24 @@ int main(int argc, const char* argv[])
                         else
                             tracer->TraceFromLattice(nOrient, betaSym, gammaSym);
                     }
+                }
+                else if (useEulerAdapt)
+                {
+                    if (args.IsCatched("sobol") || args.IsCatched("euler_quad"))
+                        std::cerr << "WARNING: --sobol/--euler_quad ignored because --euler_adapt is selected." << std::endl;
+                    if (args.IsCatched("multigrid"))
+                        std::cerr << "WARNING: --euler_adapt currently runs single-size; --multigrid ignored." << std::endl;
+                    int nBeta = args.GetIntValue("euler_adapt", 0);
+                    int nGammaMax = args.GetIntValue("euler_adapt", 1);
+                    if (args.IsCatched("auto_tgrid") && !args.IsCatched("grid") && !args.IsCatched("tgrid"))
+                    {
+                        double tgridEps = args.GetDoubleValue("auto_tgrid", 0);
+                        if (tgridEps <= 0) tgridEps = 0.05;
+                        int nProbe = std::max(64, nBeta * nGammaMax);
+                        tracer->TraceAdaptiveTheta(nProbe, betaSym, gammaSym, tgridEps, 8, true);
+                    }
+                    tracer->TraceFromEulerAdaptiveGamma(nBeta, nGammaMax,
+                                                        betaSym, gammaSym);
                 }
                 else if (useEulerQuad)
                 {
@@ -3176,11 +3236,13 @@ int main(int argc, const char* argv[])
         if (!args.IsCatched("po") && !args.IsCatched("fixed")
             && !args.IsCatched("random") && !args.IsCatched("montecarlo")
             && !args.IsCatched("oldauto") && !args.IsCatched("sobol")
+            && !args.IsCatched("so3_quat")
             && !args.IsCatched("sobol_seed")
             && !args.IsCatched("sobol_ring")
             && !args.IsCatched("hammersley") && !args.IsCatched("lattice")
             && !args.IsCatched("lattice_z")
-            && !args.IsCatched("euler_quad") && !args.IsCatched("adaptive")
+            && !args.IsCatched("euler_quad") && !args.IsCatched("euler_adapt")
+            && !args.IsCatched("adaptive")
             && !args.IsCatched("auto") && !args.IsCatched("autofull")
             && !args.IsCatched("oldautofull"))
         {
@@ -3189,12 +3251,14 @@ int main(int argc, const char* argv[])
                  << "    --fixed BETA GAMMA    Fixed orientation\n"
                  << "    --random B G          Random orientation grid\n"
                  << "    --sobol N             Quasi-random orientations\n"
+                 << "    --so3_quat N          Full SO(3) quaternion orientations\n"
                  << "    --sobol_seed N S      Sobol with nested Owen scramble seed\n"
                  << "    --sobol_ring B G      Sobol beta x uniform gamma ring\n"
                  << "    --hammersley N        Hammersley orientations\n"
                  << "    --lattice N           Rank-1 lattice orientations\n"
                  << "    --lattice_z N Z       Rank-1 lattice with generator Z\n"
                  << "    --euler_quad B G      High-order Euler quadrature\n"
+                 << "    --euler_adapt B Gmax  Gauss beta with adaptive gamma count\n"
                  << "    --oldauto DIV         Physics-based auto grid\n"
                  << "    --auto EPS            Full auto mode\n"
                  << "  Example: mbs_po --po -p 1 10 5 --ri 1.3 0 -w 1 -n 4 --oldauto 8\n";
