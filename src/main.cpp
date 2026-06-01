@@ -397,7 +397,9 @@ void PrintFullHelp()
          << "  --multikeq_batch_ratio R\n"
          << "                           Max kmax/kmin inside --multikeq_shared_batches\n"
          << "                           (default 1.05). Smaller is closer to independent\n"
-         << "                           oldauto grids; larger reuses more tracing.\n\n"
+         << "                           oldauto grids; larger reuses more tracing.\n"
+         << "                           Env MBS_GPU_MULTI_K_FULL=1 fuses nearby k_eq\n"
+         << "                           values into one CUDA diffraction pass (experimental).\n\n"
 
 
          << "=== Output ===\n"
@@ -492,7 +494,8 @@ void PrintReleaseHelp()
          << "  --multigrid_threads N       Threads per child process\n"
          << "  --gpu_devices LIST          CUDA devices for parallel children\n"
          << "  --multikeq_shared_batches   Batch k_eq values per GPU and reuse tracing per batch\n"
-         << "  --multikeq_batch_ratio R    Max kmax/kmin per shared k_eq batch (default 1.05)\n\n"
+         << "  --multikeq_batch_ratio R    Max kmax/kmin per shared k_eq batch (default 1.05)\n"
+         << "  Env MBS_GPU_MULTI_K_FULL=1  Experimental fused CUDA diffraction for shared batches\n\n"
 
          << "=== Output / diagnostics kept in release ===\n"
          << "  -o NAME                Output path/name\n"

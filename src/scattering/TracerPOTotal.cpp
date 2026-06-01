@@ -3873,6 +3873,15 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     if (m_mpiRank == 0 && sharedGpuExplicitScale)
         std::cout << "Shared multikeq GPU: explicit CPU scaling enabled "
                   << "(MBS_SHARED_GPU_EXPLICIT_SCALE=1)" << std::endl;
+    const bool sharedGpuMultiKFull =
+        handlerPO->IsGpuEnabled()
+        && !computeNoShadow
+        && !sharedGpuExplicitScale
+        && std::getenv("MBS_GPU_MULTI_K_FULL")
+        && std::atoi(std::getenv("MBS_GPU_MULTI_K_FULL")) != 0;
+    if (m_mpiRank == 0 && sharedGpuMultiKFull)
+        std::cout << "Shared multikeq GPU: experimental fused multi-k kernel "
+                  << "enabled" << std::endl;
     HandlerPO prepareTemplate(m_particle, &m_incidentLight,
                               handlerPO->nTheta, m_scattering->m_wave);
     prepareTemplate.ConfigureForThreadLocalPrepare(*handlerPO, m_scattering);
@@ -3974,6 +3983,79 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
         }
 
         auto betaDiffStart = std::chrono::high_resolution_clock::now();
+        if (sharedGpuMultiKFull)
+        {
+            std::vector<double> scales(x_sizes.size(), 1.0);
+            std::vector<double> localExtOt(x_sizes.size(), 0.0);
+            for (size_t s = 0; s < x_sizes.size(); ++s)
+            {
+                const double scale = x_sizes[s] / x_ref;
+                scales[s] = scale;
+                const double waveIndex = 2.0 * M_PI / m_scattering->m_wave;
+                for (const PreparedOrientation &po : group.prepared)
+                {
+                    localExtOt[s] +=
+                        handlerPO->ComputeForwardExtinctionOtScaled(
+                            po, scale, waveIndex,
+                            handlerPO->AbsorptionCoefficient());
+                }
+            }
+
+            std::vector<Arr2D> localMs;
+            localMs.reserve(x_sizes.size());
+            for (size_t s = 0; s < x_sizes.size(); ++s)
+            {
+                localMs.push_back(Arr2D(nAz + 1, nZen + 1, 4, 4));
+                localMs.back().ClearArr();
+            }
+
+            bool fusedOk = true;
+            for (int gpuStart = 0; gpuStart < group.groupOrient; )
+            {
+                int gpuBatchSize = handlerPO->SelectGpuOrientationBatchSize(
+                    group.prepared, gpuStart, group.groupOrient - gpuStart);
+                int gpuEnd = std::min(gpuStart + gpuBatchSize, group.groupOrient);
+                fusedOk = handlerPO->IsFftEnabled()
+                    ? handlerPO->HandleOrientationsToLocalGpuFftPhiMultiK(
+                        group.prepared, gpuStart, gpuEnd - gpuStart, scales,
+                        2.0 * M_PI / m_scattering->m_wave, localMs)
+                    : handlerPO->HandleOrientationsToLocalGpuMultiK(
+                        group.prepared, gpuStart, gpuEnd - gpuStart, scales,
+                        2.0 * M_PI / m_scattering->m_wave, localMs);
+                if (!fusedOk)
+                    break;
+                gpuStart = gpuEnd;
+            }
+
+            if (fusedOk)
+            {
+                for (size_t s = 0; s < x_sizes.size(); ++s)
+                {
+                    const double scale = scales[s];
+                    const double scale2 = scale * scale;
+                    results_ext_ot[s] += localExtOt[s];
+                    if (m_mirrorGamma)
+                        ApplyMirrorGammaMueller(localMs[s], nAz, nZen);
+                    for (int p=0; p<nAz; ++p)
+                        for (int t=0; t<=nZen; ++t)
+                            results_M[s].insert(p, t, localMs[s](p, t));
+                    for (int i = 0; i < group.groupOrient; ++i)
+                    {
+                        results_energy[s] += group.energies[i] * scale2;
+                        results_output_energy[s] += PreparedOutputEnergy(
+                            group.prepared[i], scale,
+                            handlerPO->AbsorptionCoefficient());
+                    }
+                }
+                phase2 += std::chrono::duration<double>(
+                    std::chrono::high_resolution_clock::now() - betaDiffStart).count();
+                return;
+            }
+            if (m_mpiRank == 0)
+                std::cerr << "Shared multikeq GPU: fused multi-k unavailable "
+                          << "for this chunk; falling back to per-size GPU path."
+                          << std::endl;
+        }
         for (size_t s = 0; s < x_sizes.size(); ++s)
         {
             double scale = x_sizes[s] / x_ref;

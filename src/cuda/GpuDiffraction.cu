@@ -110,6 +110,12 @@ struct GpuBeam
     GpuReal pnxDPx, pnxDPy, pnxDPz;
     GpuReal jp00r, jp00i, jp01r, jp01i;
     GpuReal jp10r, jp10i, jp11r, jp11i;
+    double raw00r, raw00i, raw01r, raw01i;
+    double raw10r, raw10i, raw11r, raw11i;
+    double phasePath;
+    double phaseSign;
+    int absOffset;
+    int absCount;
     int orientation;
 };
 
@@ -144,6 +150,8 @@ struct GpuWorkspace
     GpuReal *vf = nullptr;
     GpuReal *j = nullptr, *jNoShadow = nullptr;
     GpuReal *weights = nullptr;
+    GpuReal *scales = nullptr;
+    double *absPaths = nullptr;
     int *beamOffsets = nullptr;
     int *beamOffsets8 = nullptr;
     GpuReal *m = nullptr, *mNoShadow = nullptr, *mOrient = nullptr;
@@ -152,13 +160,15 @@ struct GpuWorkspace
     size_t sinThetaCap = 0, cosThetaCap = 0;
     size_t sinPhiCap = 0, cosPhiCap = 0;
     size_t vfCap = 0, jCap = 0, jNoShadowCap = 0;
-    size_t weightsCap = 0, beamOffsetsCap = 0, mCap = 0, mNoShadowCap = 0, mOrientCap = 0;
+    size_t weightsCap = 0, scalesCap = 0, absPathsCap = 0, beamOffsetsCap = 0, mCap = 0, mNoShadowCap = 0, mOrientCap = 0;
     size_t beamOffsets8Cap = 0;
     int gridNAz = -1, gridNZen = -1;
     double gridSignature = 0.0;
     std::vector<GpuBeam> hBeams;
     std::vector<GpuBeam8> hBeams8;
     std::vector<GpuReal> hWeights;
+    std::vector<GpuReal> hScales;
+    std::vector<double> hAbsPaths;
     std::vector<int> hBeamOffsets;
     std::vector<int> hBeamOffsets8;
     std::vector<GpuReal> hM;
@@ -234,26 +244,39 @@ static inline void pack_prepared_gpu_beam(const PreparedBeam &pb,
     b.pNPx = pb.pNPx; b.pNPy = pb.pNPy; b.pNPz = pb.pNPz;
     b.pnxDTx = pb.pnxDTx; b.pnxDTy = pb.pnxDTy; b.pnxDTz = pb.pnxDTz;
     b.pnxDPx = pb.pnxDPx; b.pnxDPy = pb.pnxDPy; b.pnxDPz = pb.pnxDPz;
+    const double phasePath = pb.isExternal
+        ? pb.origBeam.opticalPath
+        : pb.info.projLenght;
+    double phaseSign = 1.0;
+    if (pb.isExternal)
+        phaseSign = -phaseSign;
+    if (!pb.isExternal && (pb.origBeam.nActs & 1))
+        phaseSign = -phaseSign;
+    b.raw00r = real(pb.origBeam.J.m11);
+    b.raw00i = imag(pb.origBeam.J.m11);
+    b.raw01r = real(pb.origBeam.J.m12);
+    b.raw01i = imag(pb.origBeam.J.m12);
+    b.raw10r = real(pb.origBeam.J.m21);
+    b.raw10i = imag(pb.origBeam.J.m21);
+    b.raw11r = real(pb.origBeam.J.m22);
+    b.raw11i = imag(pb.origBeam.J.m22);
+    b.phasePath = phasePath;
+    b.phaseSign = phaseSign;
+    b.absOffset = 0;
+    b.absCount = 0;
     if (scaleOnPack)
     {
-        const double path = pb.isExternal
-            ? pb.origBeam.opticalPath * scale
-            : pb.info.projLenght * scale;
+        const double path = phasePath * scale;
         const double arg = waveIndex * path;
         double sn = std::sin(arg);
         double cs = std::cos(arg);
-        double sign = 1.0;
-        if (pb.isExternal)
-            sign = -sign;
-        if (!pb.isExternal && (pb.origBeam.nActs & 1))
-            sign = -sign;
         const double absorption = prepared_absorption_factor(pb, scale, cAbs);
         auto set_j = [&](const ::complex &jc, GpuReal &reOut, GpuReal &imOut)
         {
             const double jr = real(jc) * absorption;
             const double ji = imag(jc) * absorption;
-            reOut = (GpuReal)(sign * (jr * cs - ji * sn));
-            imOut = (GpuReal)(sign * (jr * sn + ji * cs));
+            reOut = (GpuReal)(phaseSign * (jr * cs - ji * sn));
+            imOut = (GpuReal)(phaseSign * (jr * sn + ji * cs));
         };
         set_j(pb.origBeam.J.m11, b.jp00r, b.jp00i);
         set_j(pb.origBeam.J.m12, b.jp01r, b.jp01i);
@@ -462,6 +485,12 @@ static bool gpu_fft_check_enabled()
 static bool gpu_timing_enabled()
 {
     const char *value = std::getenv("MBS_GPU_TIMING");
+    return value && value[0] == '1' && value[1] == '\0';
+}
+
+static bool gpu_multik_full_enabled()
+{
+    const char *value = std::getenv("MBS_GPU_MULTI_K_FULL");
     return value && value[0] == '1' && value[1] == '\0';
 }
 
@@ -950,6 +979,144 @@ __device__ inline bool compute_beam_jones_context_gpu(const GpuBeam &b,
         waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
         invComplWaveR, invComplWaveI, legacySign, singularCorrection,
         d00r, d00i, d01r, d01i, d10r, d10i, d11r, d11i);
+}
+
+__device__ inline void phase_raw_jones_scaled(const GpuBeam &b,
+                                              GpuReal waveIndex,
+                                              GpuReal scale,
+                                              const double *__restrict__ absPaths,
+                                              GpuReal cAbs,
+                                              GpuReal &jp00r, GpuReal &jp00i,
+                                              GpuReal &jp01r, GpuReal &jp01i,
+                                              GpuReal &jp10r, GpuReal &jp10i,
+                                              GpuReal &jp11r, GpuReal &jp11i)
+{
+    double sn, cs;
+    sincos((double)waveIndex * b.phasePath * (double)scale, &sn, &cs);
+    const double sign = b.phaseSign;
+    double absorption = 1.0;
+    if (absPaths && b.absCount > 0)
+    {
+        double sum = 0.0;
+        for (int i = 0; i < b.absCount; ++i)
+        {
+            const double path = absPaths[b.absOffset + i];
+            sum += (path > DBL_EPSILON)
+                ? exp((double)cAbs * path * (double)scale)
+                : 1.0;
+        }
+        absorption = sum / (double)b.absCount;
+    }
+    jp00r = (GpuReal)(sign * absorption * (b.raw00r * cs - b.raw00i * sn));
+    jp00i = (GpuReal)(sign * absorption * (b.raw00r * sn + b.raw00i * cs));
+    jp01r = (GpuReal)(sign * absorption * (b.raw01r * cs - b.raw01i * sn));
+    jp01i = (GpuReal)(sign * absorption * (b.raw01r * sn + b.raw01i * cs));
+    jp10r = (GpuReal)(sign * absorption * (b.raw10r * cs - b.raw10i * sn));
+    jp10i = (GpuReal)(sign * absorption * (b.raw10r * sn + b.raw10i * cs));
+    jp11r = (GpuReal)(sign * absorption * (b.raw11r * cs - b.raw11i * sn));
+    jp11i = (GpuReal)(sign * absorption * (b.raw11r * sn + b.raw11i * cs));
+}
+
+__device__ inline bool compute_beam_jones_context_gpu_multik(
+                                                      const GpuBeam &b,
+                                                      GpuReal cp,
+                                                      GpuReal sp,
+                                                      GpuReal sin_t,
+                                                      GpuReal cos_t,
+                                                      GpuReal dx,
+                                                      GpuReal dy,
+                                                      GpuReal dz,
+                                                      GpuReal vfx,
+                                                      GpuReal vfy,
+                                                      GpuReal vfz,
+                                                      GpuReal waveIndex,
+                                                      GpuReal wi2,
+                                                      GpuReal eps1,
+                                                      GpuReal eps2,
+                                                      GpuReal complWaveR,
+                                                      GpuReal complWaveI,
+                                                      GpuReal invComplWaveR,
+                                                      GpuReal invComplWaveI,
+                                                      int legacySign,
+                                                      GpuReal scale,
+                                                      const double *__restrict__ absPaths,
+                                                      GpuReal cAbs,
+                                                      GpuReal &d00r, GpuReal &d00i,
+                                                      GpuReal &d01r, GpuReal &d01i,
+                                                      GpuReal &d10r, GpuReal &d10i,
+                                                      GpuReal &d11r, GpuReal &d11i)
+{
+    int nv = b.nVertices;
+    if (nv <= 0) return false;
+
+    GpuReal neg_cp = -cp, neg_sp = -sp;
+    GpuReal a_sin = neg_cp * b.horAx + neg_sp * b.horAy;
+    GpuReal a_cos = b.horAz;
+    GpuReal a0 = b.bdx;
+    GpuReal b_sin = neg_cp * b.verAx + neg_sp * b.verAy;
+    GpuReal b_cos = b.verAz;
+    GpuReal b0 = b.bdy;
+
+    GpuReal A = sin_t * a_sin + cos_t * a_cos + a0;
+    GpuReal B = sin_t * b_sin + cos_t * b_cos + b0;
+    GpuReal absA = fabs(A);
+    GpuReal absB = fabs(B);
+    const GpuReal scale2 = scale * scale;
+    const GpuReal waveIndexEff = waveIndex * scale;
+    const GpuReal wi2Eff = wi2 * scale2;
+
+    GpuReal fr, fi;
+    bool integralOk = compute_beam_integral_cached_gpu<32>(
+        b, nv, sin_t, cos_t, waveIndexEff, wi2Eff, eps1, eps2,
+        complWaveR, complWaveI, invComplWaveR, invComplWaveI,
+        legacySign, 1,
+        a_sin, a_cos, a0, b_sin, b_cos, b0,
+        A, B, absA, absB, fr, fi);
+    if (!integralOk)
+        return false;
+    if (absA < eps2 && absB < eps2)
+    {
+        fr *= scale2;
+        fi *= scale2;
+    }
+    if (isnan(fr)) return false;
+
+    GpuReal dpr = 1.0, dpi = 0.0;
+    if (!b.isExternal)
+    {
+        GpuReal dp_sin = cp * b.cenx + sp * b.ceny;
+        GpuReal dp_cos = -b.cenz;
+        gpu_sincos(-waveIndexEff * (sin_t * dp_sin + cos_t * dp_cos), &dpi, &dpr);
+    }
+
+    GpuReal r00, r01, r10, r11;
+    rotate_jones_gpu(b.pNTx, b.pNTy, b.pNTz, b.pNPx, b.pNPy, b.pNPz,
+                     b.pnxDTx, b.pnxDTy, b.pnxDTz,
+                     b.pnxDPx, b.pnxDPy, b.pnxDPz,
+                     vfx, vfy, vfz, dx, dy, dz,
+                     r00, r01, r10, r11);
+
+    GpuReal cpr, cpi;
+    cmul(fr, fi, dpr, dpi, cpr, cpi);
+    GpuReal sr00r = cpr * r00, sr00i = cpi * r00;
+    GpuReal sr01r = cpr * r01, sr01i = cpi * r01;
+    GpuReal sr10r = cpr * r10, sr10i = cpi * r10;
+    GpuReal sr11r = cpr * r11, sr11i = cpi * r11;
+
+    GpuReal jp00r, jp00i, jp01r, jp01i, jp10r, jp10i, jp11r, jp11i;
+    phase_raw_jones_scaled(b, waveIndex, scale, absPaths, cAbs,
+                           jp00r, jp00i, jp01r, jp01i,
+                           jp10r, jp10i, jp11r, jp11i);
+
+    d00r = sr00r * jp00r - sr00i * jp00i + sr01r * jp10r - sr01i * jp10i;
+    d00i = sr00r * jp00i + sr00i * jp00r + sr01r * jp10i + sr01i * jp10r;
+    d01r = sr00r * jp01r - sr00i * jp01i + sr01r * jp11r - sr01i * jp11i;
+    d01i = sr00r * jp01i + sr00i * jp01r + sr01r * jp11i + sr01i * jp11r;
+    d10r = sr10r * jp00r - sr10i * jp00i + sr11r * jp10r - sr11i * jp10i;
+    d10i = sr10r * jp00i + sr10i * jp00r + sr11r * jp10i + sr11i * jp10r;
+    d11r = sr10r * jp01r - sr10i * jp01i + sr11r * jp11r - sr11i * jp11i;
+    d11i = sr10r * jp01i + sr10i * jp01r + sr11r * jp11i + sr11i * jp11r;
+    return true;
 }
 
 __device__ inline bool compute_beam_jones_context_gpu8_auto(const GpuBeam8 &b,
@@ -1905,6 +2072,83 @@ __global__ void diffraction_grid_mueller_full_kernel(const GpuBeam *__restrict__
     mueller_accum_from_jones(j00r, j00i, j01r, j01i, j10r, j10i, j11r, j11i,
                              weights[orient] * (GpuReal)0.25,
                              &mFull[grid * 16]);
+}
+
+__global__ void diffraction_grid_mueller_multik_kernel(const GpuBeam *__restrict__ beams,
+                                                       const int *__restrict__ beamOffsets,
+                                                       const GpuReal *__restrict__ sinTheta,
+                                                       const GpuReal *__restrict__ cosTheta,
+                                                       const GpuReal *__restrict__ sinPhi,
+                                                       const GpuReal *__restrict__ cosPhi,
+                                                       const GpuReal *__restrict__ vf,
+                                                       const GpuReal *__restrict__ weights,
+                                                       const GpuReal *__restrict__ scales,
+                                                       const double *__restrict__ absPaths,
+                                                       int nAz, int nZen,
+                                                       int nOrient,
+                                                       int nSizes,
+                                                       GpuReal waveIndex,
+                                                       GpuReal wi2,
+                                                       GpuReal eps1,
+                                                       GpuReal eps2,
+                                                       GpuReal complWaveR,
+                                                       GpuReal complWaveI,
+                                                       GpuReal invComplWaveR,
+                                                       GpuReal invComplWaveI,
+                                                       int legacySign,
+                                                       GpuReal cAbs,
+                                                       GpuReal *__restrict__ mFull)
+{
+    const int gridCount = nAz * (nZen + 1);
+    const long long perSize = (long long)nOrient * gridCount;
+    const long long total = (long long)nSizes * perSize;
+    const long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= total) return;
+
+    const int sizeIdx = (int)(idx / perSize);
+    const long long localIdx = idx - (long long)sizeIdx * perSize;
+    const int orient = (int)(localIdx / gridCount);
+    const int grid = (int)(localIdx - (long long)orient * gridCount);
+    const int begin = beamOffsets[orient];
+    const int end = beamOffsets[orient + 1];
+    const int p = grid / (nZen + 1);
+    const int t = grid - p * (nZen + 1);
+    const GpuReal cp = cosPhi[p], sp = sinPhi[p];
+    const GpuReal sin_t = sinTheta[t], cos_t = cosTheta[t];
+    const GpuReal dx = sin_t * cp;
+    const GpuReal dy = sin_t * sp;
+    const GpuReal dz = -cos_t;
+    const GpuReal vfx = vf[(grid * 3) + 0];
+    const GpuReal vfy = vf[(grid * 3) + 1];
+    const GpuReal vfz = vf[(grid * 3) + 2];
+    const GpuReal scale = scales[sizeIdx];
+
+    GpuReal j00r = 0.0, j00i = 0.0;
+    GpuReal j01r = 0.0, j01i = 0.0;
+    GpuReal j10r = 0.0, j10i = 0.0;
+    GpuReal j11r = 0.0, j11i = 0.0;
+
+    for (int bi = begin; bi < end; ++bi)
+    {
+        GpuReal d00r, d00i, d01r, d01i, d10r, d10i, d11r, d11i;
+        const GpuBeam &b = beams[bi];
+        if (!compute_beam_jones_context_gpu_multik(
+                b, cp, sp, sin_t, cos_t, dx, dy, dz, vfx, vfy, vfz,
+                waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+                invComplWaveR, invComplWaveI, legacySign, scale,
+                absPaths, cAbs,
+                d00r, d00i, d01r, d01i, d10r, d10i, d11r, d11i))
+            continue;
+
+        j00r += d00r; j00i += d00i;
+        j01r += d01r; j01i += d01i;
+        j10r += d10r; j10i += d10i;
+        j11r += d11r; j11i += d11i;
+    }
+
+    mueller_accum_from_jones(j00r, j00i, j01r, j01i, j10r, j10i, j11r, j11i,
+                             weights[orient] * (GpuReal)0.25,
+                             &mFull[((size_t)sizeIdx * gridCount + grid) * 16]);
 }
 
 __global__ void diffraction_grid_mueller_full8_kernel(const GpuBeam8 *__restrict__ beams,
@@ -3200,6 +3444,316 @@ bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOri
     if (computeNoShadow)
         add_arr2d_inplace(fftMns, nFull, nZen, localM_noshadow);
 
+    return true;
+}
+
+bool HandlerPO::HandleOrientationsToLocalGpuFftPhiMultiK(
+                                                   const std::vector<PreparedOrientation> &prepared,
+                                                   int start,
+                                                   int count,
+                                                   const std::vector<double> &scales,
+                                                   double waveIndex,
+                                                   std::vector<Arr2D> &localMs)
+{
+    auto failFft = [](const char *where) {
+        if (gpu_fft_debug_enabled())
+            std::fprintf(stderr, "GPU FFT multik failed at %s\n", where);
+        return false;
+    };
+    if (!gpu_multik_full_enabled())
+        return failFft("disabled");
+    if (!isCoh || ComputeNoShadow())
+        return failFft("unsupported-mode");
+    if (gpu_fft_check_enabled() || gpu_fft_adaptive_phi_enabled())
+        return failFft("check-or-adaptive-enabled");
+
+    const int nFull = m_sphere.nAzimuth;
+    const int nZen = m_sphere.nZenith;
+    int factor = choose_fft_phi_factor(nFull, m_fftPhiFactor);
+    if (factor <= 1 || nFull < 32)
+        return HandleOrientationsToLocalGpuMultiK(prepared, start, count,
+                                                 scales, waveIndex, localMs);
+
+    int nLow = nFull / factor;
+    if (nLow < 16) nLow = std::min(nFull, 16);
+    if (nLow >= nFull)
+        return HandleOrientationsToLocalGpuMultiK(prepared, start, count,
+                                                 scales, waveIndex, localMs);
+
+    int thetaFactor = gpu_fft_theta_factor();
+    int nZenLow = nZen;
+    if (thetaFactor > 1)
+    {
+        if (m_sphere.isNonUniform || nZen < 32 || (nZen % thetaFactor) != 0)
+            thetaFactor = 1;
+        else
+            nZenLow = std::max(2, nZen / thetaFactor);
+    }
+
+    static bool printed = false;
+    if (!printed)
+    {
+        std::fprintf(stderr,
+                     "GPU FFT multik angular interpolation: direct Nphi=%d, output Nphi=%d (factor=%d), "
+                     "direct Ntheta=%d, output Ntheta=%d (factor=%d).\n",
+                     nLow, nFull, factor, nZenLow + 1, nZen + 1,
+                     thetaFactor);
+        printed = true;
+    }
+
+    ScatteringRange fullSphere = m_sphere;
+    ScatteringRange lowSphere = fullSphere;
+    lowSphere.nAzimuth = nLow;
+    lowSphere.azinuthStep = M_2PI / nLow;
+    lowSphere.nZenith = nZenLow;
+    lowSphere.zenithStep = (lowSphere.zenithEnd - lowSphere.zenithStart) / nZenLow;
+    lowSphere.ComputeSphereDirections(*m_incidentLight);
+
+    std::vector<Arr2D> lowMs;
+    lowMs.reserve(scales.size());
+    for (size_t s = 0; s < scales.size(); ++s)
+    {
+        lowMs.push_back(Arr2D(nLow + 1, nZenLow + 1, 4, 4));
+        lowMs.back().ClearArr();
+    }
+
+    bool savedFft = m_fftEnabled;
+    m_fftEnabled = false;
+    m_sphere = lowSphere;
+    bool ok = HandleOrientationsToLocalGpuMultiK(prepared, start, count,
+                                                 scales, waveIndex, lowMs);
+    m_sphere = fullSphere;
+    m_fftEnabled = savedFft;
+    if (!ok)
+        return failFft("low-direct-multik");
+
+    const bool timing = gpu_timing_enabled();
+    const double tStart = timing ? gpu_now_ms() : 0.0;
+    for (size_t s = 0; s < scales.size(); ++s)
+    {
+        const Arr2D *phiSource = &lowMs[s];
+        Arr2D thetaM(nLow + 1, nZen + 1, 4, 4);
+        if (thetaFactor > 1)
+        {
+            thetaM.ClearArr();
+            if (!fft_upsample_theta_arr2d(lowMs[s], nLow, nZenLow, nZen,
+                                          thetaM))
+                return failFft("theta-upsample");
+            phiSource = &thetaM;
+        }
+        if (!fft_upsample_phi_arr2d(*phiSource, nLow, nFull, nZen,
+                                    localMs[s]))
+            return failFft("phi-upsample");
+    }
+    if (timing)
+        std::fprintf(stderr,
+                     "GPU timing fft_multik sizes=%zu nLow=%d nFull=%d nZenLow=%d nZen=%d total=%.3fms\n",
+                     scales.size(), nLow, nFull, nZenLow, nZen,
+                     gpu_now_ms() - tStart);
+
+    return true;
+}
+
+bool HandlerPO::HandleOrientationsToLocalGpuMultiK(const std::vector<PreparedOrientation> &prepared,
+                                                   int start,
+                                                   int count,
+                                                   const std::vector<double> &scales,
+                                                   double waveIndex,
+                                                   std::vector<Arr2D> &localMs)
+{
+    auto failMultiK = [](const char *where) {
+        if (gpu_fft_debug_enabled())
+            std::fprintf(stderr, "GPU multik failed at %s\n", where);
+        return false;
+    };
+    if (!gpu_multik_full_enabled())
+        return failMultiK("disabled");
+    if (!isCoh || ComputeNoShadow() || m_fftEnabled)
+        return failMultiK("unsupported-mode");
+    if (count <= 0 || scales.empty())
+        return true;
+    if (localMs.size() < scales.size())
+        return failMultiK("local-output-size");
+
+    const int nOrient = count;
+    const int nSizes = (int)scales.size();
+    const int nAz = m_sphere.nAzimuth;
+    const int nZen = m_sphere.nZenith;
+    const int gridCount = nAz * (nZen + 1);
+    size_t nBeams = 0;
+    for (int oi = 0; oi < nOrient; ++oi)
+    {
+        const PreparedOrientation &po = prepared[start + oi];
+        for (const PreparedBeam &pb : po.beams)
+        {
+            if (!pb.edgeData.valid || pb.edgeData.nVertices <= 0 || pb.edgeData.nVertices > 32)
+                return failMultiK("bad-edge-data");
+            ++nBeams;
+        }
+    }
+    if (nBeams == 0)
+        return true;
+
+    const bool timing = gpu_timing_enabled();
+    const double tStart = timing ? gpu_now_ms() : 0.0;
+    double tPack = 0.0, tEnsure = 0.0, tGrid = 0.0;
+    double tCopy = 0.0, tKernel = 0.0, tD2h = 0.0, tAdd = 0.0;
+
+    GpuWorkspace &ws = g_gpuWorkspace;
+    double t0 = timing ? gpu_now_ms() : 0.0;
+    ws.hBeams.resize(nBeams);
+    ws.hWeights.assign(nOrient, 0.0);
+    ws.hScales.resize(nSizes);
+    ws.hBeamOffsets.assign(nOrient + 1, 0);
+    size_t nAbsPaths = 0;
+    for (int oi = 0; oi < nOrient; ++oi)
+        for (const PreparedBeam &pb : prepared[start + oi].beams)
+            nAbsPaths += pb.absorptionPaths.size();
+    ws.hAbsPaths.clear();
+    ws.hAbsPaths.reserve(nAbsPaths);
+    for (int s = 0; s < nSizes; ++s)
+        ws.hScales[s] = (GpuReal)scales[s];
+
+    size_t bi = 0;
+    for (int oi = 0; oi < nOrient; ++oi)
+    {
+        ws.hBeamOffsets[oi] = (int)bi;
+        const PreparedOrientation &po = prepared[start + oi];
+        ws.hWeights[oi] = po.sinZenith;
+        for (const PreparedBeam &pb : po.beams)
+        {
+            GpuBeam &gb = ws.hBeams[bi++];
+            pack_prepared_gpu_beam<GpuBeam, 32>(
+                pb, oi, 1.0, 1.0, false, waveIndex,
+                AbsorptionCoefficient(), gb);
+            gb.absOffset = (int)ws.hAbsPaths.size();
+            gb.absCount = (int)pb.absorptionPaths.size();
+            for (double path : pb.absorptionPaths)
+                ws.hAbsPaths.push_back(path);
+        }
+    }
+    ws.hBeamOffsets[nOrient] = (int)bi;
+    if (timing) tPack = gpu_now_ms() - t0;
+
+    const size_t mCount = (size_t)nSizes * gridCount * 16;
+    t0 = timing ? gpu_now_ms() : 0.0;
+    if (!ensure_device_capacity(ws.beams, ws.beamCap, nBeams)) return failMultiK("alloc-beams");
+    if (!ensure_device_capacity(ws.weights, ws.weightsCap, ws.hWeights.size())) return failMultiK("alloc-weights");
+    if (!ensure_device_capacity(ws.scales, ws.scalesCap, ws.hScales.size())) return failMultiK("alloc-scales");
+    if (!ensure_device_capacity(ws.absPaths, ws.absPathsCap, ws.hAbsPaths.size())) return failMultiK("alloc-abs-paths");
+    if (!ensure_device_capacity(ws.beamOffsets, ws.beamOffsetsCap, ws.hBeamOffsets.size())) return failMultiK("alloc-offsets");
+    if (!ensure_device_capacity(ws.sinTheta, ws.sinThetaCap, (size_t)nZen + 1)) return failMultiK("alloc-sintheta");
+    if (!ensure_device_capacity(ws.cosTheta, ws.cosThetaCap, (size_t)nZen + 1)) return failMultiK("alloc-costheta");
+    if (!ensure_device_capacity(ws.sinPhi, ws.sinPhiCap, (size_t)nAz)) return failMultiK("alloc-sinphi");
+    if (!ensure_device_capacity(ws.cosPhi, ws.cosPhiCap, (size_t)nAz)) return failMultiK("alloc-cosphi");
+    if (!ensure_device_capacity(ws.vf, ws.vfCap, (size_t)gridCount * 3)) return failMultiK("alloc-vf");
+    if (!ensure_device_capacity(ws.m, ws.mCap, mCount)) return failMultiK("alloc-mueller");
+    if (timing) tEnsure = gpu_now_ms() - t0;
+
+    t0 = timing ? gpu_now_ms() : 0.0;
+    const double gridSignature = gpu_grid_signature(m_sphere, nZen);
+    if (ws.gridNAz != nAz || ws.gridNZen != nZen || fabs(ws.gridSignature - gridSignature) > 1e-12)
+    {
+        std::vector<GpuReal> hSinTheta(nZen + 1), hCosTheta(nZen + 1);
+        for (int t = 0; t <= nZen; ++t)
+        {
+            GpuReal theta = (GpuReal)regularized_gpu_theta(m_sphere, t);
+            hSinTheta[t] = sin(theta);
+            hCosTheta[t] = cos(theta);
+        }
+        std::vector<GpuReal> hSinPhi(nAz), hCosPhi(nAz);
+        for (int p = 0; p < nAz; ++p)
+        {
+            GpuReal phi = p * m_sphere.azinuthStep;
+            hSinPhi[p] = sin(phi);
+            hCosPhi[p] = cos(phi);
+        }
+        std::vector<GpuReal> hVf((size_t)gridCount * 3);
+        for (int p = 0; p < nAz; ++p)
+            for (int t = 0; t <= nZen; ++t)
+            {
+                int grid = p * (nZen + 1) + t;
+                Point3d &v = m_sphere.vf[p][t];
+                hVf[grid * 3 + 0] = v.x;
+                hVf[grid * 3 + 1] = v.y;
+                hVf[grid * 3 + 2] = v.z;
+            }
+        if (cudaMemcpy(ws.sinTheta, hSinTheta.data(), hSinTheta.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return failMultiK("copy-sintheta");
+        if (cudaMemcpy(ws.cosTheta, hCosTheta.data(), hCosTheta.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return failMultiK("copy-costheta");
+        if (cudaMemcpy(ws.sinPhi, hSinPhi.data(), hSinPhi.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return failMultiK("copy-sinphi");
+        if (cudaMemcpy(ws.cosPhi, hCosPhi.data(), hCosPhi.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return failMultiK("copy-cosphi");
+        if (cudaMemcpy(ws.vf, hVf.data(), hVf.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return failMultiK("copy-vf");
+        ws.gridNAz = nAz;
+        ws.gridNZen = nZen;
+        ws.gridSignature = gridSignature;
+    }
+    if (timing) tGrid = gpu_now_ms() - t0;
+
+    t0 = timing ? gpu_now_ms() : 0.0;
+    if (cudaMemcpy(ws.beams, ws.hBeams.data(), ws.hBeams.size() * sizeof(GpuBeam), cudaMemcpyHostToDevice) != cudaSuccess) return failMultiK("copy-beams");
+    if (cudaMemcpy(ws.weights, ws.hWeights.data(), ws.hWeights.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return failMultiK("copy-weights");
+    if (cudaMemcpy(ws.scales, ws.hScales.data(), ws.hScales.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return failMultiK("copy-scales");
+    if (!ws.hAbsPaths.empty()
+        && cudaMemcpy(ws.absPaths, ws.hAbsPaths.data(),
+                      ws.hAbsPaths.size() * sizeof(double),
+                      cudaMemcpyHostToDevice) != cudaSuccess)
+        return failMultiK("copy-abs-paths");
+    if (cudaMemcpy(ws.beamOffsets, ws.hBeamOffsets.data(), ws.hBeamOffsets.size() * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) return failMultiK("copy-offsets");
+    if (cudaMemset(ws.m, 0, mCount * sizeof(GpuReal)) != cudaSuccess) return failMultiK("memset-m");
+    if (timing) tCopy = gpu_now_ms() - t0;
+
+    t0 = timing ? gpu_now_ms() : 0.0;
+    int block = gpu_block_size();
+    long long total = (long long)nSizes * nOrient * gridCount;
+    int kernelGrid = (int)((total + block - 1) / block);
+    diffraction_grid_mueller_multik_kernel<<<kernelGrid, block>>>(
+        ws.beams, ws.beamOffsets, ws.sinTheta, ws.cosTheta, ws.sinPhi,
+        ws.cosPhi, ws.vf, ws.weights, ws.scales,
+        ws.hAbsPaths.empty() ? nullptr : ws.absPaths,
+        nAz, nZen, nOrient, nSizes,
+        m_waveIndex, m_wi2, gpu_effective_eps1(m_eps1), m_eps2,
+        real(m_complWave), imag(m_complWave),
+        real(m_invComplWave), imag(m_invComplWave),
+        m_legacySign ? 1 : 0, (GpuReal)AbsorptionCoefficient(), ws.m);
+    cudaError_t err = cudaGetLastError();
+    if (!gpu_report_cuda_error(err, "multik diffraction kernel launch"))
+        return failMultiK("kernel-launch");
+    if (timing)
+    {
+        err = cudaDeviceSynchronize();
+        if (!gpu_report_cuda_error(err, "multik diffraction kernel sync"))
+            return failMultiK("kernel-sync");
+        tKernel = gpu_now_ms() - t0;
+    }
+
+    t0 = timing ? gpu_now_ms() : 0.0;
+    ws.hM.resize(mCount);
+    if (cudaMemcpy(ws.hM.data(), ws.m, mCount * sizeof(GpuReal), cudaMemcpyDeviceToHost) != cudaSuccess)
+        return failMultiK("copy-m-host");
+    if (timing) tD2h = gpu_now_ms() - t0;
+
+    t0 = timing ? gpu_now_ms() : 0.0;
+    for (int s = 0; s < nSizes; ++s)
+    {
+        const size_t sizeBase = (size_t)s * gridCount * 16;
+        for (int p = 0; p < nAz; ++p)
+            for (int t = 0; t <= nZen; ++t)
+            {
+                int grid = p * (nZen + 1) + t;
+                const GpuReal *m = &ws.hM[sizeBase + (size_t)grid * 16];
+                double *cell = localMs[s].RawCell(p, t);
+                for (int k = 0; k < 16; ++k)
+                    cell[k] += m[k];
+            }
+    }
+    if (timing)
+    {
+        tAdd = gpu_now_ms() - t0;
+        std::fprintf(stderr,
+                     "GPU timing multik orient=%d sizes=%d beams=%zu nAz=%d nZen=%d pack=%.3fms ensure=%.3fms grid=%.3fms copy=%.3fms kernels=%.3fms d2h=%.3fms add=%.3fms total=%.3fms\n",
+                     nOrient, nSizes, nBeams, nAz, nZen, tPack, tEnsure,
+                     tGrid, tCopy, tKernel, tD2h, tAdd, gpu_now_ms() - tStart);
+    }
     return true;
 }
 

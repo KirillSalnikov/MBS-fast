@@ -115,6 +115,18 @@ public:
                                             Arr2D &localM_noshadow,
                                             double scale = 1.0,
                                             double waveIndex = 0.0);
+    bool HandleOrientationsToLocalGpuMultiK(const std::vector<PreparedOrientation> &prepared,
+                                            int start,
+                                            int count,
+                                            const std::vector<double> &scales,
+                                            double waveIndex,
+                                            std::vector<Arr2D> &localMs);
+    bool HandleOrientationsToLocalGpuFftPhiMultiK(const std::vector<PreparedOrientation> &prepared,
+                                                  int start,
+                                                  int count,
+                                                  const std::vector<double> &scales,
+                                                  double waveIndex,
+                                                  std::vector<Arr2D> &localMs);
     int SelectGpuOrientationBatchSize(const std::vector<PreparedOrientation> &prepared,
                                       int start,
                                       int maxCount) const;

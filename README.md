@@ -192,6 +192,16 @@ bin/mbs_po --po --oldauto 2 --pf shapeA64_mbs.dat \
     --tgrid scattering_angles --nphi 600 --gpu --fft --close \
     --multigrid_parallel 0 --multigrid_threads 16 --gpu_devices 0,1,2,3,4 \
     --multikeq_shared_batches --multikeq_batch_ratio 1.05
+
+# Experimental lower-latency shared-batch GPU diffraction.
+# Reuses one packed beam buffer and computes several k_eq values in one CUDA
+# pass. Supports --fft and absorbing beams; falls back automatically for
+# unsupported safety modes such as no-shadow output or FFT check/refine.
+MBS_GPU_MULTI_K_FULL=1 \
+bin/mbs_po --po --oldauto 2 --pf shapeA64_mbs.dat \
+    --multikeq_list keq_list.txt --ri 1.6 0.002 -w 1.064 -n 8 \
+    --tgrid scattering_angles --nphi 600 --gpu --fft --close \
+    --multikeq_shared_batches --multikeq_batch_ratio 1.05
 ```
 
 **Note**: `--grid` and `--sym` are NOT needed with `--auto`/`--autofull`. Theta grid, phi bins, and particle symmetry are set automatically.
@@ -291,7 +301,7 @@ See `tests/reference_test/RESULTS.md` and comparison plots in `tests/reference_t
   tracing. Large non-convex particles can therefore remain Phase-1 limited.
 - **Multi-size**: `--multigrid`, `--multikeq`, `--multikeq_list` — trace once at the largest size inside one process, recompute diffraction for all sizes
 - **Multi-GPU scans**: `--multigrid_parallel 0 --gpu_devices ...` runs exact independent child sizes by default; add `--multikeq_shared_batches` to reuse one trace per GPU batch of nearby `k_eq` values
-- **GPU batching controls**: `MBS_SHARED_BETA_GROUP=N`, `MBS_GPU_NO_ATOMICS=1`, `MBS_GPU_MEM_FRACTION=...`
+- **GPU batching controls**: `MBS_SHARED_BETA_GROUP=N`, `MBS_GPU_NO_ATOMICS=1`, `MBS_GPU_MEM_FRACTION=...`, `MBS_GPU_MULTI_K_FULL=1`
 - **Per-beta save**: `--save_betas` — write intermediate Mueller per beta (backup/resume)
 - **Opt-in checkpoint**: `--checkpoint` — save/resume long `--orientfile` and `--oldauto`/`--random` runs; off by default to avoid extra I/O. For oldauto/random, the checkpoint is written after each completed beta ring and the same `-o` folder is reused on restart.
 - **Dual output**: M.dat (with shadow) + M_noshadow.dat (without) at no extra cost

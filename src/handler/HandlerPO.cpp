@@ -2468,6 +2468,26 @@ bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOri
     return false;
 }
 
+bool HandlerPO::HandleOrientationsToLocalGpuMultiK(const std::vector<PreparedOrientation> &/*prepared*/,
+                                                   int /*start*/,
+                                                   int /*count*/,
+                                                   const std::vector<double> &/*scales*/,
+                                                   double /*waveIndex*/,
+                                                   std::vector<Arr2D> &/*localMs*/)
+{
+    return false;
+}
+
+bool HandlerPO::HandleOrientationsToLocalGpuFftPhiMultiK(const std::vector<PreparedOrientation> &/*prepared*/,
+                                                         int /*start*/,
+                                                         int /*count*/,
+                                                         const std::vector<double> &/*scales*/,
+                                                         double /*waveIndex*/,
+                                                         std::vector<Arr2D> &/*localMs*/)
+{
+    return false;
+}
+
 bool HandlerPO::DiffractThetasGpu(const std::vector<PreparedOrientation> &/*prepared*/,
                                    const double */*theta_rads*/,
                                    int /*nPoints*/,
