@@ -1678,6 +1678,254 @@ double HandlerPO::ComputeForwardExtinctionOt(
     return std::isfinite(cext) ? cext : 0.0;
 }
 
+double HandlerPO::ComputeForwardExtinctionOtScaled(
+    const PreparedOrientation &prepared,
+    double scale,
+    double waveIndex,
+    double absorptionCoefficient) const
+{
+    if (std::fabs(scale - 1.0) <= 1e-15)
+        return ComputeForwardExtinctionOt(prepared);
+
+    complex f00(0.0, 0.0), f01(0.0, 0.0);
+    complex f10(0.0, 0.0), f11(0.0, 0.0);
+
+    const double scale2 = scale * scale;
+    const double scaledWaveIndex = waveIndex;
+    const double scaledWi2 = 0.5 * scaledWaveIndex * scaledWaveIndex;
+    const double sin_t = 0.0;
+    const double cos_t = 1.0;
+    const double cp = 1.0;
+    const double sp = 0.0;
+    const double dx = 0.0;
+    const double dy = 0.0;
+    const double dz = -1.0;
+    const double vfx = 0.0;
+    const double vfy = 1.0;
+    const double vfz = 0.0;
+
+    for (const PreparedBeam &pb : prepared.beams)
+    {
+        if (m_otPhaseAverage && !pb.isExternal)
+            continue;
+        if (!pb.edgeData.valid)
+            continue;
+
+        BeamEdgeData edge = pb.edgeData;
+        for (int e = 0; e < edge.nVertices; ++e)
+        {
+            edge.x[e] *= scale;
+            edge.y[e] *= scale;
+            edge.intercept_x[e] *= scale;
+            edge.intercept_y[e] *= scale;
+        }
+
+        ThetaCoeffs tc;
+        precompute_theta_coeffs(
+            edge.x, edge.y, edge.nVertices,
+            pb.horAx, pb.horAy, pb.horAz,
+            pb.verAx, pb.verAy, pb.verAz,
+            pb.bdx, pb.bdy, pb.bdz,
+            pb.cenx * scale, pb.ceny * scale, pb.cenz * scale,
+            cp, sp, scaledWaveIndex,
+            pb.pNTx, pb.pNTy, pb.pNTz,
+            pb.pNPx, pb.pNPy, pb.pNPz,
+            pb.pnxDTx, pb.pnxDTy, pb.pnxDTz,
+            pb.pnxDPx, pb.pnxDPy, pb.pnxDPz,
+            tc);
+
+        const double A = cos_t * tc.a_cos + tc.a0;
+        const double B = cos_t * tc.b_cos + tc.b0;
+        const double absA = std::fabs(A);
+        const double absB = std::fabs(B);
+
+        complex fresnel;
+        if (absA < m_eps2 && absB < m_eps2)
+        {
+            fresnel = (m_legacySign ? m_invComplWave : -m_invComplWave)
+                * (pb.beam_area * scale2);
+        }
+        else
+        {
+            const int nv = tc.nv;
+            if (nv <= 0)
+                continue;
+            std::vector<double> phases(nv), vc(nv), vs(nv);
+            for (int v = 0; v < nv; ++v)
+                phases[v] = cos_t * tc.pcos[v] + tc.p0[v];
+            for (int v = 0; v < nv; ++v)
+                fast_sincos(phases[v], vs[v], vc[v]);
+
+            double sr = 0.0, si = 0.0;
+            if (absB > absA)
+            {
+                for (int e = 0; e < nv; ++e)
+                {
+                    if (!edge.edge_valid_x[e])
+                        continue;
+                    int en = (e + 1 < nv) ? e + 1 : 0;
+                    double Ci = A + edge.slope_yx[e] * B;
+                    double absCi = std::fabs(Ci);
+                    double inv = (absCi > m_eps1) ? 1.0 / Ci : 0.0;
+                    sr += (vc[en] - vc[e]) * inv;
+                    si += (vs[en] - vs[e]) * inv;
+                    if (__builtin_expect(absCi <= m_eps1, 0))
+                    {
+                        double p1x = edge.x[e];
+                        double p2x = edge.x[en];
+                        double tr = -scaledWi2 * Ci * (p2x * p2x - p1x * p1x)
+                            * 0.5;
+                        double ti = scaledWaveIndex * (p2x - p1x);
+                        sr += vc[e] * tr - vs[e] * ti;
+                        si += vc[e] * ti + vs[e] * tr;
+                    }
+                }
+                if (std::fabs(B) <= m_eps1)
+                    continue;
+                sr /= B;
+                si /= B;
+            }
+            else
+            {
+                for (int e = 0; e < nv; ++e)
+                {
+                    if (!edge.edge_valid_y[e])
+                        continue;
+                    int en = (e + 1 < nv) ? e + 1 : 0;
+                    double Ei = A * edge.slope_xy[e] + B;
+                    double absEi = std::fabs(Ei);
+                    double inv = (absEi > m_eps1) ? 1.0 / Ei : 0.0;
+                    sr += (vc[en] - vc[e]) * inv;
+                    si += (vs[en] - vs[e]) * inv;
+                    if (__builtin_expect(absEi <= m_eps1, 0))
+                    {
+                        double p1y = edge.y[e];
+                        double p2y = edge.y[en];
+                        double tr = -scaledWi2 * Ei * (p2y * p2y - p1y * p1y)
+                            * 0.5;
+                        double ti = scaledWaveIndex * (p2y - p1y);
+                        sr += vc[e] * tr - vs[e] * ti;
+                        si += vc[e] * ti + vs[e] * tr;
+                    }
+                }
+                if (std::fabs(A) <= m_eps1)
+                    continue;
+                double invNegA = -1.0 / A;
+                sr *= invNegA;
+                si *= invNegA;
+            }
+            fresnel = m_complWave * complex(sr, si);
+        }
+        if (std::isnan(real(fresnel)))
+            continue;
+
+        double phaseReference = pb.isExternal
+            ? pb.origBeam.opticalPath * scale
+            : m_otFarReferencePath;
+
+        double dpr = 1.0, dpi = 0.0;
+        if (!pb.isExternal)
+        {
+            double dpArg = -scaledWaveIndex * (cos_t * tc.dp_cos + phaseReference);
+            fast_sincos(dpArg, dpi, dpr);
+        }
+        else if (phaseReference != 0.0)
+        {
+            double dpArg = -scaledWaveIndex * phaseReference;
+            fast_sincos(dpArg, dpi, dpr);
+        }
+
+        double r00, r01, r10, r11;
+        rotate_jones_inline(
+            pb.pNTx, pb.pNTy, pb.pNTz,
+            pb.pNPx, pb.pNPy, pb.pNPz,
+            pb.pnxDTx, pb.pnxDTy, pb.pnxDTz,
+            pb.pnxDPx, pb.pnxDPy, pb.pnxDPz,
+            vfx, vfy, vfz, dx, dy, dz,
+            r00, r01, r10, r11);
+
+        double path = pb.isExternal
+            ? pb.origBeam.opticalPath * scale
+            : pb.info.projLenght * scale;
+        double sn = 0.0, cs = 1.0;
+        fast_sincos(scaledWaveIndex * path, sn, cs);
+        double sign = 1.0;
+        if (pb.isExternal)
+            sign = -sign;
+        if (!pb.isExternal && (pb.origBeam.nActs & 1))
+            sign = -sign;
+
+        double absorption = 1.0;
+        if (!pb.absorptionPaths.empty())
+        {
+            double sum = 0.0;
+            int count = 0;
+            for (double absPath : pb.absorptionPaths)
+            {
+                sum += (absPath > DBL_EPSILON)
+                    ? std::exp(absorptionCoefficient * absPath * scale)
+                    : 1.0;
+                ++count;
+            }
+            if (count > 0)
+                absorption = sum / count;
+        }
+
+        auto phased = [&](const ::complex &jc, double &reOut, double &imOut)
+        {
+            double jr = real(jc) * absorption;
+            double ji = imag(jc) * absorption;
+            reOut = sign * (jr * cs - ji * sn);
+            imOut = sign * (jr * sn + ji * cs);
+        };
+        double jp00r, jp00i, jp01r, jp01i;
+        double jp10r, jp10i, jp11r, jp11i;
+        phased(pb.origBeam.J.m11, jp00r, jp00i);
+        phased(pb.origBeam.J.m12, jp01r, jp01i);
+        phased(pb.origBeam.J.m21, jp10r, jp10i);
+        phased(pb.origBeam.J.m22, jp11r, jp11i);
+
+        const double fr = real(fresnel);
+        const double fi = imag(fresnel);
+        const double cpr = fr * dpr - fi * dpi;
+        const double cpi = fr * dpi + fi * dpr;
+        const double sr00r = cpr * r00, sr00i = cpi * r00;
+        const double sr01r = cpr * r01, sr01i = cpi * r01;
+        const double sr10r = cpr * r10, sr10i = cpi * r10;
+        const double sr11r = cpr * r11, sr11i = cpi * r11;
+
+        f00 += complex(sr00r * jp00r - sr00i * jp00i
+                       + sr01r * jp10r - sr01i * jp10i,
+                       sr00r * jp00i + sr00i * jp00r
+                       + sr01r * jp10i + sr01i * jp10r);
+        f01 += complex(sr00r * jp01r - sr00i * jp01i
+                       + sr01r * jp11r - sr01i * jp11i,
+                       sr00r * jp01i + sr00i * jp01r
+                       + sr01r * jp11i + sr01i * jp11r);
+        f10 += complex(sr10r * jp00r - sr10i * jp00i
+                       + sr11r * jp10r - sr11i * jp10i,
+                       sr10r * jp00i + sr10i * jp00r
+                       + sr11r * jp10i + sr11i * jp10r);
+        f11 += complex(sr10r * jp01r - sr10i * jp01i
+                       + sr11r * jp11r - sr11i * jp11i,
+                       sr10r * jp01i + sr10i * jp01r
+                       + sr11r * jp11i + sr11i * jp11r);
+    }
+
+    const complex forward = f00 + f11;
+    double forwardExtinctionAmplitude = imag(forward);
+    if (m_otPingDistance != 0.0)
+    {
+        const double phase = 2.0 * scaledWaveIndex * m_otPingDistance;
+        double sn = 0.0, cs = 1.0;
+        fast_sincos(phase, sn, cs);
+        forwardExtinctionAmplitude = imag(forward) * cs - real(forward) * sn;
+    }
+    const double cext = m_wavelength * forwardExtinctionAmplitude
+        * prepared.sinZenith;
+    return std::isfinite(cext) ? cext : 0.0;
+}
+
 // =============================================================================
 // HandleBeamsToLocal: Process prepared beams into a LOCAL Mueller accumulator.
 // Thread-safe: only reads immutable handler data (m_sphere, wave constants)

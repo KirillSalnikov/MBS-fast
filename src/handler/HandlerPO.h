@@ -78,6 +78,10 @@ public:
     void PrepareBeams(std::vector<Beam> &beams, double sinZenith,
                       PreparedOrientation &out);
     double ComputeForwardExtinctionOt(const PreparedOrientation &prepared) const;
+    double ComputeForwardExtinctionOtScaled(const PreparedOrientation &prepared,
+                                            double scale,
+                                            double waveIndex,
+                                            double absorptionCoefficient) const;
 
     /// Copy immutable settings needed by PrepareBeams into a worker-local
     /// handler. The worker gets its own Scattering/Particle state.

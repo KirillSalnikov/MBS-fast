@@ -3982,10 +3982,9 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
 
             for (const PreparedOrientation &po : group.prepared)
             {
-                PreparedOrientation scaledForExt = ScalePreparedOrientation(
-                    po, scale, waveIndex, handlerPO->AbsorptionCoefficient());
                 results_ext_ot[s] +=
-                    handlerPO->ComputeForwardExtinctionOt(scaledForExt);
+                    handlerPO->ComputeForwardExtinctionOtScaled(
+                        po, scale, waveIndex, handlerPO->AbsorptionCoefficient());
             }
 
             Arr2D localM(nAz + 1, nZen + 1, 4, 4); localM.ClearArr();
