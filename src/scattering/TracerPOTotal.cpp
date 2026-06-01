@@ -81,6 +81,28 @@ static int EnvInt(const char *name, int fallback)
     return (end && *end == '\0' && parsed > 0) ? (int)parsed : fallback;
 }
 
+static long long HostMemoryBudgetOverrideKb()
+{
+    const char *value = std::getenv("MBS_HOST_MEM_BUDGET_MB");
+    if (!value || !*value)
+        return 0;
+    char *end = nullptr;
+    long parsed = std::strtol(value, &end, 10);
+    return (end && *end == '\0' && parsed > 0)
+        ? (long long)parsed * 1024LL
+        : 0;
+}
+
+static long long EffectiveMemAvailableMb()
+{
+    long long availableKb = ReadMeminfoKb("MemAvailable:");
+    long long availableMb = availableKb > 0 ? availableKb / 1024 : 2048;
+    long long overrideKb = HostMemoryBudgetOverrideKb();
+    if (overrideKb > 0)
+        availableMb = std::min(availableMb, overrideKb / 1024);
+    return std::max(1LL, availableMb);
+}
+
 static int HostMemoryAwareGammaChunk(int requested,
                                      bool noBeamCutoff,
                                      long long *totalKbOut,
@@ -108,12 +130,15 @@ static int HostMemoryAwareGammaChunk(int requested,
     const long long totalBudgetKb =
         (long long)(std::max(0.05, std::min(0.90, fraction)) * (double)totalKb);
     const long long freeBudgetKb = std::max(0LL, availableKb - reserveKb);
-    const long long budgetKb = std::max(256LL * 1024LL,
+    long long budgetKb = std::max(256LL * 1024LL,
         std::min(totalBudgetKb, rssKb + freeBudgetKb));
+    const long long overrideKb = HostMemoryBudgetOverrideKb();
+    if (overrideKb > 0)
+        budgetKb = std::min(budgetKb, overrideKb);
     if (budgetKbOut) *budgetKbOut = budgetKb;
 
     const int mbPerGamma = EnvInt("MBS_OLDAUTO_BYTES_PER_GAMMA_MB",
-                                  noBeamCutoff ? 1024 : 256);
+                                  noBeamCutoff ? 256 : 128);
     const long long perGammaKb = std::max(1, mbPerGamma) * 1024LL;
     int byMemory = (int)std::max(1LL, budgetKb / perGammaKb);
     return std::max(1, std::min(requested, byMemory));
@@ -2613,7 +2638,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     }
     else if (handlerPO->IsGpuEnabled())
     {
-        int defaultChunk = noBeamCutoff ? 8 : 64;
+        int defaultChunk = nGamma;
         const char *chunkEnv = std::getenv("MBS_OLDAUTO_GAMMA_CHUNK");
         if (chunkEnv && *chunkEnv)
         {
@@ -2656,6 +2681,9 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
                      << " MB, VmRSS=" << (hostMemRssKb / 1024)
                      << " MB, budget=" << (hostMemBudgetKb / 1024)
                      << " MB";
+                if (HostMemoryBudgetOverrideKb() > 0)
+                    line << ", shared-budget=" << (HostMemoryBudgetOverrideKb() / 1024)
+                         << " MB";
             }
             if (hostMemConservative)
                 line << ", no-cutoff conservative mode";
@@ -3259,22 +3287,9 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
     int nAz = handlerPO->m_sphere.nAzimuth;
     int nZen = handlerPO->m_sphere.nZenith;
 
-    // Estimate available memory
-    long long availMemBytes = 2LL * 1024 * 1024 * 1024; // default 2 GB
-#ifdef __linux__
-    {
-        std::ifstream meminfo("/proc/meminfo");
-        std::string line;
-        while (std::getline(meminfo, line)) {
-            if (line.find("MemAvailable:") == 0) {
-                long long kb = 0;
-                sscanf(line.c_str(), "MemAvailable: %lld", &kb);
-                if (kb > 0) availMemBytes = kb * 1024;
-                break;
-            }
-        }
-    }
-#endif
+    // Estimate available memory. In --multigrid_parallel the parent can pass a
+    // per-child cap via MBS_HOST_MEM_BUDGET_MB to avoid N children overbooking RAM.
+    long long availMemBytes = EffectiveMemAvailableMb() * 1024LL * 1024LL;
     // Reserve memory for thread-local Mueller arrays: nThreads * nAz * nZen * 16 * 8 bytes
     int nThreads = 1;
     #pragma omp parallel
@@ -4928,22 +4943,9 @@ void TracerPOTotal::TraceWeightedOrientations(
     int nAz = handlerPO->m_sphere.nAzimuth;
     int nZen = handlerPO->m_sphere.nZenith;
 
-    // Chunked streaming: auto-size chunks based on available RAM
-    long long availMB = 2048; // default 2 GB
-#ifdef __linux__
-    {
-        std::ifstream meminfo("/proc/meminfo");
-        std::string line;
-        while (std::getline(meminfo, line)) {
-            if (line.find("MemAvailable:") == 0) {
-                long long kb = 0;
-                sscanf(line.c_str(), "MemAvailable: %lld", &kb);
-                if (kb > 0) availMB = kb / 1024;
-                break;
-            }
-        }
-    }
-#endif
+    // Chunked streaming: auto-size chunks based on available RAM. The value is
+    // capped by MBS_HOST_MEM_BUDGET_MB when launched by the parallel scheduler.
+    long long availMB = EffectiveMemAvailableMb();
     long long beamBudget = std::max(100LL, availMB / 2);
     int chunkSize = std::max(32, std::min(4096, std::min(myCount, (int)(beamBudget * 1024 / 350))));
     if (m_sobolChunkSize > 0)
@@ -4961,7 +4963,10 @@ void TracerPOTotal::TraceWeightedOrientations(
     if (m_mpiRank == 0)
     {
         std::ostringstream log;
-        log << "Memory: " << availMB << " MB available, chunk="
+        log << "Memory: " << availMB << " MB available";
+        if (HostMemoryBudgetOverrideKb() > 0)
+            log << " (shared budget)";
+        log << ", chunk="
             << chunkSize << " orientations (" << nChunks << " chunks), "
             << nThreads << " threads";
         std::cerr << log.str() << std::endl;
@@ -5498,23 +5503,7 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
     const bool computeNoShadow = handlerPO->ComputeNoShadow();
     const double weight = 1.0 / ((double)nOrient * (double)seedCount);
 
-    long long availMB = 2048;
-#ifdef __linux__
-    {
-        std::ifstream meminfo("/proc/meminfo");
-        std::string line;
-        while (std::getline(meminfo, line))
-        {
-            if (line.find("MemAvailable:") == 0)
-            {
-                long long kb = 0;
-                sscanf(line.c_str(), "MemAvailable: %lld", &kb);
-                if (kb > 0) availMB = kb / 1024;
-                break;
-            }
-        }
-    }
-#endif
+    long long availMB = EffectiveMemAvailableMb();
     long long beamBudget = std::max(100LL, availMB / 2);
     int chunkSize = std::max(32, std::min(4096, std::min(myCount, (int)(beamBudget * 1024 / 350))));
     if (m_sobolChunkSize > 0)
@@ -5529,7 +5518,10 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
     }
 #endif
     if (m_mpiRank == 0)
-        std::cerr << "Variable-phi memory: " << availMB << " MB available, chunk="
+        std::cerr << "Variable-phi memory: " << availMB << " MB available";
+        if (HostMemoryBudgetOverrideKb() > 0)
+            std::cerr << " (shared budget)";
+        std::cerr << ", chunk="
                   << chunkSize << " orientations (" << nChunks << " chunks), "
                   << nThreads << " threads" << std::endl;
 

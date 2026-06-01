@@ -12,7 +12,9 @@
 #include <iomanip>
 #include <cerrno>
 #include <cstring>
+#include <cctype>
 #include <stdexcept>
+#include <vector>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <fcntl.h>
@@ -220,6 +222,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("multikeq_list", 1, true); // multi-size by exact k_eq values from file
     parser.AddRule("multigrid_parallel", 1, true); // run multigrid sizes as child processes
     parser.AddRule("multigrid_threads", 1, true); // per-child OpenMP threads for multigrid_parallel
+    parser.AddRule("gpu_devices", 1, true); // comma-separated CUDA devices for multigrid_parallel
     parser.AddRule("save_betas", 0, true); // save intermediate Mueller for each beta to betas/ subfolder
     parser.AddRule("checkpoint", 0, true); // enable checkpoint save/resume for long orientfile and oldauto/random runs
     parser.AddRule("tgrid", 1, true); // non-uniform theta grid file
@@ -380,9 +383,10 @@ void PrintFullHelp()
          << "                           -p must specify largest particle\n\n"
          << "  --multikeq Kmin Kmax N   N equivalent-size parameters k_eq from Kmin to Kmax (log scale)\n"
          << "  --multikeq_list FILE     Exact k_eq values, one per line; --oldauto traces max once\n"
-         << "  --multigrid_parallel N   Run multigrid/multikeq as N child processes\n"
-         << "                           Useful with --gpu; default child threads is 1 unless overridden\n"
-         << "  --multigrid_threads N    OpenMP threads per child in --multigrid_parallel\n\n"
+         << "  --multigrid_parallel N   Run multigrid/multikeq as N child processes (0 = auto)\n"
+         << "                           With --gpu, children are assigned distinct CUDA devices\n"
+         << "  --multigrid_threads N    OpenMP threads per child in --multigrid_parallel\n"
+         << "  --gpu_devices LIST       CUDA devices for parallel children, e.g. 0,1,2,3,4\n\n"
 
 
          << "=== Output ===\n"
@@ -473,8 +477,9 @@ void PrintReleaseHelp()
          << "  --multigrid Dmin Dmax N     Log-spaced Dmax scan\n"
          << "  --multikeq Kmin Kmax N      Log-spaced k_eq scan\n"
          << "  --multikeq_list FILE        Exact k_eq values, one per line\n"
-         << "  --multigrid_parallel N      Run sizes as child processes\n"
-         << "  --multigrid_threads N       Threads per child process\n\n"
+         << "  --multigrid_parallel N      Run sizes as child processes (0 = auto)\n"
+         << "  --multigrid_threads N       Threads per child process\n"
+         << "  --gpu_devices LIST          CUDA devices for parallel children\n\n"
 
          << "=== Output / diagnostics kept in release ===\n"
          << "  -o NAME                Output path/name\n"
@@ -930,6 +935,98 @@ std::string ShellQuote(const std::string &s)
     return out;
 }
 
+std::vector<std::string> SplitCommaList(const std::string &value)
+{
+    std::vector<std::string> out;
+    std::string item;
+    std::stringstream ss(value);
+    while (std::getline(ss, item, ','))
+    {
+        item.erase(std::remove_if(item.begin(), item.end(),
+                   [](unsigned char c) { return std::isspace(c); }), item.end());
+        if (!item.empty())
+            out.push_back(item);
+    }
+    return out;
+}
+
+std::vector<std::string> VisibleGpuDeviceList(const ArgPP &args)
+{
+    if (args.IsCatched("gpu_devices"))
+        return SplitCommaList(args.GetStringValue("gpu_devices", 0));
+
+    const char *visible = std::getenv("CUDA_VISIBLE_DEVICES");
+    if (visible && *visible)
+        return SplitCommaList(visible);
+
+    std::vector<std::string> devices;
+    for (int i = 0; i < 64; ++i)
+    {
+        std::string path = "/dev/nvidia" + std::to_string(i);
+        if (access(path.c_str(), F_OK) == 0)
+            devices.push_back(std::to_string(i));
+    }
+    return devices;
+}
+
+long long ReadMemAvailableMb()
+{
+    std::ifstream f("/proc/meminfo");
+    std::string name;
+    long long value = 0;
+    std::string unit;
+    while (f >> name >> value >> unit)
+        if (name == "MemAvailable:")
+            return value / 1024;
+    return 0;
+}
+
+bool EnsureDirectoryRecursive(const std::string &path)
+{
+    if (path.empty())
+        return false;
+
+    std::string current;
+    size_t pos = 0;
+    if (path[0] == '/')
+    {
+        current = "/";
+        pos = 1;
+    }
+
+    while (pos <= path.size())
+    {
+        size_t next = path.find('/', pos);
+        std::string part = path.substr(pos, next == std::string::npos
+                                             ? std::string::npos
+                                             : next - pos);
+        if (!part.empty())
+        {
+            if (current.empty() || current == "/")
+                current += part;
+            else
+                current += "/" + part;
+
+            if (mkdir(current.c_str(), 0755) != 0 && errno != EEXIST)
+                return false;
+        }
+        if (next == std::string::npos)
+            break;
+        pos = next + 1;
+    }
+    return true;
+}
+
+double EnvDoubleMain(const char *name, double fallback)
+{
+    const char *value = std::getenv(name);
+    if (!value || !*value)
+        return fallback;
+    char *end = nullptr;
+    double parsed = std::strtod(value, &end);
+    return (end && *end == '\0' && parsed > 0.0) ? parsed : fallback;
+}
+
 bool FlagMatches(const std::string &arg, const std::string &name)
 {
     return arg == "--" + name || (name.size() == 1 && arg == "-" + name);
@@ -941,7 +1038,7 @@ int ParallelMultigridRemoveCount(const std::string &arg)
     static const Item items[] = {
         {"multigrid", 3}, {"multikeq", 3}, {"multikeq_list", 1}, {"multigrid_parallel", 1},
         {"multigrid_threads", 1}, {"rs", 1}, {"k_eq", 1},
-        {"threads", 1}, {"o", 1}
+        {"threads", 1}, {"gpu_devices", 1}, {"o", 1}
     };
     for (const Item &item : items)
     {
@@ -954,10 +1051,12 @@ int ParallelMultigridRemoveCount(const std::string &arg)
 int RunParallelMultigrid(int argc, const char *argv[], const ArgPP &args, bool useGpu)
 {
     bool byD = args.IsCatched("multigrid");
-    bool byKEq = args.IsCatched("multikeq");
+    bool byKEqRange = args.IsCatched("multikeq");
+    bool byKEqList = args.IsCatched("multikeq_list");
+    bool byKEq = byKEqRange || byKEqList;
     if (byD == byKEq)
     {
-        std::cerr << "ERROR: --multigrid_parallel requires exactly one of --multigrid or --multikeq." << std::endl;
+        std::cerr << "ERROR: --multigrid_parallel requires exactly one of --multigrid, --multikeq, or --multikeq_list." << std::endl;
         return 1;
     }
     if (byD && !args.IsCatched("pf"))
@@ -966,12 +1065,16 @@ int RunParallelMultigrid(int argc, const char *argv[], const ArgPP &args, bool u
         return 1;
     }
 
+    std::vector<std::string> gpuDevices = useGpu ? VisibleGpuDeviceList(args) : std::vector<std::string>();
     int jobs = args.GetIntValue("multigrid_parallel", 0);
-    if (jobs < 1)
+    if (jobs < 0)
     {
-        std::cerr << "ERROR: --multigrid_parallel must be >= 1." << std::endl;
+        std::cerr << "ERROR: --multigrid_parallel must be >= 0 (0 = auto)." << std::endl;
         return 1;
     }
+    if (jobs == 0)
+        jobs = useGpu ? std::max(1, (int)gpuDevices.size())
+                      : std::max(1, DefaultPhysicalCoreCount());
     int childThreads = args.IsCatched("multigrid_threads")
         ? args.GetIntValue("multigrid_threads", 0)
         : (useGpu ? 1 : std::max(1, DefaultPhysicalCoreCount() / jobs));
@@ -981,19 +1084,40 @@ int RunParallelMultigrid(int argc, const char *argv[], const ArgPP &args, bool u
         return 1;
     }
 
-    std::string key = byKEq ? "multikeq" : "multigrid";
-    double minValue = args.GetDoubleValue(key, 0);
-    double maxValue = args.GetDoubleValue(key, 1);
-    int count = args.GetIntValue(key, 2);
-    if (minValue <= 0 || maxValue <= 0)
+    std::vector<double> sizes;
+    if (byKEqList)
     {
-        std::cerr << "ERROR: multigrid sizes must be positive." << std::endl;
-        return 1;
+        try
+        {
+            sizes = ReadSizeList(args.GetStringValue("multikeq_list", 0));
+        }
+        catch (const std::exception &ex)
+        {
+            std::cerr << "ERROR: " << ex.what() << std::endl;
+            return 1;
+        }
     }
-    std::vector<double> sizes = GenerateLogSizes(minValue, maxValue, count);
+    else
+    {
+        std::string key = byKEq ? "multikeq" : "multigrid";
+        double minValue = args.GetDoubleValue(key, 0);
+        double maxValue = args.GetDoubleValue(key, 1);
+        int count = args.GetIntValue(key, 2);
+        if (minValue <= 0 || maxValue <= 0)
+        {
+            std::cerr << "ERROR: multigrid sizes must be positive." << std::endl;
+            return 1;
+        }
+        sizes = GenerateLogSizes(minValue, maxValue, count);
+    }
 
     std::string baseOut = args.IsCatched("o") ? args.GetStringValue("o", 0) : "multigrid_parallel";
-    mkdir(baseOut.c_str(), 0755);
+    if (!EnsureDirectoryRecursive(baseOut))
+    {
+        std::cerr << "ERROR: could not create output root '" << baseOut
+                  << "': " << strerror(errno) << std::endl;
+        return 1;
+    }
 
     std::vector<std::string> baseArgs;
     baseArgs.reserve(argc + 8);
@@ -1010,15 +1134,42 @@ int RunParallelMultigrid(int argc, const char *argv[], const ArgPP &args, bool u
         baseArgs.push_back(a);
     }
 
+    const double memFraction = std::max(0.10, std::min(0.95,
+        EnvDoubleMain("MBS_PARALLEL_MEM_FRACTION", 0.70)));
+    const long long memAvailableMb = ReadMemAvailableMb();
+    const long long childMemBudgetMb = (useGpu && jobs > 0 && memAvailableMb > 0)
+        ? std::max(512LL, (long long)((double)memAvailableMb * memFraction / jobs))
+        : 0;
+
     std::cout << "Parallel multigrid: " << sizes.size() << " "
               << (byKEq ? "k_eq" : "Dmax") << " sizes, jobs=" << jobs
               << ", child_threads=" << childThreads
               << (useGpu ? " (--gpu)" : "") << std::endl;
+    if (useGpu)
+    {
+        std::cout << "GPU scheduler devices:";
+        if (gpuDevices.empty())
+            std::cout << " none detected; children will use default CUDA selection";
+        for (const std::string &device : gpuDevices)
+            std::cout << " " << device;
+        std::cout << std::endl;
+        if (childMemBudgetMb > 0)
+        {
+            std::cout << "GPU scheduler RAM budget: MemAvailable="
+                      << memAvailableMb << " MB, jobs=" << jobs
+                      << ", fraction=" << memFraction
+                      << ", child_budget=" << childMemBudgetMb
+                      << " MB" << std::endl;
+        }
+    }
     std::cout << "Output root: " << baseOut << std::endl;
 
     struct RunningChild { pid_t pid; std::string label; };
     std::vector<RunningChild> running;
     int failures = 0;
+    size_t nextGpu = 0;
+    std::set<std::string> usedLabels;
+    int jobIndex = 0;
 
     auto waitOne = [&]() {
         int status = 0;
@@ -1047,7 +1198,15 @@ int RunParallelMultigrid(int argc, const char *argv[], const ArgPP &args, bool u
         while ((int)running.size() >= jobs)
             waitOne();
 
-        std::string label = std::string(byKEq ? "keq" : "D") + SizeLabel(value);
+        const std::string baseLabel = std::string(byKEq ? "keq" : "D") + SizeLabel(value);
+        std::string label = baseLabel;
+        if (usedLabels.count(label) != 0)
+            label = baseLabel + "_job" + std::to_string(jobIndex + 1);
+        while (usedLabels.count(label) != 0)
+            label = baseLabel + "_job" + std::to_string(++jobIndex + 1);
+        usedLabels.insert(label);
+        ++jobIndex;
+
         std::vector<std::string> child = baseArgs;
         child.push_back("--threads");
         child.push_back(std::to_string(childThreads));
@@ -1064,7 +1223,17 @@ int RunParallelMultigrid(int argc, const char *argv[], const ArgPP &args, bool u
         child.push_back("-o");
         child.push_back(baseOut + "/" + label);
 
-        std::cout << "Starting " << label << ":";
+        std::string childGpuDevice;
+        if (useGpu && !gpuDevices.empty())
+        {
+            childGpuDevice = gpuDevices[nextGpu % gpuDevices.size()];
+            ++nextGpu;
+        }
+
+        std::cout << "Starting " << label;
+        if (!childGpuDevice.empty())
+            std::cout << " [CUDA_VISIBLE_DEVICES=" << childGpuDevice << "]";
+        std::cout << ":";
         for (const std::string &s : child)
             std::cout << " " << ShellQuote(s);
         std::cout << std::endl;
@@ -1078,6 +1247,14 @@ int RunParallelMultigrid(int argc, const char *argv[], const ArgPP &args, bool u
         }
         if (pid == 0)
         {
+            if (!childGpuDevice.empty())
+            {
+                setenv("CUDA_VISIBLE_DEVICES", childGpuDevice.c_str(), 1);
+                setenv("MBS_GPU_SLOT", childGpuDevice.c_str(), 1);
+            }
+            if (childMemBudgetMb > 0 && std::getenv("MBS_HOST_MEM_BUDGET_MB") == nullptr)
+                setenv("MBS_HOST_MEM_BUDGET_MB",
+                       std::to_string(childMemBudgetMb).c_str(), 1);
             std::string logPath = baseOut + "/" + label + ".run.log";
             int fd = open(logPath.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
             if (fd >= 0)
@@ -1228,22 +1405,6 @@ int main(int argc, const char* argv[])
 #endif
     const bool useGpu = args.IsCatched("gpu") || (defaultGpu && !args.IsCatched("cpu"));
 
-    if (useGpu)
-    {
-        GpuDeviceInfo gpuInfo;
-        std::string gpuError;
-        if (!CheckGpuRuntime(gpuInfo, gpuError))
-        {
-            std::cerr << "ERROR: CUDA GPU backend is unavailable: "
-                      << gpuError << std::endl;
-            return 1;
-        }
-
-        std::cout << "GPU backend: " << FormatGpuInfo(gpuInfo)
-                  << (defaultGpu && !args.IsCatched("gpu") ? " (default)" : "")
-                  << std::endl;
-    }
-
     const bool useFft = args.IsCatched("fft");
     if (useFft && !useGpu)
     {
@@ -1264,6 +1425,22 @@ int main(int argc, const char* argv[])
     if (args.IsCatched("multigrid_parallel"))
     {
         return RunParallelMultigrid(argc, argv, args, useGpu);
+    }
+
+    if (useGpu)
+    {
+        GpuDeviceInfo gpuInfo;
+        std::string gpuError;
+        if (!CheckGpuRuntime(gpuInfo, gpuError))
+        {
+            std::cerr << "ERROR: CUDA GPU backend is unavailable: "
+                      << gpuError << std::endl;
+            return 1;
+        }
+
+        std::cout << "GPU backend: " << FormatGpuInfo(gpuInfo)
+                  << (defaultGpu && !args.IsCatched("gpu") ? " (default)" : "")
+                  << std::endl;
     }
 
     double re = args.GetDoubleValue("ri", 0);
