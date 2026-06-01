@@ -223,6 +223,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("multigrid_parallel", 1, true); // run multigrid sizes as child processes
     parser.AddRule("multigrid_threads", 1, true); // per-child OpenMP threads for multigrid_parallel
     parser.AddRule("gpu_devices", 1, true); // comma-separated CUDA devices for multigrid_parallel
+    parser.AddRule("multikeq_shared_batches", 0, true); // batch k_eq values per GPU; trace once per batch
     parser.AddRule("save_betas", 0, true); // save intermediate Mueller for each beta to betas/ subfolder
     parser.AddRule("checkpoint", 0, true); // enable checkpoint save/resume for long orientfile and oldauto/random runs
     parser.AddRule("tgrid", 1, true); // non-uniform theta grid file
@@ -386,7 +387,12 @@ void PrintFullHelp()
          << "  --multigrid_parallel N   Run multigrid/multikeq as N child processes (0 = auto)\n"
          << "                           With --gpu, children are assigned distinct CUDA devices\n"
          << "  --multigrid_threads N    OpenMP threads per child in --multigrid_parallel\n"
-         << "  --gpu_devices LIST       CUDA devices for parallel children, e.g. 0,1,2,3,4\n\n"
+         << "  --gpu_devices LIST       CUDA devices for parallel children, e.g. 0,1,2,3,4\n"
+         << "  --multikeq_shared_batches\n"
+         << "                           For --gpu --multigrid_parallel with --multikeq(_list),\n"
+         << "                           send several k_eq values to each GPU child and trace once\n"
+         << "                           on the largest k_eq in that batch. Faster for scans;\n"
+         << "                           lower k_eq values use the batch reference orientation grid.\n\n"
 
 
          << "=== Output ===\n"
@@ -479,7 +485,8 @@ void PrintReleaseHelp()
          << "  --multikeq_list FILE        Exact k_eq values, one per line\n"
          << "  --multigrid_parallel N      Run sizes as child processes (0 = auto)\n"
          << "  --multigrid_threads N       Threads per child process\n"
-         << "  --gpu_devices LIST          CUDA devices for parallel children\n\n"
+         << "  --gpu_devices LIST          CUDA devices for parallel children\n"
+         << "  --multikeq_shared_batches   Batch k_eq values per GPU and reuse tracing per batch\n\n"
 
          << "=== Output / diagnostics kept in release ===\n"
          << "  -o NAME                Output path/name\n"
@@ -1038,7 +1045,7 @@ int ParallelMultigridRemoveCount(const std::string &arg)
     static const Item items[] = {
         {"multigrid", 3}, {"multikeq", 3}, {"multikeq_list", 1}, {"multigrid_parallel", 1},
         {"multigrid_threads", 1}, {"rs", 1}, {"k_eq", 1},
-        {"threads", 1}, {"gpu_devices", 1}, {"o", 1}
+        {"threads", 1}, {"gpu_devices", 1}, {"multikeq_shared_batches", 0}, {"o", 1}
     };
     for (const Item &item : items)
     {
@@ -1046,6 +1053,71 @@ int ParallelMultigridRemoveCount(const std::string &arg)
             return item.values;
     }
     return -1;
+}
+
+std::string ParallelBatchLabel(bool byKEq,
+                               const std::vector<double> &batch,
+                               int batchIndex)
+{
+    if (batch.empty())
+        return "batch" + std::to_string(batchIndex + 1);
+    if (batch.size() == 1)
+        return std::string(byKEq ? "keq" : "D") + SizeLabel(batch.front());
+    double minValue = *std::min_element(batch.begin(), batch.end());
+    double maxValue = *std::max_element(batch.begin(), batch.end());
+    return std::string(byKEq ? "keq" : "D") + SizeLabel(minValue)
+        + "_to_" + SizeLabel(maxValue)
+        + "_batch" + std::to_string(batchIndex + 1);
+}
+
+bool WriteParallelSizeList(const std::string &path,
+                           const std::vector<double> &batch)
+{
+    std::ofstream out(path.c_str(), std::ios::out | std::ios::trunc);
+    if (!out.is_open())
+        return false;
+    out << std::setprecision(17);
+    for (double value : batch)
+        out << value << '\n';
+    return true;
+}
+
+std::vector<std::vector<double>> BuildParallelBatches(
+    const std::vector<double> &sizes,
+    bool byKEq,
+    bool useGpu,
+    int jobs,
+    bool sharedKeqRequested)
+{
+    std::vector<std::vector<double>> batches;
+    if (sizes.empty())
+        return batches;
+
+    bool sharedKeqBatches = sharedKeqRequested;
+    if (std::getenv("MBS_PARALLEL_SHARED_KEQ"))
+        sharedKeqBatches = std::atoi(std::getenv("MBS_PARALLEL_SHARED_KEQ")) != 0;
+    sharedKeqBatches = sharedKeqBatches && byKEq && useGpu
+        && sizes.size() > (size_t)std::max(1, jobs);
+
+    if (!sharedKeqBatches)
+    {
+        batches.reserve(sizes.size());
+        for (double value : sizes)
+            batches.push_back(std::vector<double>(1, value));
+        return batches;
+    }
+
+    const int batchCount = std::max(1, std::min<int>(jobs, (int)sizes.size()));
+    batches.assign(batchCount, std::vector<double>());
+    for (size_t i = 0; i < sizes.size(); ++i)
+    {
+        size_t batch = (i * (size_t)batchCount) / sizes.size();
+        batches[batch].push_back(sizes[i]);
+    }
+    batches.erase(std::remove_if(batches.begin(), batches.end(),
+                  [](const std::vector<double> &b) { return b.empty(); }),
+                  batches.end());
+    return batches;
 }
 
 int RunParallelMultigrid(int argc, const char *argv[], const ArgPP &args, bool useGpu)
@@ -1141,10 +1213,19 @@ int RunParallelMultigrid(int argc, const char *argv[], const ArgPP &args, bool u
         ? std::max(512LL, (long long)((double)memAvailableMb * memFraction / jobs))
         : 0;
 
+    std::vector<std::vector<double>> batches =
+        BuildParallelBatches(sizes, byKEq, useGpu, jobs,
+                             args.IsCatched("multikeq_shared_batches"));
+
     std::cout << "Parallel multigrid: " << sizes.size() << " "
               << (byKEq ? "k_eq" : "Dmax") << " sizes, jobs=" << jobs
+              << ", batches=" << batches.size()
               << ", child_threads=" << childThreads
               << (useGpu ? " (--gpu)" : "") << std::endl;
+    if (byKEq && batches.size() < sizes.size())
+        std::cout << "Parallel multigrid shared k_eq batches: child processes "
+                  << "reuse one oldauto trace for all sizes in their batch"
+                  << std::endl;
     if (useGpu)
     {
         std::cout << "GPU scheduler devices:";
@@ -1193,12 +1274,12 @@ int RunParallelMultigrid(int argc, const char *argv[], const ArgPP &args, bool u
         }
     };
 
-    for (double value : sizes)
+    for (const std::vector<double> &batch : batches)
     {
         while ((int)running.size() >= jobs)
             waitOne();
 
-        const std::string baseLabel = std::string(byKEq ? "keq" : "D") + SizeLabel(value);
+        const std::string baseLabel = ParallelBatchLabel(byKEq, batch, jobIndex);
         std::string label = baseLabel;
         if (usedLabels.count(label) != 0)
             label = baseLabel + "_job" + std::to_string(jobIndex + 1);
@@ -1210,15 +1291,29 @@ int RunParallelMultigrid(int argc, const char *argv[], const ArgPP &args, bool u
         std::vector<std::string> child = baseArgs;
         child.push_back("--threads");
         child.push_back(std::to_string(childThreads));
-        if (byKEq)
+        if (byKEq && batch.size() > 1)
+        {
+            const std::string batchListPath = baseOut + "/" + label + "_keq.txt";
+            if (!WriteParallelSizeList(batchListPath, batch))
+            {
+                std::cerr << "ERROR: could not write k_eq batch list '"
+                          << batchListPath << "': " << strerror(errno)
+                          << std::endl;
+                ++failures;
+                continue;
+            }
+            child.push_back("--multikeq_list");
+            child.push_back(batchListPath);
+        }
+        else if (byKEq)
         {
             child.push_back("--k_eq");
-            child.push_back(std::to_string(value));
+            child.push_back(std::to_string(batch.front()));
         }
         else
         {
             child.push_back("--rs");
-            child.push_back(std::to_string(value));
+            child.push_back(std::to_string(batch.front()));
         }
         child.push_back("-o");
         child.push_back(baseOut + "/" + label);
