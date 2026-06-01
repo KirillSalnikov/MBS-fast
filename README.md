@@ -177,6 +177,21 @@ bin/mbs_po --po --oldauto 2 --pole \
     --pf shapeA64_mbs.dat --multikeq_list keq_list.txt \
     --ri 1.6 0.002 -w 1.064 -n 8 \
     --tgrid scattering_angles --nphi 600 --gpu --fft --close
+
+# Multi-GPU scan: exact mode, one child size per GPU job
+bin/mbs_po --po --oldauto 2 --pf shapeA64_mbs.dat \
+    --multikeq_list keq_list.txt --ri 1.6 0.002 -w 1.064 -n 8 \
+    --tgrid scattering_angles --nphi 600 --gpu --fft --close \
+    --multigrid_parallel 0 --multigrid_threads 16 --gpu_devices 0,1,2,3,4
+
+# Multi-GPU scan with trace reuse inside each GPU batch.
+# Use only when the listed k_eq values are close enough for a shared
+# reference orientation grid; tighten --multikeq_batch_ratio for accuracy.
+bin/mbs_po --po --oldauto 2 --pf shapeA64_mbs.dat \
+    --multikeq_list keq_list.txt --ri 1.6 0.002 -w 1.064 -n 8 \
+    --tgrid scattering_angles --nphi 600 --gpu --fft --close \
+    --multigrid_parallel 0 --multigrid_threads 16 --gpu_devices 0,1,2,3,4 \
+    --multikeq_shared_batches --multikeq_batch_ratio 1.05
 ```
 
 **Note**: `--grid` and `--sym` are NOT needed with `--auto`/`--autofull`. Theta grid, phi bins, and particle symmetry are set automatically.
@@ -274,7 +289,8 @@ See `tests/reference_test/RESULTS.md` and comparison plots in `tests/reference_t
 - **Non-convex tracing status**: ray tracing is still CPU-side; `--gpu_trace`
   is only an experimental CUDA candidate prefilter, not completed full GPU
   tracing. Large non-convex particles can therefore remain Phase-1 limited.
-- **Multi-size**: `--multigrid`, `--multikeq`, `--multikeq_list` — trace once at the largest size, recompute diffraction for all sizes
+- **Multi-size**: `--multigrid`, `--multikeq`, `--multikeq_list` — trace once at the largest size inside one process, recompute diffraction for all sizes
+- **Multi-GPU scans**: `--multigrid_parallel 0 --gpu_devices ...` runs exact independent child sizes by default; add `--multikeq_shared_batches` to reuse one trace per GPU batch of nearby `k_eq` values
 - **GPU batching controls**: `MBS_SHARED_BETA_GROUP=N`, `MBS_GPU_NO_ATOMICS=1`, `MBS_GPU_MEM_FRACTION=...`
 - **Per-beta save**: `--save_betas` — write intermediate Mueller per beta (backup/resume)
 - **Opt-in checkpoint**: `--checkpoint` — save/resume long `--orientfile` and `--oldauto`/`--random` runs; off by default to avoid extra I/O. For oldauto/random, the checkpoint is written after each completed beta ring and the same `-o` folder is reused on restart.

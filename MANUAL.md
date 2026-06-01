@@ -553,6 +553,51 @@ shared tracing.
 
 Each child receives one size via `--rs` or `--k_eq`.
 
+With CUDA builds, `--multigrid_parallel 0` means auto: use the number of
+visible GPU devices. Devices are assigned by setting `CUDA_VISIBLE_DEVICES`
+for each child. `--gpu_devices 0,1,2,3,4` restricts or orders the device list.
+
+The parent also divides host RAM between children. It exports
+`MBS_HOST_MEM_BUDGET_MB` to each child, and the oldauto/random GPU
+auto-chunker uses that as an upper host-memory budget. The default total
+fraction is controlled by:
+
+```
+MBS_PARALLEL_MEM_FRACTION=0.70
+```
+
+#### `--multikeq_shared_batches`
+
+Opt-in trace reuse for multi-GPU `k_eq` scans. Instead of launching one child
+per size, the parent groups nearby `k_eq` values into per-GPU batch files and
+launches each child with its own `--multikeq_list`. Inside that child,
+oldauto traces/prepares once at the largest `k_eq` in the batch and then
+recomputes diffraction for every size in the batch.
+
+This is faster for dense size scans because tracing is reused, but it is not
+bit-identical to independent oldauto for the smaller sizes in a batch: those
+sizes use the orientation grid chosen for the batch reference size. This is
+usually a denser grid for the smaller sizes, but it is still a different
+quadrature. Therefore the exact default remains one child per size.
+
+#### `--multikeq_batch_ratio R`
+
+Maximum allowed ratio inside an opt-in shared k_eq batch:
+
+```
+kmax / kmin <= R
+```
+
+Default:
+
+```
+R = 1.05
+```
+
+Use smaller values, e.g. `1.01` or `1.02`, when the result must stay closer to
+independent oldauto grids. Use larger values only for exploratory scans where
+trace reuse is more important than strict quadrature matching.
+
 #### `--multigrid_threads N`
 
 OpenMP threads per child process in `--multigrid_parallel`. If omitted, GPU
@@ -1293,6 +1338,9 @@ mbs_po --po --all --tr tracks.dat --gr \
 | `--multikeq_list` | FILE | Multi-size | Exact k_eq values; shared trace at max |
 | `--multigrid_parallel` | JOBS | Multi-size | Run sizes as child processes |
 | `--multigrid_threads` | N | Multi-size | Threads per child process |
+| `--gpu_devices` | LIST | Multi-size | CUDA devices for parallel GPU children |
+| `--multikeq_shared_batches` | (none) | Multi-size | Group nearby k_eq values per GPU child and reuse tracing |
+| `--multikeq_batch_ratio` | R | Multi-size | Max `kmax/kmin` inside a shared k_eq batch |
 | `--threads` | N | Performance | OpenMP worker threads |
 | `--gpu` | (none) | Performance | CUDA diffraction backend |
 | `--fft` | (none) | Performance | cuFFT phi interpolation backend; requires `--gpu` |

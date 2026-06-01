@@ -224,6 +224,7 @@ void SetArgRules(ArgPP &parser)
     parser.AddRule("multigrid_threads", 1, true); // per-child OpenMP threads for multigrid_parallel
     parser.AddRule("gpu_devices", 1, true); // comma-separated CUDA devices for multigrid_parallel
     parser.AddRule("multikeq_shared_batches", 0, true); // batch k_eq values per GPU; trace once per batch
+    parser.AddRule("multikeq_batch_ratio", 1, true); // max kmax/kmin inside shared k_eq batch
     parser.AddRule("save_betas", 0, true); // save intermediate Mueller for each beta to betas/ subfolder
     parser.AddRule("checkpoint", 0, true); // enable checkpoint save/resume for long orientfile and oldauto/random runs
     parser.AddRule("tgrid", 1, true); // non-uniform theta grid file
@@ -393,6 +394,10 @@ void PrintFullHelp()
          << "                           send several k_eq values to each GPU child and trace once\n"
          << "                           on the largest k_eq in that batch. Faster for scans;\n"
          << "                           lower k_eq values use the batch reference orientation grid.\n\n"
+         << "  --multikeq_batch_ratio R\n"
+         << "                           Max kmax/kmin inside --multikeq_shared_batches\n"
+         << "                           (default 1.05). Smaller is closer to independent\n"
+         << "                           oldauto grids; larger reuses more tracing.\n\n"
 
 
          << "=== Output ===\n"
@@ -486,7 +491,8 @@ void PrintReleaseHelp()
          << "  --multigrid_parallel N      Run sizes as child processes (0 = auto)\n"
          << "  --multigrid_threads N       Threads per child process\n"
          << "  --gpu_devices LIST          CUDA devices for parallel children\n"
-         << "  --multikeq_shared_batches   Batch k_eq values per GPU and reuse tracing per batch\n\n"
+         << "  --multikeq_shared_batches   Batch k_eq values per GPU and reuse tracing per batch\n"
+         << "  --multikeq_batch_ratio R    Max kmax/kmin per shared k_eq batch (default 1.05)\n\n"
 
          << "=== Output / diagnostics kept in release ===\n"
          << "  -o NAME                Output path/name\n"
@@ -1045,7 +1051,8 @@ int ParallelMultigridRemoveCount(const std::string &arg)
     static const Item items[] = {
         {"multigrid", 3}, {"multikeq", 3}, {"multikeq_list", 1}, {"multigrid_parallel", 1},
         {"multigrid_threads", 1}, {"rs", 1}, {"k_eq", 1},
-        {"threads", 1}, {"gpu_devices", 1}, {"multikeq_shared_batches", 0}, {"o", 1}
+        {"threads", 1}, {"gpu_devices", 1}, {"multikeq_shared_batches", 0},
+        {"multikeq_batch_ratio", 1}, {"o", 1}
     };
     for (const Item &item : items)
     {
@@ -1087,7 +1094,8 @@ std::vector<std::vector<double>> BuildParallelBatches(
     bool byKEq,
     bool useGpu,
     int jobs,
-    bool sharedKeqRequested)
+    bool sharedKeqRequested,
+    double maxKeqRatio)
 {
     std::vector<std::vector<double>> batches;
     if (sizes.empty())
@@ -1107,16 +1115,27 @@ std::vector<std::vector<double>> BuildParallelBatches(
         return batches;
     }
 
-    const int batchCount = std::max(1, std::min<int>(jobs, (int)sizes.size()));
-    batches.assign(batchCount, std::vector<double>());
-    for (size_t i = 0; i < sizes.size(); ++i)
+    maxKeqRatio = std::max(1.0, maxKeqRatio);
+    std::vector<double> sorted = sizes;
+    std::sort(sorted.begin(), sorted.end());
+
+    std::vector<double> current;
+    for (double value : sorted)
     {
-        size_t batch = (i * (size_t)batchCount) / sizes.size();
-        batches[batch].push_back(sizes[i]);
+        if (!current.empty())
+        {
+            double kmin = current.front();
+            double ratio = kmin > 0.0 ? value / kmin : 1.0;
+            if (ratio > maxKeqRatio)
+            {
+                batches.push_back(current);
+                current.clear();
+            }
+        }
+        current.push_back(value);
     }
-    batches.erase(std::remove_if(batches.begin(), batches.end(),
-                  [](const std::vector<double> &b) { return b.empty(); }),
-                  batches.end());
+    if (!current.empty())
+        batches.push_back(current);
     return batches;
 }
 
@@ -1212,10 +1231,19 @@ int RunParallelMultigrid(int argc, const char *argv[], const ArgPP &args, bool u
     const long long childMemBudgetMb = (useGpu && jobs > 0 && memAvailableMb > 0)
         ? std::max(512LL, (long long)((double)memAvailableMb * memFraction / jobs))
         : 0;
+    double sharedKeqMaxRatio = args.IsCatched("multikeq_batch_ratio")
+        ? args.GetDoubleValue("multikeq_batch_ratio", 0)
+        : EnvDoubleMain("MBS_PARALLEL_KEQ_BATCH_RATIO", 1.05);
+    if (sharedKeqMaxRatio < 1.0)
+    {
+        std::cerr << "ERROR: --multikeq_batch_ratio must be >= 1." << std::endl;
+        return 1;
+    }
 
     std::vector<std::vector<double>> batches =
         BuildParallelBatches(sizes, byKEq, useGpu, jobs,
-                             args.IsCatched("multikeq_shared_batches"));
+                             args.IsCatched("multikeq_shared_batches"),
+                             sharedKeqMaxRatio);
 
     std::cout << "Parallel multigrid: " << sizes.size() << " "
               << (byKEq ? "k_eq" : "Dmax") << " sizes, jobs=" << jobs
@@ -1224,7 +1252,8 @@ int RunParallelMultigrid(int argc, const char *argv[], const ArgPP &args, bool u
               << (useGpu ? " (--gpu)" : "") << std::endl;
     if (byKEq && batches.size() < sizes.size())
         std::cout << "Parallel multigrid shared k_eq batches: child processes "
-                  << "reuse one oldauto trace for all sizes in their batch"
+                  << "reuse one oldauto trace for all sizes in their batch; "
+                  << "max kmax/kmin=" << sharedKeqMaxRatio
                   << std::endl;
     if (useGpu)
     {
@@ -1317,6 +1346,18 @@ int RunParallelMultigrid(int argc, const char *argv[], const ArgPP &args, bool u
         }
         child.push_back("-o");
         child.push_back(baseOut + "/" + label);
+
+        if (byKEq && batch.size() > 1)
+        {
+            const double kmin = *std::min_element(batch.begin(), batch.end());
+            const double kmax = *std::max_element(batch.begin(), batch.end());
+            const double ratio = kmin > 0.0 ? kmax / kmin : 1.0;
+            std::cout << "Batch " << label << ": k_eq " << kmin << ".."
+                      << kmax << ", n_sizes=" << batch.size()
+                      << ", reference=max, kmax/kmin=" << ratio
+                      << ". Child oldauto log reports the actual reference grid."
+                      << std::endl;
+        }
 
         std::string childGpuDevice;
         if (useGpu && !gpuDevices.empty())
