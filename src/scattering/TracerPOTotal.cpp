@@ -31,6 +31,94 @@ static matrix MirrorGammaMuellerMatrix(const matrix &src, const matrix &mirror)
     return out;
 }
 
+static long long ReadMeminfoKb(const char *key)
+{
+    std::ifstream f("/proc/meminfo");
+    std::string name;
+    long long value = 0;
+    std::string unit;
+    while (f >> name >> value >> unit)
+    {
+        if (name == key)
+            return value;
+    }
+    return 0;
+}
+
+static long long ReadProcessRssKb()
+{
+    std::ifstream f("/proc/self/status");
+    std::string line;
+    while (std::getline(f, line))
+    {
+        if (line.find("VmRSS:") == 0)
+        {
+            long long kb = 0;
+            std::sscanf(line.c_str(), "VmRSS: %lld", &kb);
+            return kb;
+        }
+    }
+    return 0;
+}
+
+static double EnvDouble(const char *name, double fallback)
+{
+    const char *value = std::getenv(name);
+    if (!value || !*value)
+        return fallback;
+    char *end = nullptr;
+    double parsed = std::strtod(value, &end);
+    return (end && *end == '\0' && parsed > 0.0) ? parsed : fallback;
+}
+
+static int EnvInt(const char *name, int fallback)
+{
+    const char *value = std::getenv(name);
+    if (!value || !*value)
+        return fallback;
+    char *end = nullptr;
+    long parsed = std::strtol(value, &end, 10);
+    return (end && *end == '\0' && parsed > 0) ? (int)parsed : fallback;
+}
+
+static int HostMemoryAwareGammaChunk(int requested,
+                                     bool noBeamCutoff,
+                                     long long *totalKbOut,
+                                     long long *availableKbOut,
+                                     long long *rssKbOut,
+                                     long long *budgetKbOut)
+{
+    const long long totalKb = ReadMeminfoKb("MemTotal:");
+    const long long availableKb = ReadMeminfoKb("MemAvailable:");
+    const long long rssKb = ReadProcessRssKb();
+    if (totalKbOut) *totalKbOut = totalKb;
+    if (availableKbOut) *availableKbOut = availableKb;
+    if (rssKbOut) *rssKbOut = rssKb;
+
+    if (totalKb <= 0 || availableKb <= 0)
+    {
+        if (budgetKbOut) *budgetKbOut = 0;
+        return std::max(1, requested);
+    }
+
+    const double fraction = EnvDouble("MBS_HOST_MEM_FRACTION",
+                                      noBeamCutoff ? 0.35 : 0.55);
+    const long long reserveKb =
+        (long long)EnvInt("MBS_HOST_MEM_RESERVE_MB", 4096) * 1024LL;
+    const long long totalBudgetKb =
+        (long long)(std::max(0.05, std::min(0.90, fraction)) * (double)totalKb);
+    const long long freeBudgetKb = std::max(0LL, availableKb - reserveKb);
+    const long long budgetKb = std::max(256LL * 1024LL,
+        std::min(totalBudgetKb, rssKb + freeBudgetKb));
+    if (budgetKbOut) *budgetKbOut = budgetKb;
+
+    const int mbPerGamma = EnvInt("MBS_OLDAUTO_BYTES_PER_GAMMA_MB",
+                                  noBeamCutoff ? 1024 : 256);
+    const long long perGammaKb = std::max(1, mbPerGamma) * 1024LL;
+    int byMemory = (int)std::max(1LL, budgetKb / perGammaKb);
+    return std::max(1, std::min(requested, byMemory));
+}
+
 static void ApplyMirrorGammaMueller(Arr2D &arr, int nAz, int nZen)
 {
     Arr2D mirrored(nAz + 1, nZen + 1, 4, 4);
@@ -2512,13 +2600,20 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         && handlerPO->m_beamCutoffImportanceRel <= 0.0
         && handlerPO->m_beamCutoff <= 0.0;
     bool autoGammaChunk = false;
+    bool hostMemGuarded = false;
+    bool hostMemClamped = false;
+    bool hostMemConservative = false;
+    long long hostMemTotalKb = 0;
+    long long hostMemAvailableKb = 0;
+    long long hostMemRssKb = 0;
+    long long hostMemBudgetKb = 0;
     if (m_sobolChunkSize > 0)
     {
         gammaChunk = std::max(1, std::min(nGamma, m_sobolChunkSize));
     }
-    else if (handlerPO->IsGpuEnabled() && noBeamCutoff)
+    else if (handlerPO->IsGpuEnabled())
     {
-        int defaultChunk = 64;
+        int defaultChunk = noBeamCutoff ? 8 : 64;
         const char *chunkEnv = std::getenv("MBS_OLDAUTO_GAMMA_CHUNK");
         if (chunkEnv && *chunkEnv)
         {
@@ -2531,13 +2626,45 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         autoGammaChunk = gammaChunk < nGamma;
     }
 
+    if (handlerPO->IsGpuEnabled())
+    {
+        const int requestedGammaChunk = std::max(1, std::min(nGamma, gammaChunk));
+        gammaChunk = HostMemoryAwareGammaChunk(
+            requestedGammaChunk,
+            noBeamCutoff,
+            &hostMemTotalKb,
+            &hostMemAvailableKb,
+            &hostMemRssKb,
+            &hostMemBudgetKb);
+        gammaChunk = std::max(1, std::min(nGamma, gammaChunk));
+        hostMemGuarded = true;
+        hostMemClamped = gammaChunk < requestedGammaChunk;
+        hostMemConservative = noBeamCutoff;
+    }
+
     if (m_mpiRank == 0 && gammaChunk < nGamma)
     {
         std::ostringstream line;
         line << "Oldauto/random memory: gamma chunk=" << gammaChunk
              << "/" << nGamma << " per beta";
-        if (autoGammaChunk)
-            line << " (auto no-cutoff GPU; override with --chunk or MBS_OLDAUTO_GAMMA_CHUNK)";
+        if (hostMemGuarded)
+        {
+            line << " (GPU host-RAM guard";
+            if (hostMemTotalKb > 0)
+            {
+                line << ", MemAvailable=" << (hostMemAvailableKb / 1024)
+                     << " MB, VmRSS=" << (hostMemRssKb / 1024)
+                     << " MB, budget=" << (hostMemBudgetKb / 1024)
+                     << " MB";
+            }
+            if (hostMemConservative)
+                line << ", no-cutoff conservative mode";
+            if (hostMemClamped)
+                line << ", clamped requested chunk";
+            else if (autoGammaChunk)
+                line << ", auto chunk";
+            line << "; tune with MBS_HOST_MEM_FRACTION/MBS_HOST_MEM_RESERVE_MB)";
+        }
         else
             line << " (--chunk)";
         std::cout << line.str() << std::endl;
@@ -2798,7 +2925,9 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             chunkPrepared.clear(); chunkPrepared.shrink_to_fit();
         };
 
-        const bool pipelineTraceGpu = handlerPO->IsGpuEnabled() && gammaChunk < gammaFullCount;
+        const bool pipelineTraceGpu = handlerPO->IsGpuEnabled()
+            && gammaChunk < gammaFullCount
+            && !hostMemConservative;
         if (pipelineTraceGpu)
         {
             auto launchPrepare = [&](int start) {
