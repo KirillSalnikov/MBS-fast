@@ -72,6 +72,10 @@ private:
                             const Vector3f &polNormal, const Vector3f &clipNormal,
                             const Vector3f &dir,
                             PolygonArray &pols);
+    void CutPolygonByAggregateParts(const Polygon &pol, int facetId,
+                                    const Vector3f &polNormal,
+                                    const Vector3f &dir,
+                                    PolygonArray &pols);
 
     bool PushBeamPartsToTree(const Beam &beam,
                              const PolygonArray &parts);

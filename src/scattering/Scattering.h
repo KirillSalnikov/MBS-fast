@@ -118,7 +118,7 @@ protected:
     void ComputePolarisationParams(const Vector3f &dir,
                                    const Vector3f &facetNormal, Beam &beam);
 
-    void ComputeFacetEnergy(int facetId, const Polygon &lightedPolygon);
+    void AddProjectedIncidentEnergy(int facetId, const Polygon &lightedPolygon);
 
 
     bool PushBeamToTree(Beam &beam, int facetId, int level, Location location);

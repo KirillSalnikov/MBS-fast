@@ -36,7 +36,8 @@ Scattering::Scattering(Particle *particle, Light *incidentLight, bool isOpticalP
     : m_particle(particle),
       splitting(isOpticalPath),
       m_incidentLight(incidentLight),
-      m_nActs(nActs)
+      m_nActs(nActs),
+      m_incidentEnergy(0.0)
 {
     m_facets = m_particle->facets;
 
@@ -175,7 +176,7 @@ void Scattering::SplitLightToBeams(int facetId, Beam &inBeam, Beam &outBeam)
     }
 }
 
-void Scattering::ComputeFacetEnergy(int facetId, const Polygon &lightedPolygon)
+void Scattering::AddProjectedIncidentEnergy(int facetId, const Polygon &lightedPolygon)
 {
     const Point3f &normal = m_facets[facetId].in_normal;
     double cosA = DotProduct(m_incidentDir, normal);

@@ -11,6 +11,7 @@ struct CachedBeam {
     // Precomputed 2D aperture vertices (in aperture coordinate system, already centered)
     // These are in absolute units at tracing time; we normalize by D_ref below.
     double vx_norm[32], vy_norm[32]; // 2D vertex coords / D_ref
+    double v3x_norm[32], v3y_norm[32], v3z_norm[32]; // 3D vertex coords / D_ref
     double slope_yx[32], slope_xy[32]; // edge slopes (dimensionless, scale-invariant)
     double intercept_y_norm[32], intercept_x_norm[32]; // intercepts / D_ref
     bool edge_valid_x[32], edge_valid_y[32];
@@ -22,13 +23,18 @@ struct CachedBeam {
     double opticalPath_norm;   // optical path / D_ref
     double projLength_norm;    // projected length / D_ref
     double area_norm;          // area / D_ref^2
+    double lenIndexX;          // d(optical path)/dx across aperture
+    double lenIndexY;          // d(optical path)/dy across aperture
+    bool hasInternalPath;      // beam has traveled through the particle
     bool isExternal;           // lastFacetId == INT_MAX (shadow beam)
 
     // Precomputed polarization data (direction-independent)
     BeamPolData polData;
 
-    // Beam direction (unit vector, scale-invariant)
+    // Beam direction and polarization basis (unit vectors, scale-invariant)
     double dirx, diry, dirz;
+    double polx, poly, polz;
+    double basisx, basisy, basisz;
 
     // Aperture coordinate axes (unit vectors, scale-invariant)
     double horAx, horAy, horAz;

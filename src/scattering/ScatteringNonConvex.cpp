@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <vector>
+#include <iomanip>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -57,6 +59,17 @@ bool GpuTraceRuntimeEnabled()
 #endif
 
 namespace {
+bool PgLikePartShadow()
+{
+    const char *v = std::getenv("MBS_AGGREGATE_PART_SHADOW");
+    return v && *v;
+}
+
+double HullCross(const Point2f &o, const Point2f &a, const Point2f &b)
+{
+    return (a.x - o.x)*(b.y - o.y) - (a.y - o.y)*(b.x - o.x);
+}
+
 double CpuTraceProjectedPrefilterMargin()
 {
     static const double margin = []() {
@@ -136,6 +149,27 @@ void ScatteringNonConvex::PushBeamsToTree(int facetId, const PolygonArray &polyg
         out.AddOpticalPath(path);
         UpdateTraceReference(in);
         UpdateTraceReference(out);
+        if (const char *initialDebugPath = std::getenv("MBS_INITIAL_BEAMR_DEBUG"))
+        {
+            if (*initialDebugPath)
+            {
+                std::ofstream dbg(initialDebugPath, std::ios::app);
+                dbg << std::scientific << std::setprecision(15)
+                    << facetId << " " << j << " " << out.nVertices
+                    << " " << out.Area()
+                    << " " << out.direction.cx << " " << out.direction.cy << " " << out.direction.cz
+                    << " " << m_facets[facetId].ex_normal.cx << " " << m_facets[facetId].ex_normal.cy << " " << m_facets[facetId].ex_normal.cz
+                    << " " << out.polarizationBasis.cx << " " << out.polarizationBasis.cy << " " << out.polarizationBasis.cz
+                    << " " << real(out.J.m11) << " " << imag(out.J.m11)
+                    << " " << real(out.J.m12) << " " << imag(out.J.m12)
+                    << " " << real(out.J.m21) << " " << imag(out.J.m21)
+                    << " " << real(out.J.m22) << " " << imag(out.J.m22)
+                    << " " << out.opticalPath;
+                for (int vi = 0; vi < out.nVertices; ++vi)
+                    dbg << " " << out.arr[vi].cx << " " << out.arr[vi].cy << " " << out.arr[vi].cz;
+                dbg << std::endl;
+            }
+        }
 #ifdef _DEBUG // DEB
         in.dirs.push_back(in.direction);
         out.dirs.push_back(out.direction);
@@ -151,9 +185,7 @@ void ScatteringNonConvex::PushBeamsToTree(int facetId, const PolygonArray &polyg
         m_beamTree.push_back(in);
         m_beamTree.push_back(out);
         m_treeSize = (int)m_beamTree.size();
-#ifdef _CHECK_ENERGY_BALANCE
-        ComputeFacetEnergy(facetId, out);
-#endif
+        AddProjectedIncidentEnergy(facetId, out);
     }
 }
 
@@ -179,9 +211,7 @@ void ScatteringNonConvex::SplitByFacet(const IntArray &facetIDs, int facetIndex)
 
 void ScatteringNonConvex::SplitLightToBeams()
 {
-#ifdef _CHECK_ENERGY_BALANCE
     m_incidentEnergy = 0;
-#endif
     m_treeSize = 0;
     m_beamTree.clear();
     ResetTraceReference();
@@ -213,17 +243,24 @@ void ScatteringNonConvex::IntersectWithFacet(const IntArray &facetIds, int prevF
 {
     int id = facetIds.arr[prevFacetNum];
 
-    if (prevFacetNum == 0 || m_facets[id].isVisibleOut)
+    const char *noInitialClip = std::getenv("MBS_NO_INITIAL_SHADOW_CLIP");
+    if ((noInitialClip && *noInitialClip) || prevFacetNum == 0 || m_facets[id].isVisibleOut)
     {
-        resFacets.Push(m_facets[id]);
+        if (PgLikePartShadow())
+            CutPolygonByAggregateParts(m_facets[id], id, m_facets[id].ex_normal, m_incidentDir, resFacets);
+        else
+            resFacets.Push(m_facets[id]);
     }
     else // facet is probably shadowed by others
     {
         const Facet &facet = m_facets[id];
         const Point3f &normal = facet.ex_normal;
 
-        CutPolygonByFacets(facet, facetIds, prevFacetNum, normal, normal,
-                           m_incidentDir, resFacets);
+        if (PgLikePartShadow())
+            CutPolygonByAggregateParts(facet, id, normal, m_incidentDir, resFacets);
+        else
+            CutPolygonByFacets(facet, facetIds, prevFacetNum, normal, normal,
+                               m_incidentDir, resFacets);
     }
 }
 
@@ -234,6 +271,158 @@ void ScatteringNonConvex::SelectVisibleFacets(const Beam &beam, IntArray &facetI
     Point3f dir = beam.direction;
     dir.d_param = m_facets[beam.lastFacetId].in_normal.d_param;
     SortFacets_faster(dir, facetIDs);
+}
+
+
+void ScatteringNonConvex::CutPolygonByAggregateParts(const Polygon &pol, int facetId,
+                                                     const Vector3f &polNormal,
+                                                     const Vector3f &dir,
+                                                     PolygonArray &pols)
+{
+    pols.Push(pol);
+
+    if (!m_particle->isAggregated || m_particle->nFacetsInPart <= 0)
+        return;
+
+    int targetBegin = 0, targetEnd = 0;
+    m_particle->GetParticalFacetIdRangeByFacetId(facetId, targetBegin, targetEnd);
+    const int facetsPerPart = m_particle->nFacetsInPart;
+    const int nParts = m_particle->nFacets / facetsPerPart;
+
+    Point3f origin = pol.arr[0];
+    Point3f axisU = pol.arr[1] - pol.arr[0];
+    Normalize(axisU);
+    Point3f axisV = CrossProduct(polNormal, axisU);
+    Normalize(axisV);
+    const double denom = DotProduct(dir, polNormal);
+    if (std::fabs(denom) < EPS_PROJECTION)
+        return;
+
+    for (int part = 0; part < nParts; ++part)
+    {
+        const int begin = part * facetsPerPart;
+        const int end = begin + facetsPerPart;
+        if (begin == targetBegin)
+            continue;
+
+        bool mayBlock = false;
+        std::vector<Point2f> projected;
+        projected.reserve(facetsPerPart * 6);
+
+        double targetMinX = 1.0e100, targetMinY = 1.0e100;
+        double targetMaxX = -1.0e100, targetMaxY = -1.0e100;
+        for (int vi = 0; vi < pol.nVertices; ++vi)
+        {
+            Point3f rel = pol.arr[vi] - origin;
+            const double x = DotProduct(rel, axisU);
+            const double y = DotProduct(rel, axisV);
+            targetMinX = std::min(targetMinX, x); targetMaxX = std::max(targetMaxX, x);
+            targetMinY = std::min(targetMinY, y); targetMaxY = std::max(targetMaxY, y);
+        }
+
+        for (int fid = begin; fid < end; ++fid)
+        {
+            const Facet &f = m_facets[fid];
+            if (DotProduct(f.ex_normal, dir) >= -1.0e-3)
+                continue;
+
+            bool faceInFront = false;
+            double faceMinX = 1.0e100, faceMinY = 1.0e100;
+            double faceMaxX = -1.0e100, faceMaxY = -1.0e100;
+            std::vector<Point2f> faceProjected;
+            faceProjected.reserve(f.nVertices);
+
+            for (int vi = 0; vi < f.nVertices; ++vi)
+            {
+                const Point3f &src = f.arr[vi];
+                const double t = (DotProduct(src, polNormal) + polNormal.d_param) / denom;
+                const char *depthMode = std::getenv("MBS_AGGREGATE_PART_SHADOW_DEPTH");
+                if (depthMode && depthMode[0] == '1')
+                {
+                    if (t > 0.0)
+                        faceInFront = true;
+                }
+                else if (depthMode && depthMode[0] == '2')
+                {
+                    if (t < 0.0)
+                        faceInFront = true;
+                }
+                else if (DotProduct(src - pol.arr[0], polNormal) > 0.0)
+                {
+                    faceInFront = true;
+                }
+                Point3f pp = src - dir * t;
+                Point3f rel = pp - origin;
+                const double x = DotProduct(rel, axisU);
+                const double y = DotProduct(rel, axisV);
+                faceMinX = std::min(faceMinX, x); faceMaxX = std::max(faceMaxX, x);
+                faceMinY = std::min(faceMinY, y); faceMaxY = std::max(faceMaxY, y);
+                faceProjected.push_back(Point2f(x, y));
+            }
+
+            const bool bboxOverlap = faceMaxX >= targetMinX && faceMinX <= targetMaxX
+                                  && faceMaxY >= targetMinY && faceMinY <= targetMaxY;
+            if (!faceInFront || !bboxOverlap)
+                continue;
+
+            mayBlock = true;
+            projected.insert(projected.end(), faceProjected.begin(), faceProjected.end());
+        }
+
+        if (!mayBlock || projected.size() < 3)
+            continue;
+
+        std::sort(projected.begin(), projected.end(), [](const Point2f &a, const Point2f &b) {
+            if (std::fabs(a.x - b.x) > 1e-7) return a.x < b.x;
+            return a.y < b.y;
+        });
+        std::vector<Point2f> unique;
+        unique.reserve(projected.size());
+        for (const Point2f &p2 : projected)
+        {
+            if (unique.empty() || std::fabs(unique.back().x - p2.x) > 1e-7 || std::fabs(unique.back().y - p2.y) > 1e-7)
+                unique.push_back(p2);
+        }
+        if (unique.size() < 3)
+            continue;
+
+        std::vector<Point2f> hull;
+        for (const Point2f &p2 : unique)
+        {
+            while (hull.size() >= 2 && HullCross(hull[hull.size()-2], hull[hull.size()-1], p2) <= 0)
+                hull.pop_back();
+            hull.push_back(p2);
+        }
+        const size_t lower = hull.size();
+        for (int i = (int)unique.size() - 2; i >= 0; --i)
+        {
+            const Point2f &p2 = unique[i];
+            while (hull.size() > lower && HullCross(hull[hull.size()-2], hull[hull.size()-1], p2) <= 0)
+                hull.pop_back();
+            hull.push_back(p2);
+        }
+        if (hull.size() > 1)
+            hull.pop_back();
+        if (hull.size() < 3 || hull.size() >= MAX_VERTEX_NUM)
+            continue;
+
+        Polygon clip;
+        for (const Point2f &p2 : hull)
+            clip.AddVertex(origin + axisU * p2.x + axisV * p2.y);
+        if (DotProduct(clip.Normal(), polNormal) < 0)
+            Polygon::InverseVertexOrder(clip);
+
+        m_polygonBuffer.Clear();
+        while (pols.size != 0)
+        {
+            const Polygon &subj = pols.Pop();
+            Difference(subj, polNormal, clip, polNormal, dir, m_polygonBuffer);
+        }
+        if (m_polygonBuffer.size == 0)
+            break;
+        for (unsigned i = 0; i < m_polygonBuffer.size; ++i)
+            pols.Push(m_polygonBuffer.arr[i]);
+    }
 }
 
 void ScatteringNonConvex::CutPolygonByFacets(const Polygon &pol,
@@ -279,6 +468,11 @@ void ScatteringNonConvex::CutExternalBeam(const Beam &beam,
 {
     const Point3f &n1 = m_facets[beam.lastFacetId].ex_normal;
     const Point3f &n2 = m_facets[beam.lastFacetId].in_normal;
+    const bool debugCut = []() {
+        const char *value = std::getenv("MBS_CUT_DEBUG");
+        return value && value[0] == '1' && value[1] == 0;
+    }();
+    const double sourceArea = debugCut ? beam.Area() : 0.0;
 
     IntArray facetIds;
     SelectVisibleFacets(beam, facetIds);
@@ -297,10 +491,24 @@ void ScatteringNonConvex::CutExternalBeam(const Beam &beam,
 #ifdef _DEBUG // DEB
     tmp.ops.push_back(path);
 #endif
+    double cutArea = 0.0;
     for (unsigned i = 0; i < m_polygonResultBuffer.size; ++i)
     {
         tmp.SetPolygon(m_polygonResultBuffer.arr[i]);
+        if (debugCut)
+            cutArea += tmp.Area();
         scaterredBeams.push_back(tmp);
+    }
+    if (debugCut)
+    {
+        std::cout << "MBS_CUT_DEBUG lastFacet=" << beam.lastFacetId
+                  << " nActs=" << beam.nActs
+                  << " loc=" << (beam.location == Location::Out ? "Out" : "In")
+                  << " sourceArea=" << sourceArea
+                  << " cutArea=" << cutArea
+                  << " candidates=" << facetIds.size
+                  << " pieces=" << m_polygonResultBuffer.size
+                  << std::endl;
     }
 }
 

@@ -63,8 +63,17 @@ public:
     void SetRefractiveIndex(const complex &value);
 
     const Symmetry &GetSymmetry() const;
-    virtual void GetParticalFacetIdRangeByFacetId(
-            int /*id*/, int &/*begin*/, int &/*end*/) const {}
+    virtual void GetParticalFacetIdRangeByFacetId(int id, int &begin, int &end) const
+    {
+        begin = 0;
+        end = 0;
+        if (!isAggregated || nFacetsInPart <= 0 || id < 0 || id >= nFacets)
+            return;
+        begin = (id / nFacetsInPart) * nFacetsInPart;
+        end = begin + nFacetsInPart;
+        if (end > nFacets)
+            end = nFacets;
+    }
 
     bool IsConcave() const;
 

@@ -42,9 +42,7 @@ bool ScatteringConvex::ScatterLight(double beta, double gamma,
         inBeam.id = newId;
         PushBeamToTree(inBeam, facetID, 0, Location::In);
 
-#ifdef _CHECK_ENERGY_BALANCE
-        ComputeFacetEnergy(facetID, outBeam);
-#endif
+        AddProjectedIncidentEnergy(facetID, outBeam);
     }
 
     TraceInternalBeams(outBeams);
