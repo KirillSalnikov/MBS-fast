@@ -1,0 +1,1225 @@
+% Options for packages loaded elsewhere
+\PassOptionsToPackage{unicode}{hyperref}
+\PassOptionsToPackage{hyphens}{url}
+\PassOptionsToPackage{dvipsnames,svgnames,x11names}{xcolor}
+\documentclass[
+  10pt,
+  a4paper,
+]{article}
+\usepackage{xcolor}
+\usepackage[margin=20mm]{geometry}
+\usepackage{amsmath,amssymb}
+\setcounter{secnumdepth}{5}
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{textcomp} % provide euro and other symbols
+\else % if luatex or xetex
+  \usepackage{unicode-math} % this also loads fontspec
+  \defaultfontfeatures{Scale=MatchLowercase}
+  \defaultfontfeatures[\rmfamily]{Ligatures=TeX,Scale=1}
+\fi
+\usepackage{lmodern}
+\ifPDFTeX\else
+  % xetex/luatex font selection
+  \setmainfont[]{Noto Serif}
+  \setsansfont[]{Noto Sans}
+  \setmonofont[]{DejaVu Sans Mono}
+\fi
+% Use upquote if available, for straight quotes in verbatim environments
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+\IfFileExists{microtype.sty}{% use microtype if available
+  \usepackage[]{microtype}
+  \UseMicrotypeSet[protrusion]{basicmath} % disable protrusion for tt fonts
+}{}
+\makeatletter
+\@ifundefined{KOMAClassName}{% if non-KOMA class
+  \IfFileExists{parskip.sty}{%
+    \usepackage{parskip}
+  }{% else
+    \setlength{\parindent}{0pt}
+    \setlength{\parskip}{6pt plus 2pt minus 1pt}}
+}{% if KOMA class
+  \KOMAoptions{parskip=half}}
+\makeatother
+\usepackage{color}
+\usepackage{fancyvrb}
+\newcommand{\VerbBar}{|}
+\newcommand{\VERB}{\Verb[commandchars=\\\{\}]}
+\DefineVerbatimEnvironment{Highlighting}{Verbatim}{commandchars=\\\{\}}
+% Add ',fontsize=\small' for more characters per line
+\newenvironment{Shaded}{}{}
+\newcommand{\AlertTok}[1]{\textcolor[rgb]{1.00,0.00,0.00}{\textbf{#1}}}
+\newcommand{\AnnotationTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textbf{\textit{#1}}}}
+\newcommand{\AttributeTok}[1]{\textcolor[rgb]{0.49,0.56,0.16}{#1}}
+\newcommand{\BaseNTok}[1]{\textcolor[rgb]{0.25,0.63,0.44}{#1}}
+\newcommand{\BuiltInTok}[1]{\textcolor[rgb]{0.00,0.50,0.00}{#1}}
+\newcommand{\CharTok}[1]{\textcolor[rgb]{0.25,0.44,0.63}{#1}}
+\newcommand{\CommentTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textit{#1}}}
+\newcommand{\CommentVarTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textbf{\textit{#1}}}}
+\newcommand{\ConstantTok}[1]{\textcolor[rgb]{0.53,0.00,0.00}{#1}}
+\newcommand{\ControlFlowTok}[1]{\textcolor[rgb]{0.00,0.44,0.13}{\textbf{#1}}}
+\newcommand{\DataTypeTok}[1]{\textcolor[rgb]{0.56,0.13,0.00}{#1}}
+\newcommand{\DecValTok}[1]{\textcolor[rgb]{0.25,0.63,0.44}{#1}}
+\newcommand{\DocumentationTok}[1]{\textcolor[rgb]{0.73,0.13,0.13}{\textit{#1}}}
+\newcommand{\ErrorTok}[1]{\textcolor[rgb]{1.00,0.00,0.00}{\textbf{#1}}}
+\newcommand{\ExtensionTok}[1]{#1}
+\newcommand{\FloatTok}[1]{\textcolor[rgb]{0.25,0.63,0.44}{#1}}
+\newcommand{\FunctionTok}[1]{\textcolor[rgb]{0.02,0.16,0.49}{#1}}
+\newcommand{\ImportTok}[1]{\textcolor[rgb]{0.00,0.50,0.00}{\textbf{#1}}}
+\newcommand{\InformationTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textbf{\textit{#1}}}}
+\newcommand{\KeywordTok}[1]{\textcolor[rgb]{0.00,0.44,0.13}{\textbf{#1}}}
+\newcommand{\NormalTok}[1]{#1}
+\newcommand{\OperatorTok}[1]{\textcolor[rgb]{0.40,0.40,0.40}{#1}}
+\newcommand{\OtherTok}[1]{\textcolor[rgb]{0.00,0.44,0.13}{#1}}
+\newcommand{\PreprocessorTok}[1]{\textcolor[rgb]{0.74,0.48,0.00}{#1}}
+\newcommand{\RegionMarkerTok}[1]{#1}
+\newcommand{\SpecialCharTok}[1]{\textcolor[rgb]{0.25,0.44,0.63}{#1}}
+\newcommand{\SpecialStringTok}[1]{\textcolor[rgb]{0.73,0.40,0.53}{#1}}
+\newcommand{\StringTok}[1]{\textcolor[rgb]{0.25,0.44,0.63}{#1}}
+\newcommand{\VariableTok}[1]{\textcolor[rgb]{0.10,0.09,0.49}{#1}}
+\newcommand{\VerbatimStringTok}[1]{\textcolor[rgb]{0.25,0.44,0.63}{#1}}
+\newcommand{\WarningTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textbf{\textit{#1}}}}
+\usepackage{longtable,booktabs,array}
+\usepackage{calc} % for calculating minipage widths
+% Correct order of tables after \paragraph or \subparagraph
+\usepackage{etoolbox}
+\makeatletter
+\patchcmd\longtable{\par}{\if@noskipsec\mbox{}\fi\par}{}{}
+\makeatother
+% Allow footnotes in longtable head/foot
+\IfFileExists{footnotehyper.sty}{\usepackage{footnotehyper}}{\usepackage{footnote}}
+\makesavenoteenv{longtable}
+\setlength{\emergencystretch}{3em} % prevent overfull lines
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\usepackage{bookmark}
+\IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
+\urlstyle{same}
+\hypersetup{
+  pdftitle={MBS-fast Manual},
+  colorlinks=true,
+  linkcolor={blue},
+  filecolor={Maroon},
+  citecolor={Blue},
+  urlcolor={blue},
+  pdfcreator={LaTeX via pandoc}}
+
+\title{MBS-fast Manual}
+\author{}
+\date{June 9, 2026}
+
+\begin{document}
+\maketitle
+
+\renewcommand*\contentsname{Contents}
+{
+\setcounter{tocdepth}{3}
+\tableofcontents
+}
+MBS-fast computes light scattering by non-spherical particles with
+geometrical ray tracing plus Physical Optics (PO) diffraction. The code
+is optimized for CPU OpenMP/MPI runs and CUDA GPU diffraction runs. This
+manual describes the current command line interface, build targets,
+grids, multi-GPU scans, and the main diffraction/Jones/Mueller formulas
+used by the implementation.
+
+\section{Build}\label{build}
+
+\subsection{Requirements}\label{requirements}
+
+\begin{longtable}[]{@{}lll@{}}
+\toprule\noalign{}
+Component & Required for & Notes \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+GCC \textgreater= 9 or Clang \textgreater= 14 & CPU and host CUDA code &
+GCC is the normal path on EPYC \\
+OpenMP & CPU parallelism & GCC links with \texttt{libgomp} \\
+MPI & \texttt{cpu/} split build & \texttt{mpicxx} is used when
+available \\
+CUDA toolkit & \texttt{gpu/} split build & \texttt{nvcc},
+\texttt{libcudart}, \texttt{libcufft} \\
+NVIDIA driver & GPU runs & Must support the requested \texttt{sm\_XX}
+binary \\
+\end{longtable}
+
+The split build is the recommended build path. CPU objects are kept
+under \texttt{cpu/build/}; CUDA objects are kept under
+\texttt{gpu/build/}. The shared physics code remains in \texttt{src/}.
+
+\subsection{CPU build}\label{cpu-build}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\CommentTok{\# MPI + OpenMP CPU binary}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ cpu }\AttributeTok{{-}j}
+
+\CommentTok{\# Run one MPI rank with 64 OpenMP threads}
+\VariableTok{OMP\_NUM\_THREADS}\OperatorTok{=}\NormalTok{64 }\ExtensionTok{cpu/bin/mbs\_po\_mpi} \AttributeTok{{-}{-}po} \AttributeTok{{-}p}\NormalTok{ 1 125.9 78.09 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}ri}\NormalTok{ 1.3116 0 }\AttributeTok{{-}w}\NormalTok{ 0.532 }\AttributeTok{{-}n}\NormalTok{ 12 }\AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}threads}\NormalTok{ 64 }\AttributeTok{{-}{-}close} \AttributeTok{{-}o}\NormalTok{ out\_cpu}
+
+\CommentTok{\# Run four MPI ranks, each with 16 OpenMP threads}
+\ExtensionTok{mpirun} \AttributeTok{{-}np}\NormalTok{ 4 cpu/bin/mbs\_po\_mpi }\AttributeTok{{-}{-}po} \AttributeTok{{-}p}\NormalTok{ 1 125.9 78.09 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}ri}\NormalTok{ 1.3116 0 }\AttributeTok{{-}w}\NormalTok{ 0.532 }\AttributeTok{{-}n}\NormalTok{ 12 }\AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}threads}\NormalTok{ 16 }\AttributeTok{{-}{-}close} \AttributeTok{{-}o}\NormalTok{ out\_cpu\_mpi}
+\end{Highlighting}
+\end{Shaded}
+
+Debug help build:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ cpu debug}
+\ExtensionTok{cpu/bin/mbs\_po\_mpi\_debug} \AttributeTok{{-}{-}help{-}debug}
+\end{Highlighting}
+\end{Shaded}
+
+\subsection{GPU build}\label{gpu-build}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\CommentTok{\# Default GPU binary: float + fast math}
+\VariableTok{PATH}\OperatorTok{=}\NormalTok{/usr/local/cuda/bin:}\VariableTok{$PATH} \FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu }\AttributeTok{{-}j}
+
+\CommentTok{\# Explicit variants}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu float       }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_float}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu float\_fast  }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_float\_fast}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu double\_fast }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_double\_fast}
+\end{Highlighting}
+\end{Shaded}
+
+\begin{longtable}[]{@{}llrrl@{}}
+\toprule\noalign{}
+Target & Binary & CUDA precision & Fast math & Typical use \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{make\ -C\ gpu} & \texttt{gpu/bin/mbs\_po\_gpu\_float\_fast} &
+FP32 & yes & Fast production scans \\
+\texttt{make\ -C\ gpu\ float} & \texttt{gpu/bin/mbs\_po\_gpu\_float} &
+FP32 & no & FP32 check without fast math \\
+\texttt{make\ -C\ gpu\ double\_fast} &
+\texttt{gpu/bin/mbs\_po\_gpu\_double\_fast} & FP64 & yes & Reference GPU
+checks \\
+\texttt{make\ -C\ gpu\ double\_debug} &
+\texttt{gpu/bin/mbs\_po\_gpu\_double\_debug} & FP64 & yes & Debug help
+and diagnostics \\
+\end{longtable}
+
+The GPU split build enables CUDA diffraction by default.
+\texttt{-\/-gpu} is accepted but optional. Use \texttt{-\/-cpu} only
+when you deliberately want the CPU diffraction backend from a
+GPU-capable binary.
+
+The Makefile detects the GPU compute capability with
+\texttt{nvidia-smi}. Override when needed:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\CommentTok{\# Ampere, e.g. RTX 3080 Ti}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu double\_fast }\AttributeTok{{-}j}\NormalTok{ GPU\_ARCH=86}
+
+\CommentTok{\# Ada, e.g. RTX 4070}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu float\_fast }\AttributeTok{{-}j}\NormalTok{ GPU\_ARCH=89}
+\end{Highlighting}
+\end{Shaded}
+
+\subsection{EPYC Zen5, AVX-512, and
+AVX2}\label{epyc-zen5-avx-512-and-avx2}
+
+\texttt{scripts/detect\_arch\_flags.sh} is used by the Makefiles through
+\texttt{ARCH\_FLAGS}. On a native machine, the safest high-performance
+option is usually:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ cpu clean}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ cpu }\AttributeTok{{-}j}\NormalTok{ ARCH\_FLAGS=}\StringTok{"{-}march=native {-}mtune=native"}
+
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu clean}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu double\_fast }\AttributeTok{{-}j}\NormalTok{ ARCH\_FLAGS=}\StringTok{"{-}march=native {-}mtune=native"}
+\end{Highlighting}
+\end{Shaded}
+
+For named AMD targets:
+
+\begin{longtable}[]{@{}lll@{}}
+\toprule\noalign{}
+CPU target & GCC/Clang flags & Notes \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+EPYC Zen2 & \texttt{ARCH\_FLAGS="-march=znver2\ -mtune=znver2"} &
+AVX2/FMA path \\
+EPYC Zen3 & \texttt{ARCH\_FLAGS="-march=znver3\ -mtune=znver3"} &
+AVX2/FMA path \\
+EPYC Zen4 & \texttt{ARCH\_FLAGS="-march=znver4\ -mtune=znver4"} &
+AVX-512 capable on GCC versions that support it \\
+EPYC Zen5 & \texttt{ARCH\_FLAGS="-march=znver5\ -mtune=znver5"} & Use
+with a compiler that knows \texttt{znver5} \\
+Portable AVX2 & \texttt{ARCH\_FLAGS="-O3\ -mavx2\ -mfma"} & Runs on AVX2
+machines \\
+Explicit AVX-512 &
+\texttt{ARCH\_FLAGS="-O3\ -mavx512f\ -mavx512dq\ -mavx512cd\ -mavx512bw\ -mavx512vl"}
+& Use only on machines that support these flags \\
+\end{longtable}
+
+There is no GCC/Clang option named \texttt{AVX12}. If the intended
+target is Zen5 with AVX-512, use \texttt{-march=znver5} when the
+compiler supports it. If the compiler is older, either upgrade GCC/Clang
+or use the explicit AVX-512 flags above after checking
+\texttt{lscpu\ \textbar{}\ grep\ avx512}.
+
+\subsection{Legacy root Makefile}\label{legacy-root-makefile}
+
+The root \texttt{Makefile} still exists for compatibility:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\FunctionTok{make}                         \CommentTok{\# bin/mbs\_po, CPU}
+\FunctionTok{make}\NormalTok{ gpu\_double\_fast         }\CommentTok{\# delegates to gpu/double\_fast}
+\FunctionTok{make}\NormalTok{ gpu\_float\_fast          }\CommentTok{\# delegates to gpu/float\_fast}
+\FunctionTok{make}\NormalTok{ USE\_CUDA=1              }\CommentTok{\# legacy single{-}tree CUDA build}
+\end{Highlighting}
+\end{Shaded}
+
+Prefer the split \texttt{cpu/} and \texttt{gpu/} builds for normal work.
+
+\section{Quick runs}\label{quick-runs}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\CommentTok{\# GPU double, oldauto orientation grid, full 0..180 degree output}
+\ExtensionTok{gpu/bin/mbs\_po\_gpu\_double\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}p}\NormalTok{ 1 125.9 78.09 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}ri}\NormalTok{ 1.3116 0 }\AttributeTok{{-}w}\NormalTok{ 0.532 }\AttributeTok{{-}n}\NormalTok{ 12 }\AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}threads}\NormalTok{ 64 }\AttributeTok{{-}{-}close} \AttributeTok{{-}o}\NormalTok{ hex\_gpu\_double}
+
+\CommentTok{\# Same run, force CPU backend from the GPU binary}
+\ExtensionTok{gpu/bin/mbs\_po\_gpu\_double\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}{-}cpu} \AttributeTok{{-}p}\NormalTok{ 1 125.9 78.09 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}ri}\NormalTok{ 1.3116 0 }\AttributeTok{{-}w}\NormalTok{ 0.532 }\AttributeTok{{-}n}\NormalTok{ 12 }\AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}threads}\NormalTok{ 64 }\AttributeTok{{-}{-}close} \AttributeTok{{-}o}\NormalTok{ hex\_cpu\_from\_gpu\_bin}
+
+\CommentTok{\# File particle scaled by equivalent size parameter}
+\ExtensionTok{gpu/bin/mbs\_po\_gpu\_float\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}{-}pf}\NormalTok{ particle.dat }\AttributeTok{{-}{-}k\_eq}\NormalTok{ 58.81 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}ri}\NormalTok{ 1.6 0.002 }\AttributeTok{{-}w}\NormalTok{ 1.064 }\AttributeTok{{-}n}\NormalTok{ 14 }\AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\AttributeTok{{-}{-}pole} \DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}threads}\NormalTok{ 16 }\AttributeTok{{-}{-}close} \AttributeTok{{-}o}\NormalTok{ particle\_keq}
+
+\CommentTok{\# Two{-}point forward/backward check}
+\ExtensionTok{gpu/bin/mbs\_po\_gpu\_double\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}p}\NormalTok{ 1 125.9 78.09 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}ri}\NormalTok{ 1.3116 0 }\AttributeTok{{-}w}\NormalTok{ 0.532 }\AttributeTok{{-}n}\NormalTok{ 1 }\AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\AttributeTok{{-}{-}pole} \DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 1 }\AttributeTok{{-}{-}threads}\NormalTok{ 64 }\AttributeTok{{-}{-}close} \AttributeTok{{-}o}\NormalTok{ check\_0\_180}
+\end{Highlighting}
+\end{Shaded}
+
+\section{Physical model}\label{physical-model}
+
+\subsection{Pipeline}\label{pipeline}
+
+\begin{longtable}[]{@{}lll@{}}
+\toprule\noalign{}
+Stage & Main code path & Result \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Particle setup & \texttt{src/particle}, \texttt{src/main.cpp} & Facets,
+normals, area, volume, symmetry \\
+Geometrical tracing & \texttt{src/scattering}, \texttt{src/tracer},
+\texttt{src/Splitting.cpp} & Output beams with direction, polygon, area,
+optical path, Jones matrix \\
+PO diffraction & \texttt{HandlerPO::ApplyDiffraction*},
+\texttt{Handler::DiffractIncline*}, CUDA equivalents & Far-field Jones
+amplitude per beam and direction \\
+Coherent sum & \texttt{HandlerPO::AddToMueller}, GPU fused Mueller
+kernels & Sum Jones matrices over beams for one orientation \\
+Mueller conversion & \texttt{src/math/Mueller.cpp} & 4x4 Mueller
+matrix \\
+Orientation average & \texttt{HandlerPOTotal}, \texttt{TracerPOTotal} &
+Final randomly oriented Mueller matrix \\
+\end{longtable}
+
+\subsection{Ray Jones matrices}\label{ray-jones-matrices}
+
+Each traced beam carries a 2x2 complex Jones matrix \texttt{beam.J}.
+Refraction and reflection multiply it by Fresnel coefficients in
+\texttt{Splitting.cpp}. The two polarization channels are the local
+vertical/horizontal basis of the incident and outgoing ray.
+
+For a beam with local Jones matrix
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{J = [ Jvv  Jvh ]}
+\NormalTok{    [ Jhv  Jhh ],}
+\end{Highlighting}
+\end{Shaded}
+
+the code treats \texttt{J} as the coherent amplitude transform
+accumulated along the ray path. Cutoffs based on
+\texttt{\textbar{}J\textbar{}\^{}2}, area, or
+\texttt{\textbar{}J\textbar{}\^{}2*area} can remove weak beams before
+expensive diffraction.
+
+\subsection{Dyadic rotation into the scattering
+basis}\label{dyadic-rotation-into-the-scattering-basis}
+
+Before adding a beam to a detector direction, the beam-local Jones
+matrix must be expressed in the detector polarization basis.
+\texttt{HandlerPO::RotateJones} and \texttt{RotateJonesFast} build this
+2x2 rotation/projection using dot products between:
+
+\begin{longtable}[]{@{}ll@{}}
+\toprule\noalign{}
+Vector & Meaning \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{beam.Direction()} & Beam propagation direction after tracing \\
+\texttt{direction} & Requested far-field scattering direction \\
+\texttt{vf} & Forward reference direction \\
+\texttt{info} polarization vectors & Precomputed beam polarization
+basis \\
+\end{longtable}
+
+The effective far-field Jones contribution has the structure used in
+\texttt{ApplyDiffractionFast}:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{J\_beam(theta, phi) = F\_edge(theta, phi) * R\_out(theta, phi) * F\_n(theta, phi)}
+\end{Highlighting}
+\end{Shaded}
+
+where:
+
+\begin{longtable}[]{@{}lll@{}}
+\toprule\noalign{}
+Factor & Code & Meaning \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{F\_edge} & \texttt{DiffractInclineFast},
+\texttt{DiffractIncline}, \texttt{DiffractInclineAbs} & Scalar Kirchhoff
+edge diffraction integral for the beam polygon \\
+\texttt{R\_out} & \texttt{RotateJones} or \texttt{KarczewskiJones} &
+Jones-basis rotation/projection from beam coordinates to scattering
+coordinates \\
+\texttt{F\_n} & \texttt{ComputeFnJones} & Fresnel/Jones correction for
+the beam normal and direction \\
+\end{longtable}
+
+The optional \texttt{-\/-karczewski} flag replaces the default rotation
+with the Karczewski polarization matrix. The code comments note that
+\texttt{M11} is unchanged because the Frobenius norm is preserved, while
+polarization-sensitive elements can change.
+
+\subsection{Kirchhoff diffraction
+integral}\label{kirchhoff-diffraction-integral}
+
+For each traced output beam the illuminated aperture is a polygon. The
+PO far field is evaluated by a boundary/edge form of the Kirchhoff
+integral. In code this lives in:
+
+\begin{longtable}[]{@{}ll@{}}
+\toprule\noalign{}
+Function & Use \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{Handler::DiffractIncline} & CPU scalar non-absorbing edge
+integral \\
+\texttt{Handler::DiffractInclineFast} & CPU optimized edge integral with
+precomputed edge data \\
+\texttt{Handler::DiffractInclineAbs} & Absorbing variant \\
+\texttt{GpuDiffraction.cu} kernels & CUDA implementation of the same
+aperture/edge calculation \\
+\end{longtable}
+
+Conceptually the scalar diffraction factor is the aperture phase
+integral
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{F(q) = integral\_A exp(i k q.r) dA,}
+\end{Highlighting}
+\end{Shaded}
+
+where \texttt{A} is the projected beam polygon,
+\texttt{k\ =\ 2*pi/lambda}, and \texttt{q} is the difference between the
+outgoing beam direction and the requested far-field direction. The
+implementation evaluates the polygon integral through its edges to avoid
+sampling the aperture area directly. For an edge from vertex \texttt{a}
+to \texttt{b}, the contribution is a stable complex exponential
+difference divided by the corresponding phase denominator; special
+small-denominator branches use sinc-like limits.
+
+The GPU and CPU branches should use the same geometry, phase convention,
+and theta grid. Differences normally come from precision (\texttt{float}
+vs \texttt{double}), fast math, FFT interpolation, atomics/reduction
+order, and special pole or endpoint handling.
+
+\subsection{Coherent and incoherent Mueller
+accumulation}\label{coherent-and-incoherent-mueller-accumulation}
+
+Default PO mode is coherent per orientation:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{J\_total(theta, phi) = sum\_beams J\_beam(theta, phi)}
+\NormalTok{M(theta, phi)       = Mueller(J\_total(theta, phi))}
+\end{Highlighting}
+\end{Shaded}
+
+With \texttt{-\/-incoh}, the conversion happens before beam summation:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{M(theta, phi) = sum\_beams Mueller(J\_beam(theta, phi))}
+\end{Highlighting}
+\end{Shaded}
+
+The Jones-to-Mueller conversion is implemented in
+\texttt{src/math/Mueller.cpp}. For Jones elements \texttt{S1..S4}, the
+code computes the standard 4x4 real Mueller matrix from bilinear
+products such as \texttt{\textbar{}S1\textbar{}\^{}2},
+\texttt{\textbar{}S2\textbar{}\^{}2}, \texttt{Re(S1\ conj(S2))}, and
+\texttt{Im(S1\ conj(S2))}.
+
+\subsection{Orientation averaging}\label{orientation-averaging}
+
+For randomly oriented particles, each orientation produces a Mueller
+matrix on the scattering grid. \texttt{HandlerPOTotal} and
+\texttt{TracerPOTotal} average orientations with the beta/gamma weights
+selected by the orientation mode. At beta poles, \texttt{-\/-pole} uses
+one gamma value because all gamma rotations are equivalent at the exact
+pole. In current code, \texttt{-\/-pole} keeps beta endpoints instead of
+midpoint beta sampling, so the beta pole is actually present in the
+grid.
+
+\subsection{Scattering-angle weights}\label{scattering-angle-weights}
+
+Uniform theta grids output \texttt{Nth\ +\ 1} rows. \texttt{2pi*dcos} is
+the solid-angle ring weight assigned to the theta row:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{dOmega(theta\_j) = 2*pi * (cos(theta\_left) {-} cos(theta\_right))}
+\end{Highlighting}
+\end{Shaded}
+
+For endpoint rows the interval is half-width and clipped to the
+requested range. For a full \texttt{0..180} grid the sum of
+\texttt{2pi*dcos} over all rows is \texttt{4*pi}.
+
+\section{Particles and sizes}\label{particles-and-sizes}
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Flag & Arguments & Description \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-p} & \texttt{TYPE\ L\ D\ {[}extra{]}} & Built-in particle.
+Exactly one of \texttt{-p} or \texttt{-\/-pf} is required. \\
+\texttt{-\/-pf} & \texttt{FILE} & Load particle from file. \\
+\texttt{-\/-rs} & \texttt{SIZE} & Resize file particle to
+\texttt{Dmax\ =\ SIZE}. Mutually exclusive with \texttt{-\/-k\_eq}. \\
+\texttt{-\/-k\_eq} & \texttt{X} & Resize so
+\texttt{k\_eq\ =\ 2*pi*r\_eq/lambda}. Requires wavelength. \\
+\texttt{-\/-ri} & \texttt{Re\ Im} & Complex refractive index. Absorption
+is enabled automatically when \texttt{Im\ !=\ 0}, or explicitly with
+\texttt{-\/-abs}. \\
+\texttt{-w} & \texttt{LAMBDA} & Wavelength in micrometers. \\
+\texttt{-n} & \texttt{N} & Maximum internal reflection/refraction
+depth. \\
+\end{longtable}
+
+Built-in particle types:
+
+\begin{longtable}[]{@{}rll@{}}
+\toprule\noalign{}
+Type & Shape & Parameters \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+1 & Hexagonal column/plate & \texttt{L\ D} \\
+2 & Bullet & \texttt{L\ D} \\
+3 & Bullet rosette & \texttt{L\ D\ {[}cap{]}} \\
+4 & Droxtal & \texttt{L\ D\ extra}, uses the extra shape parameter \\
+10 & Concave hexagonal & \texttt{L\ D\ concavity} \\
+12 & Hexagonal aggregate & \texttt{L\ D\ count} \\
+999 & Built-in aggregate & \texttt{extra} \\
+\end{longtable}
+
+Equivalent-size scaling:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{r\_eq = (3 V / (4*pi))\^{}(1/3)}
+\NormalTok{k\_eq = 2*pi*r\_eq/lambda}
+\NormalTok{scale = (k\_eq\_target * lambda / (2*pi)) / r\_eq\_original}
+\end{Highlighting}
+\end{Shaded}
+
+\section{Orientation grids}\label{orientation-grids}
+
+\begin{longtable}[]{@{}lrll@{}}
+\toprule\noalign{}
+Mode & Arguments & Best use & Notes \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-\/-oldauto} & \texttt{DIV} & Production regular grid & Grid
+step follows diffraction-limited angular scale; common values are
+\texttt{2}, \texttt{4}, \texttt{8}. \\
+\texttt{-\/-random} & \texttt{Nb\ Ng} & Manual beta/gamma regular grid &
+Uses symmetry-reduced beta/gamma domain unless overridden. \\
+\texttt{-\/-fixed} & \texttt{BETA\ GAMMA} & Single-orientation debugging
+& Angles are degrees. \\
+\texttt{-\/-orientfile} & \texttt{FILE} & Reproducible custom
+orientations & One beta/gamma pair per line. \\
+\texttt{-\/-sobol} & \texttt{N} & Quasi-random orientation average &
+Good convergence for broad scans. \\
+\texttt{-\/-sobol\_seed} & \texttt{N\ S} & Seeded Sobol/Owen sequence &
+Useful for repeatable convergence checks. \\
+\texttt{-\/-sobol\_ring} & \texttt{Nb\ Ng} & Sobol beta with uniform
+gamma rings & Hybrid orientation grid. \\
+\texttt{-\/-so3\_quat} & \texttt{N} & Full SO(3) Hammersley quaternions
+& Does not rely on beta/gamma symmetry domain. \\
+\texttt{-\/-hammersley} & \texttt{N} & Low-discrepancy orientations &
+Debug/experimental. \\
+\texttt{-\/-lattice} & \texttt{N} & Rank-1 lattice orientations &
+Debug/experimental. \\
+\texttt{-\/-lattice\_z} & \texttt{N\ Z} & Rank-1 lattice with explicit
+generator & Debug/experimental. \\
+\texttt{-\/-euler\_quad} & \texttt{Nb\ Ng} & Gauss in cos(beta),
+periodic gamma & High-order quadrature. \\
+\texttt{-\/-euler\_adapt} & \texttt{Nb\ NgMax} & Adaptive gamma count
+per beta ring & Reduces work near beta poles. \\
+\texttt{-\/-adaptive} & \texttt{EPS} & Adaptive Sobol count & Doubles
+orientations until relative convergence target. \\
+\texttt{-\/-auto} & \texttt{EPS} & Auto theta, phi, orientation count &
+Convenience mode. \\
+\texttt{-\/-autofull} & \texttt{EPS} & Auto \texttt{n}, theta, phi,
+orientations & Slower, more complete search. \\
+\texttt{-\/-oldautofull} & \texttt{EPS} & Autofull search with oldauto
+final grid & Useful when final regular grid is required. \\
+\end{longtable}
+
+Orientation modifiers:
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Flag & Arguments & Description \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-\/-ring\_points} & \texttt{N} & Points per diffraction ring for
+oldauto estimates; default \texttt{3}. \\
+\texttt{-\/-mirror\_gamma} & none & Halve the gamma symmetry range and
+mirror the Mueller result. \\
+\texttt{-\/-sym} & \texttt{Sb\ Sg} & Override symmetry domain: beta
+range is \texttt{pi/Sb}, gamma range is \texttt{2*pi/Sg}. \\
+\texttt{-\/-b} & \texttt{B1\ B2} & Manual beta range in degrees for
+\texttt{-\/-random}. \\
+\texttt{-\/-g} & \texttt{G1\ G2} & Manual gamma range in degrees for
+\texttt{-\/-random}. \\
+\texttt{-\/-maxorient} & \texttt{N} & Maximum orientations for adaptive
+modes. \\
+\texttt{-\/-chunk} & \texttt{N} & Orientation/gamma chunk size. \\
+\texttt{-\/-coh\_orient} & none & Legacy coherent-across-orientations
+mode. \\
+\texttt{-\/-pole} & none & Use one gamma value at beta poles. Best with
+endpoint grids such as \texttt{-\/-oldauto}. \\
+\texttt{-\/-owen\_avg} & \texttt{K} & Average \texttt{K} nested Owen
+final seeds in \texttt{-\/-autofull}; default can be controlled by
+environment. \\
+\texttt{-\/-owen\_seeds} & \texttt{S...} & Explicit Owen seeds for
+\texttt{-\/-autofull} final averaging. \\
+\end{longtable}
+
+\section{Scattering grids}\label{scattering-grids}
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Flag & Arguments & Description \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-\/-grid} & \texttt{T1\ T2\ Nphi\ Nth} & Uniform theta grid from
+\texttt{T1} to \texttt{T2} degrees. Output has \texttt{Nth\ +\ 1} theta
+rows. \\
+\texttt{-\/-grid} & \texttt{R\ Nphi\ Nth} & Backscatter cone grid of
+radius \texttt{R} degrees. \\
+\texttt{-\/-tgrid} & \texttt{FILE} & Non-uniform theta grid in degrees,
+one row per theta value. \\
+\texttt{-\/-auto\_tgrid} & \texttt{EPS} & Adaptive theta grid by
+bisection. \\
+\texttt{-\/-auto\_phi} & none & Choose \texttt{Nphi} automatically from
+size parameter. \\
+\texttt{-\/-nphi} & \texttt{N} & Override phi count. Highest priority
+for phi. \\
+\texttt{-\/-filter} & \texttt{DEG} & Restrict output to a backscattering
+cone. Legacy/debug use. \\
+\texttt{-\/-point} & none & Backscatter point mode. Legacy; avoid for
+optimized regular-grid production. \\
+\end{longtable}
+
+Priority:
+
+\begin{longtable}[]{@{}ll@{}}
+\toprule\noalign{}
+Quantity & Priority \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Theta grid & \texttt{-\/-tgrid} \textgreater{} \texttt{-\/-grid}
+\textgreater{} \texttt{-\/-auto\_tgrid} \textgreater{} \texttt{-\/-auto}
+\textgreater{} default \\
+Phi grid & \texttt{-\/-nphi} \textgreater{} \texttt{-\/-grid}
+\textgreater{} \texttt{-\/-auto\_phi} \textgreater{} \texttt{-\/-auto}
+\textgreater{} default \\
+\end{longtable}
+
+For full angular integrals use \texttt{-\/-grid\ 0\ 180\ Nphi\ Nth}.
+Endpoint rows are physical half-cells; they must not have zero weight.
+
+\section{GPU and multi-GPU}\label{gpu-and-multi-gpu}
+
+\subsection{CUDA backend}\label{cuda-backend}
+
+\begin{longtable}[]{@{}ll@{}}
+\toprule\noalign{}
+Flag & Description \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-\/-gpu} & Use CUDA diffraction backend. Optional in
+\texttt{gpu/} binaries because they default to GPU. \\
+\texttt{-\/-cpu} & Force CPU backend from a GPU-capable binary. \\
+\texttt{-\/-fft} & Use cuFFT angular phi interpolation backend. Requires
+GPU. \\
+\texttt{-\/-threads\ N} & OpenMP host worker threads. Also controls
+tracing-side parallelism before GPU diffraction. \\
+\end{longtable}
+
+GPU runtime errors are fatal in the split GPU build. For debugging only:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\VariableTok{MBS\_GPU\_ALLOW\_FALLBACK}\OperatorTok{=}\NormalTok{1 }\ExtensionTok{gpu/bin/mbs\_po\_gpu\_float\_fast}\NormalTok{ ...}
+\end{Highlighting}
+\end{Shaded}
+
+\subsection{Why the GPU version is
+faster}\label{why-the-gpu-version-is-faster}
+
+The expensive PO part is the repeated evaluation of the same beam
+aperture integral for many detector directions and many orientations.
+The CPU traces rays and prepares compact beam records; the GPU then
+evaluates diffraction and, in the fast paths, Mueller accumulation on a
+large regular grid.
+
+\begin{longtable}[]{@{}llll@{}}
+\toprule\noalign{}
+Work item & CPU path & GPU path & Parallel granularity \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Ray tracing through facets & OpenMP over orientations/gamma blocks &
+Mostly still CPU-side; \texttt{-\/-gpu\_trace} is only a candidate
+prefilter & Orientation/chunk level \\
+Beam packing & CPU host code & CPU prepares \texttt{GpuBeam}/packed beam
+buffers and copies to device & Beam records \\
+Edge diffraction & Scalar/vector CPU loops & CUDA kernels in
+\texttt{GpuDiffraction.cu} & Beam x theta x phi x orientation \\
+Jones coherent sum & CPU arrays of complex 2x2 matrices & Atomic or
+no-atomic device kernels & Grid cell and orientation \\
+Jones to Mueller & CPU after Jones sum & Separate
+\texttt{mueller\_batch\_kernel} or fused in diffraction kernel & Grid
+cell \\
+Multi-\texttt{k\_eq} scans & Repeat diffraction per size & Optional
+fused multi-\texttt{k\_eq} CUDA pass & Size x beam x grid \\
+FFT phi interpolation & CPU direct phi grid unless disabled & cuFFT
+low-phi pass plus zero-padding reconstruction & Theta/orientation
+batches \\
+\end{longtable}
+
+The main speedup comes from exposing a very large product of independent
+operations:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{Nwork \textasciitilde{}= Norient * Nbeams\_per\_orientation * Ntheta * Nphi}
+\end{Highlighting}
+\end{Shaded}
+
+Each beam/direction contribution is mostly independent until the
+coherent Jones sum. That makes the diffraction stage a good CUDA
+workload: many threads do the same edge-integral arithmetic over
+different \texttt{(orientation,\ beam,\ theta,\ phi)} combinations.
+
+\subsection{Atomic and no-atomic GPU
+accumulation}\label{atomic-and-no-atomic-gpu-accumulation}
+
+There are two families of CUDA accumulation paths in
+\texttt{src/cuda/GpuDiffraction.cu}.
+
+\begin{longtable}[]{@{}llll@{}}
+\toprule\noalign{}
+Mode & Main kernels & How accumulation works & When useful \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Atomic Jones accumulation & \texttt{diffraction\_kernel} & Each thread
+computes one beam/grid contribution and uses \texttt{atomicAdd} into the
+complex Jones buffer. Afterwards \texttt{mueller\_batch\_kernel}
+converts the summed Jones matrix to Mueller. & General fallback,
+supports more combinations such as no-shadow output. \\
+No-atomic grid kernels & \texttt{diffraction\_grid\_kernel} & Work is
+reorganized so a thread owns a grid/output slot and loops over beams,
+avoiding multiple writers to the same Jones cell. & Full-only output
+when memory/layout allows it. \\
+Fused Mueller kernels & \texttt{diffraction\_grid\_mueller\_kernel},
+\texttt{diffraction\_grid\_mueller\_full\_kernel},
+\texttt{*\_full8\_kernel}, \texttt{*\_mixed8\_kernel} & The kernel
+computes coherent Jones locally for an output slot and immediately
+converts/adds Mueller, avoiding large intermediate Jones buffers. & Fast
+production path for full-only GPU runs. \\
+Staged orientation Mueller &
+\texttt{diffraction\_grid\_mueller\_orient\_kernel} +
+\texttt{reduce\_mueller\_orient\_kernel} & First writes per-orientation
+Mueller, then reduces orientations. & Reduces contention and gives a
+deterministic reduction shape for large orientation batches. \\
+Multi-\texttt{k\_eq} fused &
+\texttt{diffraction\_grid\_mueller\_multik\_kernel} & Computes several
+nearby equivalent sizes from one packed beam batch. & Shared-batch
+\texttt{-\/-multikeq} scans. \\
+\end{longtable}
+
+In the atomic path the atomics are on the real and imaginary components
+of the 2x2 Jones matrix:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{J00.re, J00.im, J01.re, J01.im,}
+\NormalTok{J10.re, J10.im, J11.re, J11.im}
+\end{Highlighting}
+\end{Shaded}
+
+For \texttt{\_noshadow} output the same set of atomics is also applied
+to the no-shadow Jones buffer. This is correct for coherent PO because
+beams must be summed as Jones amplitudes before conversion to Mueller.
+The cost is contention when many beams hit the same detector cell.
+
+The no-atomic/fused paths avoid that contention by changing ownership:
+one CUDA thread or thread group owns an output grid element and
+accumulates the beams for that element in registers/local variables.
+This is often faster for full Mueller output because it reduces
+global-memory atomics and may skip the large intermediate Jones buffer.
+The tradeoff is that these paths are more specialized and may be
+disabled for diagnostic modes that require extra outputs.
+
+Useful controls:
+
+\begin{longtable}[]{@{}ll@{}}
+\toprule\noalign{}
+Environment variable & Effect \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{MBS\_GPU\_NO\_ATOMICS=1} & Force no-atomic path when
+supported. \\
+\texttt{MBS\_GPU\_NO\_ATOMICS=0} & Force atomic path for
+comparison/debugging. \\
+\texttt{MBS\_GPU\_FUSED\_MUELLER=1} & Prefer fused
+diffraction-to-Mueller kernels when no-atomic mode is active. \\
+\texttt{MBS\_GPU\_STAGE\_MUELLER=1} & Use staged per-orientation Mueller
+plus reduction where supported. \\
+\texttt{MBS\_GPU\_NO\_VERTEX\_CACHE=1} & Disable cached/packed vertex
+path for debugging. \\
+\texttt{MBS\_GPU\_TIMING=1} & Print GPU timing breakdown for
+count/pack/copy/kernels/d2h/add. \\
+\texttt{MBS\_GPU\_BLOCK=N} & Override CUDA block size for kernel
+tuning. \\
+\end{longtable}
+
+Do not confuse this with full GPU ray tracing. The production GPU
+backend is primarily a diffraction and Mueller-accumulation accelerator.
+\texttt{-\/-gpu\_trace} only prefilters nonconvex tracing candidates;
+exact intersections remain CPU-side.
+
+\subsection{Multi-size scans}\label{multi-size-scans}
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Flag & Arguments & Description \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-\/-multigrid} & \texttt{Dmin\ Dmax\ N} & Log-spaced scan in
+maximum particle dimension. \\
+\texttt{-\/-multikeq} & \texttt{Kmin\ Kmax\ N} & Log-spaced scan in
+equivalent size parameter. \\
+\texttt{-\/-multikeq\_list} & \texttt{FILE} & Exact list of
+\texttt{k\_eq} values, one per line. \\
+\texttt{-\/-multigrid\_parallel} & \texttt{N} & Run scan points as child
+processes; \texttt{0} means auto. \\
+\texttt{-\/-multigrid\_threads} & \texttt{N} & OpenMP threads per child
+process. \\
+\texttt{-\/-gpu\_devices} & \texttt{LIST} & Comma-separated CUDA device
+list, for example \texttt{0,1,2,3,4}. \\
+\texttt{-\/-multikeq\_shared\_batches} & none & Batch nearby
+\texttt{k\_eq} values per GPU child and reuse tracing from the largest
+value in the batch. \\
+\texttt{-\/-multikeq\_batch\_ratio} & \texttt{R} & Maximum
+\texttt{kmax/kmin} inside one shared batch; default \texttt{1.05}. \\
+\end{longtable}
+
+Exact multi-GPU scan, one process per active GPU slot:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\ExtensionTok{gpu/bin/mbs\_po\_gpu\_float\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}{-}pf}\NormalTok{ particle.dat }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}multikeq\_list}\NormalTok{ keq.txt }\AttributeTok{{-}{-}ri}\NormalTok{ 1.6 0.002 }\AttributeTok{{-}w}\NormalTok{ 1.064 }\AttributeTok{{-}n}\NormalTok{ 12 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}fft} \AttributeTok{{-}{-}close} \DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}multigrid\_parallel}\NormalTok{ 0 }\AttributeTok{{-}{-}multigrid\_threads}\NormalTok{ 16 }\AttributeTok{{-}{-}gpu\_devices}\NormalTok{ 0,1,2,3,4 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}o}\NormalTok{ scan\_exact}
+\end{Highlighting}
+\end{Shaded}
+
+Shared-batch scan:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\ExtensionTok{gpu/bin/mbs\_po\_gpu\_float\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}{-}pf}\NormalTok{ particle.dat }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}multikeq\_list}\NormalTok{ keq.txt }\AttributeTok{{-}{-}ri}\NormalTok{ 1.6 0.002 }\AttributeTok{{-}w}\NormalTok{ 1.064 }\AttributeTok{{-}n}\NormalTok{ 12 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}fft} \AttributeTok{{-}{-}close} \DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}multigrid\_parallel}\NormalTok{ 0 }\AttributeTok{{-}{-}multigrid\_threads}\NormalTok{ 16 }\AttributeTok{{-}{-}gpu\_devices}\NormalTok{ 0,1,2,3,4 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}multikeq\_shared\_batches} \AttributeTok{{-}{-}multikeq\_batch\_ratio}\NormalTok{ 1.05 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}o}\NormalTok{ scan\_shared}
+\end{Highlighting}
+\end{Shaded}
+
+Experimental fused multi-\texttt{k\_eq} GPU diffraction:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\VariableTok{MBS\_GPU\_MULTI\_K\_FULL}\OperatorTok{=}\NormalTok{1 }\ExtensionTok{gpu/bin/mbs\_po\_gpu\_float\_fast}\NormalTok{ ...}
+\end{Highlighting}
+\end{Shaded}
+
+Use tighter \texttt{-\/-multikeq\_batch\_ratio} for accuracy; use exact
+mode when each size must have its own oldauto reference grid.
+
+\section{All flags}\label{all-flags}
+
+\subsection{Method, particle, and physical
+parameters}\label{method-particle-and-physical-parameters}
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Flag & Arguments & Description \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-\/-po} & none & Physical Optics mode. \\
+\texttt{-\/-go} & none & Geometrical Optics mode. \\
+\texttt{-p} & \texttt{TYPE\ L\ D\ {[}extra{]}} & Built-in particle. \\
+\texttt{-\/-pf} & \texttt{FILE} & Particle from file. \\
+\texttt{-\/-rs} & \texttt{SIZE} & Resize file particle by Dmax. \\
+\texttt{-\/-k\_eq} & \texttt{X} & Resize by equivalent size
+parameter. \\
+\texttt{-\/-ri} & \texttt{Re\ Im} & Refractive index. \\
+\texttt{-w} & \texttt{LAMBDA} & Wavelength in micrometers. \\
+\texttt{-n} & \texttt{N} & Maximum internal reflections/refractions. \\
+\texttt{-\/-abs} & none & Enable absorption accounting. Also enabled
+automatically for nonzero \texttt{Im(ri)}. \\
+\texttt{-\/-abs\_points} & \texttt{N} or \texttt{all} & Absorption
+sampling: center point or all polygon vertices. \\
+\end{longtable}
+
+\subsection{Orientation flags}\label{orientation-flags}
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Flag & Arguments & Description \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-\/-fixed} & \texttt{BETA\ GAMMA} & Single orientation in
+degrees. \\
+\texttt{-\/-random} & \texttt{Nb\ Ng} & Regular beta/gamma grid. \\
+\texttt{-\/-sobol} & \texttt{N} & Sobol orientations. \\
+\texttt{-\/-so3\_quat} & \texttt{N} & Full SO(3) quaternion
+orientations. \\
+\texttt{-\/-sobol\_seed} & \texttt{N\ S} & Sobol with explicit Owen
+seed. \\
+\texttt{-\/-sobol\_ring} & \texttt{Nb\ Ng} & Sobol beta with gamma
+rings. \\
+\texttt{-\/-hammersley} & \texttt{N} & Hammersley orientation set. \\
+\texttt{-\/-lattice} & \texttt{N} & Rank-1 lattice orientation set. \\
+\texttt{-\/-lattice\_z} & \texttt{N\ Z} & Rank-1 lattice with explicit
+generator. \\
+\texttt{-\/-euler\_quad} & \texttt{Nb\ Ng} & Gauss beta x periodic gamma
+quadrature. \\
+\texttt{-\/-euler\_adapt} & \texttt{Nb\ NgMax} & Gauss beta with
+adaptive gamma count. \\
+\texttt{-\/-montecarlo} & \texttt{N} & Pseudo-random Monte Carlo
+orientations. \\
+\texttt{-\/-adaptive} & \texttt{EPS} & Adaptive orientation
+convergence. \\
+\texttt{-\/-auto} & \texttt{EPS} & Auto theta, phi, and orientation
+count. \\
+\texttt{-\/-autofull} & \texttt{EPS} & Auto \texttt{n}, theta, phi, and
+orientations. \\
+\texttt{-\/-oldautofull} & \texttt{EPS} & Autofull search with oldauto
+final grid. \\
+\texttt{-\/-owen\_avg} & \texttt{K} & Average final Owen seeds. \\
+\texttt{-\/-owen\_seeds} & \texttt{S...} & Explicit final Owen seeds. \\
+\texttt{-\/-oldauto} & \texttt{DIV} & Physics-based regular grid. \\
+\texttt{-\/-ring\_points} & \texttt{N} & Points per diffraction ring
+estimate. \\
+\texttt{-\/-mirror\_gamma} & none & Use mirrored half gamma domain. \\
+\texttt{-\/-orientfile} & \texttt{FILE} & Load beta/gamma orientations
+from file. \\
+\texttt{-\/-b} & \texttt{B1\ B2} & Beta range for
+\texttt{-\/-random}. \\
+\texttt{-\/-g} & \texttt{G1\ G2} & Gamma range for
+\texttt{-\/-random}. \\
+\texttt{-\/-maxorient} & \texttt{N} & Maximum adaptive orientation
+count. \\
+\texttt{-\/-chunk} & \texttt{N} & Chunk size for orientation/gamma
+processing. \\
+\texttt{-\/-coh\_orient} & none & Legacy coherent orientation mode. \\
+\texttt{-\/-pole} & none & Exact beta-pole gamma shortcut. \\
+\texttt{-\/-sym} & \texttt{Sb\ Sg} & Override particle symmetry. \\
+\end{longtable}
+
+\subsection{Scattering grid and acceleration
+flags}\label{scattering-grid-and-acceleration-flags}
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Flag & Arguments & Description \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-\/-grid} & \texttt{T1\ T2\ Nphi\ Nth} & Uniform theta range. \\
+\texttt{-\/-grid} & \texttt{R\ Nphi\ Nth} & Backscatter cone. \\
+\texttt{-\/-tgrid} & \texttt{FILE} & Non-uniform theta grid. \\
+\texttt{-\/-auto\_tgrid} & \texttt{EPS} & Adaptive theta grid. \\
+\texttt{-\/-auto\_phi} & none & Automatic phi count. \\
+\texttt{-\/-nphi} & \texttt{N} & Override phi count. \\
+\texttt{-\/-threads} & \texttt{N} & OpenMP worker threads. \\
+\texttt{-\/-gpu} & none & CUDA backend. \\
+\texttt{-\/-cpu} & none & Force CPU backend in GPU build. \\
+\texttt{-\/-fft} & none & cuFFT phi interpolation. \\
+\texttt{-\/-beam\_cutoff} & \texttt{EPS} & Set relative beam \texttt{J}
+and area cutoffs. \\
+\texttt{-\/-beam\_cutoff\_j} & \texttt{EPS} & Skip beams by relative
+` \\
+\texttt{-\/-beam\_cutoff\_area} & \texttt{EPS} & Skip beams by relative
+beam area. \\
+\texttt{-\/-beam\_cutoff\_importance} & \texttt{EPS} & Skip beams by
+relative ` \\
+\texttt{-\/-trace\_cutoff} & \texttt{EPS} & Set trace pruning \texttt{J}
+and area cutoffs. \\
+\texttt{-\/-trace\_cutoff\_j} & \texttt{EPS} & Prune trace tree by
+relative ` \\
+\texttt{-\/-trace\_cutoff\_area} & \texttt{EPS} & Prune trace tree by
+relative area. \\
+\texttt{-\/-trace\_cutoff\_importance} & \texttt{EPS} & Prune trace tree
+by ` \\
+\texttt{-\/-trace\_max\_beams} & \texttt{N} & Abort one orientation
+after \texttt{N} beam nodes; \texttt{0} disables. \\
+\texttt{-\/-gpu\_trace} & none & Experimental CUDA prefilter for
+nonconvex tracing candidates. \\
+\texttt{-\/-trace\_prefilter} & none & Enable CPU projected-AABB
+prefilter. \\
+\texttt{-\/-no\_trace\_prefilter} & none & Disable CPU projected-AABB
+prefilter. \\
+\texttt{-\/-trace\_prefilter\_margin} & \texttt{M} & AABB prefilter
+margin. \\
+\texttt{-\/-trace\_prefilter\_stats} & none & Print prefilter
+counters. \\
+\texttt{-r} & \texttt{RATIO} & Beam area restriction ratio; default
+\texttt{100}. \\
+\end{longtable}
+
+\subsection{Output, diagnostics, and legacy
+flags}\label{output-diagnostics-and-legacy-flags}
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Flag & Arguments & Description \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-o} & \texttt{NAME} & Output path/name. \\
+\texttt{-\/-close} & none & Exit after computation. \\
+\texttt{-\/-log} & \texttt{SEC} & Progress logging interval. \\
+\texttt{-\/-checkpoint} & none & Save/resume long
+\texttt{-\/-orientfile}, \texttt{-\/-oldauto}, and \texttt{-\/-random}
+runs. \\
+\texttt{-\/-save\_betas} & none & Save per-beta Mueller files. \\
+\texttt{-\/-full\_only} & none & Write only full Mueller output. This is
+the default. \\
+\texttt{-\/-noshadow\_output} & none & Also write \texttt{\_noshadow}
+Mueller output. \\
+\texttt{-\/-shadow} & none & Legacy flag; currently no effect. \\
+\texttt{-\/-shadow\_off} & none & Disable shadow beam. Diagnostic
+use. \\
+\texttt{-\/-incoh} & none & Incoherent per-beam Mueller sum. \\
+\texttt{-\/-jones} & none & Write Jones matrices where supported. \\
+\texttt{-\/-karczewski} & none & Use Karczewski polarization matrix. \\
+\texttt{-\/-legacy\_sign} & none & Use old Fresnel sign convention. \\
+\texttt{-\/-ot\_phase\_avg} & none & Average optical-theorem extinction
+over one far-reference phase period. \\
+\texttt{-\/-ot\_phase\_shift} & \texttt{F} & Diagnostic optical-theorem
+phase shift in wavelengths. \\
+\texttt{-\/-ot\_ping} & \texttt{D} & Legacy far-screen optical-theorem
+phase rotation. \\
+\texttt{-\/-filter} & \texttt{DEG} & Restrict output to backscatter
+cone. \\
+\texttt{-\/-point} & none & Legacy backscatter point mode. \\
+\texttt{-\/-tr} & \texttt{FILE} & Load trajectory file. \\
+\texttt{-\/-all} & none & Calculate all loaded trajectories. \\
+\texttt{-\/-gr} & none & Output trajectory groups. \\
+\texttt{-\/-forced\_convex} & none & Force convex processing. \\
+\texttt{-\/-forced\_nonconvex} & none & Force nonconvex processing. \\
+\texttt{-\/-help}, \texttt{-h} & none & Print help. \\
+\texttt{-\/-help-debug} & none & Print full debug/experimental help. \\
+\end{longtable}
+
+\section{Environment variables}\label{environment-variables}
+
+Production-use variables:
+
+\begin{longtable}[]{@{}ll@{}}
+\toprule\noalign{}
+Variable & Meaning \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{CUDA\_VISIBLE\_DEVICES} & Standard CUDA device visibility
+control. \\
+\texttt{OMP\_NUM\_THREADS} & OpenMP default thread count when
+\texttt{-\/-threads} is not used. \\
+\texttt{MBS\_GPU\_ALLOW\_FALLBACK=1} & Allow old GPU-to-CPU fallback
+after CUDA failure. Debug only. \\
+\texttt{MBS\_GPU\_MEM\_FRACTION} & Fraction of free GPU memory allowed
+for internal buffers. \\
+\texttt{MBS\_GPU\_NO\_ATOMICS} & Select no-atomic (\texttt{1}) or atomic
+(\texttt{0}) GPU accumulation path when possible. \\
+\texttt{MBS\_GPU\_FUSED\_MUELLER} & Select fused diffraction-to-Mueller
+kernels when no-atomic mode is active. \\
+\texttt{MBS\_GPU\_STAGE\_MUELLER} & Enable staged per-orientation
+Mueller reduction when supported. \\
+\texttt{MBS\_GPU\_NO\_VERTEX\_CACHE} & Disable cached/packed vertex path
+for debugging. \\
+\texttt{MBS\_GPU\_TIMING} & Print CUDA timing breakdowns. \\
+\texttt{MBS\_GPU\_BLOCK} & Override CUDA kernel block size. \\
+\texttt{MBS\_HOST\_MEM\_FRACTION} & Host-memory fraction for
+oldauto/random chunking. \\
+\texttt{MBS\_HOST\_MEM\_RESERVE\_MB} & Host memory reserve in MB. \\
+\texttt{MBS\_HOST\_MEM\_BUDGET\_MB} & Hard host memory budget, also set
+for parallel children. \\
+\texttt{MBS\_FFT\_PHI\_FACTOR} & Override FFT reduced phi factor. \\
+\texttt{MBS\_GPU\_MULTI=0} & Disable automatic multi-orientation GPU
+batching. \\
+\texttt{MBS\_GPU\_MULTI\_MAX=N} & Cap automatic GPU multi batching. \\
+\texttt{MBS\_GPU\_MULTI\_K\_FULL=1} & Experimental fused
+multi-\texttt{k\_eq} diffraction. \\
+\texttt{MBS\_SHARED\_BETA\_GROUP=N} & Override shared-batch beta
+grouping. \\
+\texttt{MBS\_SHARED\_ORIENT\_CHUNK=N} & Override shared-batch
+orientation chunk size. \\
+\texttt{MBS\_PARALLEL\_MEM\_FRACTION} & Memory fraction used by parallel
+multi-size scheduler. \\
+\texttt{MBS\_PARALLEL\_SHARED\_KEQ=1} & Environment equivalent of shared
+\texttt{k\_eq} batching. \\
+\texttt{MBS\_PARALLEL\_KEQ\_BATCH\_RATIO=R} & Environment default for
+shared batch ratio. \\
+\end{longtable}
+
+Diagnostic variables exist for FFT refinement, autofull heuristics,
+trace prefilters, and internal debug ranges. They are intentionally not
+recommended for normal production runs; inspect
+\texttt{grep\ -R\ "getenv(\textbackslash{}"MBS\_"\ src} when debugging a
+specific subsystem.
+
+\section{Output}\label{output}
+
+Main output is a whitespace-separated \texttt{.dat} file:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{ScAngle 2pi*dcos M11 M12 M13 M14 M21 M22 M23 M24 M31 M32 M33 M34 M41 M42 M43 M44}
+\end{Highlighting}
+\end{Shaded}
+
+\begin{longtable}[]{@{}ll@{}}
+\toprule\noalign{}
+Column & Meaning \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{ScAngle} & Scattering angle theta in degrees. \\
+\texttt{2pi*dcos} & Solid-angle ring weight for this theta row. \\
+\texttt{Mij} & Mueller matrix elements after beam and orientation
+averaging. \\
+\end{longtable}
+
+Common companion outputs:
+
+\begin{longtable}[]{@{}lll@{}}
+\toprule\noalign{}
+Output & Created by & Meaning \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{\_noshadow} file & \texttt{-\/-noshadow\_output} & Mueller
+matrix without shadow/external beam contribution. \\
+\texttt{\_betas/} directory & \texttt{-\/-save\_betas} & Per-beta
+Mueller diagnostics. \\
+checkpoint files & \texttt{-\/-checkpoint} & Resume data for long
+orientation-grid runs. \\
+Jones output & \texttt{-\/-jones} & Raw Jones matrices in supported PO
+modes. \\
+\end{longtable}
+
+Warnings about optical-theorem/integral mismatch are diagnostics. For
+non-absorbing runs the physical absorption is fixed to zero; the printed
+integral characteristic is a consistency check, not a replacement for
+the output Mueller matrix.
+
+\end{document}

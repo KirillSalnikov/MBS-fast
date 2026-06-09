@@ -1,0 +1,1116 @@
+% Options for packages loaded elsewhere
+\PassOptionsToPackage{unicode}{hyperref}
+\PassOptionsToPackage{hyphens}{url}
+\PassOptionsToPackage{dvipsnames,svgnames,x11names}{xcolor}
+\documentclass[
+  russian,
+  10pt,
+  a4paper,
+]{article}
+\usepackage{xcolor}
+\usepackage[margin=20mm]{geometry}
+\usepackage{amsmath,amssymb}
+\setcounter{secnumdepth}{5}
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{textcomp} % provide euro and other symbols
+\else % if luatex or xetex
+  \usepackage{unicode-math} % this also loads fontspec
+  \defaultfontfeatures{Scale=MatchLowercase}
+  \defaultfontfeatures[\rmfamily]{Ligatures=TeX,Scale=1}
+\fi
+\usepackage{lmodern}
+\ifPDFTeX\else
+  % xetex/luatex font selection
+  \setmainfont[]{Noto Serif}
+  \setsansfont[]{Noto Sans}
+  \setmonofont[]{DejaVu Sans Mono}
+\fi
+% Use upquote if available, for straight quotes in verbatim environments
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+\IfFileExists{microtype.sty}{% use microtype if available
+  \usepackage[]{microtype}
+  \UseMicrotypeSet[protrusion]{basicmath} % disable protrusion for tt fonts
+}{}
+\makeatletter
+\@ifundefined{KOMAClassName}{% if non-KOMA class
+  \IfFileExists{parskip.sty}{%
+    \usepackage{parskip}
+  }{% else
+    \setlength{\parindent}{0pt}
+    \setlength{\parskip}{6pt plus 2pt minus 1pt}}
+}{% if KOMA class
+  \KOMAoptions{parskip=half}}
+\makeatother
+\usepackage{color}
+\usepackage{fancyvrb}
+\newcommand{\VerbBar}{|}
+\newcommand{\VERB}{\Verb[commandchars=\\\{\}]}
+\DefineVerbatimEnvironment{Highlighting}{Verbatim}{commandchars=\\\{\}}
+% Add ',fontsize=\small' for more characters per line
+\newenvironment{Shaded}{}{}
+\newcommand{\AlertTok}[1]{\textcolor[rgb]{1.00,0.00,0.00}{\textbf{#1}}}
+\newcommand{\AnnotationTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textbf{\textit{#1}}}}
+\newcommand{\AttributeTok}[1]{\textcolor[rgb]{0.49,0.56,0.16}{#1}}
+\newcommand{\BaseNTok}[1]{\textcolor[rgb]{0.25,0.63,0.44}{#1}}
+\newcommand{\BuiltInTok}[1]{\textcolor[rgb]{0.00,0.50,0.00}{#1}}
+\newcommand{\CharTok}[1]{\textcolor[rgb]{0.25,0.44,0.63}{#1}}
+\newcommand{\CommentTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textit{#1}}}
+\newcommand{\CommentVarTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textbf{\textit{#1}}}}
+\newcommand{\ConstantTok}[1]{\textcolor[rgb]{0.53,0.00,0.00}{#1}}
+\newcommand{\ControlFlowTok}[1]{\textcolor[rgb]{0.00,0.44,0.13}{\textbf{#1}}}
+\newcommand{\DataTypeTok}[1]{\textcolor[rgb]{0.56,0.13,0.00}{#1}}
+\newcommand{\DecValTok}[1]{\textcolor[rgb]{0.25,0.63,0.44}{#1}}
+\newcommand{\DocumentationTok}[1]{\textcolor[rgb]{0.73,0.13,0.13}{\textit{#1}}}
+\newcommand{\ErrorTok}[1]{\textcolor[rgb]{1.00,0.00,0.00}{\textbf{#1}}}
+\newcommand{\ExtensionTok}[1]{#1}
+\newcommand{\FloatTok}[1]{\textcolor[rgb]{0.25,0.63,0.44}{#1}}
+\newcommand{\FunctionTok}[1]{\textcolor[rgb]{0.02,0.16,0.49}{#1}}
+\newcommand{\ImportTok}[1]{\textcolor[rgb]{0.00,0.50,0.00}{\textbf{#1}}}
+\newcommand{\InformationTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textbf{\textit{#1}}}}
+\newcommand{\KeywordTok}[1]{\textcolor[rgb]{0.00,0.44,0.13}{\textbf{#1}}}
+\newcommand{\NormalTok}[1]{#1}
+\newcommand{\OperatorTok}[1]{\textcolor[rgb]{0.40,0.40,0.40}{#1}}
+\newcommand{\OtherTok}[1]{\textcolor[rgb]{0.00,0.44,0.13}{#1}}
+\newcommand{\PreprocessorTok}[1]{\textcolor[rgb]{0.74,0.48,0.00}{#1}}
+\newcommand{\RegionMarkerTok}[1]{#1}
+\newcommand{\SpecialCharTok}[1]{\textcolor[rgb]{0.25,0.44,0.63}{#1}}
+\newcommand{\SpecialStringTok}[1]{\textcolor[rgb]{0.73,0.40,0.53}{#1}}
+\newcommand{\StringTok}[1]{\textcolor[rgb]{0.25,0.44,0.63}{#1}}
+\newcommand{\VariableTok}[1]{\textcolor[rgb]{0.10,0.09,0.49}{#1}}
+\newcommand{\VerbatimStringTok}[1]{\textcolor[rgb]{0.25,0.44,0.63}{#1}}
+\newcommand{\WarningTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textbf{\textit{#1}}}}
+\usepackage{longtable,booktabs,array}
+\usepackage{calc} % for calculating minipage widths
+% Correct order of tables after \paragraph or \subparagraph
+\usepackage{etoolbox}
+\makeatletter
+\patchcmd\longtable{\par}{\if@noskipsec\mbox{}\fi\par}{}{}
+\makeatother
+% Allow footnotes in longtable head/foot
+\IfFileExists{footnotehyper.sty}{\usepackage{footnotehyper}}{\usepackage{footnote}}
+\makesavenoteenv{longtable}
+\ifLuaTeX
+\usepackage[bidi=basic,shorthands=off,,provide=*]{babel}
+\else
+\usepackage[bidi=default,shorthands=off,,provide=*]{babel}
+\fi
+\ifPDFTeX
+\else
+\babelfont{rm}[]{Noto Serif}
+\fi
+\ifLuaTeX
+  \usepackage{selnolig} % disable illegal ligatures
+\fi
+\setlength{\emergencystretch}{3em} % prevent overfull lines
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\usepackage{bookmark}
+\IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
+\urlstyle{same}
+\hypersetup{
+  pdftitle={Руководство MBS-fast},
+  pdflang={ru},
+  colorlinks=true,
+  linkcolor={blue},
+  filecolor={Maroon},
+  citecolor={Blue},
+  urlcolor={blue},
+  pdfcreator={LaTeX via pandoc}}
+
+\title{Руководство MBS-fast}
+\author{}
+\date{9 июня 2026}
+
+\begin{document}
+\maketitle
+
+\renewcommand*\contentsname{Оглавление}
+{
+\setcounter{tocdepth}{3}
+\tableofcontents
+}
+MBS-fast считает рассеяние света несферическими ледяными частицами:
+сначала трассируются геометрические лучи, затем для выходных пучков
+считается дифракция в приближении Physical Optics. Код поддерживает
+CPU-расчеты через OpenMP/MPI и CUDA-ускорение дифракции на GPU.
+
+\section{Сборка}\label{ux441ux431ux43eux440ux43aux430}
+
+\subsection{Требования}\label{ux442ux440ux435ux431ux43eux432ux430ux43dux438ux44f}
+
+\begin{longtable}[]{@{}lll@{}}
+\toprule\noalign{}
+Компонент & Для чего нужен & Комментарий \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+GCC \textgreater= 9 или Clang \textgreater= 14 & CPU и host-часть CUDA &
+На EPYC обычно используется GCC \\
+OpenMP & Многопоточность CPU & Для GCC линкуется \texttt{libgomp} \\
+MPI & CPU split build & \texttt{cpu/Makefile} использует
+\texttt{mpicxx}, если он есть \\
+CUDA toolkit & GPU split build & Нужны \texttt{nvcc},
+\texttt{libcudart}, \texttt{libcufft} \\
+NVIDIA driver & GPU запуск & Драйвер должен поддерживать собранный
+\texttt{sm\_XX} \\
+\end{longtable}
+
+Рекомендуемый путь сборки - split build:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ cpu }\AttributeTok{{-}j}          \CommentTok{\# CPU MPI/OpenMP}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu }\AttributeTok{{-}j}          \CommentTok{\# GPU float\_fast по умолчанию}
+\end{Highlighting}
+\end{Shaded}
+
+Объектные файлы CPU лежат в \texttt{cpu/build/}, CUDA - в
+\texttt{gpu/build/}. Общая физика и CLI остаются в \texttt{src/},
+поэтому CPU и GPU версии не расходятся в разные кодовые базы.
+
+\subsection{CPU}\label{cpu}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\CommentTok{\# MPI + OpenMP CPU binary}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ cpu }\AttributeTok{{-}j}
+
+\CommentTok{\# Один MPI rank, 64 OpenMP потока}
+\VariableTok{OMP\_NUM\_THREADS}\OperatorTok{=}\NormalTok{64 }\ExtensionTok{cpu/bin/mbs\_po\_mpi} \AttributeTok{{-}{-}po} \AttributeTok{{-}p}\NormalTok{ 1 125.9 78.09 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}ri}\NormalTok{ 1.3116 0 }\AttributeTok{{-}w}\NormalTok{ 0.532 }\AttributeTok{{-}n}\NormalTok{ 12 }\AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}threads}\NormalTok{ 64 }\AttributeTok{{-}{-}close} \AttributeTok{{-}o}\NormalTok{ out\_cpu}
+
+\CommentTok{\# Четыре MPI rank, по 16 потоков на rank}
+\ExtensionTok{mpirun} \AttributeTok{{-}np}\NormalTok{ 4 cpu/bin/mbs\_po\_mpi }\AttributeTok{{-}{-}po} \AttributeTok{{-}p}\NormalTok{ 1 125.9 78.09 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}ri}\NormalTok{ 1.3116 0 }\AttributeTok{{-}w}\NormalTok{ 0.532 }\AttributeTok{{-}n}\NormalTok{ 12 }\AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}threads}\NormalTok{ 16 }\AttributeTok{{-}{-}close} \AttributeTok{{-}o}\NormalTok{ out\_cpu\_mpi}
+\end{Highlighting}
+\end{Shaded}
+
+Debug/help сборка:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ cpu debug}
+\ExtensionTok{cpu/bin/mbs\_po\_mpi\_debug} \AttributeTok{{-}{-}help{-}debug}
+\end{Highlighting}
+\end{Shaded}
+
+\subsection{GPU}\label{gpu}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\CommentTok{\# GPU binary по умолчанию: float + fast math}
+\VariableTok{PATH}\OperatorTok{=}\NormalTok{/usr/local/cuda/bin:}\VariableTok{$PATH} \FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu }\AttributeTok{{-}j}
+
+\CommentTok{\# Явные варианты}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu float       }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_float}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu float\_fast  }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_float\_fast}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu double\_fast }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_double\_fast}
+\end{Highlighting}
+\end{Shaded}
+
+\begin{longtable}[]{@{}llrrl@{}}
+\toprule\noalign{}
+Target & Binary & CUDA точность & Fast math & Когда использовать \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{make\ -C\ gpu} & \texttt{gpu/bin/mbs\_po\_gpu\_float\_fast} &
+FP32 & да & Быстрые production сканы \\
+\texttt{make\ -C\ gpu\ float} & \texttt{gpu/bin/mbs\_po\_gpu\_float} &
+FP32 & нет & Проверка FP32 без fast math \\
+\texttt{make\ -C\ gpu\ double\_fast} &
+\texttt{gpu/bin/mbs\_po\_gpu\_double\_fast} & FP64 & да & Контрольные
+GPU расчеты \\
+\texttt{make\ -C\ gpu\ double\_debug} &
+\texttt{gpu/bin/mbs\_po\_gpu\_double\_debug} & FP64 & да &
+\texttt{-\/-help-debug} и диагностика \\
+\end{longtable}
+
+В split GPU build CUDA backend включен по умолчанию. Флаг
+\texttt{-\/-gpu} можно писать, но он не обязателен. Флаг
+\texttt{-\/-cpu} принудительно запускает CPU backend внутри GPU-capable
+бинарника.
+
+Архитектура GPU определяется через \texttt{nvidia-smi}. При
+необходимости задавайте вручную:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu double\_fast }\AttributeTok{{-}j}\NormalTok{ GPU\_ARCH=86   }\CommentTok{\# Ampere}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu float\_fast  }\AttributeTok{{-}j}\NormalTok{ GPU\_ARCH=89   }\CommentTok{\# Ada}
+\end{Highlighting}
+\end{Shaded}
+
+\subsection{EPYC Zen5, AVX-512 и
+AVX2}\label{epyc-zen5-avx-512-ux438-avx2}
+
+Makefile берет CPU-флаги из \texttt{scripts/detect\_arch\_flags.sh}
+через \texttt{ARCH\_FLAGS}. Для расчета на той же машине обычно лучше:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ cpu clean}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ cpu }\AttributeTok{{-}j}\NormalTok{ ARCH\_FLAGS=}\StringTok{"{-}march=native {-}mtune=native"}
+
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu clean}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu double\_fast }\AttributeTok{{-}j}\NormalTok{ ARCH\_FLAGS=}\StringTok{"{-}march=native {-}mtune=native"}
+\end{Highlighting}
+\end{Shaded}
+
+\begin{longtable}[]{@{}lll@{}}
+\toprule\noalign{}
+Цель & Флаги GCC/Clang & Комментарий \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+EPYC Zen2 & \texttt{ARCH\_FLAGS="-march=znver2\ -mtune=znver2"} &
+AVX2/FMA \\
+EPYC Zen3 & \texttt{ARCH\_FLAGS="-march=znver3\ -mtune=znver3"} &
+AVX2/FMA \\
+EPYC Zen4 & \texttt{ARCH\_FLAGS="-march=znver4\ -mtune=znver4"} &
+AVX-512 при поддержке компилятора \\
+EPYC Zen5 & \texttt{ARCH\_FLAGS="-march=znver5\ -mtune=znver5"} & Нужен
+GCC/Clang, который знает \texttt{znver5} \\
+Portable AVX2 & \texttt{ARCH\_FLAGS="-O3\ -mavx2\ -mfma"} & Запускается
+на AVX2 машинах \\
+Явный AVX-512 &
+\texttt{ARCH\_FLAGS="-O3\ -mavx512f\ -mavx512dq\ -mavx512cd\ -mavx512bw\ -mavx512vl"}
+& Только если \texttt{lscpu} показывает эти флаги \\
+\end{longtable}
+
+Флага \texttt{AVX12} у GCC/Clang нет. Если имелся в виду Zen5 с AVX-512,
+используйте \texttt{-march=znver5}. Если компилятор старый, обновите его
+или задайте явные \texttt{-mavx512*} флаги после проверки
+\texttt{lscpu}.
+
+\section{Быстрый
+старт}\label{ux431ux44bux441ux442ux440ux44bux439-ux441ux442ux430ux440ux442}
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\CommentTok{\# GPU double, полный диапазон 0..180 градусов}
+\ExtensionTok{gpu/bin/mbs\_po\_gpu\_double\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}p}\NormalTok{ 1 125.9 78.09 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}ri}\NormalTok{ 1.3116 0 }\AttributeTok{{-}w}\NormalTok{ 0.532 }\AttributeTok{{-}n}\NormalTok{ 12 }\AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}threads}\NormalTok{ 64 }\AttributeTok{{-}{-}close} \AttributeTok{{-}o}\NormalTok{ hex\_gpu\_double}
+
+\CommentTok{\# То же, но CPU backend из GPU бинарника}
+\ExtensionTok{gpu/bin/mbs\_po\_gpu\_double\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}{-}cpu} \AttributeTok{{-}p}\NormalTok{ 1 125.9 78.09 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}ri}\NormalTok{ 1.3116 0 }\AttributeTok{{-}w}\NormalTok{ 0.532 }\AttributeTok{{-}n}\NormalTok{ 12 }\AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}threads}\NormalTok{ 64 }\AttributeTok{{-}{-}close} \AttributeTok{{-}o}\NormalTok{ hex\_cpu\_from\_gpu\_bin}
+
+\CommentTok{\# Частица из файла, масштабирование через k\_eq}
+\ExtensionTok{gpu/bin/mbs\_po\_gpu\_float\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}{-}pf}\NormalTok{ particle.dat }\AttributeTok{{-}{-}k\_eq}\NormalTok{ 58.81 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}ri}\NormalTok{ 1.6 0.002 }\AttributeTok{{-}w}\NormalTok{ 1.064 }\AttributeTok{{-}n}\NormalTok{ 14 }\AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\AttributeTok{{-}{-}pole} \DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}threads}\NormalTok{ 16 }\AttributeTok{{-}{-}close} \AttributeTok{{-}o}\NormalTok{ particle\_keq}
+
+\CommentTok{\# Быстрая проверка двух точек: 0 и 180 градусов}
+\ExtensionTok{gpu/bin/mbs\_po\_gpu\_double\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}p}\NormalTok{ 1 125.9 78.09 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}ri}\NormalTok{ 1.3116 0 }\AttributeTok{{-}w}\NormalTok{ 0.532 }\AttributeTok{{-}n}\NormalTok{ 1 }\AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\AttributeTok{{-}{-}pole} \DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 1 }\AttributeTok{{-}{-}threads}\NormalTok{ 64 }\AttributeTok{{-}{-}close} \AttributeTok{{-}o}\NormalTok{ check\_0\_180}
+\end{Highlighting}
+\end{Shaded}
+
+\section{Физическая
+модель}\label{ux444ux438ux437ux438ux447ux435ux441ux43aux430ux44f-ux43cux43eux434ux435ux43bux44c}
+
+\subsection{Общий pipeline}\label{ux43eux431ux449ux438ux439-pipeline}
+
+\begin{longtable}[]{@{}lll@{}}
+\toprule\noalign{}
+Этап & Где в коде & Результат \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Геометрия частицы & \texttt{src/particle}, \texttt{src/main.cpp} &
+Грани, нормали, площадь, объем, симметрия \\
+Трассировка лучей & \texttt{src/scattering}, \texttt{src/tracer},
+\texttt{src/Splitting.cpp} & Выходные пучки: направление, полигон,
+площадь, оптический путь, Jones \\
+PO дифракция & \texttt{HandlerPO::ApplyDiffraction*},
+\texttt{Handler::DiffractIncline*}, CUDA kernels & Jones амплитуда пучка
+в дальнем поле \\
+Когерентная сумма & \texttt{HandlerPO::AddToMueller}, CUDA fused Mueller
+kernels & Сумма Jones матриц по пучкам для одной ориентации \\
+Jones -\textgreater{} Mueller & \texttt{src/math/Mueller.cpp} & Реальная
+матрица Mueller 4x4 \\
+Усреднение ориентаций & \texttt{HandlerPOTotal}, \texttt{TracerPOTotal}
+& Финальная матрица для случайно ориентированных частиц \\
+\end{longtable}
+
+\subsection{Jones матрицы
+лучей}\label{jones-ux43cux430ux442ux440ux438ux446ux44b-ux43bux443ux447ux435ux439}
+
+Каждый пучок несет комплексную матрицу Jones \texttt{beam.J}:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{J = [ Jvv  Jvh ]}
+\NormalTok{    [ Jhv  Jhh ]}
+\end{Highlighting}
+\end{Shaded}
+
+При отражениях/преломлениях \texttt{Splitting.cpp} домножает
+\texttt{beam.J} на коэффициенты Fresnel в локальном
+вертикальном/горизонтальном базисе луча. В PO режиме это амплитуда,
+поэтому в обычном когерентном режиме сначала суммируются Jones матрицы
+пучков, и только затем считается Mueller.
+
+\subsection{Диады и поворот в базис
+рассеяния}\label{ux434ux438ux430ux434ux44b-ux438-ux43fux43eux432ux43eux440ux43eux442-ux432-ux431ux430ux437ux438ux441-ux440ux430ux441ux441ux435ux44fux43dux438ux44f}
+
+Перед добавлением пучка в направление наблюдения локальный Jones базис
+надо перевести в базис детектора. Это делают
+\texttt{HandlerPO::RotateJones} и \texttt{RotateJonesFast}. Они строят
+2x2 матрицу проекций через скалярные произведения между:
+
+\begin{longtable}[]{@{}ll@{}}
+\toprule\noalign{}
+Вектор & Смысл \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{beam.Direction()} & Направление пучка после трассировки \\
+\texttt{direction} & Требуемое направление рассеяния \\
+\texttt{vf} & Forward reference direction \\
+\texttt{info} polarization vectors & Предвычисленный поляризационный
+базис пучка \\
+\end{longtable}
+
+В \texttt{ApplyDiffractionFast} вклад пучка имеет вид:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{J\_beam(theta, phi) = F\_edge(theta, phi) * R\_out(theta, phi) * F\_n(theta, phi)}
+\end{Highlighting}
+\end{Shaded}
+
+\begin{longtable}[]{@{}lll@{}}
+\toprule\noalign{}
+Множитель & Код & Смысл \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{F\_edge} & \texttt{DiffractInclineFast},
+\texttt{DiffractIncline}, \texttt{DiffractInclineAbs} & Скалярный
+edge-интеграл Kirchhoff для полигона пучка \\
+\texttt{R\_out} & \texttt{RotateJones} или \texttt{KarczewskiJones} &
+Поворот/проекция Jones базиса в базис рассеяния \\
+\texttt{F\_n} & \texttt{ComputeFnJones} & Fresnel/Jones поправка для
+нормали пучка и направления \\
+\end{longtable}
+
+Флаг \texttt{-\/-karczewski} заменяет стандартный \texttt{RotateJones}
+на матрицу Karczewski. По комментариям в коде \texttt{M11} при этом не
+меняется, потому что сохраняется Frobenius norm, но поляризационные
+элементы могут отличаться.
+
+\subsection{Дифракционный интеграл
+Kirchhoff}\label{ux434ux438ux444ux440ux430ux43aux446ux438ux43eux43dux43dux44bux439-ux438ux43dux442ux435ux433ux440ux430ux43b-kirchhoff}
+
+Для каждого выходного пучка освещенная апертура представлена полигоном.
+PO дальнее поле считается как интеграл по апертуре:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{F(q) = integral\_A exp(i k q.r) dA}
+\end{Highlighting}
+\end{Shaded}
+
+где \texttt{A} - полигон пучка, \texttt{k\ =\ 2*pi/lambda}, \texttt{q} -
+разность между направлением пучка и направлением наблюдения. В коде
+интеграл считается через границы полигона, а не через sampling площади.
+Для ребра от \texttt{a} до \texttt{b} вклад выражается через разность
+комплексных экспонент и фазовый знаменатель; для малых знаменателей
+используются устойчивые sinc-пределы.
+
+\begin{longtable}[]{@{}ll@{}}
+\toprule\noalign{}
+Функция & Назначение \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{Handler::DiffractIncline} & CPU scalar edge integral без
+поглощения \\
+\texttt{Handler::DiffractInclineFast} & Оптимизированный CPU edge
+integral с предвычисленными ребрами \\
+\texttt{Handler::DiffractInclineAbs} & Вариант с поглощением \\
+\texttt{GpuDiffraction.cu} & CUDA реализация тех же вычислений \\
+\end{longtable}
+
+CPU и GPU ветки должны использовать одну геометрию, фазовую конвенцию и
+сетку theta. Отличия обычно дают точность
+(\texttt{float}/\texttt{double}), \texttt{-\/-use\_fast\_math},
+FFT-интерполяция, порядок редукции/атомики и специальные случаи
+полюсов/endpoint.
+
+\subsection{Когерентная и некогерентная
+сумма}\label{ux43aux43eux433ux435ux440ux435ux43dux442ux43dux430ux44f-ux438-ux43dux435ux43aux43eux433ux435ux440ux435ux43dux442ux43dux430ux44f-ux441ux443ux43cux43cux430}
+
+По умолчанию:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{J\_total(theta, phi) = sum\_beams J\_beam(theta, phi)}
+\NormalTok{M(theta, phi)       = Mueller(J\_total(theta, phi))}
+\end{Highlighting}
+\end{Shaded}
+
+С флагом \texttt{-\/-incoh}:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{M(theta, phi) = sum\_beams Mueller(J\_beam(theta, phi))}
+\end{Highlighting}
+\end{Shaded}
+
+Преобразование Jones -\textgreater{} Mueller реализовано в
+\texttt{src/math/Mueller.cpp}: элементы 4x4 строятся из билинейных
+комбинаций \texttt{\textbar{}S\_i\textbar{}\^{}2},
+\texttt{Re(S\_i\ conj(S\_j))}, \texttt{Im(S\_i\ conj(S\_j))}.
+
+\subsection{\texorpdfstring{Усреднение ориентаций и
+\texttt{-\/-pole}}{Усреднение ориентаций и -\/-pole}}\label{ux443ux441ux440ux435ux434ux43dux435ux43dux438ux435-ux43eux440ux438ux435ux43dux442ux430ux446ux438ux439-ux438---pole}
+
+Ориентационные режимы задают веса по beta/gamma. На точных beta-полюсах
+все gamma эквивалентны, поэтому \texttt{-\/-pole} считает одну gamma и
+умножает вес. В текущей версии при \texttt{-\/-pole} используются beta
+endpoints, чтобы точка beta=0 или beta=pi действительно присутствовала в
+сетке, а не заменялась midpoint.
+
+\subsection{Веса scattering
+grid}\label{ux432ux435ux441ux430-scattering-grid}
+
+Для uniform theta grid выводится \texttt{Nth\ +\ 1} строк. Колонка
+\texttt{2pi*dcos} - вес кольца телесного угла:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{dOmega(theta\_j) = 2*pi * (cos(theta\_left) {-} cos(theta\_right))}
+\end{Highlighting}
+\end{Shaded}
+
+Для endpoint строк используется половинная ячейка, обрезанная границей
+диапазона. Для полной сетки \texttt{0..180} сумма всех \texttt{2pi*dcos}
+должна быть \texttt{4*pi}.
+
+\section{Частицы и
+размер}\label{ux447ux430ux441ux442ux438ux446ux44b-ux438-ux440ux430ux437ux43cux435ux440}
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Флаг & Аргументы & Описание \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-p} & \texttt{TYPE\ L\ D\ {[}extra{]}} & Built-in частица. Нужно
+указать ровно один источник: \texttt{-p} или \texttt{-\/-pf}. \\
+\texttt{-\/-pf} & \texttt{FILE} & Частица из файла. \\
+\texttt{-\/-rs} & \texttt{SIZE} & Масштабировать file particle до
+\texttt{Dmax\ =\ SIZE}. \\
+\texttt{-\/-k\_eq} & \texttt{X} & Масштабировать так, чтобы
+\texttt{k\_eq\ =\ 2*pi*r\_eq/lambda}. \\
+\texttt{-\/-ri} & \texttt{Re\ Im} & Комплексный показатель
+преломления. \\
+\texttt{-w} & \texttt{LAMBDA} & Длина волны в микрометрах. \\
+\texttt{-n} & \texttt{N} & Максимальная глубина внутренних
+отражений/преломлений. \\
+\end{longtable}
+
+Типы \texttt{-p}:
+
+\begin{longtable}[]{@{}rll@{}}
+\toprule\noalign{}
+Type & Форма & Параметры \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+1 & Hexagonal column/plate & \texttt{L\ D} \\
+2 & Bullet & \texttt{L\ D} \\
+3 & Bullet rosette & \texttt{L\ D\ {[}cap{]}} \\
+4 & Droxtal & \texttt{L\ D\ extra} \\
+10 & Concave hexagonal & \texttt{L\ D\ concavity} \\
+12 & Hexagonal aggregate & \texttt{L\ D\ count} \\
+999 & Built-in aggregate & \texttt{extra} \\
+\end{longtable}
+
+Масштабирование через equivalent size:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{r\_eq = (3 V / (4*pi))\^{}(1/3)}
+\NormalTok{k\_eq = 2*pi*r\_eq/lambda}
+\NormalTok{scale = (k\_eq\_target * lambda / (2*pi)) / r\_eq\_original}
+\end{Highlighting}
+\end{Shaded}
+
+\section{Ориентационные
+сетки}\label{ux43eux440ux438ux435ux43dux442ux430ux446ux438ux43eux43dux43dux44bux435-ux441ux435ux442ux43aux438}
+
+\begin{longtable}[]{@{}lrll@{}}
+\toprule\noalign{}
+Режим & Аргументы & Когда применять & Комментарий \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-\/-oldauto} & \texttt{DIV} & Основной production режим & Шаг
+сетки связан с diffraction-limited angular scale; типично \texttt{2},
+\texttt{4}, \texttt{8}. \\
+\texttt{-\/-random} & \texttt{Nb\ Ng} & Ручная beta/gamma сетка &
+Использует symmetry-reduced domain. \\
+\texttt{-\/-fixed} & \texttt{BETA\ GAMMA} & Отладка одной ориентации &
+Углы в градусах. \\
+\texttt{-\/-orientfile} & \texttt{FILE} & Пользовательские ориентации &
+Одна пара beta/gamma на строку. \\
+\texttt{-\/-sobol} & \texttt{N} & Quasi-random average & Хорош для
+сходимости сканов. \\
+\texttt{-\/-sobol\_seed} & \texttt{N\ S} & Sobol/Owen с seed &
+Повторяемые проверки сходимости. \\
+\texttt{-\/-sobol\_ring} & \texttt{Nb\ Ng} & Sobol beta + uniform gamma
+rings & Гибридная сетка. \\
+\texttt{-\/-so3\_quat} & \texttt{N} & Full SO(3) quaternions & Не
+опирается на beta/gamma symmetry domain. \\
+\texttt{-\/-hammersley} & \texttt{N} & Hammersley orientations &
+Experimental/debug. \\
+\texttt{-\/-lattice} & \texttt{N} & Rank-1 lattice &
+Experimental/debug. \\
+\texttt{-\/-lattice\_z} & \texttt{N\ Z} & Rank-1 lattice с явным
+generator & Experimental/debug. \\
+\texttt{-\/-euler\_quad} & \texttt{Nb\ Ng} & Gauss по cos(beta),
+periodic gamma & Высокий порядок квадратуры. \\
+\texttt{-\/-euler\_adapt} & \texttt{Nb\ NgMax} & Adaptive gamma count &
+Меньше работы около beta poles. \\
+\texttt{-\/-montecarlo} & \texttt{N} & Псевдослучайные ориентации &
+Базовая Monte Carlo проверка. \\
+\texttt{-\/-adaptive} & \texttt{EPS} & Автоподбор числа Sobol
+orientations & Удваивает число ориентаций до цели. \\
+\texttt{-\/-auto} & \texttt{EPS} & Auto theta, phi, orientations &
+Удобный режим. \\
+\texttt{-\/-autofull} & \texttt{EPS} & Auto \texttt{n}, theta, phi,
+orientations & Более полный и дорогой поиск. \\
+\texttt{-\/-oldautofull} & \texttt{EPS} & Autofull + oldauto final grid
+& Когда нужна регулярная финальная сетка. \\
+\end{longtable}
+
+Модификаторы:
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Флаг & Аргументы & Описание \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-\/-ring\_points} & \texttt{N} & Точек на diffraction ring для
+oldauto estimates. \\
+\texttt{-\/-mirror\_gamma} & none & Половина gamma domain +
+зеркалирование Mueller. \\
+\texttt{-\/-sym} & \texttt{Sb\ Sg} & Override symmetry: beta range
+\texttt{pi/Sb}, gamma range \texttt{2*pi/Sg}. \\
+\texttt{-\/-b} & \texttt{B1\ B2} & Диапазон beta для
+\texttt{-\/-random}, градусы. \\
+\texttt{-\/-g} & \texttt{G1\ G2} & Диапазон gamma для
+\texttt{-\/-random}, градусы. \\
+\texttt{-\/-maxorient} & \texttt{N} & Верхняя граница adaptive
+orientations. \\
+\texttt{-\/-chunk} & \texttt{N} & Chunk size по ориентациям/gamma. \\
+\texttt{-\/-coh\_orient} & none & Legacy
+coherent-across-orientations. \\
+\texttt{-\/-pole} & none & Одна gamma на точных beta poles. \\
+\texttt{-\/-owen\_avg} & \texttt{K} & Усреднение \texttt{K} Owen seeds в
+\texttt{-\/-autofull}. \\
+\texttt{-\/-owen\_seeds} & \texttt{S...} & Явный список Owen seeds. \\
+\end{longtable}
+
+\section{Сетка
+рассеяния}\label{ux441ux435ux442ux43aux430-ux440ux430ux441ux441ux435ux44fux43dux438ux44f}
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Флаг & Аргументы & Описание \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-\/-grid} & \texttt{T1\ T2\ Nphi\ Nth} & Uniform theta range от
+\texttt{T1} до \texttt{T2}; выводит \texttt{Nth\ +\ 1} theta строк. \\
+\texttt{-\/-grid} & \texttt{R\ Nphi\ Nth} & Backscatter cone радиуса
+\texttt{R} градусов. \\
+\texttt{-\/-tgrid} & \texttt{FILE} & Неравномерная theta сетка, градусы,
+одна строка на theta. \\
+\texttt{-\/-auto\_tgrid} & \texttt{EPS} & Adaptive theta grid через
+bisection. \\
+\texttt{-\/-auto\_phi} & none & Автоматический выбор \texttt{Nphi}. \\
+\texttt{-\/-nphi} & \texttt{N} & Override phi count, максимальный
+приоритет. \\
+\texttt{-\/-filter} & \texttt{DEG} & Ограничить output backscatter
+cone. \\
+\texttt{-\/-point} & none & Legacy backscatter point mode. \\
+\end{longtable}
+
+Приоритет:
+
+\begin{longtable}[]{@{}ll@{}}
+\toprule\noalign{}
+Величина & Приоритет \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Theta & \texttt{-\/-tgrid} \textgreater{} \texttt{-\/-grid}
+\textgreater{} \texttt{-\/-auto\_tgrid} \textgreater{} \texttt{-\/-auto}
+\textgreater{} default \\
+Phi & \texttt{-\/-nphi} \textgreater{} \texttt{-\/-grid} \textgreater{}
+\texttt{-\/-auto\_phi} \textgreater{} \texttt{-\/-auto} \textgreater{}
+default \\
+\end{longtable}
+
+\section{GPU и multi-GPU}\label{gpu-ux438-multi-gpu}
+
+\subsection{За счет чего GPU
+быстрее}\label{ux437ux430-ux441ux447ux435ux442-ux447ux435ux433ux43e-gpu-ux431ux44bux441ux442ux440ux435ux435}
+
+Самая дорогая часть PO - многократный расчет дифракционного
+edge-интеграла для большого числа направлений, пучков и ориентаций. CPU
+готовит пучки, а GPU параллелит дифракцию и, в быстрых режимах, сразу
+накопление Mueller.
+
+\begin{longtable}[]{@{}llll@{}}
+\toprule\noalign{}
+Операция & CPU path & GPU path & Гранулярность \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Трассировка через грани & OpenMP по ориентациям/gamma blocks & В
+основном CPU; \texttt{-\/-gpu\_trace} только prefilter кандидатов &
+Orientation/chunk \\
+Packing пучков & CPU & CPU готовит \texttt{GpuBeam} buffers и копирует
+на device & Beam records \\
+Edge diffraction & CPU loops & CUDA kernels & Beam x theta x phi x
+orientation \\
+Когерентная Jones сумма & CPU complex arrays & Atomic или no-atomic
+device kernels & Grid cell/orientation \\
+Jones -\textgreater{} Mueller & CPU после Jones sum &
+\texttt{mueller\_batch\_kernel} или fused kernel & Grid cell \\
+Multi-\texttt{k\_eq} & Повтор по размерам & Optional fused
+multi-\texttt{k\_eq} CUDA pass & Size x beam x grid \\
+FFT phi & Direct phi grid & cuFFT low-phi pass + zero-padding &
+Theta/orientation batches \\
+\end{longtable}
+
+Масштаб работы:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{Nwork \textasciitilde{}= Norient * Nbeams\_per\_orientation * Ntheta * Nphi}
+\end{Highlighting}
+\end{Shaded}
+
+Эти вклады почти независимы до момента когерентной суммы Jones, поэтому
+хорошо ложатся на CUDA.
+
+\subsection{Atomic и no-atomic
+режимы}\label{atomic-ux438-no-atomic-ux440ux435ux436ux438ux43cux44b}
+
+\begin{longtable}[]{@{}llll@{}}
+\toprule\noalign{}
+Режим & Kernels & Как копится результат & Когда используется \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Atomic Jones & \texttt{diffraction\_kernel} & Thread считает вклад
+beam/grid и делает \texttt{atomicAdd} в complex Jones buffer. Потом
+\texttt{mueller\_batch\_kernel} делает Mueller. & General fallback,
+включая часть diagnostic/no-shadow режимов. \\
+No-atomic grid & \texttt{diffraction\_grid\_kernel} & Thread владеет
+output cell и сам проходит по пучкам, без конкуренции writers. &
+Full-only output, когда подходит layout. \\
+Fused Mueller & \texttt{diffraction\_grid\_mueller\_kernel},
+\texttt{*\_full\_kernel}, \texttt{*\_full8\_kernel},
+\texttt{*\_mixed8\_kernel} & Kernel считает Jones локально и сразу
+переводит/добавляет Mueller. & Быстрый production путь. \\
+Staged orientation Mueller &
+\texttt{diffraction\_grid\_mueller\_orient\_kernel} +
+\texttt{reduce\_mueller\_orient\_kernel} & Сначала per-orientation
+Mueller, затем редукция. & Большие batches, меньше contention. \\
+Multi-\texttt{k\_eq} fused &
+\texttt{diffraction\_grid\_mueller\_multik\_kernel} & Несколько близких
+\texttt{k\_eq} из одного packed beam batch. & Shared-batch scans. \\
+\end{longtable}
+
+В atomic path атомики идут по real/imag компонентам 2x2 Jones:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{J00.re, J00.im, J01.re, J01.im,}
+\NormalTok{J10.re, J10.im, J11.re, J11.im}
+\end{Highlighting}
+\end{Shaded}
+
+Для \texttt{\_noshadow} тот же набор atomics пишется во второй Jones
+buffer. Это корректно для когерентной PO суммы, но может быть узким
+местом, если много пучков пишут в одну detector cell.
+
+Управление:
+
+\begin{longtable}[]{@{}ll@{}}
+\toprule\noalign{}
+Переменная & Действие \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{MBS\_GPU\_NO\_ATOMICS=1} & Форсировать no-atomic путь, если
+поддерживается. \\
+\texttt{MBS\_GPU\_NO\_ATOMICS=0} & Форсировать atomic путь для
+сравнения/debug. \\
+\texttt{MBS\_GPU\_FUSED\_MUELLER=1} & Предпочитать fused
+diffraction-to-Mueller kernels. \\
+\texttt{MBS\_GPU\_STAGE\_MUELLER=1} & Включить staged per-orientation
+Mueller reduction. \\
+\texttt{MBS\_GPU\_TIMING=1} & Печатать breakdown
+count/pack/copy/kernels/d2h/add. \\
+\texttt{MBS\_GPU\_BLOCK=N} & Override CUDA block size. \\
+\end{longtable}
+
+\subsection{Multi-size и multi-GPU}\label{multi-size-ux438-multi-gpu}
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Флаг & Аргументы & Описание \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-\/-multigrid} & \texttt{Dmin\ Dmax\ N} & Log-spaced scan по
+\texttt{Dmax}. \\
+\texttt{-\/-multikeq} & \texttt{Kmin\ Kmax\ N} & Log-spaced scan по
+\texttt{k\_eq}. \\
+\texttt{-\/-multikeq\_list} & \texttt{FILE} & Точный список
+\texttt{k\_eq}, один на строку. \\
+\texttt{-\/-multigrid\_parallel} & \texttt{N} & Запуск scan points как
+child processes; \texttt{0} значит auto. \\
+\texttt{-\/-multigrid\_threads} & \texttt{N} & OpenMP threads на child
+process. \\
+\texttt{-\/-gpu\_devices} & \texttt{LIST} & Список CUDA devices,
+например \texttt{0,1,2,3,4}. \\
+\texttt{-\/-multikeq\_shared\_batches} & none & Batch близких
+\texttt{k\_eq} на GPU child с reuse tracing от максимального
+\texttt{k\_eq}. \\
+\texttt{-\/-multikeq\_batch\_ratio} & \texttt{R} & Максимальное
+\texttt{kmax/kmin} внутри shared batch; default \texttt{1.05}. \\
+\end{longtable}
+
+Exact multi-GPU:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\ExtensionTok{gpu/bin/mbs\_po\_gpu\_float\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}{-}pf}\NormalTok{ particle.dat }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}multikeq\_list}\NormalTok{ keq.txt }\AttributeTok{{-}{-}ri}\NormalTok{ 1.6 0.002 }\AttributeTok{{-}w}\NormalTok{ 1.064 }\AttributeTok{{-}n}\NormalTok{ 12 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}fft} \AttributeTok{{-}{-}close} \DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}multigrid\_parallel}\NormalTok{ 0 }\AttributeTok{{-}{-}multigrid\_threads}\NormalTok{ 16 }\AttributeTok{{-}{-}gpu\_devices}\NormalTok{ 0,1,2,3,4 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}o}\NormalTok{ scan\_exact}
+\end{Highlighting}
+\end{Shaded}
+
+Shared-batch:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\ExtensionTok{gpu/bin/mbs\_po\_gpu\_float\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}{-}pf}\NormalTok{ particle.dat }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}multikeq\_list}\NormalTok{ keq.txt }\AttributeTok{{-}{-}ri}\NormalTok{ 1.6 0.002 }\AttributeTok{{-}w}\NormalTok{ 1.064 }\AttributeTok{{-}n}\NormalTok{ 12 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}fft} \AttributeTok{{-}{-}close} \DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}multigrid\_parallel}\NormalTok{ 0 }\AttributeTok{{-}{-}multigrid\_threads}\NormalTok{ 16 }\AttributeTok{{-}{-}gpu\_devices}\NormalTok{ 0,1,2,3,4 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}multikeq\_shared\_batches} \AttributeTok{{-}{-}multikeq\_batch\_ratio}\NormalTok{ 1.05 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}o}\NormalTok{ scan\_shared}
+\end{Highlighting}
+\end{Shaded}
+
+Fused multi-\texttt{k\_eq}:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\VariableTok{MBS\_GPU\_MULTI\_K\_FULL}\OperatorTok{=}\NormalTok{1 }\ExtensionTok{gpu/bin/mbs\_po\_gpu\_float\_fast}\NormalTok{ ...}
+\end{Highlighting}
+\end{Shaded}
+
+\section{Все флаги}\label{ux432ux441ux435-ux444ux43bux430ux433ux438}
+
+\subsection{Метод, частица, физические
+параметры}\label{ux43cux435ux442ux43eux434-ux447ux430ux441ux442ux438ux446ux430-ux444ux438ux437ux438ux447ux435ux441ux43aux438ux435-ux43fux430ux440ux430ux43cux435ux442ux440ux44b}
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Флаг & Аргументы & Описание \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-\/-po} & none & Physical Optics. \\
+\texttt{-\/-go} & none & Geometrical Optics. \\
+\texttt{-p} & \texttt{TYPE\ L\ D\ {[}extra{]}} & Built-in particle. \\
+\texttt{-\/-pf} & \texttt{FILE} & Particle from file. \\
+\texttt{-\/-rs} & \texttt{SIZE} & Resize file particle by Dmax. \\
+\texttt{-\/-k\_eq} & \texttt{X} & Resize by equivalent size
+parameter. \\
+\texttt{-\/-ri} & \texttt{Re\ Im} & Refractive index. \\
+\texttt{-w} & \texttt{LAMBDA} & Wavelength, micrometers. \\
+\texttt{-n} & \texttt{N} & Max internal reflections/refractions. \\
+\texttt{-\/-abs} & none & Enable absorption accounting. \\
+\texttt{-\/-abs\_points} & \texttt{N} или \texttt{all} & Absorption
+samples. \\
+\end{longtable}
+
+\subsection{Ориентации}\label{ux43eux440ux438ux435ux43dux442ux430ux446ux438ux438}
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Флаг & Аргументы & Описание \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-\/-fixed} & \texttt{BETA\ GAMMA} & Одна ориентация в
+градусах. \\
+\texttt{-\/-random} & \texttt{Nb\ Ng} & Regular beta/gamma grid. \\
+\texttt{-\/-sobol} & \texttt{N} & Sobol orientations. \\
+\texttt{-\/-so3\_quat} & \texttt{N} & Full SO(3) quaternions. \\
+\texttt{-\/-sobol\_seed} & \texttt{N\ S} & Sobol with Owen seed. \\
+\texttt{-\/-sobol\_ring} & \texttt{Nb\ Ng} & Sobol beta x gamma
+rings. \\
+\texttt{-\/-hammersley} & \texttt{N} & Hammersley set. \\
+\texttt{-\/-lattice} & \texttt{N} & Rank-1 lattice. \\
+\texttt{-\/-lattice\_z} & \texttt{N\ Z} & Rank-1 lattice with
+generator. \\
+\texttt{-\/-euler\_quad} & \texttt{Nb\ Ng} & Euler/Gauss quadrature. \\
+\texttt{-\/-euler\_adapt} & \texttt{Nb\ NgMax} & Adaptive gamma
+count. \\
+\texttt{-\/-montecarlo} & \texttt{N} & Monte Carlo orientations. \\
+\texttt{-\/-adaptive} & \texttt{EPS} & Adaptive orientation
+convergence. \\
+\texttt{-\/-auto} & \texttt{EPS} & Auto theta, phi, orientation
+count. \\
+\texttt{-\/-autofull} & \texttt{EPS} & Auto \texttt{n}, theta, phi,
+orientation count. \\
+\texttt{-\/-oldautofull} & \texttt{EPS} & Autofull + oldauto final
+grid. \\
+\texttt{-\/-owen\_avg} & \texttt{K} & Average final Owen seeds. \\
+\texttt{-\/-owen\_seeds} & \texttt{S...} & Explicit Owen seeds. \\
+\texttt{-\/-oldauto} & \texttt{DIV} & Physics-based regular grid. \\
+\texttt{-\/-ring\_points} & \texttt{N} & Points per diffraction ring
+estimate. \\
+\texttt{-\/-mirror\_gamma} & none & Mirror half gamma domain. \\
+\texttt{-\/-orientfile} & \texttt{FILE} & Load beta/gamma from file. \\
+\texttt{-\/-b} & \texttt{B1\ B2} & Beta range for
+\texttt{-\/-random}. \\
+\texttt{-\/-g} & \texttt{G1\ G2} & Gamma range for
+\texttt{-\/-random}. \\
+\texttt{-\/-maxorient} & \texttt{N} & Max adaptive orientations. \\
+\texttt{-\/-chunk} & \texttt{N} & Orientation/gamma chunk size. \\
+\texttt{-\/-coh\_orient} & none & Legacy coherent orientation mode. \\
+\texttt{-\/-pole} & none & Exact beta-pole gamma shortcut. \\
+\texttt{-\/-sym} & \texttt{Sb\ Sg} & Override symmetry. \\
+\end{longtable}
+
+\subsection{Сетка, ускорение,
+cutoffs}\label{ux441ux435ux442ux43aux430-ux443ux441ux43aux43eux440ux435ux43dux438ux435-cutoffs}
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Флаг & Аргументы & Описание \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-\/-grid} & \texttt{T1\ T2\ Nphi\ Nth} & Uniform theta range. \\
+\texttt{-\/-grid} & \texttt{R\ Nphi\ Nth} & Backscatter cone. \\
+\texttt{-\/-tgrid} & \texttt{FILE} & Non-uniform theta grid. \\
+\texttt{-\/-auto\_tgrid} & \texttt{EPS} & Adaptive theta grid. \\
+\texttt{-\/-auto\_phi} & none & Auto phi count. \\
+\texttt{-\/-nphi} & \texttt{N} & Override phi count. \\
+\texttt{-\/-threads} & \texttt{N} & OpenMP worker threads. \\
+\texttt{-\/-gpu} & none & CUDA backend. \\
+\texttt{-\/-cpu} & none & Force CPU backend in GPU build. \\
+\texttt{-\/-fft} & none & cuFFT phi interpolation. \\
+\texttt{-\/-beam\_cutoff} & \texttt{EPS} & Set beam \texttt{J} and area
+cutoffs. \\
+\texttt{-\/-beam\_cutoff\_j} & \texttt{EPS} & Skip by relative ` \\
+\texttt{-\/-beam\_cutoff\_area} & \texttt{EPS} & Skip by relative
+area. \\
+\texttt{-\/-beam\_cutoff\_importance} & \texttt{EPS} & Skip by relative
+` \\
+\texttt{-\/-trace\_cutoff} & \texttt{EPS} & Set trace pruning
+cutoffs. \\
+\texttt{-\/-trace\_cutoff\_j} & \texttt{EPS} & Trace prune by ` \\
+\texttt{-\/-trace\_cutoff\_area} & \texttt{EPS} & Trace prune by
+area. \\
+\texttt{-\/-trace\_cutoff\_importance} & \texttt{EPS} & Trace prune by
+` \\
+\texttt{-\/-trace\_max\_beams} & \texttt{N} & Abort orientation after
+\texttt{N} beam nodes; \texttt{0} disables. \\
+\texttt{-\/-gpu\_trace} & none & Experimental CUDA candidate
+prefilter. \\
+\texttt{-\/-trace\_prefilter} & none & Enable CPU projected-AABB
+prefilter. \\
+\texttt{-\/-no\_trace\_prefilter} & none & Disable CPU prefilter. \\
+\texttt{-\/-trace\_prefilter\_margin} & \texttt{M} & AABB prefilter
+margin. \\
+\texttt{-\/-trace\_prefilter\_stats} & none & Print prefilter
+counters. \\
+\texttt{-r} & \texttt{RATIO} & Beam area restriction ratio. \\
+\end{longtable}
+
+\subsection{Output, diagnostics,
+legacy}\label{output-diagnostics-legacy}
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Флаг & Аргументы & Описание \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-o} & \texttt{NAME} & Output path/name. \\
+\texttt{-\/-close} & none & Exit after computation. \\
+\texttt{-\/-log} & \texttt{SEC} & Progress log interval. \\
+\texttt{-\/-checkpoint} & none & Save/resume long runs. \\
+\texttt{-\/-save\_betas} & none & Save per-beta Mueller files. \\
+\texttt{-\/-full\_only} & none & Write only full Mueller output;
+default. \\
+\texttt{-\/-noshadow\_output} & none & Also write
+\texttt{\_noshadow}. \\
+\texttt{-\/-shadow} & none & Legacy flag, currently no effect. \\
+\texttt{-\/-shadow\_off} & none & Disable shadow beam. \\
+\texttt{-\/-incoh} & none & Incoherent per-beam Mueller sum. \\
+\texttt{-\/-jones} & none & Write Jones matrices where supported. \\
+\texttt{-\/-karczewski} & none & Use Karczewski polarization matrix. \\
+\texttt{-\/-legacy\_sign} & none & Old Fresnel sign convention. \\
+\texttt{-\/-ot\_phase\_avg} & none & Average OT extinction over phase
+period. \\
+\texttt{-\/-ot\_phase\_shift} & \texttt{F} & Diagnostic OT phase
+shift. \\
+\texttt{-\/-ot\_ping} & \texttt{D} & Legacy OT phase rotation. \\
+\texttt{-\/-filter} & \texttt{DEG} & Restrict output to backscatter
+cone. \\
+\texttt{-\/-point} & none & Legacy backscatter point mode. \\
+\texttt{-\/-tr} & \texttt{FILE} & Load trajectory file. \\
+\texttt{-\/-all} & none & Calculate all loaded trajectories. \\
+\texttt{-\/-gr} & none & Output trajectory groups. \\
+\texttt{-\/-forced\_convex} & none & Force convex processing. \\
+\texttt{-\/-forced\_nonconvex} & none & Force nonconvex processing. \\
+\texttt{-\/-help}, \texttt{-h} & none & Short help. \\
+\texttt{-\/-help-debug} & none & Full debug/experimental help. \\
+\end{longtable}
+
+\section{Переменные
+окружения}\label{ux43fux435ux440ux435ux43cux435ux43dux43dux44bux435-ux43eux43aux440ux443ux436ux435ux43dux438ux44f}
+
+\begin{longtable}[]{@{}ll@{}}
+\toprule\noalign{}
+Переменная & Смысл \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{CUDA\_VISIBLE\_DEVICES} & Стандартный выбор видимых CUDA
+devices. \\
+\texttt{OMP\_NUM\_THREADS} & OpenMP threads по умолчанию. \\
+\texttt{MBS\_GPU\_ALLOW\_FALLBACK=1} & Разрешить старый fallback
+GPU-\textgreater CPU после CUDA ошибки. Только debug. \\
+\texttt{MBS\_GPU\_MEM\_FRACTION} & Доля свободной GPU памяти для
+buffers. \\
+\texttt{MBS\_GPU\_NO\_ATOMICS} & Выбор no-atomic (\texttt{1}) или atomic
+(\texttt{0}) path. \\
+\texttt{MBS\_GPU\_FUSED\_MUELLER} & Fused diffraction-to-Mueller
+kernels. \\
+\texttt{MBS\_GPU\_STAGE\_MUELLER} & Staged per-orientation Mueller
+reduction. \\
+\texttt{MBS\_GPU\_NO\_VERTEX\_CACHE} & Отключить cached/packed vertex
+path. \\
+\texttt{MBS\_GPU\_TIMING} & Печатать CUDA timing breakdown. \\
+\texttt{MBS\_GPU\_BLOCK} & Override CUDA block size. \\
+\texttt{MBS\_HOST\_MEM\_FRACTION} & Доля host RAM для oldauto/random
+chunking. \\
+\texttt{MBS\_HOST\_MEM\_RESERVE\_MB} & Резерв host RAM в MB. \\
+\texttt{MBS\_HOST\_MEM\_BUDGET\_MB} & Жесткий host RAM budget. \\
+\texttt{MBS\_FFT\_PHI\_FACTOR} & Override reduced phi factor для FFT. \\
+\texttt{MBS\_GPU\_MULTI=0} & Отключить automatic multi-orientation GPU
+batching. \\
+\texttt{MBS\_GPU\_MULTI\_MAX=N} & Ограничить GPU multi batching. \\
+\texttt{MBS\_GPU\_MULTI\_K\_FULL=1} & Experimental fused
+multi-\texttt{k\_eq} diffraction. \\
+\texttt{MBS\_SHARED\_BETA\_GROUP=N} & Override beta grouping для shared
+batch. \\
+\texttt{MBS\_SHARED\_ORIENT\_CHUNK=N} & Override orientation chunk для
+shared batch. \\
+\texttt{MBS\_PARALLEL\_MEM\_FRACTION} & Memory fraction scheduler для
+parallel multi-size. \\
+\texttt{MBS\_PARALLEL\_SHARED\_KEQ=1} & Environment equivalent для
+shared \texttt{k\_eq} batching. \\
+\texttt{MBS\_PARALLEL\_KEQ\_BATCH\_RATIO=R} & Default batch ratio для
+shared \texttt{k\_eq}. \\
+\end{longtable}
+
+\section{Выходные
+файлы}\label{ux432ux44bux445ux43eux434ux43dux44bux435-ux444ux430ux439ux43bux44b}
+
+Основной \texttt{.dat}:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{ScAngle 2pi*dcos M11 M12 M13 M14 M21 M22 M23 M24 M31 M32 M33 M34 M41 M42 M43 M44}
+\end{Highlighting}
+\end{Shaded}
+
+\begin{longtable}[]{@{}ll@{}}
+\toprule\noalign{}
+Колонка & Смысл \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{ScAngle} & Угол рассеяния theta в градусах. \\
+\texttt{2pi*dcos} & Вес кольца телесного угла для theta row. \\
+\texttt{Mij} & Элементы Mueller после суммирования пучков и усреднения
+ориентаций. \\
+\end{longtable}
+
+Дополнительные outputs:
+
+\begin{longtable}[]{@{}lll@{}}
+\toprule\noalign{}
+Output & Как включается & Смысл \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{\_noshadow} & \texttt{-\/-noshadow\_output} & Mueller без
+shadow/external beam. \\
+\texttt{\_betas/} & \texttt{-\/-save\_betas} & Per-beta diagnostics. \\
+checkpoint files & \texttt{-\/-checkpoint} & Resume для длинных
+orientation-grid runs. \\
+Jones output & \texttt{-\/-jones} & Raw Jones matrices в поддержанных PO
+modes. \\
+\end{longtable}
+
+Предупреждения про optical-theorem/integral mismatch являются
+диагностикой. Для non-absorbing runs физическое поглощение фиксируется
+нулем; integral characteristic не заменяет выходную Mueller матрицу.
+
+\end{document}
