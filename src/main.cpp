@@ -174,6 +174,127 @@ enum class ParticleType : int
     CertainAggregate = 999
 };
 
+static int FinishWithCode(int code)
+{
+#ifdef USE_MPI
+    int initialized = 0;
+    int finalized = 0;
+    MPI_Initialized(&initialized);
+    if (initialized)
+        MPI_Finalized(&finalized);
+    if (initialized && !finalized)
+        MPI_Finalize();
+#endif
+    return code;
+}
+
+static void PrintCommandLineError(const std::string &msg)
+{
+    std::cerr << "\nERROR: " << msg << "\n\n"
+              << "Run with --help for common options or --help-debug for the full flag list.\n"
+              << "Minimal example:\n"
+              << "  mbs_po --po -p 1 100 70 --ri 1.31 0 -w 0.532 -n 8 \\\n"
+              << "      --oldauto 2 --grid 0 180 600 180 --close -o out\n";
+}
+
+static void ValidatePositiveInt(const ArgPP &args, const std::string &key,
+                                const std::string &label)
+{
+    if (args.IsCatched(key) && args.GetIntValue(key, 0) < 1)
+        throw std::runtime_error(label + " must be >= 1.");
+}
+
+static void ValidateNonNegativeInt(const ArgPP &args, const std::string &key,
+                                   const std::string &label)
+{
+    if (args.IsCatched(key) && args.GetIntValue(key, 0) < 0)
+        throw std::runtime_error(label + " must be >= 0.");
+}
+
+static void ValidateCommandLine(const ArgPP &args)
+{
+    if (args.IsCatched("gpu") && args.IsCatched("cpu"))
+        throw std::runtime_error("--gpu and --cpu are mutually exclusive.");
+
+    if (args.IsCatched("p") == args.IsCatched("pf"))
+        throw std::runtime_error("specify exactly one particle source: -p TYPE L D [extra] or --pf FILE.");
+
+    if (args.IsCatched("rs") && args.IsCatched("k_eq"))
+        throw std::runtime_error("--rs and --k_eq are both size controls; use only one.");
+
+    if (args.IsCatched("p"))
+    {
+        const unsigned n = args.GetArgNumber("p");
+        if (n < 1)
+            throw std::runtime_error("-p requires a particle type.");
+        const int type = args.GetIntValue("p", 0);
+        unsigned required = 3;
+        if (type == (int)ParticleType::BulletRosette)
+            required = (n == 4) ? 4 : 3;
+        else if (type == (int)ParticleType::Droxtal
+                 || type == (int)ParticleType::ConcaveHexagonal
+                 || type == (int)ParticleType::HexagonalAggregate)
+            required = 4;
+        else if (type == (int)ParticleType::CertainAggregate)
+            required = 2;
+        else if (type != (int)ParticleType::Hexagonal
+                 && type != (int)ParticleType::Bullet)
+            throw std::runtime_error("unknown -p particle type " + std::to_string(type)
+                                     + ". Supported types: 1, 2, 3, 4, 10, 12, 999.");
+        if (n < required)
+            throw std::runtime_error("-p type " + std::to_string(type)
+                                     + " expects at least " + std::to_string(required)
+                                     + " value(s), got " + std::to_string(n) + ".");
+    }
+
+    if (args.IsCatched("grid"))
+    {
+        const unsigned n = args.GetArgNumber("grid");
+        if (n != 3 && n != 4)
+            throw std::runtime_error("--grid expects either 3 values (R Nphi Nth) or 4 values (T1 T2 Nphi Nth).");
+        const int nphi = (n == 3) ? args.GetIntValue("grid", 1) : args.GetIntValue("grid", 2);
+        const int nth = (n == 3) ? args.GetIntValue("grid", 2) : args.GetIntValue("grid", 3);
+        if (nphi < 1)
+            throw std::runtime_error("--grid Nphi must be >= 1.");
+        if (nth < 1)
+            throw std::runtime_error("--grid Nth must be >= 1.");
+    }
+
+    ValidatePositiveInt(args, "threads", "--threads");
+    ValidatePositiveInt(args, "ring_points", "--ring_points");
+    ValidatePositiveInt(args, "nphi", "--nphi");
+    ValidatePositiveInt(args, "oldauto", "--oldauto");
+    ValidatePositiveInt(args, "random", "--random Nb");
+    if (args.IsCatched("random") && args.GetIntValue("random", 1) < 1)
+        throw std::runtime_error("--random Ng must be >= 1.");
+    ValidatePositiveInt(args, "sobol", "--sobol");
+    ValidatePositiveInt(args, "so3_quat", "--so3_quat");
+    ValidatePositiveInt(args, "sobol_seed", "--sobol_seed N");
+    ValidatePositiveInt(args, "sobol_ring", "--sobol_ring Nb");
+    if (args.IsCatched("sobol_ring") && args.GetIntValue("sobol_ring", 1) < 1)
+        throw std::runtime_error("--sobol_ring Ng must be >= 1.");
+    ValidatePositiveInt(args, "hammersley", "--hammersley");
+    ValidatePositiveInt(args, "lattice", "--lattice");
+    ValidatePositiveInt(args, "lattice_z", "--lattice_z N");
+    ValidatePositiveInt(args, "euler_quad", "--euler_quad Nb");
+    if (args.IsCatched("euler_quad") && args.GetIntValue("euler_quad", 1) < 1)
+        throw std::runtime_error("--euler_quad Ng must be >= 1.");
+    ValidatePositiveInt(args, "euler_adapt", "--euler_adapt Nb");
+    if (args.IsCatched("euler_adapt") && args.GetIntValue("euler_adapt", 1) < 1)
+        throw std::runtime_error("--euler_adapt NgMax must be >= 1.");
+    ValidatePositiveInt(args, "montecarlo", "--montecarlo");
+    ValidatePositiveInt(args, "maxorient", "--maxorient");
+    ValidatePositiveInt(args, "chunk", "--chunk");
+    ValidateNonNegativeInt(args, "multigrid_parallel", "--multigrid_parallel");
+    ValidatePositiveInt(args, "multigrid_threads", "--multigrid_threads");
+    ValidateNonNegativeInt(args, "trace_max_beams", "--trace_max_beams");
+
+    if (args.IsCatched("multigrid") && args.GetIntValue("multigrid", 2) < 1)
+        throw std::runtime_error("--multigrid N must be >= 1.");
+    if (args.IsCatched("multikeq") && args.GetIntValue("multikeq", 2) < 1)
+        throw std::runtime_error("--multikeq N must be >= 1.");
+}
+
 Tracks trackGroups;
 
 void SetArgRules(ArgPP &parser)
@@ -437,70 +558,83 @@ void PrintReleaseHelp()
     using namespace std;
     cout << "MBS-fast: Physical Optics for Ice Crystals\n"
          << "Usage:\n"
-         << "  mbs_po --po [particle] [orientation] [grid] [options] -o OUT --close\n\n"
+         << "  mbs_po --po PARTICLE ORIENTATION GRID [options] -o OUT --close\n"
+         << "  mbs_po --go PARTICLE ORIENTATION GRID [options] -o OUT --close\n\n"
+
+         << "Required blocks:\n"
+         << "  PARTICLE      exactly one of: -p TYPE L D [extra], or --pf FILE [--rs SIZE|--k_eq K]\n"
+         << "  PHYSICS       --ri Re Im -w LAMBDA -n N  (n can be omitted only in some auto modes)\n"
+         << "  ORIENTATION   e.g. --oldauto DIV, --random Nb Ng, --sobol N, --fixed BETA GAMMA\n"
+         << "  GRID          e.g. --grid 0 180 Nphi Nth, --tgrid FILE --nphi N\n\n"
 
          << "=== Particle ===\n"
-         << "  -p TYPE L D [extra]    Built-in particle: 1=hex, 2=bullet, 3=rosette,\n"
-         << "                         4=droxtal, 10=concave hex, 12=hex aggregate\n"
-         << "  --pf FILE              Particle from file\n"
-         << "  --rs SIZE              Resize file particle to Dmax=SIZE\n"
-         << "  --k_eq X               Resize particle so 2*pi*r_eq/lambda = X\n"
-         << "  --ri Re Im             Refractive index\n"
-         << "  -w LAMBDA              Wavelength in um\n"
-         << "  -n N                   Max internal reflections/refractions\n\n"
+         << "  -p TYPE L D [extra]    Built-in particle. TYPE: 1 hex, 2 bullet, 3 rosette,\n"
+         << "                         4 droxtal, 10 concave hex, 12 hex aggregate, 999 built-in aggregate.\n"
+         << "                         L and D are micrometers; extra is shape-specific.\n"
+         << "  --pf FILE              Load particle geometry from file instead of -p.\n"
+         << "  --rs SIZE              With --pf, scale particle to Dmax=SIZE micrometers.\n"
+         << "  --k_eq K               With --pf, scale to k_eq=2*pi*r_eq/lambda. Mutually exclusive with --rs.\n"
+         << "  --ri Re Im             Complex refractive index. Nonzero Im enables absorption accounting.\n"
+         << "  -w LAMBDA              Wavelength in micrometers.\n"
+         << "  -n N                   Max internal reflection/refraction depth.\n\n"
 
          << "=== Method ===\n"
-         << "  --po                   Physical optics\n"
-         << "  --go                   Geometrical optics\n"
-         << "  --incoh                Incoherent per-beam Mueller sum\n"
-         << "  --karczewski           Karczewski polarization matrix option\n\n"
+         << "  --po                   Physical Optics: trace rays, then compute Kirchhoff diffraction.\n"
+         << "  --go                   Geometrical Optics only; faster, no PO diffraction integral.\n"
+         << "  --incoh                Sum Mueller per beam. Default PO mode sums Jones coherently first.\n"
+         << "  --karczewski           Use Karczewski polarization rotation; M11 should be unchanged.\n\n"
 
          << "=== Orientation ===\n"
-         << "  --oldauto DIV          Recommended regular grid from diffraction step\n"
-         << "  --ring_points N        Points per diffraction ring for oldauto (default 3)\n"
-         << "  --random Nb Ng         Manual regular beta x gamma grid\n"
-         << "  --fixed BETA GAMMA     Single orientation, degrees\n"
-         << "  --orientfile FILE      Orientations from file\n"
-         << "  --sobol N              Sobol orientations\n"
-         << "  --so3_quat N           Full SO(3) quaternion orientations\n"
-         << "  --sobol_seed N S       Sobol with explicit Owen seed\n"
-         << "  --sobol_ring Nb Ng     Sobol beta x uniform gamma ring\n"
-         << "  --euler_quad Nb Ng     Euler/Gauss quadrature\n"
-         << "  --euler_adapt Nb NgMax Euler/Gauss with adaptive gamma count\n"
-         << "  --mirror_gamma         Use mirror gamma half-domain\n"
-         << "  --sym Sb Sg            Override symmetry domain\n\n"
+         << "  --oldauto DIV          Recommended production regular beta/gamma grid from diffraction scale.\n"
+         << "                         Smaller DIV means denser grid; common values: 2, 4, 8.\n"
+         << "  --pole                 For endpoint grids, trace one gamma at exact beta poles and multiply weight.\n"
+         << "  --ring_points N        Points per diffraction ring for oldauto estimates (default 3).\n"
+         << "  --random Nb Ng         Manual regular beta x gamma grid over the symmetry domain.\n"
+         << "  --fixed BETA GAMMA     Single orientation in degrees; useful for debugging.\n"
+         << "  --orientfile FILE      Load beta/gamma orientations from file.\n"
+         << "  --sobol N              Sobol quasi-random orientations.\n"
+         << "  --so3_quat N           Full SO(3) quaternion orientations.\n"
+         << "  --sobol_seed N S       Sobol with explicit nested Owen seed.\n"
+         << "  --sobol_ring Nb Ng     Sobol beta samples with uniform gamma rings.\n"
+         << "  --euler_quad Nb Ng     Gauss in cos(beta) x periodic gamma quadrature.\n"
+         << "  --euler_adapt Nb NgMax Gauss beta with adaptive gamma count per ring.\n"
+         << "  --mirror_gamma         Use half gamma domain and mirror the Mueller output.\n"
+         << "  --sym Sb Sg            Override symmetry: beta range pi/Sb, gamma range 2*pi/Sg.\n\n"
 
          << "=== Scattering grid ===\n"
-         << "  --grid T1 T2 Nphi Nth  Full theta range; output has Nth+1 theta rows\n"
-         << "  --grid R Nphi Nth      Backscatter cone of radius R deg\n"
-         << "  --tgrid FILE           Non-uniform theta grid, degrees\n"
-         << "  --nphi N               Override phi grid size\n\n"
+         << "  --grid T1 T2 Nphi Nth  Uniform theta grid from T1 to T2 degrees; outputs Nth+1 rows.\n"
+         << "                         Example: --grid 0 180 600 180.\n"
+         << "  --grid R Nphi Nth      Backscatter cone grid with angular radius R degrees.\n"
+         << "  --tgrid FILE           Non-uniform theta grid, degrees, one theta per line.\n"
+         << "  --auto_tgrid EPS       Adaptive theta grid by bisection.\n"
+         << "  --auto_phi             Choose Nphi from size parameter.\n"
+         << "  --nphi N               Override phi grid size; highest priority for phi.\n\n"
 
          << "=== Acceleration ===\n"
-         << "  --threads N            OpenMP worker threads\n"
-         << "  --gpu                  CUDA diffraction backend\n"
-         << "  --cpu                  Force CPU backend in GPU-capable binary\n"
-         << "  --fft                  cuFFT angular phi interpolation\n"
-         << "  --chunk N              Orientation/gamma chunk size\n"
-         << "  --beam_cutoff EPS      Beam J/area cutoff shorthand\n"
-         << "  --beam_cutoff_j EPS    Skip beams by relative |J|^2\n"
-         << "  --beam_cutoff_area EPS Skip beams by relative area\n"
-         << "  --beam_cutoff_importance EPS  Skip beams by |J|^2*area\n"
-         << "  --trace_cutoff EPS     Trace J/area cutoff shorthand\n"
-         << "  --trace_cutoff_j EPS   Trace cutoff by relative |J|^2\n"
-         << "  --trace_cutoff_area EPS Trace cutoff by relative area\n"
-         << "  --trace_cutoff_importance EPS Trace cutoff by |J|^2*area\n"
-         << "  --trace_max_beams N    Max traced beam nodes per orientation\n\n"
+         << "  --threads N            OpenMP host worker threads. Use physical cores for CPU tracing.\n"
+         << "  --gpu                  Use CUDA diffraction backend. Default in gpu/ binaries.\n"
+         << "  --cpu                  Force CPU backend from a GPU-capable binary.\n"
+         << "  --fft                  With --gpu, use cuFFT phi interpolation backend.\n"
+         << "  --chunk N              Orientation/gamma chunk size for memory control.\n"
+         << "  --beam_cutoff EPS      Set both beam |J|^2 and area cutoffs.\n"
+         << "  --beam_cutoff_j EPS    Skip weak output beams by relative |J|^2.\n"
+         << "  --beam_cutoff_area EPS Skip small output beams by relative area.\n"
+         << "  --beam_cutoff_importance EPS  Skip by relative |J|^2*area.\n"
+         << "  --trace_cutoff EPS     Set both internal trace |J|^2 and area pruning cutoffs.\n"
+         << "  --trace_cutoff_j EPS   Prune internal beam tree by relative |J|^2.\n"
+         << "  --trace_cutoff_area EPS Prune internal beam tree by relative area.\n"
+         << "  --trace_cutoff_importance EPS Prune by relative |J|^2*area.\n"
+         << "  --trace_max_beams N    Abort one orientation after N traced beam nodes (0 disables).\n\n"
 
          << "=== Multi-size ===\n"
-         << "  --multigrid Dmin Dmax N     Log-spaced Dmax scan\n"
-         << "  --multikeq Kmin Kmax N      Log-spaced k_eq scan\n"
-         << "  --multikeq_list FILE        Exact k_eq values, one per line\n"
-         << "  --multigrid_parallel N      Run sizes as child processes (0 = auto)\n"
-         << "  --multigrid_threads N       Threads per child process\n"
-         << "  --gpu_devices LIST          CUDA devices for parallel children\n"
-         << "  --multikeq_shared_batches   Batch k_eq values per GPU and reuse tracing per batch\n"
-         << "  --multikeq_batch_ratio R    Max kmax/kmin per shared k_eq batch (default 1.05)\n"
+         << "  --multigrid Dmin Dmax N     Log-spaced scan in Dmax.\n"
+         << "  --multikeq Kmin Kmax N      Log-spaced scan in k_eq.\n"
+         << "  --multikeq_list FILE        Exact k_eq values, one per line.\n"
+         << "  --multigrid_parallel N      Run scan points as child processes; 0 = auto.\n"
+         << "  --multigrid_threads N       OpenMP threads per child process.\n"
+         << "  --gpu_devices LIST          CUDA devices for children, e.g. 0,1,2,3,4.\n"
+         << "  --multikeq_shared_batches   Batch nearby k_eq values per GPU and reuse tracing.\n"
+         << "  --multikeq_batch_ratio R    Max kmax/kmin per shared k_eq batch (default 1.05).\n"
          << "  Env MBS_GPU_MULTI_K_FULL=1  Experimental fused CUDA diffraction for shared batches\n\n"
 
          << "=== Output / diagnostics kept in release ===\n"
@@ -513,7 +647,8 @@ void PrintReleaseHelp()
          << "  --save_betas           Save per-beta Mueller files\n"
          << "  --jones                Output Jones matrices where supported\n"
          << "  --shadow               Legacy flag; currently no effect\n"
-         << "  --abs                  Force absorption accounting\n\n"
+         << "  --abs                  Force absorption accounting.\n"
+         << "  --abs_points N|all     Absorption samples: center point or all polygon vertices.\n\n"
 
          << "=== Examples ===\n"
          << "  gpu/bin/mbs_po_gpu_float_fast --po --pf Afine30.dat --k_eq 58.81 \\\n"
@@ -1482,15 +1617,6 @@ int main(int argc, const char* argv[])
     ConfigureDefaultOpenMP();
 
     int mpi_rank = 0, mpi_size = 1;
-#ifdef USE_MPI
-    MPI_Init(&argc, const_cast<char***>(&argv));
-    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
-    if (mpi_rank == 0 && mpi_size > 1)
-        std::cout << "MPI: " << mpi_size << " processes" << std::endl;
-#endif
-
-    RenameConsole("MBS");
 
     std::string additionalSummary;
 
@@ -1505,7 +1631,8 @@ int main(int argc, const char* argv[])
     if (argc <= 1)
     {
         PrintHelp();
-        return 0;
+        PrintCommandLineError("no command-line options were provided.");
+        return FinishWithCode(2);
     }
 
     // Check --help before full parse (avoids required arg errors)
@@ -1513,36 +1640,45 @@ int main(int argc, const char* argv[])
     bool rawCpu = false;
     for (int i = 1; i < argc; ++i) {
         std::string a(argv[i]);
-        if (a == "--help" || a == "-h") { PrintHelp(); return 0; }
-        if (a == "--help-debug") { PrintDebugHelp(); return 0; }
+        if (a == "--help" || a == "-h") { PrintHelp(); return FinishWithCode(0); }
+        if (a == "--help-debug") { PrintDebugHelp(); return FinishWithCode(0); }
         if (a == "--gpu") rawGpu = true;
         if (a == "--cpu") rawCpu = true;
     }
     if (rawGpu && rawCpu)
     {
-        std::cerr << "ERROR: --gpu and --cpu are mutually exclusive." << std::endl;
-        return 1;
+        PrintCommandLineError("--gpu and --cpu are mutually exclusive.");
+        return FinishWithCode(2);
     }
 
     ArgPP args;
     SetArgRules(args);
-    args.Parse(argc, argv);
+    try
+    {
+        args.Parse(argc, argv);
+        ValidateCommandLine(args);
+    }
+    catch (const std::exception &ex)
+    {
+        PrintCommandLineError(ex.what());
+        return FinishWithCode(2);
+    }
 
     if (args.IsCatched("threads"))
     {
         int threads = args.GetIntValue("threads", 0);
         if (threads < 1)
         {
-            std::cerr << "ERROR: --threads must be >= 1." << std::endl;
-            return 1;
+            PrintCommandLineError("--threads must be >= 1.");
+            return FinishWithCode(2);
         }
         ConfigureOpenMPThreads(threads);
     }
 
     if (args.IsCatched("gpu") && args.IsCatched("cpu"))
     {
-        std::cerr << "ERROR: --gpu and --cpu are mutually exclusive." << std::endl;
-        return 1;
+        PrintCommandLineError("--gpu and --cpu are mutually exclusive.");
+        return FinishWithCode(2);
     }
 
 #if defined(USE_CUDA) && defined(MBS_GPU_DEFAULT_ON)
@@ -1555,20 +1691,31 @@ int main(int argc, const char* argv[])
     const bool useFft = args.IsCatched("fft");
     if (useFft && !useGpu)
     {
-        std::cerr << "ERROR: --fft currently requires --gpu." << std::endl;
-        return 1;
+        PrintCommandLineError("--fft currently requires --gpu.");
+        return FinishWithCode(2);
     }
 
     if (args.IsCatched("p") == args.IsCatched("pf"))
     {
-        std::cerr << "ERROR: specify exactly one particle source: -p ... or --pf FILE." << std::endl;
-        return 1;
+        PrintCommandLineError("specify exactly one particle source: -p ... or --pf FILE.");
+        return FinishWithCode(2);
     }
     if (args.IsCatched("rs") && args.IsCatched("k_eq"))
     {
-        std::cerr << "ERROR: --rs and --k_eq are both size controls; use only one." << std::endl;
-        return 1;
+        PrintCommandLineError("--rs and --k_eq are both size controls; use only one.");
+        return FinishWithCode(2);
     }
+
+#ifdef USE_MPI
+    MPI_Init(&argc, const_cast<char***>(&argv));
+    MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+    if (mpi_rank == 0 && mpi_size > 1)
+        std::cout << "MPI: " << mpi_size << " processes" << std::endl;
+#endif
+
+    RenameConsole("MBS");
+
     if (args.IsCatched("multigrid_parallel")
         || (args.IsCatched("go")
             && (args.IsCatched("multigrid")

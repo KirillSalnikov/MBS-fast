@@ -6,6 +6,8 @@
 #include <map>
 #include <typeinfo>
 #include <cstring>
+#include <cstdlib>
+#include <stdexcept>
 
 class ArgPP
 {
@@ -157,13 +159,18 @@ private: // methods
 				key = RetrieveKey(rawArg);
 				if (key.empty())
 				{
-					Error("unrecognized argument '" + rawArg + "'\n"
+					Error("unrecognized argument '" + rawArg + "'.\n"
 						  "  Hint: flags use -X (single char) or --name (multi-char).\n"
-						  "  Negative numbers as values are not supported (use 0 instead).\n"
 						  "  Run with --help for usage.");
 				}
 				Rule rule = FindRule(key);
 				CheckDependency(key, rule);
+				if (m_args.find(key) != m_args.end())
+				{
+					std::string dash = (key.size() == 1) ? "-" : "--";
+					Error("duplicate flag '" + dash + key + "'.\n"
+						  "  Specify each flag once; if you need a list, use a list-valued flag such as --owen_seeds.");
+				}
 				m_args.insert(NamedArg(key, Arg()));
 				valueNum = rule.valueNum;
 			}
@@ -194,7 +201,7 @@ private: // methods
 	{
 		if (valueNum == '+') // more than one args
 		{
-			if (IsKey(rawArg[0]))
+			if (IsFlagToken(rawArg))
 			{
 				--i;
 				valueNum = 0;
@@ -209,7 +216,7 @@ private: // methods
 		}
 		else if (valueNum == '*') // one or more args
 		{
-			if (IsKey(rawArg[0]))
+			if (IsFlagToken(rawArg))
 			{
 				--i;
 				valueNum = 0;
@@ -250,7 +257,7 @@ private: // methods
 			}
 			if (!suggestions.empty())
 				msg += "\n  Did you mean:\n" + suggestions;
-			msg += "  Run with --help for the full list of flags.";
+			msg += "\n  Run with --help for the full list of flags.";
 			Error(msg);
 		}
 
@@ -288,8 +295,7 @@ private: // methods
 		else
 		{
 			Error("unexpected '" + value + "' while reading values for --" + key + "\n"
-				  "  Values cannot start with '-'. If you meant a negative number,\n"
-				  "  this is not supported. Check the argument order.\n"
+				  "  Check the argument order or the number of values for this flag.\n"
 				  "  Got so far: --" + key + " " + JoinArg(key));
 		}
 	}
@@ -337,8 +343,7 @@ private: // methods
 
 	void Error(const std::string &msg) const
 	{
-		std::cerr << "\nArgPP error: " << msg << std::endl;
-		throw std::exception();
+		throw std::runtime_error(msg);
 	}
 
 	void AddArgRule(const std::string &key, const Rule &rule)
@@ -402,12 +407,28 @@ private: // methods
 
 	bool NonKey(const std::string &arg)
 	{
-		return arg[0] != '-';
+		return !IsFlagToken(arg);
 	}
 
 	bool IsKey(const char symb)
 	{
 		return symb == '-';
+	}
+
+	bool IsFlagToken(const std::string &arg)
+	{
+		if (arg.empty() || arg[0] != '-')
+			return false;
+		return !IsNumberToken(arg);
+	}
+
+	bool IsNumberToken(const std::string &arg)
+	{
+		if (arg.empty())
+			return false;
+		char *end = nullptr;
+		std::strtod(arg.c_str(), &end);
+		return end != arg.c_str() && *end == '\0';
 	}
 
 	template <class T>
@@ -432,8 +453,9 @@ private: // methods
 
 		if (strlen(end) != 0 || !ok)
 		{
+			std::string typeName = (typeid(T) == typeid(int)) ? "integer" : "floating-point number";
 			std::string msg = "cannot convert value '" + rawValue
-					+ "' to integer";
+					+ "' to " + typeName;
 			Error(msg);
 		}
 
