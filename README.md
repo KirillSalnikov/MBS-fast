@@ -2,19 +2,19 @@
 
 MBS-fast computes light scattering by non-spherical ice particles with geometrical ray tracing plus Physical Optics diffraction. It supports CPU OpenMP/MPI builds and CUDA GPU diffraction builds.
 
-The current full manual is [`MANUAL.md`](MANUAL.md). Russian version: [`MANUAL_RU.md`](MANUAL_RU.md).
+The current full manual is [`docs/MANUAL.md`](docs/MANUAL.md). Russian version: [`docs/MANUAL_RU.md`](docs/MANUAL_RU.md).
 
 It covers:
 
 | Topic | Where |
 |---|---|
-| CPU/GPU compilation, EPYC Zen targets, AVX2/AVX-512 | [`MANUAL.md#build`](MANUAL.md#build) |
-| CUDA float/double binaries | [`MANUAL.md#gpu-build`](MANUAL.md#gpu-build) |
-| GPU speedup, atomics, fused Mueller kernels | [`MANUAL.md#why-the-gpu-version-is-faster`](MANUAL.md#why-the-gpu-version-is-faster) |
-| Diffraction, Jones dyads, Mueller conversion | [`MANUAL.md#physical-model`](MANUAL.md#physical-model) |
-| Grids and orientation modes | [`MANUAL.md#orientation-grids`](MANUAL.md#orientation-grids), [`MANUAL.md#scattering-grids`](MANUAL.md#scattering-grids) |
-| Multi-GPU and multi-size scans | [`MANUAL.md#gpu-and-multi-gpu`](MANUAL.md#gpu-and-multi-gpu) |
-| Every parsed CLI flag | [`MANUAL.md#all-flags`](MANUAL.md#all-flags) |
+| CPU/GPU compilation, EPYC Zen targets, AVX2/AVX-512 | [`docs/MANUAL.md#build`](docs/MANUAL.md#build) |
+| CUDA float/double binaries | [`docs/MANUAL.md#gpu-build`](docs/MANUAL.md#gpu-build) |
+| GPU speedup, atomics, fused Mueller kernels | [`docs/MANUAL.md#why-the-gpu-version-is-faster`](docs/MANUAL.md#why-the-gpu-version-is-faster) |
+| Diffraction, Jones dyads, Mueller conversion | [`docs/MANUAL.md#physical-model`](docs/MANUAL.md#physical-model) |
+| Grids and orientation modes | [`docs/MANUAL.md#orientation-grids`](docs/MANUAL.md#orientation-grids), [`docs/MANUAL.md#scattering-grids`](docs/MANUAL.md#scattering-grids) |
+| Multi-GPU and multi-size scans | [`docs/MANUAL.md#gpu-and-multi-gpu`](docs/MANUAL.md#gpu-and-multi-gpu) |
+| Every parsed CLI flag | [`docs/MANUAL.md#all-flags`](docs/MANUAL.md#all-flags) |
 
 ## Quick Build
 
