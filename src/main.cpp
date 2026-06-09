@@ -1166,7 +1166,9 @@ int RunParallelMultigrid(int argc, const char *argv[], const ArgPP &args, bool u
     }
 
     std::vector<std::string> gpuDevices = useGpu ? VisibleGpuDeviceList(args) : std::vector<std::string>();
-    int jobs = args.GetIntValue("multigrid_parallel", 0);
+    int jobs = args.IsCatched("multigrid_parallel")
+        ? args.GetIntValue("multigrid_parallel", 0)
+        : 1;
     if (jobs < 0)
     {
         std::cerr << "ERROR: --multigrid_parallel must be >= 0 (0 = auto)." << std::endl;
@@ -1567,9 +1569,14 @@ int main(int argc, const char* argv[])
         std::cerr << "ERROR: --rs and --k_eq are both size controls; use only one." << std::endl;
         return 1;
     }
-    if (args.IsCatched("multigrid_parallel"))
+    if (args.IsCatched("multigrid_parallel")
+        || (args.IsCatched("go")
+            && (args.IsCatched("multigrid")
+                || args.IsCatched("multikeq")
+                || args.IsCatched("multikeq_list"))))
     {
-        return RunParallelMultigrid(argc, argv, args, useGpu);
+        return RunParallelMultigrid(argc, argv, args,
+                                    useGpu && !args.IsCatched("go"));
     }
 
     if (useGpu)
@@ -3194,6 +3201,69 @@ int main(int argc, const char* argv[])
             cout << additionalSummary;
             tracer.m_summary = additionalSummary;
             tracer.TraceFixed(beta, gamma);
+        }
+        else if (args.IsCatched("oldauto"))
+        {
+            int div = args.GetIntValue("oldauto", 0);
+            if (div < 1) div = 8;
+
+            double L = particle->MaximalDimention();
+            if (L <= 0.0 || wave <= 0.0)
+            {
+                std::cerr << "ERROR: --go --oldauto requires positive particle Dmax and wavelength." << std::endl;
+                return 1;
+            }
+
+            double delta_theta_deg = 0.69 * wave / L * (180.0 / M_PI);
+            int points_per_ring = ringPoints;
+            double orient_step = delta_theta_deg / points_per_ring;
+
+            double betaSym_deg = RadToDeg(particle->GetSymmetry().beta);
+            double gammaSym_deg = RadToDeg(particle->GetSymmetry().gamma);
+            bool mirrorGamma = args.IsCatched("mirror_gamma");
+            double gammaRange_deg = mirrorGamma ? 0.5 * gammaSym_deg : gammaSym_deg;
+
+            int N_beta_full = (int)ceil(betaSym_deg / orient_step);
+            int N_gamma_full = (int)ceil(gammaRange_deg / orient_step);
+
+            int N_beta = (N_beta_full + div - 1) / div;
+            int N_gamma = (N_gamma_full + div - 1) / div;
+            if (N_beta < 3) N_beta = 3;
+            if (N_gamma < 3) N_gamma = 3;
+            if (mirrorGamma && (N_gamma % 2 != 0))
+            {
+                int old = N_gamma;
+                ++N_gamma;
+                std::cerr << "WARNING: --mirror_gamma rounded GO oldauto gamma "
+                          << "points to an even half-domain count: "
+                          << old << " -> " << N_gamma << std::endl;
+            }
+
+            cout << "=== GO oldauto (physics-based grid) ===" << endl;
+            cout << "  Dmax=" << L << " um, lambda=" << wave << " um" << endl;
+            cout << "  Diffraction step: " << delta_theta_deg << " deg" << endl;
+            cout << "  Orient step: " << orient_step << " deg (" << points_per_ring
+                 << " pts/ring)" << endl;
+            cout << "  Full grid: " << N_beta_full << " x " << N_gamma_full
+                 << " = " << (long long)N_beta_full * N_gamma_full << endl;
+            cout << "  div" << div << ": " << N_beta << " x " << N_gamma
+                 << " = " << (long long)N_beta * N_gamma << " orientations" << endl;
+            if (mirrorGamma)
+                cout << "  Gamma mirror symmetry: using 0.." << gammaRange_deg
+                     << " deg instead of 0.." << gammaSym_deg << " deg" << endl;
+            cout << "  n=" << reflNum << endl;
+
+            additionalSummary += ", oldauto div" + to_string(div) + "\n\n";
+            if (mirrorGamma)
+                additionalSummary += "\tGamma mirror symmetry: 0.."
+                    + to_string(gammaRange_deg) + " deg\n";
+
+            cout << additionalSummary;
+            tracer.m_summary = additionalSummary;
+
+            AngleRange beta(0, particle->GetSymmetry().beta, N_beta);
+            AngleRange gamma(0, DegToRad(gammaRange_deg), N_gamma);
+            tracer.TraceRandom(beta, gamma);
         }
         else if (args.IsCatched("random"))
         {
