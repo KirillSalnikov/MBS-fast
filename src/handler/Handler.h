@@ -73,10 +73,24 @@ public:
 
         if (!isNonUniform)
         {
-            // Original uniform code
-            double _2Pi_dcos = (radZen > M_PI-__FLT_EPSILON__ || radZen < __FLT_EPSILON__) ?
-                        1.0-cos(0.5*zenithStep) :
-                        cos((j-0.5)*zenithStep)-cos((j+0.5)*zenithStep);
+            double theta_lo, theta_hi;
+            if (j == 0)
+            {
+                theta_lo = zenithStart;
+                theta_hi = zenithStart + 0.5 * zenithStep;
+            }
+            else if (j == nZenith)
+            {
+                theta_lo = zenithEnd - 0.5 * zenithStep;
+                theta_hi = zenithEnd;
+            }
+            else
+            {
+                theta_lo = radZen - 0.5 * zenithStep;
+                theta_hi = radZen + 0.5 * zenithStep;
+            }
+
+            double _2Pi_dcos = cos(theta_lo) - cos(theta_hi);
             return _2Pi_dcos * M_2PI;
         }
 

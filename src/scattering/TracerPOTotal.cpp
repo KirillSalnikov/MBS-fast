@@ -2708,7 +2708,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         CalcCsBeta(betaNorm, block.beta, betaRange, gammaRange, normGamma, block.dcos);
         const bool pole = (fabs(block.beta) <= FLT_EPSILON
                            || fabs(block.beta - M_PI) <= FLT_EPSILON);
-        const bool fastPole = false;
+        const bool fastPole = pole && m_fastPoleGamma;
         block.gammaFullCount = fastPole ? 1 : nGamma;
         block.gammaCount = fastPole ? 1 : std::min(gammaLimit, nGamma - gammaStart);
         const double gammaWeight = fastPole ? block.dcos * nGamma : block.dcos;
@@ -2836,7 +2836,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
         const bool pole = (fabs(beta) <= FLT_EPSILON
                            || fabs(beta - M_PI) <= FLT_EPSILON);
-        const bool fastPole = false;
+        const bool fastPole = pole && m_fastPoleGamma;
         const int gammaFullCount = fastPole ? 1 : nGamma;
 
         const bool computeNoShadow = handlerPO->ComputeNoShadow();

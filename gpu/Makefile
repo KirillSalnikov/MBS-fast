@@ -1,6 +1,7 @@
 ROOT := ..
 SRC_DIR := $(ROOT)/src
 CUDA_PATH ?= /usr/local/cuda
+CUDA_LIB_PATH ?= $(if $(wildcard $(CUDA_PATH)/lib64/libcudart.so),$(CUDA_PATH)/lib64,$(CUDA_PATH)/targets/x86_64-linux/lib)
 
 CXX ?= g++
 NVCC ?= nvcc
@@ -17,7 +18,7 @@ ARCH_FLAGS ?= $(shell bash $(ROOT)/scripts/detect_arch_flags.sh "$(CXX)")
 OPT_FLAGS ?= -O3 -funroll-loops
 CXXFLAGS ?= $(OPT_FLAGS) $(ARCH_FLAGS) -std=gnu++11 -fopenmp
 CXXFLAGS += -DUSE_CUDA -DMBS_GPU_DEFAULT_ON -DMBS_GPU_BUILD_ARCH=$(GPU_ARCH) -I$(CUDA_PATH)/include
-LDFLAGS ?= -lm -lgomp -L$(CUDA_PATH)/lib64 -lcufft -lcudart
+LDFLAGS ?= -lm -lgomp -L$(CUDA_LIB_PATH) -lcufft -lcudart
 DEPFLAGS := -MMD -MP
 
 NVCCFLAGS ?= -O3 -std=c++11 -arch=sm_$(GPU_ARCH) -U_GNU_SOURCE -D_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700

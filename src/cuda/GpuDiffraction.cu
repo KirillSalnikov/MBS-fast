@@ -58,7 +58,7 @@ __device__ inline void gpu_atomic_add(GpuReal *address, GpuReal value)
     atomicAdd(address, value);
 }
 
-static inline double regularized_gpu_theta(const ScatteringRange &sphere, int t)
+static inline double gpu_theta(const ScatteringRange &sphere, int t)
 {
     return sphere.GetZenith(t);
 }
@@ -69,7 +69,7 @@ static inline double gpu_grid_signature(const ScatteringRange &sphere, int nZen)
     sig += sphere.isNonUniform ? 0.31415926 : 0.27182818;
     for (int t = 0; t <= nZen; ++t)
     {
-        const double theta = regularized_gpu_theta(sphere, t);
+        const double theta = gpu_theta(sphere, t);
         sig += theta * (double)(t + 1) * 1.6180339887498948;
     }
     return sig;
@@ -2585,7 +2585,7 @@ bool HandlerPO::HandleBeamsToLocalGpu(const PreparedOrientation &prepared,
         std::vector<GpuReal> hSinTheta(nZen + 1), hCosTheta(nZen + 1);
         for (int t = 0; t <= nZen; ++t)
         {
-            GpuReal theta = (GpuReal)regularized_gpu_theta(m_sphere, t);
+            GpuReal theta = (GpuReal)gpu_theta(m_sphere, t);
             hSinTheta[t] = sin(theta);
             hCosTheta[t] = cos(theta);
         }
@@ -3643,7 +3643,7 @@ bool HandlerPO::HandleOrientationsToLocalGpuMultiK(const std::vector<PreparedOri
         std::vector<GpuReal> hSinTheta(nZen + 1), hCosTheta(nZen + 1);
         for (int t = 0; t <= nZen; ++t)
         {
-            GpuReal theta = (GpuReal)regularized_gpu_theta(m_sphere, t);
+            GpuReal theta = (GpuReal)gpu_theta(m_sphere, t);
             hSinTheta[t] = sin(theta);
             hCosTheta[t] = cos(theta);
         }
@@ -4102,7 +4102,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         std::vector<GpuReal> hSinTheta(nZen + 1), hCosTheta(nZen + 1);
         for (int t = 0; t <= nZen; ++t)
         {
-            GpuReal theta = (GpuReal)regularized_gpu_theta(m_sphere, t);
+            GpuReal theta = (GpuReal)gpu_theta(m_sphere, t);
             hSinTheta[t] = sin(theta);
             hCosTheta[t] = cos(theta);
         }
