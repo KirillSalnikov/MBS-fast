@@ -2443,7 +2443,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     handlerPO->CleanJ();
 
     int nGamma = gammaRange.number; // MBS-raw: same as gammaRange.number
-    const bool betaMidpoint = OldautoBetaMidpointEnabled();
+    const bool betaMidpoint = OldautoBetaMidpointEnabled() && !m_fastPoleGamma;
     int nBeta = OldautoBetaCount(betaRange, betaMidpoint);
     int nOrientations = nBeta * nGamma;
     int betaNorm = (m_symmetry.beta < M_PI_2+FLT_EPSILON && m_symmetry.beta > M_PI_2-FLT_EPSILON) ? 1 : 2;
@@ -2583,6 +2583,8 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             line << "; gamma stagger enabled";
         if (betaMidpoint)
             line << "; beta midpoint enabled";
+        else if (m_fastPoleGamma)
+            line << "; beta endpoints enabled for --pole";
         std::cout << line.str() << std::endl;
         AppendTextLog(line.str() + "\n");
     }
@@ -2713,7 +2715,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         block.gammaCount = fastPole ? 1 : std::min(gammaLimit, nGamma - gammaStart);
         const double gammaWeight = fastPole ? block.dcos * nGamma : block.dcos;
         block.traceBeta = block.beta;
-        if (pole && betaRange.step > 0.0)
+        if (pole && !fastPole && betaRange.step > 0.0)
         {
             if (fabs(block.beta) <= FLT_EPSILON)
                 block.traceBeta = block.beta + 0.5 * betaRange.step;
@@ -3711,7 +3713,7 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     }
 
     int nGamma = gammaRange.number;
-    const bool betaMidpoint = OldautoBetaMidpointEnabled();
+    const bool betaMidpoint = OldautoBetaMidpointEnabled() && !m_fastPoleGamma;
     int nBeta = OldautoBetaCount(betaRange, betaMidpoint);
     int nOrientations = nBeta * nGamma;
     int betaNorm = (m_symmetry.beta < M_PI_2 + FLT_EPSILON
@@ -3747,6 +3749,7 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
               << nThreads << " OpenMP threads"
               << (gammaStagger ? "; gamma stagger enabled" : "")
               << (betaMidpoint ? "; beta midpoint enabled" : "")
+              << (!betaMidpoint && m_fastPoleGamma ? "; beta endpoints enabled for --pole" : "")
               << std::endl;
 
     auto t1 = std::chrono::high_resolution_clock::now();
@@ -3935,7 +3938,7 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
                 const bool pole = (fabs(beta) <= FLT_EPSILON
                                    || fabs(beta - M_PI) <= FLT_EPSILON);
                 double traceBeta = beta;
-                if (pole && betaRange.step > 0.0)
+                if (pole && !m_fastPoleGamma && betaRange.step > 0.0)
                 {
                     if (fabs(beta) <= FLT_EPSILON)
                         traceBeta = beta + 0.5 * betaRange.step;
