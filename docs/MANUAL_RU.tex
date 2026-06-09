@@ -1,1116 +1,2004 @@
-% Options for packages loaded elsewhere
-\PassOptionsToPackage{unicode}{hyperref}
-\PassOptionsToPackage{hyphens}{url}
-\PassOptionsToPackage{dvipsnames,svgnames,x11names}{xcolor}
-\documentclass[
-  russian,
-  10pt,
-  a4paper,
-]{article}
-\usepackage{xcolor}
-\usepackage[margin=20mm]{geometry}
-\usepackage{amsmath,amssymb}
-\setcounter{secnumdepth}{5}
-\usepackage{iftex}
-\ifPDFTeX
-  \usepackage[T1]{fontenc}
-  \usepackage[utf8]{inputenc}
-  \usepackage{textcomp} % provide euro and other symbols
-\else % if luatex or xetex
-  \usepackage{unicode-math} % this also loads fontspec
-  \defaultfontfeatures{Scale=MatchLowercase}
-  \defaultfontfeatures[\rmfamily]{Ligatures=TeX,Scale=1}
-\fi
-\usepackage{lmodern}
-\ifPDFTeX\else
-  % xetex/luatex font selection
-  \setmainfont[]{Noto Serif}
-  \setsansfont[]{Noto Sans}
-  \setmonofont[]{DejaVu Sans Mono}
-\fi
-% Use upquote if available, for straight quotes in verbatim environments
-\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
-\IfFileExists{microtype.sty}{% use microtype if available
-  \usepackage[]{microtype}
-  \UseMicrotypeSet[protrusion]{basicmath} % disable protrusion for tt fonts
-}{}
-\makeatletter
-\@ifundefined{KOMAClassName}{% if non-KOMA class
-  \IfFileExists{parskip.sty}{%
-    \usepackage{parskip}
-  }{% else
-    \setlength{\parindent}{0pt}
-    \setlength{\parskip}{6pt plus 2pt minus 1pt}}
-}{% if KOMA class
-  \KOMAoptions{parskip=half}}
-\makeatother
-\usepackage{color}
-\usepackage{fancyvrb}
-\newcommand{\VerbBar}{|}
-\newcommand{\VERB}{\Verb[commandchars=\\\{\}]}
-\DefineVerbatimEnvironment{Highlighting}{Verbatim}{commandchars=\\\{\}}
-% Add ',fontsize=\small' for more characters per line
-\newenvironment{Shaded}{}{}
-\newcommand{\AlertTok}[1]{\textcolor[rgb]{1.00,0.00,0.00}{\textbf{#1}}}
-\newcommand{\AnnotationTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textbf{\textit{#1}}}}
-\newcommand{\AttributeTok}[1]{\textcolor[rgb]{0.49,0.56,0.16}{#1}}
-\newcommand{\BaseNTok}[1]{\textcolor[rgb]{0.25,0.63,0.44}{#1}}
-\newcommand{\BuiltInTok}[1]{\textcolor[rgb]{0.00,0.50,0.00}{#1}}
-\newcommand{\CharTok}[1]{\textcolor[rgb]{0.25,0.44,0.63}{#1}}
-\newcommand{\CommentTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textit{#1}}}
-\newcommand{\CommentVarTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textbf{\textit{#1}}}}
-\newcommand{\ConstantTok}[1]{\textcolor[rgb]{0.53,0.00,0.00}{#1}}
-\newcommand{\ControlFlowTok}[1]{\textcolor[rgb]{0.00,0.44,0.13}{\textbf{#1}}}
-\newcommand{\DataTypeTok}[1]{\textcolor[rgb]{0.56,0.13,0.00}{#1}}
-\newcommand{\DecValTok}[1]{\textcolor[rgb]{0.25,0.63,0.44}{#1}}
-\newcommand{\DocumentationTok}[1]{\textcolor[rgb]{0.73,0.13,0.13}{\textit{#1}}}
-\newcommand{\ErrorTok}[1]{\textcolor[rgb]{1.00,0.00,0.00}{\textbf{#1}}}
-\newcommand{\ExtensionTok}[1]{#1}
-\newcommand{\FloatTok}[1]{\textcolor[rgb]{0.25,0.63,0.44}{#1}}
-\newcommand{\FunctionTok}[1]{\textcolor[rgb]{0.02,0.16,0.49}{#1}}
-\newcommand{\ImportTok}[1]{\textcolor[rgb]{0.00,0.50,0.00}{\textbf{#1}}}
-\newcommand{\InformationTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textbf{\textit{#1}}}}
-\newcommand{\KeywordTok}[1]{\textcolor[rgb]{0.00,0.44,0.13}{\textbf{#1}}}
-\newcommand{\NormalTok}[1]{#1}
-\newcommand{\OperatorTok}[1]{\textcolor[rgb]{0.40,0.40,0.40}{#1}}
-\newcommand{\OtherTok}[1]{\textcolor[rgb]{0.00,0.44,0.13}{#1}}
-\newcommand{\PreprocessorTok}[1]{\textcolor[rgb]{0.74,0.48,0.00}{#1}}
-\newcommand{\RegionMarkerTok}[1]{#1}
-\newcommand{\SpecialCharTok}[1]{\textcolor[rgb]{0.25,0.44,0.63}{#1}}
-\newcommand{\SpecialStringTok}[1]{\textcolor[rgb]{0.73,0.40,0.53}{#1}}
-\newcommand{\StringTok}[1]{\textcolor[rgb]{0.25,0.44,0.63}{#1}}
-\newcommand{\VariableTok}[1]{\textcolor[rgb]{0.10,0.09,0.49}{#1}}
-\newcommand{\VerbatimStringTok}[1]{\textcolor[rgb]{0.25,0.44,0.63}{#1}}
-\newcommand{\WarningTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textbf{\textit{#1}}}}
-\usepackage{longtable,booktabs,array}
-\usepackage{calc} % for calculating minipage widths
-% Correct order of tables after \paragraph or \subparagraph
-\usepackage{etoolbox}
-\makeatletter
-\patchcmd\longtable{\par}{\if@noskipsec\mbox{}\fi\par}{}{}
-\makeatother
-% Allow footnotes in longtable head/foot
-\IfFileExists{footnotehyper.sty}{\usepackage{footnotehyper}}{\usepackage{footnote}}
-\makesavenoteenv{longtable}
-\ifLuaTeX
-\usepackage[bidi=basic,shorthands=off,,provide=*]{babel}
-\else
-\usepackage[bidi=default,shorthands=off,,provide=*]{babel}
-\fi
-\ifPDFTeX
-\else
-\babelfont{rm}[]{Noto Serif}
-\fi
-\ifLuaTeX
-  \usepackage{selnolig} % disable illegal ligatures
-\fi
-\setlength{\emergencystretch}{3em} % prevent overfull lines
-\providecommand{\tightlist}{%
-  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
-\usepackage{bookmark}
-\IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
-\urlstyle{same}
-\hypersetup{
-  pdftitle={Руководство MBS-fast},
-  pdflang={ru},
-  colorlinks=true,
-  linkcolor={blue},
-  filecolor={Maroon},
-  citecolor={Blue},
-  urlcolor={blue},
-  pdfcreator={LaTeX via pandoc}}
+\documentclass[12pt,a4paper]{article}
 
-\title{Руководство MBS-fast}
-\author{}
+\usepackage[margin=18mm,includeheadfoot]{geometry}
+\usepackage{fontspec}
+\usepackage{polyglossia}
+\setmainlanguage{russian}
+\setotherlanguage{english}
+\setmainfont{Noto Serif}
+\setsansfont{Noto Sans}
+\setmonofont{DejaVu Sans Mono}[Scale=0.88]
+\usepackage{amsmath,mathtools,bm}
+\usepackage{unicode-math}
+\setmathfont{Latin Modern Math}
+\usepackage{booktabs,longtable,array,ragged2e,multirow}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{tocloft}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{microtype}
+\usepackage{listings}
+
+\graphicspath{{docs/figures/}{figures/}{docs/}{./}}
+\hypersetup{
+  pdftitle={Подробное руководство MBS-fast},
+  pdfauthor={MBS-fast},
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  urlcolor=blue!50!black,
+  citecolor=blue!50!black
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{MBS-fast}
+\rhead{физика, математика, запуск}
+\cfoot{\thepage}
+\setlength{\headheight}{15pt}
+\setlength{\parindent}{1.2em}
+\setlength{\parskip}{3pt}
+\linespread{1.12}
+\emergencystretch=4em
+
+\newcolumntype{L}[1]{>{\RaggedRight\arraybackslash}p{#1}}
+\newcolumntype{C}[1]{>{\Centering\arraybackslash}p{#1}}
+\newcommand{\code}[1]{\texttt{\small\detokenize{#1}}}
+\newcommand{\vect}[1]{\symbf{#1}}
+\newcommand{\matr}[1]{\symbf{#1}}
+\newcommand{\dd}{\,\mathrm{d}}
+\newcommand{\ii}{\mathrm{i}}
+\newcommand{\Real}{\operatorname{Re}}
+\newcommand{\Imag}{\operatorname{Im}}
+\newcommand{\conj}[1]{\overline{#1}}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+\newcommand{\SectionNote}[1]{\par\noindent\colorbox{blue!6}{\parbox{0.965\linewidth}{#1}}\par}
+
+\lstdefinestyle{cmd}{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  columns=fullflexible,
+  frame=single,
+  rulecolor=\color{black!25},
+  backgroundcolor=\color{black!2}
+}
+\lstset{style=cmd}
+\setlength{\cftsubsecnumwidth}{4.2em}
+\setlength{\cftsubsubsecnumwidth}{5.0em}
+
+\title{\textbf{MBS-fast}\\
+Подробное руководство по физике, математике, численным методам и запуску}
+\author{Актуальная PDF-версия для ветки \code{main}}
 \date{9 июня 2026}
 
 \begin{document}
 \maketitle
+\thispagestyle{empty}
 
-\renewcommand*\contentsname{Оглавление}
-{
-\setcounter{tocdepth}{3}
+\begin{abstract}
+MBS-fast считает рассеяние света несферическими ледяными частицами методом геометрической трассировки лучей с последующим интегралом Physical Optics (PO) по апертурам выходных пучков. Этот документ является самостоятельным PDF-руководством: он не получается из Markdown и предназначен для нормального чтения в PDF. В нем описаны координатные системы, трассировка, коэффициенты Френеля, матрицы Jones и Mueller, повороты базисов, дифракционный edge-интеграл, усреднение по ориентациям, правила выбора сеток, GPU/CPU ускорение, multi-GPU режимы, входные данные, выходные файлы и все основные флаги запуска.
+\end{abstract}
+
 \tableofcontents
-}
-MBS-fast считает рассеяние света несферическими ледяными частицами:
-сначала трассируются геометрические лучи, затем для выходных пучков
-считается дифракция в приближении Physical Optics. Код поддерживает
-CPU-расчеты через OpenMP/MPI и CUDA-ускорение дифракции на GPU.
+\newpage
 
-\section{Сборка}\label{ux441ux431ux43eux440ux43aux430}
+\section{Назначение программы}
 
-\subsection{Требования}\label{ux442ux440ux435ux431ux43eux432ux430ux43dux438ux44f}
+MBS-fast решает задачу дальнего поля для частицы с плоскими гранями. Программа не дискретизует весь объем частицы, как DDA, а строит множество геометрических пучков, которые возникают после отражений и преломлений на гранях. Каждый пучок несет полигон апертуры, направление распространения, оптический путь и комплексную матрицу Jones. После трассировки для каждого выходного пучка считается PO-дифракция по его апертуре, затем вклады пучков суммируются и переводятся в матрицу Mueller.
 
-\begin{longtable}[]{@{}lll@{}}
-\toprule\noalign{}
-Компонент & Для чего нужен & Комментарий \\
-\midrule\noalign{}
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.96\linewidth]{manual_pipeline.pdf}
+  \caption{Основной pipeline: геометрия частицы, трассировка, Fresnel/Jones, PO-дифракция, когерентная сумма, Mueller и усреднение ориентаций.}
+\end{figure}
+
+\subsection{Какая физика заложена}
+
+В расчете используются четыре уровня приближения.
+
+\begin{longtable}{L{0.22\linewidth} L{0.34\linewidth} L{0.34\linewidth}}
+\caption{Физические уровни модели MBS-fast.}\\
+\toprule
+Уровень & Что считается & Где появляется в коде \\
+\midrule
+\endfirsthead
+\toprule
+Уровень & Что считается & Где появляется в коде \\
+\midrule
 \endhead
-\bottomrule\noalign{}
-\endlastfoot
-GCC \textgreater= 9 или Clang \textgreater= 14 & CPU и host-часть CUDA &
-На EPYC обычно используется GCC \\
-OpenMP & Многопоточность CPU & Для GCC линкуется \texttt{libgomp} \\
-MPI & CPU split build & \texttt{cpu/Makefile} использует
-\texttt{mpicxx}, если он есть \\
-CUDA toolkit & GPU split build & Нужны \texttt{nvcc},
-\texttt{libcudart}, \texttt{libcufft} \\
-NVIDIA driver & GPU запуск & Драйвер должен поддерживать собранный
-\texttt{sm\_XX} \\
+Геометрическая оптика & Лучи отражаются и преломляются на плоских гранях по законам Снеллиуса; слабые ветви отбрасываются cutoffs. & \code{src/scattering}, \code{src/tracer}, \code{src/Splitting.cpp}. \\
+Fresnel/Jones & Поляризационная амплитуда каждой ветви хранится как комплексная матрица Jones. & \code{Beam::J}, \code{Beam::MultiplyJonesMatrix}, \code{Splitting.cpp}. \\
+Physical Optics & Выходной пучок дает дальнее поле как интеграл по полигональной апертуре. & \code{Handler::DiffractIncline*}, \code{HandlerPO::ApplyDiffraction*}, CUDA kernels. \\
+Ориентационное усреднение & Для случайной ориентации считается взвешенная сумма Mueller-матриц по сетке Эйлера или квазислучайному набору. & \code{HandlerPOTotal}, \code{TracerPOTotal}, блоки \code{--oldauto}, \code{--adaptive}, \code{--auto}. \\
+\bottomrule
 \end{longtable}
 
-Рекомендуемый путь сборки - split build:
+\SectionNote{Главная численная особенность: в PO-режиме пучки внутри одной ориентации суммируются когерентно на уровне Jones-амплитуд. Только после суммы Jones матрица переводится в Mueller. Флаг \code{--incoh} меняет это поведение и делает сумму Mueller по отдельным пучкам.}
 
-\begin{Shaded}
-\begin{Highlighting}[]
-\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ cpu }\AttributeTok{{-}j}          \CommentTok{\# CPU MPI/OpenMP}
-\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu }\AttributeTok{{-}j}          \CommentTok{\# GPU float\_fast по умолчанию}
-\end{Highlighting}
-\end{Shaded}
+\subsection{Обозначения}
 
-Объектные файлы CPU лежат в \texttt{cpu/build/}, CUDA - в
-\texttt{gpu/build/}. Общая физика и CLI остаются в \texttt{src/},
-поэтому CPU и GPU версии не расходятся в разные кодовые базы.
-
-\subsection{CPU}\label{cpu}
-
-\begin{Shaded}
-\begin{Highlighting}[]
-\CommentTok{\# MPI + OpenMP CPU binary}
-\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ cpu }\AttributeTok{{-}j}
-
-\CommentTok{\# Один MPI rank, 64 OpenMP потока}
-\VariableTok{OMP\_NUM\_THREADS}\OperatorTok{=}\NormalTok{64 }\ExtensionTok{cpu/bin/mbs\_po\_mpi} \AttributeTok{{-}{-}po} \AttributeTok{{-}p}\NormalTok{ 1 125.9 78.09 }\DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}{-}ri}\NormalTok{ 1.3116 0 }\AttributeTok{{-}w}\NormalTok{ 0.532 }\AttributeTok{{-}n}\NormalTok{ 12 }\AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}threads}\NormalTok{ 64 }\AttributeTok{{-}{-}close} \AttributeTok{{-}o}\NormalTok{ out\_cpu}
-
-\CommentTok{\# Четыре MPI rank, по 16 потоков на rank}
-\ExtensionTok{mpirun} \AttributeTok{{-}np}\NormalTok{ 4 cpu/bin/mbs\_po\_mpi }\AttributeTok{{-}{-}po} \AttributeTok{{-}p}\NormalTok{ 1 125.9 78.09 }\DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}{-}ri}\NormalTok{ 1.3116 0 }\AttributeTok{{-}w}\NormalTok{ 0.532 }\AttributeTok{{-}n}\NormalTok{ 12 }\AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}threads}\NormalTok{ 16 }\AttributeTok{{-}{-}close} \AttributeTok{{-}o}\NormalTok{ out\_cpu\_mpi}
-\end{Highlighting}
-\end{Shaded}
-
-Debug/help сборка:
-
-\begin{Shaded}
-\begin{Highlighting}[]
-\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ cpu debug}
-\ExtensionTok{cpu/bin/mbs\_po\_mpi\_debug} \AttributeTok{{-}{-}help{-}debug}
-\end{Highlighting}
-\end{Shaded}
-
-\subsection{GPU}\label{gpu}
-
-\begin{Shaded}
-\begin{Highlighting}[]
-\CommentTok{\# GPU binary по умолчанию: float + fast math}
-\VariableTok{PATH}\OperatorTok{=}\NormalTok{/usr/local/cuda/bin:}\VariableTok{$PATH} \FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu }\AttributeTok{{-}j}
-
-\CommentTok{\# Явные варианты}
-\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu float       }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_float}
-\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu float\_fast  }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_float\_fast}
-\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu double\_fast }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_double\_fast}
-\end{Highlighting}
-\end{Shaded}
-
-\begin{longtable}[]{@{}llrrl@{}}
-\toprule\noalign{}
-Target & Binary & CUDA точность & Fast math & Когда использовать \\
-\midrule\noalign{}
+\begin{longtable}{L{0.18\linewidth} L{0.72\linewidth}}
+\caption{Базовые обозначения, используемые дальше.}\\
+\toprule
+Символ & Смысл \\
+\midrule
+\endfirsthead
+\toprule
+Символ & Смысл \\
+\midrule
 \endhead
-\bottomrule\noalign{}
-\endlastfoot
-\texttt{make\ -C\ gpu} & \texttt{gpu/bin/mbs\_po\_gpu\_float\_fast} &
-FP32 & да & Быстрые production сканы \\
-\texttt{make\ -C\ gpu\ float} & \texttt{gpu/bin/mbs\_po\_gpu\_float} &
-FP32 & нет & Проверка FP32 без fast math \\
-\texttt{make\ -C\ gpu\ double\_fast} &
-\texttt{gpu/bin/mbs\_po\_gpu\_double\_fast} & FP64 & да & Контрольные
-GPU расчеты \\
-\texttt{make\ -C\ gpu\ double\_debug} &
-\texttt{gpu/bin/mbs\_po\_gpu\_double\_debug} & FP64 & да &
-\texttt{-\/-help-debug} и диагностика \\
+$\lambda$ & Длина волны в микрометрах, задается флагом \code{-w}. \\
+$k=2\pi/\lambda$ & Волновое число во внешней среде. \\
+$m=n+\ii\kappa$ & Комплексный показатель преломления частицы относительно внешней среды, задается \code{--ri Re Im}. \\
+$\vect d$ & Направление распространения текущего луча или пучка. \\
+$\vect n$ & Внешняя нормаль грани. В коде знак выбирается так, чтобы ветвление было устойчивым для текущей стороны грани. \\
+$\theta,\phi$ & Углы направления наблюдения в дальней зоне. \\
+$\vect s(\theta,\phi)$ & Единичный вектор направления наблюдения. \\
+$\matr J$ & Комплексная матрица Jones $2\times2$. \\
+$\matr M$ & Вещественная матрица Mueller $4\times4$. \\
+$A$ & Площадь или полигон апертуры; смысл уточняется в конкретной формуле. \\
+$N_b$ & Число выходных пучков для одной ориентации. \\
+$N_{\mathrm{ori}}$ & Число ориентаций в усреднении. \\
+\bottomrule
 \end{longtable}
 
-В split GPU build CUDA backend включен по умолчанию. Флаг
-\texttt{-\/-gpu} можно писать, но он не обязателен. Флаг
-\texttt{-\/-cpu} принудительно запускает CPU backend внутри GPU-capable
-бинарника.
+\section{Координатные системы}
 
-Архитектура GPU определяется через \texttt{nvidia-smi}. При
-необходимости задавайте вручную:
+\subsection{Лабораторная система}
 
-\begin{Shaded}
-\begin{Highlighting}[]
-\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu double\_fast }\AttributeTok{{-}j}\NormalTok{ GPU\_ARCH=86   }\CommentTok{\# Ampere}
-\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu float\_fast  }\AttributeTok{{-}j}\NormalTok{ GPU\_ARCH=89   }\CommentTok{\# Ada}
-\end{Highlighting}
-\end{Shaded}
+Лабораторная система фиксирована относительно падающего света. Обычно падающий луч направлен вдоль одной из осей, а частица поворачивается матрицей Эйлера. Для любого вектора $\vect x$ в лабораторной системе используются скалярное произведение $\vect a\cdot\vect b$ и векторное произведение $\vect a\times\vect b$. Все направления лучей нормируются:
+\[
+  \norm{\vect d}=1,\qquad \norm{\vect s}=1,\qquad \norm{\vect n}=1.
+\]
 
-\subsection{EPYC Zen5, AVX-512 и
-AVX2}\label{epyc-zen5-avx-512-ux438-avx2}
+\subsection{Система частицы и повороты Эйлера}
 
-Makefile берет CPU-флаги из \texttt{scripts/detect\_arch\_flags.sh}
-через \texttt{ARCH\_FLAGS}. Для расчета на той же машине обычно лучше:
+Пусть $\vect x_p$ --- координаты вершины в системе частицы, а $\vect x_l$ --- координаты в лабораторной системе. Поворот задается матрицей
+\[
+  \vect x_l = \matr R(\alpha,\beta,\gamma)\,\vect x_p.
+\]
+В коде углы ориентации задаются через наборы beta/gamma или через специальные генераторы ориентаций. Если используется полная SO(3)-параметризация, то добавляется третий угол или кватернион. Для регулярных сеток с осевой симметрией часто достаточно двух углов, потому что поворот вокруг оси падающего луча учитывается аналитически или симметрией частицы.
 
-\begin{Shaded}
-\begin{Highlighting}[]
-\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ cpu clean}
-\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ cpu }\AttributeTok{{-}j}\NormalTok{ ARCH\_FLAGS=}\StringTok{"{-}march=native {-}mtune=native"}
+Удобная запись через элементарные повороты:
+\[
+  \matr R(\alpha,\beta,\gamma)
+  = \matr R_z(\alpha)\,\matr R_y(\beta)\,\matr R_z(\gamma).
+\]
+Здесь
+\[
+\matr R_z(\chi)=
+\begin{pmatrix}
+\cos\chi&-\sin\chi&0\\
+\sin\chi& \cos\chi&0\\
+0&0&1
+\end{pmatrix},\qquad
+\matr R_y(\chi)=
+\begin{pmatrix}
+\cos\chi&0&\sin\chi\\
+0&1&0\\
+-\sin\chi&0&\cos\chi
+\end{pmatrix}.
+\]
 
-\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu clean}
-\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu double\_fast }\AttributeTok{{-}j}\NormalTok{ ARCH\_FLAGS=}\StringTok{"{-}march=native {-}mtune=native"}
-\end{Highlighting}
-\end{Shaded}
-
-\begin{longtable}[]{@{}lll@{}}
-\toprule\noalign{}
-Цель & Флаги GCC/Clang & Комментарий \\
-\midrule\noalign{}
+\begin{longtable}{L{0.17\linewidth} L{0.73\linewidth}}
+\caption{Смысл углов Эйлера.}\\
+\toprule
+Символ & Смысл \\
+\midrule
+\endfirsthead
+\toprule
+Символ & Смысл \\
+\midrule
 \endhead
-\bottomrule\noalign{}
-\endlastfoot
-EPYC Zen2 & \texttt{ARCH\_FLAGS="-march=znver2\ -mtune=znver2"} &
-AVX2/FMA \\
-EPYC Zen3 & \texttt{ARCH\_FLAGS="-march=znver3\ -mtune=znver3"} &
-AVX2/FMA \\
-EPYC Zen4 & \texttt{ARCH\_FLAGS="-march=znver4\ -mtune=znver4"} &
-AVX-512 при поддержке компилятора \\
-EPYC Zen5 & \texttt{ARCH\_FLAGS="-march=znver5\ -mtune=znver5"} & Нужен
-GCC/Clang, который знает \texttt{znver5} \\
-Portable AVX2 & \texttt{ARCH\_FLAGS="-O3\ -mavx2\ -mfma"} & Запускается
-на AVX2 машинах \\
-Явный AVX-512 &
-\texttt{ARCH\_FLAGS="-O3\ -mavx512f\ -mavx512dq\ -mavx512cd\ -mavx512bw\ -mavx512vl"}
-& Только если \texttt{lscpu} показывает эти флаги \\
+$\alpha$ & Поворот вокруг лабораторной оси падающего луча или начальный азимут, если используется полная SO(3)-сетка. \\
+$\beta$ & Наклон оси частицы относительно падающего луча. Именно beta имеет синусный якобиан $\sin\beta$. \\
+$\gamma$ & Поворот частицы вокруг собственной оси после наклона. На beta-полюсах все $\gamma$ геометрически эквивалентны. \\
+\bottomrule
 \end{longtable}
 
-Флага \texttt{AVX12} у GCC/Clang нет. Если имелся в виду Zen5 с AVX-512,
-используйте \texttt{-march=znver5}. Если компилятор старый, обновите его
-или задайте явные \texttt{-mavx512*} флаги после проверки
-\texttt{lscpu}.
+\subsection{Система грани и апертуры}
 
-\section{Быстрый
-старт}\label{ux431ux44bux441ux442ux440ux44bux439-ux441ux442ux430ux440ux442}
+Для каждого выходного пучка строится локальная система апертуры. Нормаль апертуры $\vect n_b$ берется из последней грани или из нормали пучка, а две оси в плоскости обозначим $\vect h_b$ и $\vect v_b$:
+\[
+  \vect h_b\cdot\vect n_b=0,\qquad
+  \vect v_b\cdot\vect n_b=0,\qquad
+  \vect h_b\cdot\vect v_b=0.
+\]
+Точка $\vect r$ в лабораторной системе проектируется в координаты апертуры:
+\[
+  x = (\vect r-\vect r_c)\cdot\vect h_b,\qquad
+  y = (\vect r-\vect r_c)\cdot\vect v_b,
+\]
+где $\vect r_c$ --- центр полигона пучка. Именно эти $x,y$ попадают в \code{BeamEdgeData}: массивы вершин, наклоны ребер и признаки валидности ребер.
 
-\begin{Shaded}
-\begin{Highlighting}[]
-\CommentTok{\# GPU double, полный диапазон 0..180 градусов}
-\ExtensionTok{gpu/bin/mbs\_po\_gpu\_double\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}p}\NormalTok{ 1 125.9 78.09 }\DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}{-}ri}\NormalTok{ 1.3116 0 }\AttributeTok{{-}w}\NormalTok{ 0.532 }\AttributeTok{{-}n}\NormalTok{ 12 }\AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}threads}\NormalTok{ 64 }\AttributeTok{{-}{-}close} \AttributeTok{{-}o}\NormalTok{ hex\_gpu\_double}
+\subsection{Система рассеяния}
 
-\CommentTok{\# То же, но CPU backend из GPU бинарника}
-\ExtensionTok{gpu/bin/mbs\_po\_gpu\_double\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}{-}cpu} \AttributeTok{{-}p}\NormalTok{ 1 125.9 78.09 }\DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}{-}ri}\NormalTok{ 1.3116 0 }\AttributeTok{{-}w}\NormalTok{ 0.532 }\AttributeTok{{-}n}\NormalTok{ 12 }\AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}threads}\NormalTok{ 64 }\AttributeTok{{-}{-}close} \AttributeTok{{-}o}\NormalTok{ hex\_cpu\_from\_gpu\_bin}
+Для направления наблюдения $\vect s$ строятся две поперечные оси. В коде используется опорный вектор \code{vf} и второй вектор
+\[
+  \vect v_t =
+  \frac{\vect v_f\times\vect s}
+       {\norm{\vect v_f\times\vect s}}.
+\]
+Если направление близко к полюсу и знаменатель мал, код использует специальные ветки для endpoint/pole, потому что базис рассеяния плохо определен при вырождении азимута.
 
-\CommentTok{\# Частица из файла, масштабирование через k\_eq}
-\ExtensionTok{gpu/bin/mbs\_po\_gpu\_float\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}{-}pf}\NormalTok{ particle.dat }\AttributeTok{{-}{-}k\_eq}\NormalTok{ 58.81 }\DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}{-}ri}\NormalTok{ 1.6 0.002 }\AttributeTok{{-}w}\NormalTok{ 1.064 }\AttributeTok{{-}n}\NormalTok{ 14 }\AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\AttributeTok{{-}{-}pole} \DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}threads}\NormalTok{ 16 }\AttributeTok{{-}{-}close} \AttributeTok{{-}o}\NormalTok{ particle\_keq}
+\section{Трассировка лучей}
 
-\CommentTok{\# Быстрая проверка двух точек: 0 и 180 градусов}
-\ExtensionTok{gpu/bin/mbs\_po\_gpu\_double\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}p}\NormalTok{ 1 125.9 78.09 }\DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}{-}ri}\NormalTok{ 1.3116 0 }\AttributeTok{{-}w}\NormalTok{ 0.532 }\AttributeTok{{-}n}\NormalTok{ 1 }\AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\AttributeTok{{-}{-}pole} \DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 1 }\AttributeTok{{-}{-}threads}\NormalTok{ 64 }\AttributeTok{{-}{-}close} \AttributeTok{{-}o}\NormalTok{ check\_0\_180}
-\end{Highlighting}
-\end{Shaded}
+\subsection{Пересечение луча с гранью}
 
-\section{Физическая
-модель}\label{ux444ux438ux437ux438ux447ux435ux441ux43aux430ux44f-ux43cux43eux434ux435ux43bux44c}
+Луч задается начальной точкой $\vect r_0$ и направлением $\vect d$:
+\[
+  \vect r(t)=\vect r_0+t\vect d,\qquad t\ge0.
+\]
+Грань лежит в плоскости
+\[
+  (\vect r-\vect p_f)\cdot\vect n_f=0,
+\]
+где $\vect p_f$ --- любая точка грани, $\vect n_f$ --- нормаль грани. Формула пересечения:
+\[
+  t_f =
+  \frac{(\vect p_f-\vect r_0)\cdot\vect n_f}
+       {\vect d\cdot\vect n_f}.
+\]
+Кандидат допустим, если $t_f>0$, знаменатель не близок к нулю, а точка $\vect r(t_f)$ попадает внутрь полигона грани. При невыпуклых частицах этого недостаточно: найденный hit может быть частично или полностью закрыт другой гранью.
 
-\subsection{Общий pipeline}\label{ux43eux431ux449ux438ux439-pipeline}
+\subsection{Пучок как полигон}
 
-\begin{longtable}[]{@{}lll@{}}
-\toprule\noalign{}
-Этап & Где в коде & Результат \\
-\midrule\noalign{}
+MBS-fast трассирует не одиночный луч, а полигональный пучок. Входной пучок пересекается с гранью, затем его апертура обрезается полигоном грани. Если $P_{\mathrm{in}}$ --- полигон входного пучка, а $F$ --- полигон грани в той же плоскости, то subject-полигон после попадания:
+\[
+  P_{\mathrm{hit}} = P_{\mathrm{in}}\cap F.
+\]
+Площадь $|P_{\mathrm{hit}}|$ используется в beam cutoffs и в нормировках. Если полигон выродился, ветвь удаляется.
+
+\subsection{Отражение и преломление}
+
+Пусть $\cos A=\vect n\cdot\vect d$. В \code{Splitting.cpp} используется вектор
+\[
+  \vect r = \frac{\vect d}{\cos A}-\vect n,
+\]
+после чего направление отраженной ветви записано как
+\[
+  \vect d_{\mathrm{refl}}=
+  \frac{\vect r-\vect n}{\norm{\vect r-\vect n}}.
+\]
+Такая запись эквивалентна обычной формуле зеркального отражения после учета знаковой конвенции нормали в коде. Для преломленной ветви код строит
+\[
+  s =
+  \frac{1}{m_{\mathrm{eff}}^2\cos^2 A}-\norm{\vect r}^2,
+  \qquad
+  \vect d_{\mathrm{refr}}=
+  \frac{\vect r/\sqrt{s}+\vect n}
+       {\norm{\vect r/\sqrt{s}+\vect n}}.
+\]
+Если $s$ становится неположительным, обычная преломленная ветвь отсутствует, и включается ветка полного внутреннего отражения.
+
+\subsection{Оптический путь}
+
+Фаза пучка включает оптический путь
+\[
+  \Phi_{\mathrm{path}} = k\,L_{\mathrm{opt}}.
+\]
+Для внешней среды вклад длины равен геометрической длине. Для внутреннего участка длина умножается на эффективную вещественную часть показателя:
+\[
+  L_{\mathrm{opt,in}}\approx \sqrt{\Real(m^2)}\,L_{\mathrm{geom}}.
+\]
+В поглощающем варианте дополнительно используется мнимая часть показателя и интеграл с затуханием вдоль внутреннего пути.
+
+\subsection{Ограничение глубины}
+
+Флаг \code{-n N} ограничивает максимальную глубину внутренних отражений и преломлений. Если $g$ --- номер поколения beam tree, то ветви с $g>N$ не трассируются. Это численный контроль стоимости:
+\[
+  N_{\mathrm{beam}}\sim 2^g
+\]
+для идеализированной ситуации без cutoffs, хотя на практике дерево сильно режется геометрией и порогами.
+
+\section{Коэффициенты Френеля}
+
+\subsection{Вертикальная и горизонтальная поляризация}
+
+Каждое взаимодействие с гранью домножает Jones-матрицу на два комплексных коэффициента: один для локальной вертикальной поляризации, второй для горизонтальной. В коде они называются \code{cv/ch} или \code{Tv/Th} в зависимости от ветки. Это не независимые матрицы $4\times4$, а диагональные множители в локальном Jones-базисе:
+\[
+  \matr J_{\mathrm{new}} =
+  \begin{pmatrix}
+  c_v&0\\0&c_h
+  \end{pmatrix}
+  \matr J_{\mathrm{old}}
+  \quad\text{или}\quad
+  \matr J_{\mathrm{old}}
+  \begin{pmatrix}
+  c_v&0\\0&c_h
+  \end{pmatrix},
+\]
+в зависимости от внутренней конвенции хранения строк и столбцов.
+
+\subsection{Обычное отражение и прохождение}
+
+В \code{ComputeRegularJonesParams} после вычисления $\cos G=\vect n\cdot\vect d_{\mathrm{out}}$ используются величины
+\[
+  a_0=m\cos A,\qquad a_1=m\cos G,
+\]
+\[
+  D_v=a_1+\cos A,\qquad D_h=a_0+\cos G.
+\]
+Для проходящей ветви:
+\[
+  c^{(T)}_v=\frac{2a_0}{D_v},\qquad
+  c^{(T)}_h=\frac{2a_0}{D_h}.
+\]
+Для отраженной внутренней ветви:
+\[
+  c^{(R)}_v=\frac{\cos A-a_1}{D_v},\qquad
+  c^{(R)}_h=\frac{a_0-\cos G}{D_h}.
+\]
+
+\begin{longtable}{L{0.18\linewidth} L{0.72\linewidth}}
+\caption{Обозначения в формулах Fresnel regular branch.}\\
+\toprule
+Символ & Смысл \\
+\midrule
+\endfirsthead
+\toprule
+Символ & Смысл \\
+\midrule
 \endhead
-\bottomrule\noalign{}
-\endlastfoot
-Геометрия частицы & \texttt{src/particle}, \texttt{src/main.cpp} &
-Грани, нормали, площадь, объем, симметрия \\
-Трассировка лучей & \texttt{src/scattering}, \texttt{src/tracer},
-\texttt{src/Splitting.cpp} & Выходные пучки: направление, полигон,
-площадь, оптический путь, Jones \\
-PO дифракция & \texttt{HandlerPO::ApplyDiffraction*},
-\texttt{Handler::DiffractIncline*}, CUDA kernels & Jones амплитуда пучка
-в дальнем поле \\
-Когерентная сумма & \texttt{HandlerPO::AddToMueller}, CUDA fused Mueller
-kernels & Сумма Jones матриц по пучкам для одной ориентации \\
-Jones -\textgreater{} Mueller & \texttt{src/math/Mueller.cpp} & Реальная
-матрица Mueller 4x4 \\
-Усреднение ориентаций & \texttt{HandlerPOTotal}, \texttt{TracerPOTotal}
-& Финальная матрица для случайно ориентированных частиц \\
+$m$ & Комплексный показатель преломления частицы. \\
+$\cos A$ & Косинус угла между нормалью и падающим направлением в конвенции кода. \\
+$\cos G$ & Косинус угла между нормалью и выходящим направлением. \\
+$D_v,D_h$ & Знаменатели Fresnel для двух локальных поляризаций. \\
+$c^{(T)}_v,c^{(T)}_h$ & Множители Jones для прошедшей ветви. \\
+$c^{(R)}_v,c^{(R)}_h$ & Множители Jones для отраженной ветви. \\
+\bottomrule
 \end{longtable}
 
-\subsection{Jones матрицы
-лучей}\label{jones-ux43cux430ux442ux440ux438ux446ux44b-ux43bux443ux447ux435ux439}
+\subsection{Нормальное падение}
 
-Каждый пучок несет комплексную матрицу Jones \texttt{beam.J}:
+При нормальном падении код использует упрощенные коэффициенты:
+\[
+  c_T=\frac{2m}{1+m},\qquad
+  c_R=\frac{1-m}{1+m}.
+\]
+Для одной из поляризаций отраженная ветвь получает дополнительный знак, что связано с ориентацией локального поляризационного базиса после отражения:
+\[
+  \matr J_{\mathrm{refl}}
+  \leftarrow
+  \begin{pmatrix}
+  c_R&0\\0&-c_R
+  \end{pmatrix}\matr J.
+\]
 
-\begin{Shaded}
-\begin{Highlighting}[]
-\NormalTok{J = [ Jvv  Jvh ]}
-\NormalTok{    [ Jhv  Jhh ]}
-\end{Highlighting}
-\end{Shaded}
+\subsection{Полное внутреннее отражение}
 
-При отражениях/преломлениях \texttt{Splitting.cpp} домножает
-\texttt{beam.J} на коэффициенты Fresnel в локальном
-вертикальном/горизонтальном базисе луча. В PO режиме это амплитуда,
-поэтому в обычном когерентном режиме сначала суммируются Jones матрицы
-пучков, и только затем считается Mueller.
+В ветке complete reflection код строит
+\[
+  b = m_{\mathrm{eff}}^2(1-\cos^2 A)-1,\qquad
+  q=\ii\sqrt{\max(b,0)}.
+\]
+Затем
+\[
+  c_v=\frac{\cos A-mq}{mq+\cos A},\qquad
+  c_h=\frac{m\cos A-q}{m\cos A+q}.
+\]
+Эти коэффициенты имеют модуль, близкий к единице при непоглощающей среде, но несут фазовый сдвиг. Именно этот фазовый сдвиг важен для поляризационных элементов Mueller.
 
-\subsection{Диады и поворот в базис
-рассеяния}\label{ux434ux438ux430ux434ux44b-ux438-ux43fux43eux432ux43eux440ux43eux442-ux432-ux431ux430ux437ux438ux441-ux440ux430ux441ux441ux435ux44fux43dux438ux44f}
+\subsection{Старый знак Fresnel}
 
-Перед добавлением пучка в направление наблюдения локальный Jones базис
-надо перевести в базис детектора. Это делают
-\texttt{HandlerPO::RotateJones} и \texttt{RotateJonesFast}. Они строят
-2x2 матрицу проекций через скалярные произведения между:
+Флаг \code{--legacy_sign} включает старую конвенцию знака для forward direction. Этот режим нужен только для воспроизводимости старых результатов. Для новых сравнений CPU/GPU и для физически согласованной ветки следует использовать поведение по умолчанию.
 
-\begin{longtable}[]{@{}ll@{}}
-\toprule\noalign{}
-Вектор & Смысл \\
-\midrule\noalign{}
+\section{Jones-матрицы и диады}
+
+\subsection{Матрица пучка}
+
+Каждый пучок несет
+\[
+\matr J_{\mathrm{beam}}=
+\begin{pmatrix}
+J_{vv}&J_{vh}\\
+J_{hv}&J_{hh}
+\end{pmatrix}.
+\]
+Эта матрица является амплитудной. Поэтому интенсивность связана с квадратами модулей, а интерференция между пучками сохраняется до тех пор, пока Jones-матрицы суммируются до преобразования в Mueller.
+
+\subsection{Фазовый множитель}
+
+Для внутреннего пучка функция \code{ComputeFnJones} использует фазу
+\[
+  \matr F_n(\vect s)
+  =
+  \matr J_{\mathrm{beam}}
+  \exp\!\left[\ii k
+  \left(L_{\mathrm{proj}}-\vect s\cdot\vect r_c\right)\right].
+\]
+Здесь $L_{\mathrm{proj}}$ хранится как \code{info.projLenght}, а $\vect r_c$ --- центр пучка. Для external beam берется уже накопленный optical path:
+\[
+  \matr F_n =
+  \matr J_{\mathrm{beam}}\exp(\ii k L_{\mathrm{opt}}).
+\]
+
+\subsection{Поворот Jones в базис рассеяния}
+
+В \code{HandlerPO::RotateJones} строятся векторы:
+\[
+  \vect v_t =
+  \frac{\vect v_f\times\vect s}
+       {\norm{\vect v_f\times\vect s}},
+\]
+\[
+  \vect N_T=\vect n\times\vect e_T,\qquad
+  \vect N_P=\vect n\times\vect e_P,
+\]
+\[
+  \vect D_T=\vect d_b\times\vect e_T,\qquad
+  \vect D_P=\vect d_b\times\vect e_P.
+\]
+Здесь $\vect e_T$ --- \code{info.beamBasis}, $\vect e_P$ --- \code{beam.polarizationBasis}. Далее используется BAC-CAB identity:
+\[
+  \vect c_T =
+  \vect s\times\vect N_T
+  + \vect n\times\vect D_T
+  - \vect s\left[\vect s\cdot(\vect n\times\vect D_T)\right],
+\]
+\[
+  \vect c_P =
+  \vect s\times\vect N_P
+  + \vect n\times\vect D_P
+  - \vect s\left[\vect s\cdot(\vect n\times\vect D_P)\right].
+\]
+Матрица поворота:
+\[
+  \matr R_{\mathrm{out}}=
+  \frac12
+  \begin{pmatrix}
+    \vect c_T\cdot\vect v_t & \vect c_P\cdot\vect v_t\\
+    \vect c_T\cdot\vect v_f & \vect c_P\cdot\vect v_f
+  \end{pmatrix}.
+\]
+
+\subsection{Полный Jones-вклад пучка}
+
+В \code{ApplyDiffractionFast} итоговый вклад одного пучка:
+\[
+  \matr J_b(\theta,\phi)
+  =
+  F_{\mathrm{edge},b}(\theta,\phi)\,
+  \matr R_{\mathrm{out},b}(\theta,\phi)\,
+  \matr F_{n,b}(\theta,\phi).
+\]
+
+\begin{longtable}{L{0.24\linewidth} L{0.66\linewidth}}
+\caption{Смысл множителей в полном Jones-вкладе.}\\
+\toprule
+Множитель & Смысл \\
+\midrule
+\endfirsthead
+\toprule
+Множитель & Смысл \\
+\midrule
 \endhead
-\bottomrule\noalign{}
-\endlastfoot
-\texttt{beam.Direction()} & Направление пучка после трассировки \\
-\texttt{direction} & Требуемое направление рассеяния \\
-\texttt{vf} & Forward reference direction \\
-\texttt{info} polarization vectors & Предвычисленный поляризационный
-базис пучка \\
+$F_{\mathrm{edge},b}$ & Скалярный PO-интеграл по полигональной апертуре пучка $b$. \\
+$\matr R_{\mathrm{out},b}$ & Проекция/поворот из локального Jones-базиса пучка в базис рассеяния. \\
+$\matr F_{n,b}$ & Накопленная Jones-матрица пучка с фазой optical path и поправкой на направление наблюдения. \\
+\bottomrule
 \end{longtable}
 
-В \texttt{ApplyDiffractionFast} вклад пучка имеет вид:
+\subsection{Karczewski-ветка}
 
-\begin{Shaded}
-\begin{Highlighting}[]
-\NormalTok{J\_beam(theta, phi) = F\_edge(theta, phi) * R\_out(theta, phi) * F\_n(theta, phi)}
-\end{Highlighting}
-\end{Shaded}
+Флаг \code{--karczewski} заменяет \code{RotateJones} на \code{KarczewskiJones}. В коде эта ветка помечена как экспериментальная. Важное свойство: $M_{11}$ остается тем же, потому что сохраняется Frobenius-норма Jones-оператора:
+\[
+  M_{11}=\frac12\norm{\matr J}_{F}^{2}
+  =
+  \frac12\sum_{i=1}^{2}\sum_{j=1}^{2}|J_{ij}|^2.
+\]
+Поляризационные элементы $M_{33}$, $M_{34}$, $M_{44}$ могут отличаться, потому что меняется структура Jones-матрицы в базисе рассеяния.
 
-\begin{longtable}[]{@{}lll@{}}
-\toprule\noalign{}
-Множитель & Код & Смысл \\
-\midrule\noalign{}
+\section{Преобразование Jones в Mueller}
+
+\subsection{Полная формула из кода}
+
+Пусть
+\[
+  \matr J=
+  \begin{pmatrix}
+  a&b\\c&d
+  \end{pmatrix}.
+\]
+В \code{src/math/Mueller.cpp} матрица Mueller строится из билинейных комбинаций. Формулы в принятой кодовой конвенции:
+\[
+\begin{aligned}
+M_{00}&=\frac{|a|^2+|b|^2+|c|^2+|d|^2}{2},&
+M_{01}&=\frac{|a|^2-|b|^2+|c|^2-|d|^2}{2},\\
+M_{10}&=\frac{|a|^2+|b|^2-|c|^2-|d|^2}{2},&
+M_{11}&=\frac{|a|^2-|b|^2-|c|^2+|d|^2}{2}.
+\end{aligned}
+\]
+Далее:
+\[
+\begin{aligned}
+M_{02}&=-\Real(a\conj b)-\Real(d\conj c),&
+M_{03}&=\Imag(d\conj c)-\Imag(a\conj b),\\
+M_{12}&=\Real(d\conj c)-\Real(a\conj b),&
+M_{13}&=-\Imag(a\conj b)-\Imag(d\conj c),\\
+M_{20}&=-\Real(a\conj c)-\Real(d\conj b),&
+M_{21}&=\Real(d\conj b)-\Real(a\conj c),\\
+M_{30}&=\Imag(a\conj c)-\Imag(d\conj b),&
+M_{31}&=\Imag(d\conj b)+\Imag(a\conj c),\\
+M_{22}&=\Real(a\conj d)+\Real(b\conj c),&
+M_{23}&=\Imag(a\conj d)-\Imag(b\conj c),\\
+M_{32}&=-\Imag(a\conj d)-\Imag(b\conj c),&
+M_{33}&=\Real(a\conj d)-\Real(b\conj c).
+\end{aligned}
+\]
+
+\begin{longtable}{L{0.18\linewidth} L{0.72\linewidth}}
+\caption{Обозначения в Jones$\to$Mueller.}\\
+\toprule
+Символ & Смысл \\
+\midrule
+\endfirsthead
+\toprule
+Символ & Смысл \\
+\midrule
 \endhead
-\bottomrule\noalign{}
-\endlastfoot
-\texttt{F\_edge} & \texttt{DiffractInclineFast},
-\texttt{DiffractIncline}, \texttt{DiffractInclineAbs} & Скалярный
-edge-интеграл Kirchhoff для полигона пучка \\
-\texttt{R\_out} & \texttt{RotateJones} или \texttt{KarczewskiJones} &
-Поворот/проекция Jones базиса в базис рассеяния \\
-\texttt{F\_n} & \texttt{ComputeFnJones} & Fresnel/Jones поправка для
-нормали пучка и направления \\
+$a,b,c,d$ & Комплексные элементы итоговой Jones-матрицы для одной detector cell. \\
+$\conj z$ & Комплексное сопряжение. \\
+$|z|^2=z\conj z$ & Квадрат модуля комплексной амплитуды. \\
+$\Real(z),\Imag(z)$ & Вещественная и мнимая части. \\
+$M_{ij}$ & Элементы Mueller в нулевой индексации кода; в файлах обычно печатаются как $M11,M12,\ldots,M44$. \\
+\bottomrule
 \end{longtable}
 
-Флаг \texttt{-\/-karczewski} заменяет стандартный \texttt{RotateJones}
-на матрицу Karczewski. По комментариям в коде \texttt{M11} при этом не
-меняется, потому что сохраняется Frobenius norm, но поляризационные
-элементы могут отличаться.
+\subsection{Когерентная и некогерентная сумма}
 
-\subsection{Дифракционный интеграл
-Kirchhoff}\label{ux434ux438ux444ux440ux430ux43aux446ux438ux43eux43dux43dux44bux439-ux438ux43dux442ux435ux433ux440ux430ux43b-kirchhoff}
+По умолчанию для одной ориентации:
+\[
+  \matr J_{\mathrm{tot}}(\theta,\phi)
+  =
+  \sum_{b=1}^{N_b}\matr J_b(\theta,\phi),
+  \qquad
+  \matr M(\theta,\phi)=\mathcal M(\matr J_{\mathrm{tot}}).
+\]
+С флагом \code{--incoh}:
+\[
+  \matr M_{\mathrm{incoh}}(\theta,\phi)
+  =
+  \sum_{b=1}^{N_b}\mathcal M(\matr J_b(\theta,\phi)).
+\]
+Разница принципиальная: в первом случае сохраняются интерференционные члены между разными пучками, во втором они исчезают.
 
-Для каждого выходного пучка освещенная апертура представлена полигоном.
-PO дальнее поле считается как интеграл по апертуре:
+\subsection{Повороты Mueller}
 
-\begin{Shaded}
-\begin{Highlighting}[]
-\NormalTok{F(q) = integral\_A exp(i k q.r) dA}
-\end{Highlighting}
-\end{Shaded}
+Поворот Stokes-базиса на угол $\chi$ действует только на компоненты $Q,U$:
+\[
+  \matr R_M(\chi)=
+  \begin{pmatrix}
+  1&0&0&0\\
+  0&\cos\chi&-\sin\chi&0\\
+  0&\sin\chi& \cos\chi&0\\
+  0&0&0&1
+  \end{pmatrix}.
+\]
+\code{RightRotateMueller} умножает матрицу справа, то есть меняет входной Stokes-базис:
+\[
+  \matr M'=\matr M\,\matr R_M(\chi_{\mathrm{in}}).
+\]
+\code{LeftRotateMueller} умножает слева, то есть меняет выходной базис:
+\[
+  \matr M'=\matr R_M(\chi_{\mathrm{out}})\,\matr M.
+\]
+\code{RotateMueller} делает обе операции в одной функции:
+\[
+  \matr M'=
+  \matr R_M(\chi_{\mathrm{out}})\,
+  \matr M\,
+  \matr R_M(\chi_{\mathrm{in}}).
+\]
 
-где \texttt{A} - полигон пучка, \texttt{k\ =\ 2*pi/lambda}, \texttt{q} -
-разность между направлением пучка и направлением наблюдения. В коде
-интеграл считается через границы полигона, а не через sampling площади.
-Для ребра от \texttt{a} до \texttt{b} вклад выражается через разность
-комплексных экспонент и фазовый знаменатель; для малых знаменателей
-используются устойчивые sinc-пределы.
+\section{Дифракция Physical Optics}
 
-\begin{longtable}[]{@{}ll@{}}
-\toprule\noalign{}
-Функция & Назначение \\
-\midrule\noalign{}
+\subsection{Интеграл по апертуре}
+
+Для выходного пучка с апертурой $A_b$ скалярная часть PO-дальнего поля записывается как
+\[
+  F_b(\vect q)
+  =
+  \int_{A_b}
+  \exp\!\left(\ii k\,\vect q\cdot\vect r\right)\dd A,
+  \qquad
+  \vect q=\vect d_b-\vect s.
+\]
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.84\linewidth]{manual_aperture_edge.pdf}
+  \caption{Aperture integral переводится в сумму по ребрам полигона. Это быстрее и точнее, чем sampling площади.}
+\end{figure}
+
+\subsection{Переход к ребрам полигона}
+
+В системе апертуры:
+\[
+  A_q=\vect q\cdot\vect h_b,\qquad
+  B_q=\vect q\cdot\vect v_b.
+\]
+Для вершины $j$:
+\[
+  \Phi_j=k(A_q x_j+B_q y_j).
+\]
+Если ребро описано через $y=m_jx+c_j$, то один из вариантов edge-суммы имеет вид
+\[
+  S_x =
+  \frac{1}{B_q}
+  \sum_{j}
+  \frac{\exp(\ii\Phi_{j+1})-\exp(\ii\Phi_j)}
+       {A_q+m_jB_q}.
+\]
+Если удобнее параметризовать ребро как $x=\mu_jy+\eta_j$, используется симметричная форма
+\[
+  S_y =
+  -\frac{1}{A_q}
+  \sum_{j}
+  \frac{\exp(\ii\Phi_{j+1})-\exp(\ii\Phi_j)}
+       {A_q\mu_j+B_q}.
+\]
+В коде выбор между ветками зависит от того, какой знаменатель устойчивее. Для малых $A_q$ и $B_q$ используется предельная формула площади:
+\[
+  F_b(\vect 0)\approx C_k\,|A_b|,
+\]
+где $C_k$ --- комплексный нормировочный множитель, соответствующий выбранной форме интеграла в коде.
+
+\begin{longtable}{L{0.18\linewidth} L{0.72\linewidth}}
+\caption{Символы edge-интеграла.}\\
+\toprule
+Символ & Смысл \\
+\midrule
+\endfirsthead
+\toprule
+Символ & Смысл \\
+\midrule
 \endhead
-\bottomrule\noalign{}
-\endlastfoot
-\texttt{Handler::DiffractIncline} & CPU scalar edge integral без
-поглощения \\
-\texttt{Handler::DiffractInclineFast} & Оптимизированный CPU edge
-integral с предвычисленными ребрами \\
-\texttt{Handler::DiffractInclineAbs} & Вариант с поглощением \\
-\texttt{GpuDiffraction.cu} & CUDA реализация тех же вычислений \\
+$\vect q$ & Разность направления пучка и направления наблюдения. \\
+$A_q,B_q$ & Компоненты $\vect q$ в плоскости апертуры. \\
+$(x_j,y_j)$ & Вершина полигона пучка в системе апертуры. \\
+$m_j,\mu_j$ & Наклоны ребра: $dy/dx$ и $dx/dy$. \\
+$\Phi_j$ & Фаза комплексной экспоненты в вершине $j$. \\
+$S_x,S_y$ & Две эквивалентные формы edge-суммы, выбираемые по устойчивости. \\
+\bottomrule
 \end{longtable}
 
-CPU и GPU ветки должны использовать одну геометрию, фазовую конвенцию и
-сетку theta. Отличия обычно дают точность
-(\texttt{float}/\texttt{double}), \texttt{-\/-use\_fast\_math},
-FFT-интерполяция, порядок редукции/атомики и специальные случаи
-полюсов/endpoint.
+\subsection{Почему важны точки 0 и 180 градусов}
 
-\subsection{Когерентная и некогерентная
-сумма}\label{ux43aux43eux433ux435ux440ux435ux43dux442ux43dux430ux44f-ux438-ux43dux435ux43aux43eux433ux435ux440ux435ux43dux442ux43dux430ux44f-ux441ux443ux43cux43cux430}
+В forward/backward направлениях часть базисов и знаменателей становится вырожденной или почти вырожденной:
+\[
+  \norm{\vect v_f\times\vect s}\to0,
+  \qquad
+  A_q\to0,\quad B_q\to0.
+\]
+Поэтому в этих точках особенно важны:
+\begin{itemize}[leftmargin=1.4em]
+  \item одинаковая обработка endpoint в CPU и GPU;
+  \item одинаковая формула предела edge-интеграла;
+  \item одинаковый вес $\gamma$ на beta-полюсах при \code{--pole};
+  \item отсутствие расхождения в знаке Fresnel и фазовой конвенции;
+  \item одинаковая точность: \code{float} может заметно отличаться от \code{double} именно в near-singular ветках.
+\end{itemize}
 
-По умолчанию:
+\subsection{Поглощение}
 
-\begin{Shaded}
-\begin{Highlighting}[]
-\NormalTok{J\_total(theta, phi) = sum\_beams J\_beam(theta, phi)}
-\NormalTok{M(theta, phi)       = Mueller(J\_total(theta, phi))}
-\end{Highlighting}
-\end{Shaded}
+Если $\Imag(m)>0$ или указан \code{--abs}, внутренняя часть пучка получает затухание:
+\[
+  \exp(\ii k m L)
+  =
+  \exp(\ii k \Real(m)L)\,
+  \exp(-k\Imag(m)L).
+\]
+Тогда вклад длинных внутренних путей уменьшается. В численном смысле это помогает сходимости дерева лучей, но меняет физическую интенсивность и поляризационные элементы.
 
-С флагом \texttt{-\/-incoh}:
+\section{Clipping невыпуклых частиц и агрегатов}
 
-\begin{Shaded}
-\begin{Highlighting}[]
-\NormalTok{M(theta, phi) = sum\_beams Mueller(J\_beam(theta, phi))}
-\end{Highlighting}
-\end{Shaded}
+\subsection{Зачем нужен clipping}
 
-Преобразование Jones -\textgreater{} Mueller реализовано в
-\texttt{src/math/Mueller.cpp}: элементы 4x4 строятся из билинейных
-комбинаций \texttt{\textbar{}S\_i\textbar{}\^{}2},
-\texttt{Re(S\_i\ conj(S\_j))}, \texttt{Im(S\_i\ conj(S\_j))}.
+Для выпуклой частицы пересечение пучка с ближайшей гранью обычно однозначно. Для невыпуклой частицы другая грань может закрывать часть апертуры. Тогда надо вычесть проекцию блокирующей грани из subject-полигона:
+\[
+  P_{\mathrm{vis}}
+  =
+  P_{\mathrm{subj}}
+  \setminus
+  \bigcup_{m=1}^{N_c}
+  \Pi_{\mathrm{subj}}(C_m).
+\]
 
-\subsection{\texorpdfstring{Усреднение ориентаций и
-\texttt{-\/-pole}}{Усреднение ориентаций и -\/-pole}}\label{ux443ux441ux440ux435ux434ux43dux435ux43dux438ux435-ux43eux440ux438ux435ux43dux442ux430ux446ux438ux439-ux438---pole}
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.82\linewidth]{manual_nonconvex_clipping.pdf}
+  \caption{Невыпуклый clipping: projected blocker удаляет часть subject-полигона.}
+\end{figure}
 
-Ориентационные режимы задают веса по beta/gamma. На точных beta-полюсах
-все gamma эквивалентны, поэтому \texttt{-\/-pole} считает одну gamma и
-умножает вес. В текущей версии при \texttt{-\/-pole} используются beta
-endpoints, чтобы точка beta=0 или beta=pi действительно присутствовала в
-сетке, а не заменялась midpoint.
-
-\subsection{Веса scattering
-grid}\label{ux432ux435ux441ux430-scattering-grid}
-
-Для uniform theta grid выводится \texttt{Nth\ +\ 1} строк. Колонка
-\texttt{2pi*dcos} - вес кольца телесного угла:
-
-\begin{Shaded}
-\begin{Highlighting}[]
-\NormalTok{dOmega(theta\_j) = 2*pi * (cos(theta\_left) {-} cos(theta\_right))}
-\end{Highlighting}
-\end{Shaded}
-
-Для endpoint строк используется половинная ячейка, обрезанная границей
-диапазона. Для полной сетки \texttt{0..180} сумма всех \texttt{2pi*dcos}
-должна быть \texttt{4*pi}.
-
-\section{Частицы и
-размер}\label{ux447ux430ux441ux442ux438ux446ux44b-ux438-ux440ux430ux437ux43cux435ux440}
-
-\begin{longtable}[]{@{}lrl@{}}
-\toprule\noalign{}
-Флаг & Аргументы & Описание \\
-\midrule\noalign{}
+\begin{longtable}{L{0.22\linewidth} L{0.68\linewidth}}
+\caption{Объекты clipping.}\\
+\toprule
+Символ & Смысл \\
+\midrule
+\endfirsthead
+\toprule
+Символ & Смысл \\
+\midrule
 \endhead
-\bottomrule\noalign{}
-\endlastfoot
-\texttt{-p} & \texttt{TYPE\ L\ D\ {[}extra{]}} & Built-in частица. Нужно
-указать ровно один источник: \texttt{-p} или \texttt{-\/-pf}. \\
-\texttt{-\/-pf} & \texttt{FILE} & Частица из файла. \\
-\texttt{-\/-rs} & \texttt{SIZE} & Масштабировать file particle до
-\texttt{Dmax\ =\ SIZE}. \\
-\texttt{-\/-k\_eq} & \texttt{X} & Масштабировать так, чтобы
-\texttt{k\_eq\ =\ 2*pi*r\_eq/lambda}. \\
-\texttt{-\/-ri} & \texttt{Re\ Im} & Комплексный показатель
-преломления. \\
-\texttt{-w} & \texttt{LAMBDA} & Длина волны в микрометрах. \\
-\texttt{-n} & \texttt{N} & Максимальная глубина внутренних
-отражений/преломлений. \\
+$P_{\mathrm{subj}}$ & Полигон текущего пучка, который проверяется на видимость. \\
+$C_m$ & Кандидат-блокер: грань или полигон, потенциально закрывающий subject. \\
+$\Pi_{\mathrm{subj}}$ & Проекция blocker на плоскость subject вдоль направления распространения. \\
+$P_{\mathrm{vis}}$ & Оставшийся видимый полигон после polygon difference. \\
+$N_c$ & Число кандидатов после быстрых фильтров. \\
+\bottomrule
 \end{longtable}
 
-Типы \texttt{-p}:
+\subsection{Агрегаты}
 
-\begin{longtable}[]{@{}rll@{}}
-\toprule\noalign{}
+В агрегате blocking candidate может принадлежать другой компоненте:
+\[
+  C_m \in
+  \bigcup_{p=1}^{N_{\mathrm{part}}}
+  \mathcal F_p,
+\]
+где $\mathcal F_p$ --- множество граней компоненты $p$.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.82\linewidth]{manual_aggregate_clipping.pdf}
+  \caption{Для агрегата затенение идет не только внутри одной компоненты, но и между разными компонентами.}
+\end{figure}
+
+\subsection{Projected-AABB prefilter}
+
+Точный polygon difference дорогой. Поэтому \code{--trace_prefilter} сначала строит bounding box проекции blocker:
+\[
+  B(C_m)=
+  [x_{\min},x_{\max}]\times[y_{\min},y_{\max}].
+\]
+Если
+\[
+  B(C_m)\cap B(P_{\mathrm{subj}})=\varnothing,
+\]
+то точный clipping не нужен. Это не меняет физику, а только уменьшает число дорогих операций.
+
+\section{Размер частицы и масштабирование}
+
+\subsection{Built-in и file particles}
+
+Частица задается либо \code{-p TYPE L D [extra]}, либо \code{--pf FILE}. Встроенные частицы создаются в коде, file particle читается из файла с геометрией. Нельзя одновременно задавать оба источника геометрии.
+
+\begin{longtable}{L{0.12\linewidth} L{0.30\linewidth} L{0.48\linewidth}}
+\caption{Основные встроенные частицы.}\\
+\toprule
 Type & Форма & Параметры \\
-\midrule\noalign{}
+\midrule
+\endfirsthead
+\toprule
+Type & Форма & Параметры \\
+\midrule
 \endhead
-\bottomrule\noalign{}
-\endlastfoot
-1 & Hexagonal column/plate & \texttt{L\ D} \\
-2 & Bullet & \texttt{L\ D} \\
-3 & Bullet rosette & \texttt{L\ D\ {[}cap{]}} \\
-4 & Droxtal & \texttt{L\ D\ extra} \\
-10 & Concave hexagonal & \texttt{L\ D\ concavity} \\
-12 & Hexagonal aggregate & \texttt{L\ D\ count} \\
-999 & Built-in aggregate & \texttt{extra} \\
+1 & Hexagonal column/plate & \code{L D}: длина и диаметр. \\
+2 & Bullet & \code{L D}. \\
+3 & Bullet rosette & \code{L D [cap]}. \\
+4 & Droxtal & \code{L D extra}. \\
+10 & Concave hexagonal & \code{L D concavity}. \\
+12 & Hexagonal aggregate & \code{L D count}. \\
+999 & Built-in aggregate/debug & Параметры зависят от генератора. \\
+\bottomrule
 \end{longtable}
 
-Масштабирование через equivalent size:
+\subsection{Equivalent radius и \texorpdfstring{$k_{\mathrm{eq}}$}{k eq}}
 
-\begin{Shaded}
-\begin{Highlighting}[]
-\NormalTok{r\_eq = (3 V / (4*pi))\^{}(1/3)}
-\NormalTok{k\_eq = 2*pi*r\_eq/lambda}
-\NormalTok{scale = (k\_eq\_target * lambda / (2*pi)) / r\_eq\_original}
-\end{Highlighting}
-\end{Shaded}
+Эквивалентный радиус по объему:
+\[
+  r_{\mathrm{eq}}=
+  \left(\frac{3V}{4\pi}\right)^{1/3}.
+\]
+Эквивалентный размерный параметр:
+\[
+  k_{\mathrm{eq}}=\frac{2\pi r_{\mathrm{eq}}}{\lambda}.
+\]
+Если файл частицы масштабируется по \code{--k_eq X}, то масштаб $s$ выбирается из
+\[
+  s =
+  \frac{k_{\mathrm{eq,target}}\lambda}{2\pi r_{\mathrm{eq,old}}}.
+\]
 
-\section{Ориентационные
-сетки}\label{ux43eux440ux438ux435ux43dux442ux430ux446ux438ux43eux43dux43dux44bux435-ux441ux435ux442ux43aux438}
-
-\begin{longtable}[]{@{}lrll@{}}
-\toprule\noalign{}
-Режим & Аргументы & Когда применять & Комментарий \\
-\midrule\noalign{}
+\begin{longtable}{L{0.18\linewidth} L{0.72\linewidth}}
+\caption{Флаги размера.}\\
+\toprule
+Флаг & Смысл \\
+\midrule
+\endfirsthead
+\toprule
+Флаг & Смысл \\
+\midrule
 \endhead
-\bottomrule\noalign{}
-\endlastfoot
-\texttt{-\/-oldauto} & \texttt{DIV} & Основной production режим & Шаг
-сетки связан с diffraction-limited angular scale; типично \texttt{2},
-\texttt{4}, \texttt{8}. \\
-\texttt{-\/-random} & \texttt{Nb\ Ng} & Ручная beta/gamma сетка &
-Использует symmetry-reduced domain. \\
-\texttt{-\/-fixed} & \texttt{BETA\ GAMMA} & Отладка одной ориентации &
-Углы в градусах. \\
-\texttt{-\/-orientfile} & \texttt{FILE} & Пользовательские ориентации &
-Одна пара beta/gamma на строку. \\
-\texttt{-\/-sobol} & \texttt{N} & Quasi-random average & Хорош для
-сходимости сканов. \\
-\texttt{-\/-sobol\_seed} & \texttt{N\ S} & Sobol/Owen с seed &
-Повторяемые проверки сходимости. \\
-\texttt{-\/-sobol\_ring} & \texttt{Nb\ Ng} & Sobol beta + uniform gamma
-rings & Гибридная сетка. \\
-\texttt{-\/-so3\_quat} & \texttt{N} & Full SO(3) quaternions & Не
-опирается на beta/gamma symmetry domain. \\
-\texttt{-\/-hammersley} & \texttt{N} & Hammersley orientations &
-Experimental/debug. \\
-\texttt{-\/-lattice} & \texttt{N} & Rank-1 lattice &
-Experimental/debug. \\
-\texttt{-\/-lattice\_z} & \texttt{N\ Z} & Rank-1 lattice с явным
-generator & Experimental/debug. \\
-\texttt{-\/-euler\_quad} & \texttt{Nb\ Ng} & Gauss по cos(beta),
-periodic gamma & Высокий порядок квадратуры. \\
-\texttt{-\/-euler\_adapt} & \texttt{Nb\ NgMax} & Adaptive gamma count &
-Меньше работы около beta poles. \\
-\texttt{-\/-montecarlo} & \texttt{N} & Псевдослучайные ориентации &
-Базовая Monte Carlo проверка. \\
-\texttt{-\/-adaptive} & \texttt{EPS} & Автоподбор числа Sobol
-orientations & Удваивает число ориентаций до цели. \\
-\texttt{-\/-auto} & \texttt{EPS} & Auto theta, phi, orientations &
-Удобный режим. \\
-\texttt{-\/-autofull} & \texttt{EPS} & Auto \texttt{n}, theta, phi,
-orientations & Более полный и дорогой поиск. \\
-\texttt{-\/-oldautofull} & \texttt{EPS} & Autofull + oldauto final grid
-& Когда нужна регулярная финальная сетка. \\
+\code{--rs SIZE} & Масштабировать file particle так, чтобы $D_{\max}=\code{SIZE}$. \\
+\code{--k_eq X} & Масштабировать так, чтобы $k_{\mathrm{eq}}=X$. Требуется \code{-w}. \\
+\code{--size_range A B N} & Посчитать диапазон размеров; обычно используется вместе с shared beam cache. \\
+\code{--multi_k X1 X2 ...} & Несколько $k_{\mathrm{eq}}$ в одном запуске, если подходит batch layout. \\
+\bottomrule
 \end{longtable}
 
-Модификаторы:
+\section{Ориентационное усреднение}
 
-\begin{longtable}[]{@{}lrl@{}}
-\toprule\noalign{}
-Флаг & Аргументы & Описание \\
-\midrule\noalign{}
+\subsection{Интеграл по ориентациям}
+
+Для случайных ориентаций финальная матрица:
+\[
+  \overline{\matr M}(\theta)
+  =
+  \frac{1}{W}
+  \sum_{i=1}^{N_{\mathrm{ori}}}
+  w_i\,\matr M_i(\theta),
+  \qquad
+  W=\sum_{i=1}^{N_{\mathrm{ori}}}w_i.
+\]
+В непрерывной форме для двух углов:
+\[
+  \overline{\matr M}(\theta)
+  =
+  \frac{1}{4\pi}
+  \int_0^{2\pi}\int_0^{\pi}
+  \matr M(\theta;\beta,\gamma)
+  \sin\beta\,\dd\beta\,\dd\gamma.
+\]
+Удобная переменная $\mu=\cos\beta$ дает
+\[
+  \sin\beta\,\dd\beta=-\dd\mu,
+\]
+поэтому равномерная сетка по $\mu$ физически естественнее, чем равномерная сетка по $\beta$.
+
+\subsection{Регулярная beta/gamma сетка}
+
+Если beta cell имеет границы $\beta_{j-1/2}$ и $\beta_{j+1/2}$, ее вес:
+\[
+  w_\beta(j)=
+  \cos\beta_{j-1/2}-\cos\beta_{j+1/2}.
+\]
+Если gamma равномерна:
+\[
+  w_\gamma=\frac{\gamma_{\max}-\gamma_{\min}}{N_\gamma}.
+\]
+Итоговый вес:
+\[
+  w_{j,l}=w_\beta(j)w_\gamma(l).
+\]
+
+\subsection{Флаг \texorpdfstring{\code{--pole}}{--pole}}
+
+На beta-полюсах $\beta=0$ и $\beta=\pi$ все $\gamma$ описывают одну и ту же физическую ориентацию:
+\[
+  \matr R_z(\gamma)\matr R_y(0)=\matr R_z(\gamma),
+\]
+а вращение вокруг направления падающего света может быть эквивалентно азимутальному повороту результата. Поэтому \code{--pole} оставляет одну gamma-точку на полюсе, но вес должен соответствовать целому gamma-интервалу:
+\[
+  w_{\mathrm{pole}}=w_\beta\,(\gamma_{\max}-\gamma_{\min}).
+\]
+Именно из-за этой специальной обработки CPU/GPU различия раньше проявлялись в точках $0^\circ$ и $180^\circ$: endpoint, pole-weight и near-singular scattering basis должны совпадать побитово по логике ветвления, иначе $M_{11}$ и слабые поляризационные элементы расходятся.
+
+\subsection{Oldauto}
+
+\code{--oldauto DIV} строит регулярную сетку из оценки дифракционного углового масштаба:
+\[
+  \Delta\theta_{\mathrm{diff}}
+  =
+  0.69\,\frac{\lambda}{D_{\max}}\frac{180}{\pi}.
+\]
+Параметр \code{DIV} делит этот шаг:
+\[
+  \Delta\theta_{\mathrm{ori}}
+  =
+  \frac{\Delta\theta_{\mathrm{diff}}}{\code{DIV}}.
+\]
+Дальше число beta/gamma выбирается так, чтобы покрыть область симметрии с этим шагом. Практические значения: \code{2}, \code{4}, \code{8}. Чем больше \code{DIV}, тем больше ориентаций и тем дороже расчет.
+
+\subsection{Sobol, Hammersley, lattice, Monte Carlo}
+
+Квазислучайные режимы заменяют регулярную сетку набором точек низкой дискрепантности. Идея:
+\[
+  \overline{\matr M}_N
+  =
+  \frac1N\sum_{i=1}^{N}
+  \matr M(T(\vect u_i)),
+\]
+где $\vect u_i\in[0,1)^d$ --- Sobol/Hammersley/lattice point, а $T$ переводит единичный куб в углы ориентации с правильной мерой.
+
+\begin{longtable}{L{0.22\linewidth} L{0.68\linewidth}}
+\caption{Ориентационные методы.}\\
+\toprule
+Флаг & Метод \\
+\midrule
+\endfirsthead
+\toprule
+Флаг & Метод \\
+\midrule
 \endhead
-\bottomrule\noalign{}
-\endlastfoot
-\texttt{-\/-ring\_points} & \texttt{N} & Точек на diffraction ring для
-oldauto estimates. \\
-\texttt{-\/-mirror\_gamma} & none & Половина gamma domain +
-зеркалирование Mueller. \\
-\texttt{-\/-sym} & \texttt{Sb\ Sg} & Override symmetry: beta range
-\texttt{pi/Sb}, gamma range \texttt{2*pi/Sg}. \\
-\texttt{-\/-b} & \texttt{B1\ B2} & Диапазон beta для
-\texttt{-\/-random}, градусы. \\
-\texttt{-\/-g} & \texttt{G1\ G2} & Диапазон gamma для
-\texttt{-\/-random}, градусы. \\
-\texttt{-\/-maxorient} & \texttt{N} & Верхняя граница adaptive
-orientations. \\
-\texttt{-\/-chunk} & \texttt{N} & Chunk size по ориентациям/gamma. \\
-\texttt{-\/-coh\_orient} & none & Legacy
-coherent-across-orientations. \\
-\texttt{-\/-pole} & none & Одна gamma на точных beta poles. \\
-\texttt{-\/-owen\_avg} & \texttt{K} & Усреднение \texttt{K} Owen seeds в
-\texttt{-\/-autofull}. \\
-\texttt{-\/-owen\_seeds} & \texttt{S...} & Явный список Owen seeds. \\
+\code{--fixed B G} & Одна ориентация beta/gamma, удобно для отладки CPU/GPU. \\
+\code{--orientfile FILE} & Ориентации из файла. \\
+\code{--beta_grid NB NG} & Явная регулярная beta/gamma сетка. \\
+\code{--oldauto DIV} & Production-сетка из дифракционного масштаба. \\
+\code{--sobol N} & Sobol quasi-random orientations. \\
+\code{--sobol_seed N SEED} & Sobol с Owen scrambling seed. \\
+\code{--so3_quat N} & Hammersley/SO(3) через кватернионы. \\
+\code{--hammersley N} & Hammersley orientation set. \\
+\code{--lattice N} & Rank-1 lattice orientation set. \\
+\code{--montecarlo N} & Псевдослучайные ориентации; ошибка обычно падает как $N^{-1/2}$. \\
+\bottomrule
 \end{longtable}
 
-\section{Сетка
-рассеяния}\label{ux441ux435ux442ux43aux430-ux440ux430ux441ux441ux435ux44fux43dux438ux44f}
+\subsection{Adaptive и формула выбора числа ориентаций}
 
-\begin{longtable}[]{@{}lrl@{}}
-\toprule\noalign{}
-Флаг & Аргументы & Описание \\
-\midrule\noalign{}
+Для автоматического выбора числа ориентаций используется идея сравнения двух последовательных приближений:
+\[
+  \varepsilon_N
+  =
+  \max_{r\in\mathcal R}
+  \frac{
+    \norm{\matr M_N(r)-\matr M_{N/2}(r)}_\infty
+  }{
+    |M_{11,N}(r)|+\varepsilon_0
+  }.
+\]
+Расчет продолжается, пока
+\[
+  \varepsilon_N\le \code{EPS}
+  \quad\text{или}\quad
+  N=\code{--maxorient}.
+\]
+Здесь $\mathcal R$ --- набор контрольных theta rows, $\varepsilon_0$ --- малое число для защиты от деления на ноль. Это не строгая математическая гарантия, а практический критерий сходимости наблюдаемых Mueller-элементов.
+
+\subsection{Auto, autofull, oldautofull}
+
+\code{--auto EPS} подбирает theta grid, phi grid и число ориентаций. \code{--autofull EPS} дополнительно может подбирать глубину трассировки \code{-n}. \code{--oldautofull EPS} использует автоматический поиск, но финальное усреднение делает regular oldauto-сеткой. Практически:
+\[
+  \text{стоимость}\approx
+  N_{\mathrm{ori}}\,
+  N_{\theta}\,
+  N_{\phi}\,
+  N_b.
+\]
+Поэтому автоматический режим может быть сильно дороже одной ручной production-сетки, но он полезен для выбора параметров.
+
+\section{Scattering grid}
+
+\subsection{Theta rows и solid angle}
+
+Uniform theta grid с \code{--grid T0 T1 NTH NPHI} печатает $N_{\theta}+1$ строк. Вес строки:
+\[
+  \Delta\Omega_j=
+  2\pi\left[
+  \cos\theta_{j,\mathrm{left}}
+  -
+  \cos\theta_{j,\mathrm{right}}
+  \right].
+\]
+Для полного диапазона $0^\circ\ldots180^\circ$:
+\[
+  \sum_j\Delta\Omega_j=4\pi.
+\]
+
+\subsection{Azimuthal grid}
+
+Для полного output используется $N_\phi$ азимутальных точек. Для случайно ориентированных частиц часто печатается результат, интегрированный по $\phi$, но внутри PO и GPU kernels $\phi$ остается отдельным измерением работы:
+\[
+  N_{\mathrm{work}}\sim
+  N_b\,N_\theta\,N_\phi\,N_{\mathrm{ori}}.
+\]
+
+\subsection{Auto theta grid}
+
+Forward peak требует более мелкого шага, чем боковые и задние углы. Автоматическая theta-сетка использует оценку ширины пика:
+\[
+  \theta_{\mathrm{peak}}\approx\frac{180^\circ}{x},
+  \qquad
+  x=\frac{2\pi r}{\lambda}.
+\]
+Затем строятся зоны: тонкая near-forward сетка, переходная сетка, средняя область и более грубая backscattering область. Это уменьшает число строк без потери переднего пика.
+
+\section{CPU-реализация и AVX}
+
+\subsection{Что параллелится на CPU}
+
+CPU использует OpenMP/MPI по ориентациям, theta rows, beams и size batches. Основные дорогие операции:
+\[
+  \Phi = k(A_qx+B_qy),\qquad
+  \exp(\ii\Phi)=\cos\Phi+\ii\sin\Phi,
+\]
+edge-сумма по ребрам и накопление Jones/Mueller.
+
+\subsection{AVX-512 packing}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.92\linewidth]{manual_avx512_packing.pdf}
+  \caption{AVX-512 упаковывает восемь double фаз в один vector register; AVX2 упаковывает четыре.}
+\end{figure}
+
+Для AVX-512 double:
+\[
+  \vect\Phi =
+  (\Phi_0,\Phi_1,\ldots,\Phi_7),
+\]
+\[
+  \vect C=\cos\vect\Phi,\qquad
+  \vect S=\sin\vect\Phi.
+\]
+Одна vector-инструкция или vectorized polynomial path обрабатывает сразу восемь detector directions или size values. Для AVX2:
+\[
+  \vect\Phi_{\mathrm{AVX2}}=(\Phi_0,\Phi_1,\Phi_2,\Phi_3).
+\]
+
+\subsection{Почему важны флаги компиляции}
+
+Если компилятор не имеет права генерировать AVX-512, быстрый путь не включится. Для EPYC:
+\begin{longtable}{L{0.25\linewidth} L{0.36\linewidth} L{0.29\linewidth}}
+\caption{Рекомендуемые CPU-флаги.}\\
+\toprule
+Платформа & \code{ARCH_FLAGS} & Комментарий \\
+\midrule
+\endfirsthead
+\toprule
+Платформа & \code{ARCH_FLAGS} & Комментарий \\
+\midrule
 \endhead
-\bottomrule\noalign{}
-\endlastfoot
-\texttt{-\/-grid} & \texttt{T1\ T2\ Nphi\ Nth} & Uniform theta range от
-\texttt{T1} до \texttt{T2}; выводит \texttt{Nth\ +\ 1} theta строк. \\
-\texttt{-\/-grid} & \texttt{R\ Nphi\ Nth} & Backscatter cone радиуса
-\texttt{R} градусов. \\
-\texttt{-\/-tgrid} & \texttt{FILE} & Неравномерная theta сетка, градусы,
-одна строка на theta. \\
-\texttt{-\/-auto\_tgrid} & \texttt{EPS} & Adaptive theta grid через
-bisection. \\
-\texttt{-\/-auto\_phi} & none & Автоматический выбор \texttt{Nphi}. \\
-\texttt{-\/-nphi} & \texttt{N} & Override phi count, максимальный
-приоритет. \\
-\texttt{-\/-filter} & \texttt{DEG} & Ограничить output backscatter
-cone. \\
-\texttt{-\/-point} & none & Legacy backscatter point mode. \\
+EPYC Zen2 & \code{-march=znver2 -mtune=znver2} & AVX2/FMA. \\
+EPYC Zen3 & \code{-march=znver3 -mtune=znver3} & AVX2/FMA. \\
+EPYC Zen4 & \code{-march=znver4 -mtune=znver4} & AVX-512 при поддержке GCC/Clang. \\
+EPYC Zen5 & \code{-march=znver5 -mtune=znver5} & Лучший вариант для новых компиляторов. \\
+Portable AVX2 & \code{-O3 -mavx2 -mfma} & Для переносимого бинарника под AVX2. \\
+Explicit AVX-512 & \code{-O3 -mavx512f -mavx512dq -mavx512cd -mavx512bw -mavx512vl} & Только если \code{lscpu} показывает эти флаги. \\
+\bottomrule
 \end{longtable}
 
-Приоритет:
+Флага \code{AVX12} у GCC/Clang нет. Если имеется в виду EPYC Zen5 с AVX-512, используйте \code{-march=znver5}; если компилятор старый, используйте явные \code{-mavx512*} после проверки \code{lscpu}.
 
-\begin{longtable}[]{@{}ll@{}}
-\toprule\noalign{}
-Величина & Приоритет \\
-\midrule\noalign{}
+\section{GPU-реализация}
+
+\subsection{Что ускоряет GPU}
+
+GPU быстрее, потому что PO-дифракция почти идеально раскладывается на независимые работы:
+\[
+  (b,\theta,\phi,o)\mapsto \matr J_{b,o}(\theta,\phi),
+\]
+где $b$ --- beam, $o$ --- orientation. До момента когерентной суммы каждый вклад независим.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.92\linewidth]{manual_gpu_atomics.pdf}
+  \caption{CUDA paths: atomic Jones accumulation, no-atomic ownership и fused diffraction-to-Mueller.}
+\end{figure}
+
+\begin{longtable}{L{0.23\linewidth} L{0.30\linewidth} L{0.37\linewidth}}
+\caption{GPU kernels и смысл.}\\
+\toprule
+Путь & Что делает thread & Когда выгодно \\
+\midrule
+\endfirsthead
+\toprule
+Путь & Что делает thread & Когда выгодно \\
+\midrule
 \endhead
-\bottomrule\noalign{}
-\endlastfoot
-Theta & \texttt{-\/-tgrid} \textgreater{} \texttt{-\/-grid}
-\textgreater{} \texttt{-\/-auto\_tgrid} \textgreater{} \texttt{-\/-auto}
-\textgreater{} default \\
-Phi & \texttt{-\/-nphi} \textgreater{} \texttt{-\/-grid} \textgreater{}
-\texttt{-\/-auto\_phi} \textgreater{} \texttt{-\/-auto} \textgreater{}
-default \\
+Atomic Jones & Считает вклад beam/grid и делает \code{atomicAdd} в complex Jones buffer. & General fallback и diagnostic modes. \\
+No-atomic grid & Thread владеет output cell и сам проходит по beams. & Когда layout позволяет избежать конкуренции writers. \\
+Fused Mueller & Thread считает Jones локально и сразу переводит/добавляет Mueller. & Production full-only output. \\
+Staged orientation & Сначала per-orientation Mueller, потом reduction. & Большие batches, меньше contention. \\
+Multi-\code{k_eq} fused & Несколько близких размеров из общего beam batch. & Size scans, если геометрия и сетка совместимы. \\
+\bottomrule
 \end{longtable}
 
-\section{GPU и multi-GPU}\label{gpu-ux438-multi-gpu}
+\subsection{Atomic accumulation}
 
-\subsection{За счет чего GPU
-быстрее}\label{ux437ux430-ux441ux447ux435ux442-ux447ux435ux433ux43e-gpu-ux431ux44bux441ux442ux440ux435ux435}
+Jones-матрица имеет четыре комплексных элемента:
+\[
+  \matr J=
+  \begin{pmatrix}
+  J_{00}&J_{01}\\
+  J_{10}&J_{11}
+  \end{pmatrix},
+  \qquad
+  J_{pq}=x_{pq}+\ii y_{pq}.
+\]
+Atomic path делает восемь атомарных сложений:
+\[
+  \operatorname{atomicAdd}(x_{pq}),\qquad
+  \operatorname{atomicAdd}(y_{pq}),\qquad
+  p,q\in\{0,1\}.
+\]
+Это корректно для когерентной суммы, но порядок сложения недетерминирован. Поэтому последние биты могут отличаться от CPU, особенно в \code{float} и в точках near-singular.
 
-Самая дорогая часть PO - многократный расчет дифракционного
-edge-интеграла для большого числа направлений, пучков и ориентаций. CPU
-готовит пучки, а GPU параллелит дифракцию и, в быстрых режимах, сразу
-накопление Mueller.
+\subsection{Почему fused path быстрее}
 
-\begin{longtable}[]{@{}llll@{}}
-\toprule\noalign{}
-Операция & CPU path & GPU path & Гранулярность \\
-\midrule\noalign{}
-\endhead
-\bottomrule\noalign{}
-\endlastfoot
-Трассировка через грани & OpenMP по ориентациям/gamma blocks & В
-основном CPU; \texttt{-\/-gpu\_trace} только prefilter кандидатов &
-Orientation/chunk \\
-Packing пучков & CPU & CPU готовит \texttt{GpuBeam} buffers и копирует
-на device & Beam records \\
-Edge diffraction & CPU loops & CUDA kernels & Beam x theta x phi x
-orientation \\
-Когерентная Jones сумма & CPU complex arrays & Atomic или no-atomic
-device kernels & Grid cell/orientation \\
-Jones -\textgreater{} Mueller & CPU после Jones sum &
-\texttt{mueller\_batch\_kernel} или fused kernel & Grid cell \\
-Multi-\texttt{k\_eq} & Повтор по размерам & Optional fused
-multi-\texttt{k\_eq} CUDA pass & Size x beam x grid \\
-FFT phi & Direct phi grid & cuFFT low-phi pass + zero-padding &
-Theta/orientation batches \\
-\end{longtable}
+Fused kernel избегает записи полного Jones buffer в глобальную память:
+\[
+  \sum_b\matr J_b
+  \;\longrightarrow\;
+  \mathcal M\!\left(\sum_b\matr J_b\right)
+  \;\longrightarrow\;
+  \text{global Mueller}.
+\]
+Меньше global memory traffic, меньше atomics, выше arithmetic intensity. Это особенно важно при большом $N_b$ и большом $N_\phi$.
 
-Масштаб работы:
+\subsection{Multi-GPU}
 
-\begin{Shaded}
-\begin{Highlighting}[]
-\NormalTok{Nwork \textasciitilde{}= Norient * Nbeams\_per\_orientation * Ntheta * Nphi}
-\end{Highlighting}
-\end{Shaded}
+Multi-GPU делит работу по независимым блокам: orientations, theta chunks или size batches. Если устройства $g=1,\ldots,G$ получают веса $W_g$, идеальный speedup:
+\[
+  T_G\approx
+  \frac{T_1}{G}
+  +T_{\mathrm{copy}}+T_{\mathrm{reduce}}.
+\]
+На практике ограничивают PCIe/NVLink transfers, разная скорость GPU, размер batches и необходимость финальной редукции Mueller.
 
-Эти вклады почти независимы до момента когерентной суммы Jones, поэтому
-хорошо ложатся на CUDA.
-
-\subsection{Atomic и no-atomic
-режимы}\label{atomic-ux438-no-atomic-ux440ux435ux436ux438ux43cux44b}
-
-\begin{longtable}[]{@{}llll@{}}
-\toprule\noalign{}
-Режим & Kernels & Как копится результат & Когда используется \\
-\midrule\noalign{}
-\endhead
-\bottomrule\noalign{}
-\endlastfoot
-Atomic Jones & \texttt{diffraction\_kernel} & Thread считает вклад
-beam/grid и делает \texttt{atomicAdd} в complex Jones buffer. Потом
-\texttt{mueller\_batch\_kernel} делает Mueller. & General fallback,
-включая часть diagnostic/no-shadow режимов. \\
-No-atomic grid & \texttt{diffraction\_grid\_kernel} & Thread владеет
-output cell и сам проходит по пучкам, без конкуренции writers. &
-Full-only output, когда подходит layout. \\
-Fused Mueller & \texttt{diffraction\_grid\_mueller\_kernel},
-\texttt{*\_full\_kernel}, \texttt{*\_full8\_kernel},
-\texttt{*\_mixed8\_kernel} & Kernel считает Jones локально и сразу
-переводит/добавляет Mueller. & Быстрый production путь. \\
-Staged orientation Mueller &
-\texttt{diffraction\_grid\_mueller\_orient\_kernel} +
-\texttt{reduce\_mueller\_orient\_kernel} & Сначала per-orientation
-Mueller, затем редукция. & Большие batches, меньше contention. \\
-Multi-\texttt{k\_eq} fused &
-\texttt{diffraction\_grid\_mueller\_multik\_kernel} & Несколько близких
-\texttt{k\_eq} из одного packed beam batch. & Shared-batch scans. \\
-\end{longtable}
-
-В atomic path атомики идут по real/imag компонентам 2x2 Jones:
-
-\begin{Shaded}
-\begin{Highlighting}[]
-\NormalTok{J00.re, J00.im, J01.re, J01.im,}
-\NormalTok{J10.re, J10.im, J11.re, J11.im}
-\end{Highlighting}
-\end{Shaded}
-
-Для \texttt{\_noshadow} тот же набор atomics пишется во второй Jones
-buffer. Это корректно для когерентной PO суммы, но может быть узким
-местом, если много пучков пишут в одну detector cell.
-
-Управление:
-
-\begin{longtable}[]{@{}ll@{}}
-\toprule\noalign{}
-Переменная & Действие \\
-\midrule\noalign{}
-\endhead
-\bottomrule\noalign{}
-\endlastfoot
-\texttt{MBS\_GPU\_NO\_ATOMICS=1} & Форсировать no-atomic путь, если
-поддерживается. \\
-\texttt{MBS\_GPU\_NO\_ATOMICS=0} & Форсировать atomic путь для
-сравнения/debug. \\
-\texttt{MBS\_GPU\_FUSED\_MUELLER=1} & Предпочитать fused
-diffraction-to-Mueller kernels. \\
-\texttt{MBS\_GPU\_STAGE\_MUELLER=1} & Включить staged per-orientation
-Mueller reduction. \\
-\texttt{MBS\_GPU\_TIMING=1} & Печатать breakdown
-count/pack/copy/kernels/d2h/add. \\
-\texttt{MBS\_GPU\_BLOCK=N} & Override CUDA block size. \\
-\end{longtable}
-
-\subsection{Multi-size и multi-GPU}\label{multi-size-ux438-multi-gpu}
-
-\begin{longtable}[]{@{}lrl@{}}
-\toprule\noalign{}
-Флаг & Аргументы & Описание \\
-\midrule\noalign{}
-\endhead
-\bottomrule\noalign{}
-\endlastfoot
-\texttt{-\/-multigrid} & \texttt{Dmin\ Dmax\ N} & Log-spaced scan по
-\texttt{Dmax}. \\
-\texttt{-\/-multikeq} & \texttt{Kmin\ Kmax\ N} & Log-spaced scan по
-\texttt{k\_eq}. \\
-\texttt{-\/-multikeq\_list} & \texttt{FILE} & Точный список
-\texttt{k\_eq}, один на строку. \\
-\texttt{-\/-multigrid\_parallel} & \texttt{N} & Запуск scan points как
-child processes; \texttt{0} значит auto. \\
-\texttt{-\/-multigrid\_threads} & \texttt{N} & OpenMP threads на child
-process. \\
-\texttt{-\/-gpu\_devices} & \texttt{LIST} & Список CUDA devices,
-например \texttt{0,1,2,3,4}. \\
-\texttt{-\/-multikeq\_shared\_batches} & none & Batch близких
-\texttt{k\_eq} на GPU child с reuse tracing от максимального
-\texttt{k\_eq}. \\
-\texttt{-\/-multikeq\_batch\_ratio} & \texttt{R} & Максимальное
-\texttt{kmax/kmin} внутри shared batch; default \texttt{1.05}. \\
-\end{longtable}
-
-Exact multi-GPU:
-
-\begin{Shaded}
-\begin{Highlighting}[]
-\ExtensionTok{gpu/bin/mbs\_po\_gpu\_float\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}{-}pf}\NormalTok{ particle.dat }\DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}{-}multikeq\_list}\NormalTok{ keq.txt }\AttributeTok{{-}{-}ri}\NormalTok{ 1.6 0.002 }\AttributeTok{{-}w}\NormalTok{ 1.064 }\AttributeTok{{-}n}\NormalTok{ 12 }\DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}fft} \AttributeTok{{-}{-}close} \DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}{-}multigrid\_parallel}\NormalTok{ 0 }\AttributeTok{{-}{-}multigrid\_threads}\NormalTok{ 16 }\AttributeTok{{-}{-}gpu\_devices}\NormalTok{ 0,1,2,3,4 }\DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}o}\NormalTok{ scan\_exact}
-\end{Highlighting}
-\end{Shaded}
-
-Shared-batch:
-
-\begin{Shaded}
-\begin{Highlighting}[]
-\ExtensionTok{gpu/bin/mbs\_po\_gpu\_float\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}{-}pf}\NormalTok{ particle.dat }\DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}{-}multikeq\_list}\NormalTok{ keq.txt }\AttributeTok{{-}{-}ri}\NormalTok{ 1.6 0.002 }\AttributeTok{{-}w}\NormalTok{ 1.064 }\AttributeTok{{-}n}\NormalTok{ 12 }\DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}{-}oldauto}\NormalTok{ 2 }\AttributeTok{{-}{-}grid}\NormalTok{ 0 180 600 180 }\AttributeTok{{-}{-}fft} \AttributeTok{{-}{-}close} \DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}{-}multigrid\_parallel}\NormalTok{ 0 }\AttributeTok{{-}{-}multigrid\_threads}\NormalTok{ 16 }\AttributeTok{{-}{-}gpu\_devices}\NormalTok{ 0,1,2,3,4 }\DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}{-}multikeq\_shared\_batches} \AttributeTok{{-}{-}multikeq\_batch\_ratio}\NormalTok{ 1.05 }\DataTypeTok{\textbackslash{}}
-    \AttributeTok{{-}o}\NormalTok{ scan\_shared}
-\end{Highlighting}
-\end{Shaded}
-
-Fused multi-\texttt{k\_eq}:
-
-\begin{Shaded}
-\begin{Highlighting}[]
-\VariableTok{MBS\_GPU\_MULTI\_K\_FULL}\OperatorTok{=}\NormalTok{1 }\ExtensionTok{gpu/bin/mbs\_po\_gpu\_float\_fast}\NormalTok{ ...}
-\end{Highlighting}
-\end{Shaded}
-
-\section{Все флаги}\label{ux432ux441ux435-ux444ux43bux430ux433ux438}
-
-\subsection{Метод, частица, физические
-параметры}\label{ux43cux435ux442ux43eux434-ux447ux430ux441ux442ux438ux446ux430-ux444ux438ux437ux438ux447ux435ux441ux43aux438ux435-ux43fux430ux440ux430ux43cux435ux442ux440ux44b}
-
-\begin{longtable}[]{@{}lrl@{}}
-\toprule\noalign{}
-Флаг & Аргументы & Описание \\
-\midrule\noalign{}
-\endhead
-\bottomrule\noalign{}
-\endlastfoot
-\texttt{-\/-po} & none & Physical Optics. \\
-\texttt{-\/-go} & none & Geometrical Optics. \\
-\texttt{-p} & \texttt{TYPE\ L\ D\ {[}extra{]}} & Built-in particle. \\
-\texttt{-\/-pf} & \texttt{FILE} & Particle from file. \\
-\texttt{-\/-rs} & \texttt{SIZE} & Resize file particle by Dmax. \\
-\texttt{-\/-k\_eq} & \texttt{X} & Resize by equivalent size
-parameter. \\
-\texttt{-\/-ri} & \texttt{Re\ Im} & Refractive index. \\
-\texttt{-w} & \texttt{LAMBDA} & Wavelength, micrometers. \\
-\texttt{-n} & \texttt{N} & Max internal reflections/refractions. \\
-\texttt{-\/-abs} & none & Enable absorption accounting. \\
-\texttt{-\/-abs\_points} & \texttt{N} или \texttt{all} & Absorption
-samples. \\
-\end{longtable}
-
-\subsection{Ориентации}\label{ux43eux440ux438ux435ux43dux442ux430ux446ux438ux438}
-
-\begin{longtable}[]{@{}lrl@{}}
-\toprule\noalign{}
-Флаг & Аргументы & Описание \\
-\midrule\noalign{}
-\endhead
-\bottomrule\noalign{}
-\endlastfoot
-\texttt{-\/-fixed} & \texttt{BETA\ GAMMA} & Одна ориентация в
-градусах. \\
-\texttt{-\/-random} & \texttt{Nb\ Ng} & Regular beta/gamma grid. \\
-\texttt{-\/-sobol} & \texttt{N} & Sobol orientations. \\
-\texttt{-\/-so3\_quat} & \texttt{N} & Full SO(3) quaternions. \\
-\texttt{-\/-sobol\_seed} & \texttt{N\ S} & Sobol with Owen seed. \\
-\texttt{-\/-sobol\_ring} & \texttt{Nb\ Ng} & Sobol beta x gamma
-rings. \\
-\texttt{-\/-hammersley} & \texttt{N} & Hammersley set. \\
-\texttt{-\/-lattice} & \texttt{N} & Rank-1 lattice. \\
-\texttt{-\/-lattice\_z} & \texttt{N\ Z} & Rank-1 lattice with
-generator. \\
-\texttt{-\/-euler\_quad} & \texttt{Nb\ Ng} & Euler/Gauss quadrature. \\
-\texttt{-\/-euler\_adapt} & \texttt{Nb\ NgMax} & Adaptive gamma
-count. \\
-\texttt{-\/-montecarlo} & \texttt{N} & Monte Carlo orientations. \\
-\texttt{-\/-adaptive} & \texttt{EPS} & Adaptive orientation
-convergence. \\
-\texttt{-\/-auto} & \texttt{EPS} & Auto theta, phi, orientation
-count. \\
-\texttt{-\/-autofull} & \texttt{EPS} & Auto \texttt{n}, theta, phi,
-orientation count. \\
-\texttt{-\/-oldautofull} & \texttt{EPS} & Autofull + oldauto final
-grid. \\
-\texttt{-\/-owen\_avg} & \texttt{K} & Average final Owen seeds. \\
-\texttt{-\/-owen\_seeds} & \texttt{S...} & Explicit Owen seeds. \\
-\texttt{-\/-oldauto} & \texttt{DIV} & Physics-based regular grid. \\
-\texttt{-\/-ring\_points} & \texttt{N} & Points per diffraction ring
-estimate. \\
-\texttt{-\/-mirror\_gamma} & none & Mirror half gamma domain. \\
-\texttt{-\/-orientfile} & \texttt{FILE} & Load beta/gamma from file. \\
-\texttt{-\/-b} & \texttt{B1\ B2} & Beta range for
-\texttt{-\/-random}. \\
-\texttt{-\/-g} & \texttt{G1\ G2} & Gamma range for
-\texttt{-\/-random}. \\
-\texttt{-\/-maxorient} & \texttt{N} & Max adaptive orientations. \\
-\texttt{-\/-chunk} & \texttt{N} & Orientation/gamma chunk size. \\
-\texttt{-\/-coh\_orient} & none & Legacy coherent orientation mode. \\
-\texttt{-\/-pole} & none & Exact beta-pole gamma shortcut. \\
-\texttt{-\/-sym} & \texttt{Sb\ Sg} & Override symmetry. \\
-\end{longtable}
-
-\subsection{Сетка, ускорение,
-cutoffs}\label{ux441ux435ux442ux43aux430-ux443ux441ux43aux43eux440ux435ux43dux438ux435-cutoffs}
-
-\begin{longtable}[]{@{}lrl@{}}
-\toprule\noalign{}
-Флаг & Аргументы & Описание \\
-\midrule\noalign{}
-\endhead
-\bottomrule\noalign{}
-\endlastfoot
-\texttt{-\/-grid} & \texttt{T1\ T2\ Nphi\ Nth} & Uniform theta range. \\
-\texttt{-\/-grid} & \texttt{R\ Nphi\ Nth} & Backscatter cone. \\
-\texttt{-\/-tgrid} & \texttt{FILE} & Non-uniform theta grid. \\
-\texttt{-\/-auto\_tgrid} & \texttt{EPS} & Adaptive theta grid. \\
-\texttt{-\/-auto\_phi} & none & Auto phi count. \\
-\texttt{-\/-nphi} & \texttt{N} & Override phi count. \\
-\texttt{-\/-threads} & \texttt{N} & OpenMP worker threads. \\
-\texttt{-\/-gpu} & none & CUDA backend. \\
-\texttt{-\/-cpu} & none & Force CPU backend in GPU build. \\
-\texttt{-\/-fft} & none & cuFFT phi interpolation. \\
-\texttt{-\/-beam\_cutoff} & \texttt{EPS} & Set beam \texttt{J} and area
-cutoffs. \\
-\texttt{-\/-beam\_cutoff\_j} & \texttt{EPS} & Skip by relative ` \\
-\texttt{-\/-beam\_cutoff\_area} & \texttt{EPS} & Skip by relative
-area. \\
-\texttt{-\/-beam\_cutoff\_importance} & \texttt{EPS} & Skip by relative
-` \\
-\texttt{-\/-trace\_cutoff} & \texttt{EPS} & Set trace pruning
-cutoffs. \\
-\texttt{-\/-trace\_cutoff\_j} & \texttt{EPS} & Trace prune by ` \\
-\texttt{-\/-trace\_cutoff\_area} & \texttt{EPS} & Trace prune by
-area. \\
-\texttt{-\/-trace\_cutoff\_importance} & \texttt{EPS} & Trace prune by
-` \\
-\texttt{-\/-trace\_max\_beams} & \texttt{N} & Abort orientation after
-\texttt{N} beam nodes; \texttt{0} disables. \\
-\texttt{-\/-gpu\_trace} & none & Experimental CUDA candidate
-prefilter. \\
-\texttt{-\/-trace\_prefilter} & none & Enable CPU projected-AABB
-prefilter. \\
-\texttt{-\/-no\_trace\_prefilter} & none & Disable CPU prefilter. \\
-\texttt{-\/-trace\_prefilter\_margin} & \texttt{M} & AABB prefilter
-margin. \\
-\texttt{-\/-trace\_prefilter\_stats} & none & Print prefilter
-counters. \\
-\texttt{-r} & \texttt{RATIO} & Beam area restriction ratio. \\
-\end{longtable}
-
-\subsection{Output, diagnostics,
-legacy}\label{output-diagnostics-legacy}
-
-\begin{longtable}[]{@{}lrl@{}}
-\toprule\noalign{}
-Флаг & Аргументы & Описание \\
-\midrule\noalign{}
-\endhead
-\bottomrule\noalign{}
-\endlastfoot
-\texttt{-o} & \texttt{NAME} & Output path/name. \\
-\texttt{-\/-close} & none & Exit after computation. \\
-\texttt{-\/-log} & \texttt{SEC} & Progress log interval. \\
-\texttt{-\/-checkpoint} & none & Save/resume long runs. \\
-\texttt{-\/-save\_betas} & none & Save per-beta Mueller files. \\
-\texttt{-\/-full\_only} & none & Write only full Mueller output;
-default. \\
-\texttt{-\/-noshadow\_output} & none & Also write
-\texttt{\_noshadow}. \\
-\texttt{-\/-shadow} & none & Legacy flag, currently no effect. \\
-\texttt{-\/-shadow\_off} & none & Disable shadow beam. \\
-\texttt{-\/-incoh} & none & Incoherent per-beam Mueller sum. \\
-\texttt{-\/-jones} & none & Write Jones matrices where supported. \\
-\texttt{-\/-karczewski} & none & Use Karczewski polarization matrix. \\
-\texttt{-\/-legacy\_sign} & none & Old Fresnel sign convention. \\
-\texttt{-\/-ot\_phase\_avg} & none & Average OT extinction over phase
-period. \\
-\texttt{-\/-ot\_phase\_shift} & \texttt{F} & Diagnostic OT phase
-shift. \\
-\texttt{-\/-ot\_ping} & \texttt{D} & Legacy OT phase rotation. \\
-\texttt{-\/-filter} & \texttt{DEG} & Restrict output to backscatter
-cone. \\
-\texttt{-\/-point} & none & Legacy backscatter point mode. \\
-\texttt{-\/-tr} & \texttt{FILE} & Load trajectory file. \\
-\texttt{-\/-all} & none & Calculate all loaded trajectories. \\
-\texttt{-\/-gr} & none & Output trajectory groups. \\
-\texttt{-\/-forced\_convex} & none & Force convex processing. \\
-\texttt{-\/-forced\_nonconvex} & none & Force nonconvex processing. \\
-\texttt{-\/-help}, \texttt{-h} & none & Short help. \\
-\texttt{-\/-help-debug} & none & Full debug/experimental help. \\
-\end{longtable}
-
-\section{Переменные
-окружения}\label{ux43fux435ux440ux435ux43cux435ux43dux43dux44bux435-ux43eux43aux440ux443ux436ux435ux43dux438ux44f}
-
-\begin{longtable}[]{@{}ll@{}}
-\toprule\noalign{}
+\begin{longtable}{L{0.30\linewidth} L{0.60\linewidth}}
+\caption{GPU environment variables.}\\
+\toprule
 Переменная & Смысл \\
-\midrule\noalign{}
+\midrule
+\endfirsthead
+\toprule
+Переменная & Смысл \\
+\midrule
 \endhead
-\bottomrule\noalign{}
-\endlastfoot
-\texttt{CUDA\_VISIBLE\_DEVICES} & Стандартный выбор видимых CUDA
-devices. \\
-\texttt{OMP\_NUM\_THREADS} & OpenMP threads по умолчанию. \\
-\texttt{MBS\_GPU\_ALLOW\_FALLBACK=1} & Разрешить старый fallback
-GPU-\textgreater CPU после CUDA ошибки. Только debug. \\
-\texttt{MBS\_GPU\_MEM\_FRACTION} & Доля свободной GPU памяти для
-buffers. \\
-\texttt{MBS\_GPU\_NO\_ATOMICS} & Выбор no-atomic (\texttt{1}) или atomic
-(\texttt{0}) path. \\
-\texttt{MBS\_GPU\_FUSED\_MUELLER} & Fused diffraction-to-Mueller
-kernels. \\
-\texttt{MBS\_GPU\_STAGE\_MUELLER} & Staged per-orientation Mueller
-reduction. \\
-\texttt{MBS\_GPU\_NO\_VERTEX\_CACHE} & Отключить cached/packed vertex
-path. \\
-\texttt{MBS\_GPU\_TIMING} & Печатать CUDA timing breakdown. \\
-\texttt{MBS\_GPU\_BLOCK} & Override CUDA block size. \\
-\texttt{MBS\_HOST\_MEM\_FRACTION} & Доля host RAM для oldauto/random
-chunking. \\
-\texttt{MBS\_HOST\_MEM\_RESERVE\_MB} & Резерв host RAM в MB. \\
-\texttt{MBS\_HOST\_MEM\_BUDGET\_MB} & Жесткий host RAM budget. \\
-\texttt{MBS\_FFT\_PHI\_FACTOR} & Override reduced phi factor для FFT. \\
-\texttt{MBS\_GPU\_MULTI=0} & Отключить automatic multi-orientation GPU
-batching. \\
-\texttt{MBS\_GPU\_MULTI\_MAX=N} & Ограничить GPU multi batching. \\
-\texttt{MBS\_GPU\_MULTI\_K\_FULL=1} & Experimental fused
-multi-\texttt{k\_eq} diffraction. \\
-\texttt{MBS\_SHARED\_BETA\_GROUP=N} & Override beta grouping для shared
-batch. \\
-\texttt{MBS\_SHARED\_ORIENT\_CHUNK=N} & Override orientation chunk для
-shared batch. \\
-\texttt{MBS\_PARALLEL\_MEM\_FRACTION} & Memory fraction scheduler для
-parallel multi-size. \\
-\texttt{MBS\_PARALLEL\_SHARED\_KEQ=1} & Environment equivalent для
-shared \texttt{k\_eq} batching. \\
-\texttt{MBS\_PARALLEL\_KEQ\_BATCH\_RATIO=R} & Default batch ratio для
-shared \texttt{k\_eq}. \\
+\code{CUDA_VISIBLE_DEVICES=0,1} & Выбрать доступные GPU. \\
+\code{MBS_GPU_FUSED_MUELLER=1} & Предпочитать fused diffraction-to-Mueller kernels. \\
+\code{MBS_GPU_STAGE_MUELLER=1} & Включить staged per-orientation Mueller reduction. \\
+\code{MBS_GPU_MULTI=0} & Отключить automatic multi-orientation GPU batching. \\
+\code{MBS_GPU_MULTI_K_FULL=1} & Experimental fused multi-\code{k_eq} diffraction. \\
+\code{MBS_SHARED_ORIENT_CHUNK=N} & Переопределить размер orientation chunk. \\
+\bottomrule
 \end{longtable}
 
-\section{Выходные
-файлы}\label{ux432ux44bux445ux43eux434ux43dux44bux435-ux444ux430ux439ux43bux44b}
+\section{Сборка}
 
-Основной \texttt{.dat}:
+\subsection{CPU}
 
-\begin{Shaded}
-\begin{Highlighting}[]
-\NormalTok{ScAngle 2pi*dcos M11 M12 M13 M14 M21 M22 M23 M24 M31 M32 M33 M34 M41 M42 M43 M44}
-\end{Highlighting}
-\end{Shaded}
+\begin{lstlisting}
+make -C cpu -j
 
-\begin{longtable}[]{@{}ll@{}}
-\toprule\noalign{}
-Колонка & Смысл \\
-\midrule\noalign{}
+OMP_NUM_THREADS=64 cpu/bin/mbs_po_mpi --po -p 1 125.9 78.09 \
+  --ri 1.3116 0 -w 0.532 -n 12 --oldauto 2 \
+  --grid 0 180 600 180 --threads 64 --close -o out_cpu
+\end{lstlisting}
+
+\subsection{GPU}
+
+\begin{lstlisting}
+PATH=/usr/local/cuda/bin:$PATH make -C gpu -j
+make -C gpu float -j
+make -C gpu float_fast -j
+make -C gpu double_fast -j
+\end{lstlisting}
+
+\begin{longtable}{L{0.18\linewidth} L{0.32\linewidth} L{0.14\linewidth} L{0.26\linewidth}}
+\caption{GPU targets.}\\
+\toprule
+Target & Binary & Точность & Когда использовать \\
+\midrule
+\endfirsthead
+\toprule
+Target & Binary & Точность & Когда использовать \\
+\midrule
 \endhead
-\bottomrule\noalign{}
-\endlastfoot
-\texttt{ScAngle} & Угол рассеяния theta в градусах. \\
-\texttt{2pi*dcos} & Вес кольца телесного угла для theta row. \\
-\texttt{Mij} & Элементы Mueller после суммирования пучков и усреднения
-ориентаций. \\
+\code{float} & \code{mbs_po_gpu_float} & float & Быстро, без fast math. \\
+\code{float_fast} & \code{mbs_po_gpu_float_fast} & float & Максимальная скорость, возможны отличия от double. \\
+\code{double_fast} & \code{mbs_po_gpu_double_fast} & double & Сравнения CPU/GPU, 0/180 градусов, production validation. \\
+\bottomrule
 \end{longtable}
 
-Дополнительные outputs:
+\section{Запуск и диагностика}
 
-\begin{longtable}[]{@{}lll@{}}
-\toprule\noalign{}
-Output & Как включается & Смысл \\
-\midrule\noalign{}
+\subsection{Минимальный production-пример}
+
+\begin{lstlisting}
+gpu/bin/mbs_po_gpu_double_fast --po -p 1 125.9 78.09 \
+  --ri 1.3116 0 -w 0.532 -n 12 --oldauto 2 \
+  --grid 0 180 600 180 --threads 64 --close -o hex_gpu_double
+\end{lstlisting}
+
+\subsection{CPU из GPU binary}
+
+\begin{lstlisting}
+gpu/bin/mbs_po_gpu_double_fast --po --cpu -p 1 125.9 78.09 \
+  --ri 1.3116 0 -w 0.532 -n 12 --oldauto 2 \
+  --grid 0 180 600 180 --threads 64 --close -o hex_cpu_from_gpu_bin
+\end{lstlisting}
+
+\subsection{Проверка точек 0 и 180 градусов}
+
+\begin{lstlisting}
+gpu/bin/mbs_po_gpu_double_fast --po -p 1 125.9 78.09 \
+  --ri 1.3116 0 -w 0.532 -n 1 --oldauto 2 --pole \
+  --grid 0 180 600 1 --threads 64 --close -o check_0_180
+\end{lstlisting}
+
+\section{Краткий справочник флагов}
+
+\subsection{Метод и частица}
+
+\begin{longtable}{L{0.24\linewidth} L{0.18\linewidth} L{0.48\linewidth}}
+\caption{Метод, геометрия, физические параметры.}\\
+\toprule
+Флаг & Аргументы & Описание \\
+\midrule
+\endfirsthead
+\toprule
+Флаг & Аргументы & Описание \\
+\midrule
 \endhead
-\bottomrule\noalign{}
-\endlastfoot
-\texttt{\_noshadow} & \texttt{-\/-noshadow\_output} & Mueller без
-shadow/external beam. \\
-\texttt{\_betas/} & \texttt{-\/-save\_betas} & Per-beta diagnostics. \\
-checkpoint files & \texttt{-\/-checkpoint} & Resume для длинных
-orientation-grid runs. \\
-Jones output & \texttt{-\/-jones} & Raw Jones matrices в поддержанных PO
-modes. \\
+\code{--po} & нет & Physical Optics: трассировка + дифракция. \\
+\code{--go} & нет & Только geometrical optics, без PO-интеграла. \\
+\code{-p} & \code{TYPE L D [extra]} & Built-in particle. \\
+\code{--pf} & \code{FILE} & Частица из файла. \\
+\code{--rs} & \code{SIZE} & Масштабировать file particle по $D_{\max}$. \\
+\code{--k_eq} & \code{X} & Масштабировать по equivalent size parameter. \\
+\code{--ri} & \code{Re Im} & Комплексный показатель преломления. \\
+\code{-w} & \code{LAMBDA} & Длина волны. \\
+\code{-n} & \code{N} & Максимальная глубина трассировки. \\
+\code{--abs} & нет & Включить absorption integral. \\
+\code{--close} & нет & Закрыть симметричные endpoint/periodic ranges. \\
+\bottomrule
 \end{longtable}
 
-Предупреждения про optical-theorem/integral mismatch являются
-диагностикой. Для non-absorbing runs физическое поглощение фиксируется
-нулем; integral characteristic не заменяет выходную Mueller матрицу.
+\subsection{Ориентации}
+
+\begin{longtable}{L{0.25\linewidth} L{0.18\linewidth} L{0.47\linewidth}}
+\caption{Флаги ориентаций.}\\
+\toprule
+Флаг & Аргументы & Описание \\
+\midrule
+\endfirsthead
+\toprule
+Флаг & Аргументы & Описание \\
+\midrule
+\endhead
+\code{--fixed} & \code{BETA GAMMA} & Одна ориентация в градусах. \\
+\code{--orientfile} & \code{FILE} & Загрузить ориентации из файла. \\
+\code{--beta_grid} & \code{NB NG} & Явная beta/gamma grid. \\
+\code{--oldauto} & \code{DIV} & Physics-based grid из diffraction scale. \\
+\code{--ring_points} & \code{N} & Точек на diffraction ring для oldauto estimates. \\
+\code{--sobol} & \code{N} & Sobol orientations. \\
+\code{--sobol_seed} & \code{N SEED} & Sobol с Owen seed. \\
+\code{--owen_seeds} & \code{LIST} & Набор Owen seeds. \\
+\code{--so3_quat} & \code{N} & SO(3) quaternion orientations. \\
+\code{--hammersley} & \code{N} & Hammersley orientations. \\
+\code{--lattice} & \code{N} & Rank-1 lattice orientations. \\
+\code{--montecarlo} & \code{N} & Random orientations. \\
+\code{--adaptive} & \code{EPS} & Подбор числа ориентаций по сходимости. \\
+\code{--auto} & \code{EPS} & Auto theta, phi, orientations. \\
+\code{--autofull} & \code{EPS} & Auto \code{-n}, theta, phi, orientations. \\
+\code{--oldautofull} & \code{EPS} & Auto search, final oldauto grid. \\
+\code{--maxorient} & \code{N} & Верхняя граница adaptive orientations. \\
+\code{--chunk} & \code{N} & Max orientations/gamma values per memory chunk. \\
+\code{--mirror_gamma} & нет & Половина gamma domain + mirrored Mueller. \\
+\code{--pole} & нет & Считать beta-poles как одну gamma с полным весом. \\
+\code{--coh_orient} & нет & Legacy coherent-across-orientations mode. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Сетка, ускорение, cutoffs}
+
+\begin{longtable}{L{0.25\linewidth} L{0.20\linewidth} L{0.45\linewidth}}
+\caption{Grid, acceleration, cutoffs.}\\
+\toprule
+Флаг & Аргументы & Описание \\
+\midrule
+\endfirsthead
+\toprule
+Флаг & Аргументы & Описание \\
+\midrule
+\endhead
+\code{--grid} & \code{T0 T1 NTH NPHI} & Uniform scattering grid. \\
+\code{--auto_tgrid} & \code{EPS} & Adaptive theta grid. \\
+\code{--auto_phi} & \code{X} & Auto phi count estimate. \\
+\code{--gpu} & нет & Использовать CUDA backend. \\
+\code{--cpu} & нет & Принудительно CPU backend из GPU binary. \\
+\code{--threads} & \code{N} & OpenMP threads. \\
+\code{--beam_eps} & \code{EPS} & Cutoff по амплитуде/интенсивности beam. \\
+\code{--eps_area} & \code{EPS} & Cutoff по площади beam polygon. \\
+\code{--eps_int} & \code{EPS} & Cutoff по $|J|^2A$. \\
+\code{--trace_max_beams} & \code{N} & Abort orientation after N beam nodes; 0 disables. \\
+\code{--trace_prefilter} & нет & Projected-AABB prefilter for non-convex clipping. \\
+\code{--size_range} & \code{A B N} & Диапазон размеров. \\
+\code{--multi_k} & \code{LIST} & Несколько $k_{\mathrm{eq}}$ в одном запуске. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Output, диагностика, legacy}
+
+\begin{longtable}{L{0.25\linewidth} L{0.20\linewidth} L{0.45\linewidth}}
+\caption{Output и диагностические флаги.}\\
+\toprule
+Флаг & Аргументы & Описание \\
+\midrule
+\endfirsthead
+\toprule
+Флаг & Аргументы & Описание \\
+\midrule
+\endhead
+\code{-o} & \code{PREFIX} & Prefix output files. \\
+\code{--save_betas} & нет & Save per-beta Mueller files. \\
+\code{--full_only} & нет & Писать только full Mueller output; default. \\
+\code{--noshadow_output} & нет & Дополнительно писать \code{_noshadow}. \\
+\code{--shadow} & нет & Legacy flag, сейчас без эффекта. \\
+\code{--incoh} & нет & Incoherent per-beam Mueller sum. \\
+\code{--jones} & нет & Писать Jones matrices, где поддержано. \\
+\code{--karczewski} & нет & Experimental Karczewski polarization matrix. \\
+\code{--legacy_sign} & нет & Старая Fresnel sign convention. \\
+\code{--help} & нет & Common options. \\
+\code{--help-debug} & нет & Полный список debug/experimental options. \\
+\bottomrule
+\end{longtable}
+
+\section{Выходные файлы}
+
+Основной файл содержит theta, вес solid angle и элементы Mueller. В текстовом выводе элементы обычно называются $M11,\ldots,M44$, что соответствует математическим $M_{00},\ldots,M_{33}$ в нулевой индексации кода.
+
+\begin{longtable}{L{0.25\linewidth} L{0.65\linewidth}}
+\caption{Типовые output objects.}\\
+\toprule
+Объект & Смысл \\
+\midrule
+\endfirsthead
+\toprule
+Объект & Смысл \\
+\midrule
+\endhead
+\code{theta} & Scattering angle in degrees. \\
+\code{2pi*dcos} & Вес solid-angle ring для строки theta. \\
+\code{Mij} & Элементы Mueller после beam sum и orientation average. \\
+\code{*_noshadow} & Output без shadow/external beam, если включен \code{--noshadow_output}. \\
+\code{*_betas/} & Per-beta intermediate outputs, если включен \code{--save_betas}. \\
+\code{checkpoint} & Resume files для длинных orientation-grid runs. \\
+\bottomrule
+\end{longtable}
+
+\section{Практические правила валидации}
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item Для сравнения CPU/GPU используйте \code{gpu/bin/mbs_po_gpu_double_fast --cpu} и тот же binary без \code{--cpu}. Так исключается различие CLI и большей части host-кода.
+  \item Для точек $0^\circ$ и $180^\circ$ используйте \code{--pole}, \code{double} и одинаковый \code{--grid}. Эти точки первыми показывают ошибки endpoint/pole logic.
+  \item Для performance-сравнения отдельно фиксируйте backend, точность и environment:
+  \code{float_fast}, \code{double_fast}, \code{MBS_GPU_FUSED_MUELLER},
+  \code{MBS_GPU_STAGE_MUELLER} и число GPU.
+  \item Если менялись Fresnel, RotateJones или edge-integral branches, проверяйте не только $M11$, но и $M12$, $M33$, $M34$, $M44$.
+  \item Если частица невыпуклая или агрегатная, отдельно проверяйте runs с \code{--trace_prefilter} и без него на малой сетке: результат должен совпадать в пределах roundoff.
+\end{enumerate}
+
+\newpage
+\section{Расширенные математические комментарии}
+
+\subsection{Нормировка интенсивности}
+
+В коде амплитуда пучка и дифракционный интеграл разделены: трассировка дает $\matr J_{\mathrm{beam}}$, а PO-обработчик домножает ее на $F_{\mathrm{edge}}$. Поэтому физически наблюдаемая интенсивность одной detector cell определяется не одним фактором, а произведением геометрической площади, фазового интеграла, Fresnel-множителей, оптического пути и нормировочного коэффициента output. В абстрактной записи:
+\[
+  I(\theta,\phi)
+  \propto
+  \left\lVert
+  \sum_{b=1}^{N_b}
+  C_{\mathrm{norm}}\,
+  F_{\mathrm{edge},b}\,
+  \matr R_{\mathrm{out},b}\,
+  \matr F_{n,b}
+  \right\rVert_F^2.
+\]
+Здесь $\norm{\cdot}_F$ --- Frobenius-норма. Важная практическая деталь: если сравнивать CPU и GPU, надо сравнивать не промежуточный $F_{\mathrm{edge}}$ отдельно, а весь pipeline, потому что часть фаз может быть вынесена в \code{J_phased}, часть в \code{dirPhase}, а часть в Fresnel/Jones matrices.
+
+\begin{longtable}{L{0.22\linewidth} L{0.68\linewidth}}
+\caption{Компоненты нормировки и где они могут проявляться.}\\
+\toprule
+Компонент & Практический смысл \\
+\midrule
+\endfirsthead
+\toprule
+Компонент & Практический смысл \\
+\midrule
+\endhead
+$C_{\mathrm{norm}}$ & Общий множитель output; не должен зависеть от CPU/GPU backend. \\
+$F_{\mathrm{edge}}$ & Дифракция апертуры; чувствительна к near-forward пределам. \\
+$\matr R_{\mathrm{out}}$ & Поляризационный поворот; чувствителен к вырождению scattering basis. \\
+$\matr F_n$ & Накопленная Jones матрица и фаза optical path. \\
+$w_i$ & Вес ориентации; особенно важен при \code{--pole}. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Устойчивый предел edge-интеграла}
+
+Проблемный случай edge-интеграла возникает, когда
+\[
+  |A_q|\ll1,\qquad |B_q|\ll1.
+\]
+Тогда разность экспонент
+\[
+  \exp(\ii\Phi_{j+1})-\exp(\ii\Phi_j)
+\]
+вычитает почти равные числа. Устойчивая запись использует
+\[
+  \exp(\ii u)-\exp(\ii v)
+  =
+  \exp\!\left(\ii\frac{u+v}{2}\right)
+  2\ii\sin\!\left(\frac{u-v}{2}\right).
+\]
+Если $\delta=(u-v)/2$ мал, то
+\[
+  \sin\delta \approx
+  \delta-\frac{\delta^3}{6}+\frac{\delta^5}{120}.
+\]
+Эта запись объясняет, почему forward direction должен обрабатываться отдельной веткой: обычная формула математически верна, но численно теряет значащие цифры. Для $0^\circ$ и $180^\circ$ такая потеря может выглядеть как различие CPU/GPU даже в double, если одна ветка попала в предел, а другая осталась в общей формуле.
+
+\subsection{Предел Jones-базиса на полюсах}
+
+Базис рассеяния зависит от
+\[
+  \vect v_t =
+  \frac{\vect v_f\times\vect s}
+       {\norm{\vect v_f\times\vect s}}.
+\]
+Если $\vect s$ параллелен $\vect v_f$, знаменатель равен нулю. Физически при точном forward/backward scattering азимутальный базис не единственен. Поэтому корректная численная процедура должна давать Mueller matrix, инвариантную к произвольному выбору азимута после соответствующего поворота Stokes-базиса:
+\[
+  \matr M_{\chi}
+  =
+  \matr R_M(\chi)\,
+  \matr M_0\,
+  \matr R_M(-\chi).
+\]
+Для случайно ориентированной частицы после интегрирования по ориентациям многие азимутальные зависимости сокращаются, но в одной фиксированной ориентации они могут быть видны. Поэтому для debug всегда надо отличать два вопроса: совпадает ли $M_{11}$ как интенсивность и совпадают ли поляризационные элементы в одной и той же конвенции базиса.
+
+\subsection{Симметрия forward/backward Mueller}
+
+Для идеально случайной ориентации и полной азимутальной симметрии forward scattering имеет ограничения:
+\[
+  M_{12}=M_{21}=M_{13}=M_{31}=0,
+\]
+а блок $Q/U$ становится диагонально-симметричным после выбора стандартного базиса. Backward scattering имеет собственные ограничения, но они зависят от конвенции Stokes parameters и от того, как реализован поворот в $180^\circ$. В коде есть функции \code{ForwardScattering} и \code{BackwardScattering}, которые явно зануляют часть элементов для специальных режимов. Если включен полный PO output, лучше проверять не только эти симметрии, но и непрерывность рядов около endpoint:
+\[
+  \lim_{\theta\to0^+} M_{ij}(\theta)=M_{ij}(0),
+  \qquad
+  \lim_{\theta\to\pi^-} M_{ij}(\theta)=M_{ij}(\pi).
+\]
+
+\subsection{Ошибка ориентационного усреднения}
+
+Для Monte Carlo ошибка типично имеет вид
+\[
+  \mathbb E\left[
+  \left|\overline M_N-\overline M\right|^2
+  \right]^{1/2}
+  \approx
+  \frac{\sigma_M}{\sqrt N}.
+\]
+Для low-discrepancy последовательностей Sobol/Hammersley в гладких задачах часто наблюдается более быстрое практическое падение:
+\[
+  \left|\overline M_N-\overline M\right|
+  \lesssim
+  C\frac{(\log N)^d}{N},
+\]
+но это не строгая гарантия для всех частиц, потому что clipping, caustic-like features и endpoint branches делают интегранд негладким. Поэтому adaptive-критерий в коде сравнивает не теоретическую оценку, а реальные output rows.
+
+\subsection{Практическая формула выбора \texorpdfstring{$N_{\mathrm{ori}}$}{N ori}}
+
+Если известна грубая оценка относительной вариации $V$ нужного элемента Mueller, то начальное число ориентаций можно брать как
+\[
+  N_{\mathrm{ori,0}}
+  =
+  \left\lceil
+  \left(\frac{V}{\varepsilon_{\mathrm{target}}}\right)^2
+  \right\rceil
+\]
+для Monte Carlo-like режима. Для oldauto удобнее начинать с diffraction scale:
+\[
+  N_\beta\approx
+  \frac{\beta_{\max}-\beta_{\min}}
+       {\Delta\theta_{\mathrm{diff}}/\code{DIV}},
+  \qquad
+  N_\gamma\approx
+  \frac{\gamma_{\max}-\gamma_{\min}}
+       {\Delta\theta_{\mathrm{diff}}/\code{DIV}}.
+\]
+Итог:
+\[
+  N_{\mathrm{ori}}\approx N_\beta N_\gamma,
+\]
+с поправками на симметрию и \code{--pole}. Если particle symmetry уменьшает gamma domain в $s_\gamma$ раз, то
+\[
+  N_\gamma \leftarrow \left\lceil\frac{N_\gamma}{s_\gamma}\right\rceil.
+\]
+
+\subsection{Ошибка theta grid}
+
+Theta grid должна разрешать самый узкий физический feature. Для большого размера $x$ forward peak имеет характерную ширину порядка
+\[
+  \delta\theta\sim\frac{1}{x}.
+\]
+Если шаг $\Delta\theta$ слишком крупный, интегральная интенсивность может быть примерно правильной, но peak height и соседние rows будут неверными. Практическое правило:
+\[
+  \Delta\theta_{\mathrm{front}}
+  \le
+  \frac{1}{5x}\frac{180}{\pi}
+  \quad\text{или строже для validation.}
+\]
+Для backscattering обычно можно использовать более крупный шаг, но только если поляризационные элементы не имеют быстрых осцилляций. Поэтому \code{--auto_tgrid} пытается распределить rows неравномерно по физической сложности.
+
+\subsection{Сходимость по глубине трассировки}
+
+Глубина \code{-n} контролирует число внутренних событий. Если $R$ --- характерный Fresnel reflection magnitude, то вклад поколения $g$ грубо падает как
+\[
+  I_g\sim R^{2g}
+\]
+для непоглощающего случая без фокусировок. С поглощением добавляется множитель
+\[
+  \exp(-2k\Imag(m)L_g).
+\]
+Проверка сходимости по \code{-n} должна смотреть на финальный Mueller:
+\[
+  \varepsilon_n=
+  \max_r
+  \frac{\norm{\matr M_n(r)-\matr M_{n-1}(r)}_\infty}
+       {|M_{11,n}(r)|+\varepsilon_0}.
+\]
+Если \code{-n} увеличить дорого, сначала включают beam cutoffs и анализируют число реально трассированных beams.
+
+\subsection{Beam cutoffs}
+
+Три типовых критерия можно записать как
+\[
+  \frac{\norm{\matr J_b}_F^2}{J_{\max}^2}<\varepsilon_J,
+  \qquad
+  \frac{A_b}{A_{\max}}<\varepsilon_A,
+  \qquad
+  \frac{\norm{\matr J_b}_F^2 A_b}{J_{\max}^2A_{\max}}<\varepsilon_I.
+\]
+Первый режет слабую амплитуду, второй --- малую геометрию, третий --- малый вклад интенсивности с учетом площади. Нельзя без проверки делать эти пороги слишком большими: слабые пучки могут интерферировать с сильными и менять поляризационные элементы.
+
+\subsection{Double против float}
+
+В float машинное epsilon порядка
+\[
+  \varepsilon_{\mathrm{float}}\approx1.2\cdot10^{-7},
+\]
+в double:
+\[
+  \varepsilon_{\mathrm{double}}\approx2.2\cdot10^{-16}.
+\]
+Если суммируется $N$ вкладов похожей величины, ошибка порядка сложения грубо может расти как
+\[
+  \varepsilon_{\mathrm{sum}}\sim N\varepsilon_{\mathrm{mach}}
+\]
+для неблагоприятного порядка. Поэтому atomic float accumulation в GPU может отличаться от CPU сильнее, чем double. Для validation ветки, особенно около $0^\circ$ и $180^\circ$, использовать \code{double_fast}; \code{float_fast} годится для production speed только после калибровки ошибки.
+
+\subsection{FFT/interpolation по phi}
+
+Если включается ускоренный phi-path, часть расчетов может выполняться на низком числе $\phi$ с последующим восстановлением. Математически это похоже на ограничение спектра:
+\[
+  f(\phi)=\sum_{m=-M}^{M} c_m e^{\ii m\phi}.
+\]
+Если реальный сигнал имеет существенные $|m|>M$, появляется aliasing или сглаживание. Поэтому для сравнения CPU/GPU лучше временно использовать прямой phi grid, а FFT path проверять отдельным тестом на сходимость по $N_\phi$.
+
+\subsection{Multi-size reuse}
+
+Для набора размеров геометрический beam tree может быть похожим, а фаза меняется через $kD$:
+\[
+  \Phi_j(k,D)=kD\,\xi_j,
+\]
+где $\xi_j$ --- безразмерная геометрическая проекция вершины. Тогда можно переиспользовать нормированные вершины и slopes:
+\[
+  x_j(D)=D\,\hat x_j,\qquad y_j(D)=D\,\hat y_j.
+\]
+Это ускоряет scans по размеру, но требует осторожности: если размер меняет критерии cutoffs или auto grids, reuse может стать физически неэквивалентным полной пересборке.
+
+\subsection{Почему таблицы теперь не вылезают}
+
+В этой PDF-версии таблицы заданы как \code{longtable} с колонками фиксированной ширины:
+\[
+  p_1+p_2+\cdots+p_n < W_{\mathrm{text}}.
+\]
+Длинный текст в колонках переносится с помощью \code{RaggedRight}, а не пытается держаться в одной строке. Поэтому таблицы с GPU flags, environment variables и длинными именами binaries остаются внутри A4. Для очень длинных inline names используется безопасный \code{\textbackslash detokenize}, чтобы underscore не превращался в математический индекс.
+
+\subsection{Протокол поиска расхождения CPU/GPU}
+
+Если найдено отличие между CPU и GPU, его надо локализовать сверху вниз:
+\begin{enumerate}[leftmargin=1.5em]
+  \item Зафиксировать один binary и переключать только \code{--cpu}. Так исключаются разные CLI и host defaults.
+  \item Зафиксировать \code{double_fast}, \code{--grid}, \code{--fixed} или малый \code{--oldauto}, \code{-n}. Так уменьшается пространство причин.
+  \item Проверить $M11$ отдельно от поляризационных элементов. Если отличается только polarization block, вероятнее проблема в basis rotation.
+  \item Проверить \code{--pole} и без \code{--pole}. Если отличие только на endpoint, причина в beta/gamma weight или scattering basis limit.
+  \item Отключить fused/staged paths environment variables и сравнить atomic/no-atomic path. Если меняется только последний разряд, это reduction order; если меняются проценты, это ветка формулы.
+  \item Сравнить одну ориентацию \code{--fixed}. Если fixed совпадает, а average нет, причина в orientation weights/chunks.
+\end{enumerate}
+
+\subsection{Протокол выбора production-параметров}
+
+Практический production setup:
+\begin{enumerate}[leftmargin=1.5em]
+  \item На малом размере подобрать \code{-n}, cutoffs и theta grid.
+  \item На среднем размере сравнить \code{--oldauto 2}, \code{--oldauto 4}; если разница велика, использовать \code{4} или adaptive.
+  \item Проверить \code{float_fast} против \code{double_fast} на нескольких representative sizes.
+  \item Для финального scan включить multi-GPU или multi-size reuse только после проверки, что один размер совпадает с non-reuse расчетом.
+  \item Сохранить command line, git commit, CUDA driver, GPU model, compiler flags и environment variables вместе с output.
+\end{enumerate}
+
+\subsection{Формат частицы из файла}
+
+Точный формат \code{--pf} зависит от используемого reader в репозитории, но математически любая file particle сводится к набору вершин и граней:
+\[
+  \mathcal P=
+  \left(
+  \{\vect v_i\}_{i=1}^{N_v},
+  \{\mathcal F_j\}_{j=1}^{N_f}
+  \right).
+\]
+Грань $\mathcal F_j$ является упорядоченным списком индексов вершин:
+\[
+  \mathcal F_j=(i_{j,1},i_{j,2},\ldots,i_{j,m_j}).
+\]
+Нормаль грани вычисляется из обхода вершин. Для треугольной части:
+\[
+  \vect n_j=
+  \frac{(\vect v_{i_2}-\vect v_{i_1})\times
+        (\vect v_{i_3}-\vect v_{i_1})}
+       {\norm{(\vect v_{i_2}-\vect v_{i_1})\times
+        (\vect v_{i_3}-\vect v_{i_1})}}.
+\]
+Если обход задан в обратном направлении, нормаль меняет знак. Это критично: Fresnel ветвление, inside/outside test и clipping используют ориентацию нормали. Для невыпуклой частицы дополнительно важно, чтобы грани не были самопересекающимися и чтобы соседние полигоны имели согласованную топологию.
+
+\begin{longtable}{L{0.26\linewidth} L{0.64\linewidth}}
+\caption{Проверки file particle перед расчетом.}\\
+\toprule
+Проверка & Зачем нужна \\
+\midrule
+\endfirsthead
+\toprule
+Проверка & Зачем нужна \\
+\midrule
+\endhead
+Нет нулевых ребер & Иначе нормаль и edge slopes становятся неопределенными. \\
+Грань почти плоская & PO-апертура предполагает плоский polygon. \\
+Нет самопересечения грани & Polygon clipping и area formula требуют простого полигона. \\
+Согласованный обход & Нужен правильный знак нормали. \\
+Нет дублированных почти совпадающих граней & Иначе tracing может давать двойные hits и unstable clipping. \\
+Разумный масштаб & Слишком маленькие или большие координаты ухудшают conditioning. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Площадь, объем и центр}
+
+Площадь полигона в локальной плоскости:
+\[
+  A_j=
+  \frac12
+  \left|
+  \sum_{l=1}^{m_j}
+  (x_l y_{l+1}-x_{l+1}y_l)
+  \right|.
+\]
+Центр грани:
+\[
+  \vect c_j=
+  \frac{1}{m_j}
+  \sum_{l=1}^{m_j}\vect v_{i_{j,l}}.
+\]
+Объем замкнутого многогранника удобно выражается через тетраэдры с началом координат:
+\[
+  V=
+  \frac16
+  \sum_{\mathrm{triangles}}
+  \vect a\cdot(\vect b\times\vect c).
+\]
+Знак объема снова зависит от ориентации обхода. Если volume получается отрицательным или близким к нулю для явно объемной частицы, это почти всегда проблема геометрии.
+
+\subsection{Разбор строки output}
+
+Типовая строка output содержит угол, вес и 16 элементов Mueller:
+\[
+  \theta_j,\quad
+  \Delta\Omega_j,\quad
+  M_{11},M_{12},\ldots,M_{44}.
+\]
+В терминах кода:
+\[
+  M11 \equiv M_{00},\qquad
+  M44 \equiv M_{33}.
+\]
+Если output усреднен по ориентациям, то каждый элемент уже содержит сумму:
+\[
+  M_{ab}^{\mathrm{out}}(\theta_j)=
+  \frac{1}{W}
+  \sum_i w_i M_{ab}^{(i)}(\theta_j).
+\]
+Если затем нужна интегральная характеристика по углам, используется вес \code{2pi*dcos}:
+\[
+  \langle M_{ab}\rangle_{\Omega}
+  =
+  \sum_j
+  M_{ab}^{\mathrm{out}}(\theta_j)
+  \Delta\Omega_j.
+\]
+Не надо повторно умножать на $2\pi$, если колонка уже называется \code{2pi*dcos}.
+
+\subsection{Матрица validation-тестов}
+
+\begin{longtable}{L{0.22\linewidth} L{0.28\linewidth} L{0.40\linewidth}}
+\caption{Минимальная матрица проверок после изменения физического кода.}\\
+\toprule
+Тест & Команда/режим & Что должен поймать \\
+\midrule
+\endfirsthead
+\toprule
+Тест & Команда/режим & Что должен поймать \\
+\midrule
+\endhead
+Single fixed orientation & \code{--fixed B G --grid 0 180 ...} & Ошибки RotateJones, Fresnel, edge integral. \\
+Forward/back only & \code{--grid 0 180 N 1 --pole} & Endpoint, pole weight, singular basis. \\
+CPU from GPU binary & \code{--cpu} vs default GPU & Различия backend при одинаковом host code. \\
+Double vs float & \code{double_fast} vs \code{float_fast} & Потери точности и fast math. \\
+Incoherent check & \code{--incoh} & Ошибки порядка Jones sum vs Mueller sum. \\
+Non-convex clipping & \code{--trace_prefilter} on/off & Ошибки projected-AABB rejection. \\
+Orientation convergence & \code{--oldauto 2/4/8} & Недостаточное число ориентаций. \\
+Depth convergence & \code{-n N} and \code{-n N+1} & Недостаточная глубина трассировки. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Типичные причины больших расхождений}
+
+\begin{longtable}{L{0.25\linewidth} L{0.30\linewidth} L{0.35\linewidth}}
+\caption{Диагностика расхождений.}\\
+\toprule
+Симптом & Вероятная причина & Что проверить \\
+\midrule
+\endfirsthead
+\toprule
+Симптом & Вероятная причина & Что проверить \\
+\midrule
+\endhead
+Отличается только $0^\circ$ & Endpoint/pole branch & \code{--pole}, theta cell boundary, basis limit. \\
+Отличается только $180^\circ$ & Backward basis/Fresnel sign & \code{--legacy_sign}, \code{BackwardScattering}, RotateMueller. \\
+$M11$ совпадает, $M33/M34$ нет & Polarization basis convention & \code{RotateJones} vs \code{KarczewskiJones}. \\
+Float сильно отличается от double & Cancellation или fast math & Near-forward rows, atomic reduction, \code{--use_fast_math}. \\
+GPU отличается только при large grid & Reduction order или chunking & fused/staged env vars, chunk size. \\
+Non-convex результат нестабилен & Clipping candidate error & prefilter on/off, facet normals, self-intersections. \\
+Auto дает другой результат, чем oldauto & Разные theta/orientation grids & сохранить auto grid и повторить вручную. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Контроль conservation-like величин}
+
+Для непоглощающих частиц полезно смотреть на интегральные величины, хотя PO+GO приближение не обязано идеально выполнять все теоремы для любой численной сетки. Если $S_{11}(\theta)$ соответствует $M_{11}$, интегральная scattering-like величина:
+\[
+  C_{\mathrm{sca,num}}
+  =
+  \sum_j
+  S_{11}(\theta_j)\Delta\Omega_j.
+\]
+При увеличении theta resolution и orientation resolution эта величина должна стабилизироваться. Если $C_{\mathrm{sca,num}}$ скачет при небольшом изменении \code{NTH}, это признак недоразрешенного forward peak.
+
+\subsection{Минимальные данные для воспроизводимого отчета}
+
+Вместе с output надо сохранять:
+\begin{longtable}{L{0.25\linewidth} L{0.65\linewidth}}
+\caption{Reproducibility metadata.}\\
+\toprule
+Данные & Почему нужны \\
+\midrule
+\endfirsthead
+\toprule
+Данные & Почему нужны \\
+\midrule
+\endhead
+Git commit & Физика, CLI и CUDA kernels могли измениться. \\
+Полная command line & Defaults могут отличаться между версиями. \\
+Compiler и \code{ARCH_FLAGS} & AVX path и floating-point contraction зависят от сборки. \\
+CUDA toolkit и driver & Разные версии меняют libdevice, cuFFT и scheduling. \\
+GPU model & Разная скорость double/float и atomics. \\
+Environment variables & GPU fused/staged/multi режимы выбираются через env. \\
+Particle file hash & Геометрия file particle должна быть точно той же. \\
+\bottomrule
+\end{longtable}
+
+\subsection{English technical summary}
+
+MBS-fast is a ray-tracing plus Physical Optics solver for faceted nonspherical particles. The ray-tracing stage constructs beam polygons and propagates complex Jones matrices through Fresnel reflection/refraction events. The PO stage evaluates a polygon-aperture diffraction integral in edge form. For one orientation, the default mode sums Jones amplitudes coherently and converts the resulting $2\times2$ complex matrix into a real $4\times4$ Mueller matrix. Random-orientation output is a weighted average over beta/gamma grids, Sobol/Hammersley/lattice sets, or adaptive orientation sequences.
+
+The most delicate numerical locations are forward and backward scattering. At these endpoints the scattering basis can become singular and the edge integral reaches a small-denominator limit. Correct CPU/GPU agreement therefore requires the same endpoint logic, the same pole weights for orientation averaging, and the same phase/Fresnel convention. Production speed on GPU comes from parallelizing beam-direction-orientation work items and from fused kernels that avoid writing large intermediate Jones buffers. CPU speed comes from OpenMP/MPI decomposition and AVX-512/AVX2 packing of phase and trigonometric evaluations.
+
+\appendix
+\section{Краткая английская шпаргалка}
+
+This PDF is the authoritative Russian manual. The key English mapping is:
+\begin{longtable}{L{0.30\linewidth} L{0.60\linewidth}}
+\toprule
+Russian term & English term \\
+\midrule
+\endfirsthead
+\toprule
+Russian term & English term \\
+\midrule
+\endhead
+трассировка лучей & ray tracing \\
+пучок & beam \\
+грань & facet \\
+апертура & aperture \\
+коэффициенты Френеля & Fresnel coefficients \\
+матрица Jones & Jones matrix \\
+матрица Mueller & Mueller matrix \\
+дифракционный edge-интеграл & diffraction edge integral \\
+усреднение ориентаций & orientation averaging \\
+невыпуклый clipping & non-convex clipping \\
+агрегат & aggregate \\
+\bottomrule
+\end{longtable}
+
+\section{Связь с файлами кода}
+
+\begin{longtable}{L{0.34\linewidth} L{0.56\linewidth}}
+\caption{Где искать описанные объекты в коде.}\\
+\toprule
+Файл/область & Что там находится \\
+\midrule
+\endfirsthead
+\toprule
+Файл/область & Что там находится \\
+\midrule
+\endhead
+\code{src/main.cpp} & CLI flags, auto/oldauto/adaptive orchestration, help text. \\
+\code{src/Splitting.cpp} & Fresnel coefficients, reflected/refracted beam directions, optical path update. \\
+\code{src/Beam.*} & Beam geometry, Jones matrix, polygon state. \\
+\code{src/scattering} & Ray/facet intersection, convex and non-convex clipping. \\
+\code{src/handler/Handler.cpp} & Scalar and fast edge diffraction integrals. \\
+\code{src/handler/HandlerPO.cpp} & Jones rotation, ApplyDiffraction, Mueller accumulation, AVX paths. \\
+\code{src/math/Mueller.cpp} & Jones-to-Mueller and Mueller rotations. \\
+\code{src/cuda} или \code{*.cu} & CUDA diffraction kernels, atomic/no-atomic/fused paths. \\
+\bottomrule
+\end{longtable}
+
+\clearpage
+\section{Приложение: контрольные формулы для отчетов}
+
+\subsection{Относительная ошибка элемента Mueller}
+
+Для сравнения двух расчетов $A$ и $B$ удобно печатать относительную ошибку по каждому элементу:
+\[
+  \delta_{ij}(\theta)=
+  \frac{
+  M^{A}_{ij}(\theta)-M^{B}_{ij}(\theta)
+  }{
+  |M^{A}_{11}(\theta)|+\varepsilon_0
+  }.
+\]
+Нормировка на $M_{11}$ полезна, потому что слабые поляризационные элементы могут проходить через ноль. Для абсолютного контроля слабых элементов дополнительно используют
+\[
+  \Delta_{ij}(\theta)=
+  M^{A}_{ij}(\theta)-M^{B}_{ij}(\theta).
+\]
+В отчетах лучше указывать обе величины: относительная ошибка показывает физический масштаб, абсолютная ошибка показывает численный шум около нулей.
+
+\subsection{Интегральная ошибка по углам}
+
+Если сравниваются полные кривые, вводится weighted RMS:
+\[
+  E_{ij}^{2}=
+  \frac{
+  \sum_j
+  \left(M^{A}_{ij}(\theta_j)-M^{B}_{ij}(\theta_j)\right)^2
+  \Delta\Omega_j
+  }{
+  \sum_j
+  \left(|M^{A}_{11}(\theta_j)|+\varepsilon_0\right)^2
+  \Delta\Omega_j
+  }.
+\]
+Такая метрика не заваливается на одной точке, но endpoint $0^\circ$ и $180^\circ$ все равно надо проверять отдельно, потому что именно там находятся специальные численные ветки.
+
+\subsection{Сравнение времени}
+
+Время расчета надо раскладывать на компоненты:
+\[
+  T_{\mathrm{total}}=
+  T_{\mathrm{trace}}+
+  T_{\mathrm{diffraction}}+
+  T_{\mathrm{reduction}}+
+  T_{\mathrm{io}}.
+\]
+GPU ускоряет в основном $T_{\mathrm{diffraction}}$ и часть $T_{\mathrm{reduction}}$. Если частица невыпуклая и clipping дорогой, $T_{\mathrm{trace}}$ может доминировать, и GPU speedup будет ниже. Для честного сравнения CPU/GPU надо фиксировать:
+\[
+  N_{\mathrm{ori}},\quad N_{\theta},\quad N_{\phi},\quad N_b,\quad n,\quad \text{cutoffs}.
+\]
+
+\subsection{Оценка памяти GPU}
+
+Грубая оценка памяти для Jones buffer:
+\[
+  B_J \approx
+  N_{\theta}N_{\phi}N_{\mathrm{ori,chunk}}
+  \cdot 4 \cdot 2 \cdot s_{\mathrm{real}},
+\]
+где $4$ --- число комплексных элементов Jones, $2$ --- real/imag, $s_{\mathrm{real}}=4$ для float и $8$ для double. Для Mueller buffer:
+\[
+  B_M \approx
+  N_{\theta}N_{\phi}N_{\mathrm{ori,chunk}}
+  \cdot 16 \cdot s_{\mathrm{real}}.
+\]
+Fused kernels уменьшают потребность в полном $B_J$, потому что Jones сумма может жить в регистрах или shared/local memory до преобразования в Mueller.
+
+\clearpage
+\section{Приложение: чеклист перед публикацией чисел}
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item Указать ветку и commit.
+  \item Указать CPU/GPU binary, точность и fast-math вариант.
+  \item Указать particle source: built-in параметры или hash file particle.
+  \item Указать $\lambda$, $m=n+\ii\kappa$, размер, \code{-n}.
+  \item Указать orientation method и число ориентаций.
+  \item Указать theta/phi grid и наличие \code{--pole}.
+  \item Указать cutoffs и clipping options.
+  \item Указать environment variables GPU.
+  \item Приложить сравнение хотя бы двух grid/orientation resolutions.
+  \item Для GPU production приложить контроль double на малой подвыборке.
+\end{enumerate}
+
+\subsection{Минимальная таблица в статье или отчете}
+
+\begin{longtable}{L{0.30\linewidth} L{0.60\linewidth}}
+\caption{Поля, которые должны быть в reproducibility table.}\\
+\toprule
+Поле & Пример \\
+\midrule
+\endfirsthead
+\toprule
+Поле & Пример \\
+\midrule
+\endhead
+Code & \code{MBS-fast main, commit abcdef0}. \\
+Backend & \code{gpu/bin/mbs_po_gpu_double_fast}. \\
+Particle & \code{-p 1 125.9 78.09} или \code{--pf particle.dat}. \\
+Optics & \code{--ri 1.3116 0 -w 0.532 -n 12}. \\
+Orientations & \code{--oldauto 2 --pole}. \\
+Scattering grid & \code{--grid 0 180 600 180 --close}. \\
+Hardware & CPU model, GPU model, driver, CUDA toolkit. \\
+Validation & CPU/GPU max error, oldauto 2/4 error, depth error. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Что не надо смешивать в одном сравнении}
+
+Нельзя одновременно менять backend, точность, orientation grid и theta grid, а затем приписывать отличие GPU. Корректная серия меняет один фактор:
+\[
+  A_0 \to A_1 \to A_2 \to \cdots,
+\]
+где каждая стрелка меняет только один параметр. Например:
+\[
+  \text{CPU double}
+  \to
+  \text{GPU double}
+  \to
+  \text{GPU float}
+  \to
+  \text{GPU float fast}.
+\]
+Тогда видно, на каком шаге появляется расхождение.
+
+\clearpage
+\section{Appendix: English flag groups}
+
+\begin{longtable}{L{0.28\linewidth} L{0.62\linewidth}}
+\caption{English grouping of the most important flags.}\\
+\toprule
+Group & Flags \\
+\midrule
+\endfirsthead
+\toprule
+Group & Flags \\
+\midrule
+\endhead
+Method & \code{--po}, \code{--go}, \code{--incoh}. \\
+Particle & \code{-p}, \code{--pf}, \code{--rs}, \code{--k_eq}, \code{--size_range}, \code{--multi_k}. \\
+Optics & \code{--ri}, \code{-w}, \code{-n}, \code{--abs}, \code{--legacy_sign}. \\
+Orientation & \code{--fixed}, \code{--oldauto}, \code{--sobol}, \code{--adaptive}, \code{--auto}, \code{--autofull}, \code{--pole}. \\
+Scattering grid & \code{--grid}, \code{--auto_tgrid}, \code{--auto_phi}, \code{--close}. \\
+Backend & \code{--gpu}, \code{--cpu}, \code{--threads}. \\
+Diagnostics & \code{--jones}, \code{--save_betas}, \code{--noshadow_output}, \code{--karczewski}, \code{--help-debug}. \\
+\bottomrule
+\end{longtable}
+
+The physically safest validation run is double precision with a direct grid, a fixed small set of orientations, no FFT interpolation, and the same binary used for CPU and GPU by toggling \code{--cpu}. The fastest production run is usually GPU float or GPU float-fast with fused Mueller kernels and chunked orientation batches, but that mode must be calibrated against double precision for the particle class and size range under study.
 
 \end{document}
