@@ -2,7 +2,9 @@
 
 MBS-fast computes light scattering by non-spherical ice particles with geometrical ray tracing plus Physical Optics diffraction. It supports CPU OpenMP/MPI builds and CUDA GPU diffraction builds.
 
-The current full manual is [`MANUAL.md`](MANUAL.md). It covers:
+The current full manual is [`MANUAL.md`](MANUAL.md). Russian version: [`MANUAL_RU.md`](MANUAL_RU.md).
+
+It covers:
 
 | Topic | Where |
 |---|---|
