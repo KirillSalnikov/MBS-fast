@@ -60,21 +60,7 @@ __device__ inline void gpu_atomic_add(GpuReal *address, GpuReal value)
 
 static inline double regularized_gpu_theta(const ScatteringRange &sphere, int t)
 {
-    double theta = sphere.GetZenith(t);
-    if (sphere.nZenith <= 0)
-        return theta;
-
-    if (t == 0 && theta <= 1e-14)
-    {
-        double next = sphere.GetZenith(1);
-        return 0.5 * (theta + next);
-    }
-    if (t == sphere.nZenith && theta >= M_PI - 1e-14)
-    {
-        double prev = sphere.GetZenith(sphere.nZenith - 1);
-        return 0.5 * (prev + theta);
-    }
-    return theta;
+    return sphere.GetZenith(t);
 }
 
 static inline double gpu_grid_signature(const ScatteringRange &sphere, int nZen)
