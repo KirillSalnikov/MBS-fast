@@ -170,6 +170,33 @@ struct GpuWorkspace
     int fftBatch = 0;
     std::vector<GpuComplex> hFftLow;
     std::vector<GpuComplex> hFftFull;
+
+    ~GpuWorkspace()
+    {
+        cudaFree(beams);
+        cudaFree(beams8);
+        cudaFree(sinTheta);
+        cudaFree(cosTheta);
+        cudaFree(sinPhi);
+        cudaFree(cosPhi);
+        cudaFree(vf);
+        cudaFree(j);
+        cudaFree(jNoShadow);
+        cudaFree(weights);
+        cudaFree(scales);
+        cudaFree(absPaths);
+        cudaFree(beamOffsets);
+        cudaFree(beamOffsets8);
+        cudaFree(m);
+        cudaFree(mNoShadow);
+        cudaFree(mOrient);
+        cudaFree(fftLow);
+        cudaFree(fftFull);
+        if (fftPlanLow)
+            cufftDestroy(fftPlanLow);
+        if (fftPlanFull)
+            cufftDestroy(fftPlanFull);
+    }
 };
 
 static thread_local GpuWorkspace g_gpuWorkspace;
@@ -3817,13 +3844,27 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                      scale, waveIndex]() -> bool {
                         if (subCount <= 0)
                             return true;
+                        int savedWorkerDevice = 0;
+                        cudaGetDevice(&savedWorkerDevice);
                         if (cudaSetDevice(dev) != cudaSuccess)
                             return false;
-                        g_gpuMultiWorker = true;
+                        struct MultiWorkerGuard
+                        {
+                            int savedDevice;
+                            explicit MultiWorkerGuard(int device)
+                                : savedDevice(device)
+                            {
+                                g_gpuMultiWorker = true;
+                            }
+                            ~MultiWorkerGuard()
+                            {
+                                g_gpuMultiWorker = false;
+                                cudaSetDevice(savedDevice);
+                            }
+                        } guard(savedWorkerDevice);
                         bool ok = this->HandleOrientationsToLocalGpu(
                             prepared, begin, subCount, partialM[dev],
                             partialMns[dev], scale, waveIndex);
-                        g_gpuMultiWorker = false;
                         return ok;
                     }));
             }
