@@ -74,6 +74,9 @@ gpu_float_fast:
 gpu_double_fast:
 	$(MAKE) -C gpu double_fast
 
+gpu_double_fast_mpi:
+	$(MAKE) -C gpu double_fast_mpi
+
 split: cpu gpu_float_fast
 
 $(TARGET): $(OBJECTS)

@@ -5,19 +5,28 @@ CUDA_LIB_PATH ?= $(if $(wildcard $(CUDA_PATH)/lib64/libcudart.so),$(CUDA_PATH)/l
 
 CXX ?= g++
 NVCC ?= nvcc
+USE_MPI ?= 0
 GPU_PRECISION ?= float
 GPU_FAST_MATH ?= 1
 TARGET ?= bin/mbs_po_gpu_float_fast
 FAST_SUFFIX := $(if $(filter 1,$(GPU_FAST_MATH)),_fast,)
-OBJDIR ?= build/$(GPU_PRECISION)$(FAST_SUFFIX)/obj
+MPI_SUFFIX := $(if $(filter 1,$(USE_MPI)),_mpi,)
+OBJDIR ?= build/$(GPU_PRECISION)$(FAST_SUFFIX)$(MPI_SUFFIX)/obj
 GPU_ARCH ?= $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.' | sed 's/[^0-9].*//')
 GPU_ARCH := $(if $(GPU_ARCH),$(GPU_ARCH),86)
+
+ifeq ($(USE_MPI),1)
+CXX := mpicxx
+endif
 
 CPU_MODEL := $(shell lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -1)
 ARCH_FLAGS ?= $(shell bash $(ROOT)/scripts/detect_arch_flags.sh "$(CXX)")
 OPT_FLAGS ?= -O3 -funroll-loops
 CXXFLAGS ?= $(OPT_FLAGS) $(ARCH_FLAGS) -std=gnu++11 -fopenmp
 CXXFLAGS += -DUSE_CUDA -DMBS_GPU_DEFAULT_ON -DMBS_GPU_BUILD_ARCH=$(GPU_ARCH) -I$(CUDA_PATH)/include
+ifeq ($(USE_MPI),1)
+CXXFLAGS += -DUSE_MPI
+endif
 LDFLAGS ?= -lm -lgomp -L$(CUDA_LIB_PATH) -lcufft -lcudart
 DEPFLAGS := -MMD -MP
 
@@ -54,6 +63,7 @@ $(TARGET): $(OBJECTS)
 	@echo "CXX: $(CXX)"
 	@echo "GPU_PRECISION: $(GPU_PRECISION)"
 	@echo "GPU_FAST_MATH: $(GPU_FAST_MATH)"
+	@echo "USE_MPI: $(USE_MPI)"
 	@echo "GPU_ARCH: sm_$(GPU_ARCH)"
 	@echo "CXXFLAGS: $(CXXFLAGS)"
 	@echo "NVCCFLAGS: $(NVCCFLAGS)"
@@ -80,6 +90,9 @@ float_fast:
 double_fast:
 	$(MAKE) GPU_PRECISION=double GPU_FAST_MATH=1 TARGET=bin/mbs_po_gpu_double_fast all
 
+double_fast_mpi:
+	$(MAKE) USE_MPI=1 GPU_PRECISION=double GPU_FAST_MATH=1 TARGET=bin/mbs_po_gpu_mpi_double_fast all
+
 float_debug:
 	$(MAKE) GPU_PRECISION=float GPU_FAST_MATH=1 \
 		TARGET=bin/mbs_po_gpu_float_debug \
@@ -95,6 +108,6 @@ double_debug:
 clean:
 	rm -rf build bin
 
-.PHONY: all float float_fast double_fast float_debug double_debug clean
+.PHONY: all float float_fast double_fast double_fast_mpi float_debug double_debug clean
 
 -include $(DEPS)
