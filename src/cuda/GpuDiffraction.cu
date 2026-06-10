@@ -519,12 +519,35 @@ static bool gpu_fft_debug_enabled()
     return value && value[0] == '1' && value[1] == '\0';
 }
 
+static bool gpu_running_under_mpi()
+{
+    const char *names[] = {
+        "OMPI_COMM_WORLD_SIZE",
+        "PMI_SIZE",
+        "PMIX_SIZE",
+        "MPI_LOCALNRANKS"
+    };
+    for (const char *name : names)
+    {
+        const char *value = std::getenv(name);
+        if (!value || !*value)
+            continue;
+        char *end = nullptr;
+        long parsed = std::strtol(value, &end, 10);
+        if (end && *end == '\0' && parsed > 1)
+            return true;
+    }
+    return false;
+}
+
 static int gpu_multi_device_count(int workCount)
 {
     if (workCount <= 1)
         return 1;
     const char *value = std::getenv("MBS_GPU_MULTI");
     if (value && value[0] == '0' && value[1] == '\0')
+        return 1;
+    if ((!value || !*value) && gpu_running_under_mpi())
         return 1;
 
     int count = 0;

@@ -124,7 +124,7 @@ static int HostMemoryAwareGammaChunk(int requested,
     }
 
     const double fraction = EnvDouble("MBS_HOST_MEM_FRACTION",
-                                      noBeamCutoff ? 0.35 : 0.55);
+                                      noBeamCutoff ? 0.90 : 0.55);
     const long long reserveKb =
         (long long)EnvInt("MBS_HOST_MEM_RESERVE_MB", 4096) * 1024LL;
     const long long totalBudgetKb =
@@ -138,7 +138,7 @@ static int HostMemoryAwareGammaChunk(int requested,
     if (budgetKbOut) *budgetKbOut = budgetKb;
 
     const int mbPerGamma = EnvInt("MBS_OLDAUTO_BYTES_PER_GAMMA_MB",
-                                  noBeamCutoff ? 256 : 128);
+                                  noBeamCutoff ? 64 : 128);
     const long long perGammaKb = std::max(1, mbPerGamma) * 1024LL;
     int byMemory = (int)std::max(1LL, budgetKb / perGammaKb);
     return std::max(1, std::min(requested, byMemory));
