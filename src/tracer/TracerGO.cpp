@@ -1,5 +1,6 @@
 #include "TracerGO.h"
 #include "HandlerGO.h"
+#include "HandlerTotalGO.h"
 #include <iostream>
 
 using namespace std;
@@ -27,6 +28,10 @@ void TracerGO::TraceRandom(const AngleRange &betaRange, const AngleRange &gammaR
     double normIndex = gammaRange.number * betaNorm;
     // double norm = CalcNorm(orNum);
     m_handler->SetNormIndex(normIndex);
+    if (dynamic_cast<HandlerTotalGO*>(m_handler) != nullptr)
+    {
+        m_handler->SetNormIndex(1.0);
+    }
 
     double cs_beta = 0.0;
     long long count = 0;
@@ -137,7 +142,11 @@ void TracerGO::TraceMonteCarlo(const AngleRange &betaRange, const AngleRange &ga
     double norm = CalcNorm(nOrientations);
     m_handler->SetNormIndex(norm);
 
-    m_outcomingEnergy = ((HandlerGO*)m_handler)->ComputeTotalScatteringEnergy();
+    m_outcomingEnergy = ((HandlerGO*)m_handler)->ComputeTotalScatteringEnergy()*norm;
+    m_handler->m_outputEnergy = m_outcomingEnergy;
+#ifdef _CHECK_ENERGY_BALANCE
+    m_incomingEnergy *= norm;
+#endif
 
     // m_resultDirName already has full path (dir/basename) from main.cpp
 
@@ -149,9 +158,8 @@ void TracerGO::TraceMonteCarlo(const AngleRange &betaRange, const AngleRange &ga
 double TracerGO::CalcNorm(long long orNum)
 {
 	double &symBeta = m_symmetry.beta;
-    double tmp = /*(true) ? symBeta :*/ 1.0;
 	double dBeta = -(cos(symBeta) - cos(0));
-	return tmp/(orNum*dBeta);
+	return symBeta/(orNum*dBeta);
 }
 
 void TracerGO::OutputSummary(int orNumber, CalcTimer &timer)

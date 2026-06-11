@@ -135,17 +135,7 @@ void HandlerGO::RotateMuller(const Point3f &dir, matrix &bf)
     const float &x = dir.cx;
     const float &y = dir.cy;
 
-    double tmp = y*y;
-
-    if (tmp < FLT_EPSILON)
-    {
-        tmp = M_2PI-tmp;
-    }
-    else
-    {
-        tmp = x/sqrt(x*x+tmp);
-        tmp = acos(tmp);
-    }
+    double tmp = atan2(y, x);
 
 #ifdef _DEBUG
         if (isnan(tmp))
@@ -199,22 +189,23 @@ void HandlerGO::WriteToFile(ContributionGO &contrib, double norm,
         }
         else
         {
-            allFile << ' ' << bf[0][0]*norm/(M_2PI*sn)
-                    << ' ' << bf[0][1]
-                    << ' ' << bf[0][2]
-                    << ' ' << bf[0][3]
-                    << ' ' << bf[1][0]
-                    << ' ' << bf[1][1]
-                    << ' ' << bf[1][2]
-                    << ' ' << bf[1][3]
-                    << ' ' << bf[2][0]
-                    << ' ' << bf[2][1]
-                    << ' ' << bf[2][2]
-                    << ' ' << bf[2][3]
-                    << ' ' << bf[3][0]
-                    << ' ' << bf[3][1]
-                    << ' ' << bf[3][2]
-                    << ' ' << bf[3][3];
+            const double scale = norm/(M_2PI*sn);
+            allFile << ' ' << bf[0][0]*scale
+                    << ' ' << bf[0][1]*scale
+                    << ' ' << bf[0][2]*scale
+                    << ' ' << bf[0][3]*scale
+                    << ' ' << bf[1][0]*scale
+                    << ' ' << bf[1][1]*scale
+                    << ' ' << bf[1][2]*scale
+                    << ' ' << bf[1][3]*scale
+                    << ' ' << bf[2][0]*scale
+                    << ' ' << bf[2][1]*scale
+                    << ' ' << bf[2][2]*scale
+                    << ' ' << bf[2][3]*scale
+                    << ' ' << bf[3][0]*scale
+                    << ' ' << bf[3][1]*scale
+                    << ' ' << bf[3][2]*scale
+                    << ' ' << bf[3][3]*scale;
         }
     }
 

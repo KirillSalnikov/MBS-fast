@@ -34,7 +34,7 @@ void HandlerTotalGO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
 void HandlerTotalGO::WriteMatricesToFile(std::string &destName, double nrg)
 {
 //    AverageOverAlpha(true, m_normIndex, m_totalContrib, destName);
-    WriteToFile(m_totalContrib, 1/*m_normIndex*/, destName + "_all");
+    WriteToFile(m_totalContrib, m_normIndex, destName + "_all");
 }
 
 void HandlerTotalGO::SetScatteringSphere(const ScatteringRange &grid)
