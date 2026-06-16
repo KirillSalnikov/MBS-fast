@@ -51,6 +51,17 @@ double OldautoBetaAngleGO(const AngleRange &betaRange, int betaIndex,
     return betaRange.min + (betaIndex + (midpoint ? 0.5 : 0.0))
         * betaRange.step;
 }
+
+double OldautoTraceBetaGO(double beta, const AngleRange &betaRange)
+{
+    if (betaRange.step <= 0.0)
+        return beta;
+    if (fabs(beta) <= FLT_EPSILON)
+        return beta + 0.5*betaRange.step;
+    if (fabs(beta - M_PI) <= FLT_EPSILON)
+        return beta - 0.5*betaRange.step;
+    return beta;
+}
 }
 
 TracerGO::TracerGO(Particle *particle, int reflNum, const std::string &resultFileName)
@@ -98,8 +109,9 @@ void TracerGO::TraceRandom(const AngleRange &betaRange, const AngleRange &gammaR
             gamma = OldautoGammaAngleGO(gammaRange, nGamma, j, i,
                                         gammaStagger);
 
-            m_particle->Rotate(beta, gamma, 0);
-			m_scattering->ScatterLight(beta, gamma, outBeams);
+            const double traceBeta = OldautoTraceBetaGO(beta, betaRange);
+            m_particle->Rotate(traceBeta, gamma, 0);
+			m_scattering->ScatterLight(0, 0, outBeams);
             m_handler->HandleBeams(outBeams, cs_beta);
 
 #ifdef _CHECK_ENERGY_BALANCE
@@ -137,7 +149,7 @@ void TracerGO::TraceFixed(const double &beta, const double &gamma)
 
 	vector<Beam> outBeams;
 	m_particle->Rotate(b, g, 0);
-	m_scattering->ScatterLight(b, g, outBeams);
+	m_scattering->ScatterLight(0, 0, outBeams);
     m_handler->HandleBeams(outBeams, 1);
 	outBeams.clear();
 
@@ -177,7 +189,7 @@ void TracerGO::TraceMonteCarlo(const AngleRange &betaRange, const AngleRange &ga
         try
         {
             m_particle->Rotate(beta, gamma, 0);
-            m_scattering->ScatterLight(beta, gamma, outBeams);
+            m_scattering->ScatterLight(0, 0, outBeams);
             m_handler->HandleBeams(outBeams, sin(beta));
 #ifdef _CHECK_ENERGY_BALANCE
             m_incomingEnergy += m_scattering->GetIncedentEnergy()*sin(beta);
