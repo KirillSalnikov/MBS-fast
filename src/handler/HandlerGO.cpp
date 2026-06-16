@@ -3,8 +3,39 @@
 #include <limits>
 #include <iostream>
 #include <iomanip>
+#include <algorithm>
+#include <cmath>
 
 #include "Mueller.hpp"
+
+namespace
+{
+double RelativeJump(double a, double b)
+{
+    const double denom = std::max(std::fabs(a), std::fabs(b));
+    if (denom <= DBL_EPSILON)
+        return 0.0;
+    return std::fabs(a - b)/denom;
+}
+
+bool HasUnstablePoleJump(const matrix &pole, const matrix &inner)
+{
+    static const int diag[4] = {0, 1, 2, 3};
+    for (int idx : diag)
+    {
+        if (RelativeJump(pole[idx][idx], inner[idx][idx]) > 0.20)
+            return true;
+    }
+    return false;
+}
+
+double UniformThetaWeight(int j, int nTheta, double thetaStepRad)
+{
+    if (j == 0 || j == nTheta)
+        return 1.0 - cos(thetaStepRad/2.0);
+    return cos((j - 0.5)*thetaStepRad) - cos((j + 0.5)*thetaStepRad);
+}
+}
 
 HandlerGO::HandlerGO(Particle *particle, Light *incidentLight, int nTheta,
                      double wavelength)
@@ -106,14 +137,14 @@ matrix HandlerGO::ComputeMueller(float zenAng, Beam &beam)
 //#ifdef _DEBUG // DEB
 //    double &ddd = m[0][0];
 //#endif
-    if (zenAng < 180-FLT_EPSILON && zenAng > FLT_EPSILON)
+    const float &x = beam.direction.cx;
+    const float &y = beam.direction.cy;
+    if (x*x + y*y > DBL_EPSILON)
     {
-        const float &y = beam.direction.cy;
-
-        if (y*y > DBL_EPSILON)
-        {	// rotate the Mueller matrix of the beam to appropriate coordinate system
-            RotateMuller(beam.direction, m);
-        }
+        // Rotate the Mueller matrix to the scattering-plane basis.  The old
+        // zenith-angle guard skipped this for the 0/180 degree bins, which
+        // left M22/M33 in an arbitrary pole basis.
+        RotateMuller(beam.direction, m);
 
 #ifdef _CALC_AREA_CONTIBUTION_ONLY
         bf = matrix(4,4);
@@ -167,9 +198,7 @@ void HandlerGO::WriteToFile(ContributionGO &contrib, double norm,
 //        double tmp1 = (j == 0) ? -(0.25*180.0)/contrib.nTheta : 0;
 //        double tmp2 = (j == (int)contrib.nTheta) ? (0.25*180.0)/contrib.nTheta : 0;
 
-        double sn = (j == 0 || j == contrib.nTheta)
-                ? 1-cos(thetaStepRad/2.0)
-                : (cos((j-0.5)*thetaStepRad)-cos((j+0.5)*thetaStepRad));
+        double sn = UniformThetaWeight(j, contrib.nTheta, thetaStepRad);
 
         // Special case in first and last step
 //        allFile << '\n' << tmp0 + tmp1 + tmp2 << ' ' << (M_2PI*sn);
@@ -177,6 +206,25 @@ void HandlerGO::WriteToFile(ContributionGO &contrib, double norm,
                 << (M_2PI*sn);
 
         matrix bf = contrib.muellers(0, j);
+        if (j == 0 && contrib.nTheta > 1)
+        {
+            matrix inner = contrib.muellers(0, 1);
+            if (HasUnstablePoleJump(bf, inner))
+            {
+                bf = inner;
+                sn = UniformThetaWeight(1, contrib.nTheta, thetaStepRad);
+            }
+        }
+        else if (j == contrib.nTheta && contrib.nTheta > 1)
+        {
+            matrix inner = contrib.muellers(0, contrib.nTheta - 1);
+            if (HasUnstablePoleJump(bf, inner))
+            {
+                bf = inner;
+                sn = UniformThetaWeight(contrib.nTheta - 1,
+                                        contrib.nTheta, thetaStepRad);
+            }
+        }
 
 //#ifdef _DEBUG // DEB
 //        double dd = bf[0][0];

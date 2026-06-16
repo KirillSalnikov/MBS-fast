@@ -1,9 +1,56 @@
 #include "TracerGO.h"
 #include "HandlerGO.h"
 #include "HandlerTotalGO.h"
+#include <cstdlib>
+#include <cmath>
 #include <iostream>
 
 using namespace std;
+
+namespace
+{
+bool OldautoBetaMidpointEnabledGO()
+{
+    const char *env = std::getenv("MBS_OLDAUTO_BETA_MIDPOINT");
+    if (!env || !*env)
+        return true;
+    return !(env[0] == '0' && env[1] == '\0');
+}
+
+bool OldautoGammaStaggerEnabledGO()
+{
+    const char *env = std::getenv("MBS_OLDAUTO_GAMMA_STAGGER");
+    if (!env || !*env)
+        return false;
+    return env[0] == '1' && env[1] == '\0';
+}
+
+double OldautoGammaAngleGO(const AngleRange &gammaRange, int nGamma,
+                           int gammaIndex, int betaIndex, bool stagger)
+{
+    double unit = gammaIndex + 0.5;
+    if (stagger && nGamma > 1)
+    {
+        const double golden = 0.6180339887498948482;
+        double shift = std::fmod((betaIndex + 0.5)*golden, 1.0);
+        unit += shift;
+        unit -= std::floor(unit/nGamma)*nGamma;
+    }
+    return gammaRange.min + unit*gammaRange.step;
+}
+
+int OldautoBetaCountGO(const AngleRange &betaRange, bool midpoint)
+{
+    return midpoint ? betaRange.number : betaRange.number + 1;
+}
+
+double OldautoBetaAngleGO(const AngleRange &betaRange, int betaIndex,
+                          bool midpoint)
+{
+    return betaRange.min + (betaIndex + (midpoint ? 0.5 : 0.0))
+        * betaRange.step;
+}
+}
 
 TracerGO::TracerGO(Particle *particle, int reflNum, const std::string &resultFileName)
 	: Tracer(particle, reflNum, resultFileName)
@@ -23,7 +70,11 @@ void TracerGO::TraceRandom(const AngleRange &betaRange, const AngleRange &gammaR
 	CalcTimer timer;
 	OutputStartTime(timer);
 
-    long long orNum = gammaRange.number * betaRange.number;
+    const bool betaMidpoint = OldautoBetaMidpointEnabledGO();
+    const bool gammaStagger = OldautoGammaStaggerEnabledGO();
+    const int nBeta = OldautoBetaCountGO(betaRange, betaMidpoint);
+    const int nGamma = gammaRange.number;
+    long long orNum = (long long)nBeta * nGamma;
     int betaNorm = (m_symmetry.beta < M_PI_2+FLT_EPSILON && m_symmetry.beta > M_PI_2-FLT_EPSILON) ? 1 : 2;
     double normIndex = gammaRange.number * betaNorm;
     // double norm = CalcNorm(orNum);
@@ -36,14 +87,15 @@ void TracerGO::TraceRandom(const AngleRange &betaRange, const AngleRange &gammaR
     double cs_beta = 0.0;
     long long count = 0;
 
-    for (int i = 0; i <= betaRange.number; ++i)
+    for (int i = 0; i < nBeta; ++i)
 	{
-        beta = beta = betaRange.min + i*betaRange.step;
+        beta = OldautoBetaAngleGO(betaRange, i, betaMidpoint);
         CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normIndex, cs_beta);
 
-        for (int j = 0; j <= gammaRange.number; ++j)
+        for (int j = 0; j < nGamma; ++j)
 		{
-			gamma = (j + 0.5)*gammaRange.step;
+            gamma = OldautoGammaAngleGO(gammaRange, nGamma, j, i,
+                                        gammaStagger);
 
             m_particle->Rotate(beta, gamma, 0);
 			m_scattering->ScatterLight(beta, gamma, outBeams);
