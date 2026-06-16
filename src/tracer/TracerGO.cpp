@@ -5,6 +5,9 @@
 #include <cstdlib>
 #include <cmath>
 #include <iostream>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 using namespace std;
 
@@ -62,6 +65,31 @@ double OldautoTraceBetaGO(double beta, const AngleRange &betaRange)
         return beta - 0.5*betaRange.step;
     return beta;
 }
+
+unsigned int MonteSeedGO()
+{
+    const char *env = std::getenv("MBS_MONTE_SEED");
+    if (env && *env)
+    {
+        char *end = nullptr;
+        unsigned long seed = std::strtoul(env, &end, 10);
+        if (end && *end == '\0')
+            return (unsigned int)seed;
+    }
+
+    unsigned int lo, hi;
+    asm("rdtsc" : "=a"(lo), "=d"(hi));
+    return lo ^ (hi << 16);
+}
+
+int GoThreadCount()
+{
+#ifdef _OPENMP
+    return omp_get_max_threads();
+#else
+    return 1;
+#endif
+}
 }
 
 TracerGO::TracerGO(Particle *particle, int reflNum, const std::string &resultFileName)
@@ -96,45 +124,122 @@ void TracerGO::TraceRandom(const AngleRange &betaRange, const AngleRange &gammaR
         m_handler->SetNormIndex(1.0);
     }
 
+    HandlerGO *handlerGO = dynamic_cast<HandlerGO*>(m_handler);
+    HandlerTotalGO *handlerTotal = dynamic_cast<HandlerTotalGO*>(m_handler);
+    const bool parallelTotal = handlerGO && handlerTotal
+        && GoThreadCount() > 1 && orNum > 1;
+
     double cs_beta = 0.0;
     long long count = 0;
 
-    for (int i = 0; i < nBeta; ++i)
-	{
-        beta = OldautoBetaAngleGO(betaRange, i, betaMidpoint);
-        CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normIndex, cs_beta);
+    if (parallelTotal)
+    {
+        m_scattering->PrepareForParallelTrace();
+        double incomingEnergySum = 0.0;
 
-        for (int j = 0; j < nGamma; ++j)
-		{
-            gamma = OldautoGammaAngleGO(gammaRange, nGamma, j, i,
-                                        gammaStagger);
+#pragma omp parallel reduction(+:incomingEnergySum)
+        {
+            Particle localParticle = *m_particle;
+            Scattering *localScatter =
+                m_scattering->CloneFor(&localParticle, &m_incidentLight);
+            HandlerTotalGO localHandler(&localParticle, &m_incidentLight,
+                                        handlerGO->nTheta, m_scattering->m_wave);
+            localHandler.ConfigureForThreadLocal(*handlerGO, localScatter);
+            localHandler.SetScatteringSphere(handlerGO->m_sphere);
+            std::vector<Beam> localBeams;
 
-            const double traceBeta = OldautoTraceBetaGO(beta, betaRange);
-            m_particle->Rotate(traceBeta, gamma, 0);
-			m_scattering->ScatterLight(0, 0, outBeams);
-            m_handler->HandleBeams(outBeams, cs_beta);
+#pragma omp for schedule(dynamic, 1)
+            for (long long idx = 0; idx < orNum; ++idx)
+            {
+                const int i = (int)(idx/nGamma);
+                const int j = (int)(idx%nGamma);
+                const double beta = OldautoBetaAngleGO(betaRange, i,
+                                                       betaMidpoint);
+                double csLocal = 0.0;
+                CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normIndex,
+                           csLocal);
+                const double gamma = OldautoGammaAngleGO(gammaRange, nGamma, j,
+                                                         i, gammaStagger);
+                const double traceBeta = OldautoTraceBetaGO(beta, betaRange);
+                localParticle.Rotate(traceBeta, gamma, 0);
+                localScatter->ScatterLight(0, 0, localBeams);
+                localHandler.HandleBeams(localBeams, csLocal);
 
 #ifdef _CHECK_ENERGY_BALANCE
-            m_incomingEnergy += m_scattering->GetIncedentEnergy()*cs_beta;
+                incomingEnergySum += localScatter->GetIncedentEnergy()*csLocal;
 #endif
-//			m_handler->WriteLog(to_string(i) + ", " + to_string(j) + " ");
-//			OutputOrientationToLog(i, j, logfile);
-            if (m_logTime == 0)
-            {
-                OutputProgress(orNum, ++count,
-                               std::lround(RadToDeg(beta)),
-                               std::lround(RadToDeg(gamma)), timer,
-                               outBeams.size());
-            }
-            else
-            {
-                OutputProgress(orNum, ++count, i,j, timer, outBeams.size());
+                const int beamCount = (int)localBeams.size();
+                localBeams.clear();
+
+                long long done;
+#pragma omp atomic capture
+                done = ++count;
+
+#pragma omp critical(go_progress)
+                {
+                    if (m_logTime == 0)
+                    {
+                        OutputProgress(orNum, done,
+                                       std::lround(RadToDeg(beta)),
+                                       std::lround(RadToDeg(gamma)), timer,
+                                       beamCount);
+                    }
+                    else
+                    {
+                        OutputProgress(orNum, done, i, j, timer, beamCount);
+                    }
+                }
             }
 
-            outBeams.clear();
-		}
+#pragma omp critical(go_merge)
+            {
+                handlerGO->MergeTotalContributionFrom(localHandler);
+            }
 
-	}
+            delete localScatter;
+        }
+
+#ifdef _CHECK_ENERGY_BALANCE
+        m_incomingEnergy += incomingEnergySum;
+#endif
+    }
+    else
+    {
+        for (int i = 0; i < nBeta; ++i)
+        {
+            beta = OldautoBetaAngleGO(betaRange, i, betaMidpoint);
+            CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normIndex, cs_beta);
+
+            for (int j = 0; j < nGamma; ++j)
+            {
+                gamma = OldautoGammaAngleGO(gammaRange, nGamma, j, i,
+                                            gammaStagger);
+
+                const double traceBeta = OldautoTraceBetaGO(beta, betaRange);
+                m_particle->Rotate(traceBeta, gamma, 0);
+                m_scattering->ScatterLight(0, 0, outBeams);
+                m_handler->HandleBeams(outBeams, cs_beta);
+
+#ifdef _CHECK_ENERGY_BALANCE
+                m_incomingEnergy += m_scattering->GetIncedentEnergy()*cs_beta;
+#endif
+                if (m_logTime == 0)
+                {
+                    OutputProgress(orNum, ++count,
+                                   std::lround(RadToDeg(beta)),
+                                   std::lround(RadToDeg(gamma)), timer,
+                                   outBeams.size());
+                }
+                else
+                {
+                    OutputProgress(orNum, ++count, i,j, timer, outBeams.size());
+                }
+
+                outBeams.clear();
+            }
+
+        }
+    }
 
     // m_incomingEnergy *= normIndex;
     m_handler->m_outputEnergy = ((HandlerGO*)m_handler)->ComputeTotalScatteringEnergy();
@@ -173,38 +278,112 @@ void TracerGO::TraceMonteCarlo(const AngleRange &betaRange, const AngleRange &ga
 
     string fulldir = m_resultDirName + "/";
 
-    unsigned int lo, hi;
-    asm("rdtsc" : "=a"(lo), "=d"(hi));
-    unsigned long long nTacts = (unsigned long long)hi << 32 | lo;
-    srand(nTacts);
-    cout << endl << "NTacts = " << nTacts << endl;
-//    srand(static_cast<unsigned>(time(0)));
+    unsigned int seed = MonteSeedGO();
+    srand(seed);
+    cout << endl << "Monte seed = " << seed << endl;
     long long count = 0;
+    const double cosMin = cos(betaRange.max);
+    const double dCos = 1.0 - cosMin;
+    std::vector<double> betas(nOrientations);
+    std::vector<double> gammas(nOrientations);
 
     for (int i = 0; i < nOrientations; ++i)
     {
-        beta = RandomDouble(0, 1)*betaRange.max;
-        gamma = RandomDouble(0, 1)*gammaRange.max;
-
-        try
-        {
-            m_particle->Rotate(beta, gamma, 0);
-            m_scattering->ScatterLight(0, 0, outBeams);
-            m_handler->HandleBeams(outBeams, sin(beta));
-#ifdef _CHECK_ENERGY_BALANCE
-            m_incomingEnergy += m_scattering->GetIncedentEnergy()*sin(beta);
-#endif
-        }
-        catch (...)
-        {
-        }
-
-        outBeams.clear();
-
-        OutputProgress(nOrientations, ++count, i, i, timer, outBeams.size());
+        betas[i] = acos(1.0 - RandomDouble(0, 1)*dCos);
+        gammas[i] = RandomDouble(0, 1)*gammaRange.max;
     }
 
-    double norm = CalcNorm(nOrientations);
+    HandlerGO *handlerGO = dynamic_cast<HandlerGO*>(m_handler);
+    HandlerTotalGO *handlerTotal = dynamic_cast<HandlerTotalGO*>(m_handler);
+    const bool parallelTotal = handlerGO && handlerTotal
+        && GoThreadCount() > 1 && nOrientations > 1;
+
+    if (parallelTotal)
+    {
+        m_scattering->PrepareForParallelTrace();
+        double incomingEnergySum = 0.0;
+
+#pragma omp parallel reduction(+:incomingEnergySum)
+        {
+            Particle localParticle = *m_particle;
+            Scattering *localScatter =
+                m_scattering->CloneFor(&localParticle, &m_incidentLight);
+            HandlerTotalGO localHandler(&localParticle, &m_incidentLight,
+                                        handlerGO->nTheta, m_scattering->m_wave);
+            localHandler.ConfigureForThreadLocal(*handlerGO, localScatter);
+            localHandler.SetScatteringSphere(handlerGO->m_sphere);
+            std::vector<Beam> localBeams;
+
+#pragma omp for schedule(dynamic, 1)
+            for (int i = 0; i < nOrientations; ++i)
+            {
+                try
+                {
+                    localParticle.Rotate(betas[i], gammas[i], 0);
+                    localScatter->ScatterLight(0, 0, localBeams);
+                    localHandler.HandleBeams(localBeams, 1.0);
+#ifdef _CHECK_ENERGY_BALANCE
+                    incomingEnergySum += localScatter->GetIncedentEnergy();
+#endif
+                }
+                catch (...)
+                {
+                }
+
+                const int beamCount = (int)localBeams.size();
+                localBeams.clear();
+
+                long long done;
+#pragma omp atomic capture
+                done = ++count;
+
+#pragma omp critical(go_progress)
+                {
+                    OutputProgress(nOrientations, done, i, i, timer,
+                                   beamCount);
+                }
+            }
+
+#pragma omp critical(go_merge)
+            {
+                handlerGO->MergeTotalContributionFrom(localHandler);
+            }
+
+            delete localScatter;
+        }
+
+#ifdef _CHECK_ENERGY_BALANCE
+        m_incomingEnergy += incomingEnergySum;
+#endif
+    }
+    else
+    {
+        for (int i = 0; i < nOrientations; ++i)
+        {
+            beta = betas[i];
+            gamma = gammas[i];
+
+            try
+            {
+                m_particle->Rotate(beta, gamma, 0);
+                m_scattering->ScatterLight(0, 0, outBeams);
+                m_handler->HandleBeams(outBeams, 1.0);
+#ifdef _CHECK_ENERGY_BALANCE
+                m_incomingEnergy += m_scattering->GetIncedentEnergy();
+#endif
+            }
+            catch (...)
+            {
+            }
+
+            const int beamCount = (int)outBeams.size();
+            outBeams.clear();
+
+            OutputProgress(nOrientations, ++count, i, i, timer, beamCount);
+        }
+    }
+
+    double norm = 1.0/nOrientations;
     m_handler->SetNormIndex(norm);
 
     m_outcomingEnergy = ((HandlerGO*)m_handler)->ComputeTotalScatteringEnergy()*norm;
@@ -240,26 +419,101 @@ void TracerGO::TraceSobol(int nOrientations, unsigned int seed,
     const double dCos = 1.0 - cosMin;
 
     long long count = 0;
+    std::vector<double> betas(nOrientations);
+    std::vector<double> gammas(nOrientations);
     for (int i = 0; i < nOrientations; ++i)
     {
-        const double beta = acos(1.0 - su[i]*dCos);
-        const double gamma = sv[i]*gammaMax;
+        betas[i] = acos(1.0 - su[i]*dCos);
+        gammas[i] = sv[i]*gammaMax;
+    }
 
-        try
+    HandlerGO *handlerGO = dynamic_cast<HandlerGO*>(m_handler);
+    HandlerTotalGO *handlerTotal = dynamic_cast<HandlerTotalGO*>(m_handler);
+    const bool parallelTotal = handlerGO && handlerTotal
+        && GoThreadCount() > 1 && nOrientations > 1;
+
+    if (parallelTotal)
+    {
+        m_scattering->PrepareForParallelTrace();
+        double incomingEnergySum = 0.0;
+
+#pragma omp parallel reduction(+:incomingEnergySum)
         {
-            m_particle->Rotate(beta, gamma, 0);
-            m_scattering->ScatterLight(0, 0, outBeams);
-            m_handler->HandleBeams(outBeams, 1.0);
+            Particle localParticle = *m_particle;
+            Scattering *localScatter =
+                m_scattering->CloneFor(&localParticle, &m_incidentLight);
+            HandlerTotalGO localHandler(&localParticle, &m_incidentLight,
+                                        handlerGO->nTheta, m_scattering->m_wave);
+            localHandler.ConfigureForThreadLocal(*handlerGO, localScatter);
+            localHandler.SetScatteringSphere(handlerGO->m_sphere);
+            std::vector<Beam> localBeams;
+
+#pragma omp for schedule(dynamic, 1)
+            for (int i = 0; i < nOrientations; ++i)
+            {
+                try
+                {
+                    localParticle.Rotate(betas[i], gammas[i], 0);
+                    localScatter->ScatterLight(0, 0, localBeams);
+                    localHandler.HandleBeams(localBeams, 1.0);
 #ifdef _CHECK_ENERGY_BALANCE
-            m_incomingEnergy += m_scattering->GetIncedentEnergy();
+                    incomingEnergySum += localScatter->GetIncedentEnergy();
 #endif
-        }
-        catch (...)
-        {
+                }
+                catch (...)
+                {
+                }
+
+                const int beamCount = (int)localBeams.size();
+                localBeams.clear();
+
+                long long done;
+#pragma omp atomic capture
+                done = ++count;
+
+#pragma omp critical(go_progress)
+                {
+                    OutputProgress(nOrientations, done, i, i, timer,
+                                   beamCount);
+                }
+            }
+
+#pragma omp critical(go_merge)
+            {
+                handlerGO->MergeTotalContributionFrom(localHandler);
+            }
+
+            delete localScatter;
         }
 
-        OutputProgress(nOrientations, ++count, i, i, timer, outBeams.size());
-        outBeams.clear();
+#ifdef _CHECK_ENERGY_BALANCE
+        m_incomingEnergy += incomingEnergySum;
+#endif
+    }
+    else
+    {
+        for (int i = 0; i < nOrientations; ++i)
+        {
+            const double beta = betas[i];
+            const double gamma = gammas[i];
+
+            try
+            {
+                m_particle->Rotate(beta, gamma, 0);
+                m_scattering->ScatterLight(0, 0, outBeams);
+                m_handler->HandleBeams(outBeams, 1.0);
+#ifdef _CHECK_ENERGY_BALANCE
+                m_incomingEnergy += m_scattering->GetIncedentEnergy();
+#endif
+            }
+            catch (...)
+            {
+            }
+
+            const int beamCount = (int)outBeams.size();
+            outBeams.clear();
+            OutputProgress(nOrientations, ++count, i, i, timer, beamCount);
+        }
     }
 
     const double norm = 1.0/nOrientations;

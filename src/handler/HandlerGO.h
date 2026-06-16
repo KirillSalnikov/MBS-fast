@@ -15,6 +15,9 @@ public:
     void WriteLog(const std::string &str);
 
     void MultiplyMueller(const Beam &beam, matrix &m);
+    void ConfigureForThreadLocal(const HandlerGO &source,
+                                 Scattering *scattering);
+    void MergeTotalContributionFrom(const HandlerGO &source);
 
 protected:
     ContributionGO m_totalContrib;	// result scattering martices contribution

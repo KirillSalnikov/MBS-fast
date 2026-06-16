@@ -27,6 +27,28 @@ void HandlerGO::SetScatteringSphere(const ScatteringRange &grid)
 
 }
 
+void HandlerGO::ConfigureForThreadLocal(const HandlerGO &source,
+                                         Scattering *scattering)
+{
+    m_scattering = scattering;
+    m_sphere = source.m_sphere;
+    m_tracks = source.m_tracks;
+    m_hasAbsorption = source.m_hasAbsorption;
+    m_normIndex = source.m_normIndex;
+    m_cAbs = source.m_cAbs;
+    m_ri = source.m_ri;
+    m_riIm = source.m_riIm;
+    m_absMag = source.m_absMag;
+    m_absorptionPointCount = source.m_absorptionPointCount;
+}
+
+void HandlerGO::MergeTotalContributionFrom(const HandlerGO &source)
+{
+    m_totalContrib.back += source.m_totalContrib.back;
+    m_totalContrib.forward += source.m_totalContrib.forward;
+    m_totalContrib.muellers += source.m_totalContrib.muellers;
+}
+
 void HandlerGO::ExtractPeaks(double *b, double *f, double norm,
                              const std::string &destDir)
 {
