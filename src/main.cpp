@@ -3444,6 +3444,25 @@ int main(int argc, const char* argv[])
             tracer.m_summary = additionalSummary;
             tracer.TraceMonteCarlo(beta, gamma, nOr);
         }
+        else if (args.IsCatched("sobol") || args.IsCatched("sobol_seed"))
+        {
+            const bool hasSeed = args.IsCatched("sobol_seed");
+            int nOr = hasSeed ? args.GetIntValue("sobol_seed", 0)
+                              : args.GetIntValue("sobol", 0);
+            unsigned int seed = hasSeed
+                ? (unsigned int)std::max(0, args.GetIntValue("sobol_seed", 1))
+                : 42u;
+            double betaMax = particle->GetSymmetry().beta;
+            double gammaMax = particle->GetSymmetry().gamma;
+            if (args.IsCatched("mirror_gamma"))
+                gammaMax *= 0.5;
+
+            additionalSummary += hasSeed ? ", Sobol nested Owen seed\n\n"
+                                         : ", Sobol quasi-random\n\n";
+            cout << additionalSummary;
+            tracer.m_summary = additionalSummary;
+            tracer.TraceSobol(nOr, seed, betaMax, gammaMax);
+        }
 
         delete handler;
     }

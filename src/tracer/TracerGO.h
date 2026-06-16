@@ -11,6 +11,8 @@ public:
 	void TraceFixed(const double &beta, const double &gamma);
     void TraceMonteCarlo(const AngleRange &betaRange, const AngleRange &gammaRange,
                          int nOrientations);
+    void TraceSobol(int nOrientations, unsigned int seed,
+                    double betaMax, double gammaMax);
 
 protected:
 	double CalcNorm(long long orNum);

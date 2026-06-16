@@ -1,6 +1,7 @@
 #include "TracerGO.h"
 #include "HandlerGO.h"
 #include "HandlerTotalGO.h"
+#include "Sobol.h"
 #include <cstdlib>
 #include <cmath>
 #include <iostream>
@@ -205,6 +206,61 @@ void TracerGO::TraceMonteCarlo(const AngleRange &betaRange, const AngleRange &ga
     m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
     OutputSummary(nOrientations, timer);
 
+}
+
+void TracerGO::TraceSobol(int nOrientations, unsigned int seed,
+                          double betaMax, double gammaMax)
+{
+#ifdef _CHECK_ENERGY_BALANCE
+    m_incomingEnergy = 0;
+    m_outcomingEnergy = 0;
+#endif
+    vector<Beam> outBeams;
+
+    CalcTimer timer;
+    OutputStartTime(timer);
+
+    Sobol2D sobol(seed);
+    std::vector<double> su, sv;
+    sobol.generate(nOrientations, su, sv);
+
+    const double cosMin = cos(betaMax);
+    const double dCos = 1.0 - cosMin;
+
+    long long count = 0;
+    for (int i = 0; i < nOrientations; ++i)
+    {
+        const double beta = acos(1.0 - su[i]*dCos);
+        const double gamma = sv[i]*gammaMax;
+
+        try
+        {
+            m_particle->Rotate(beta, gamma, 0);
+            m_scattering->ScatterLight(0, 0, outBeams);
+            m_handler->HandleBeams(outBeams, 1.0);
+#ifdef _CHECK_ENERGY_BALANCE
+            m_incomingEnergy += m_scattering->GetIncedentEnergy();
+#endif
+        }
+        catch (...)
+        {
+        }
+
+        OutputProgress(nOrientations, ++count, i, i, timer, outBeams.size());
+        outBeams.clear();
+    }
+
+    const double norm = 1.0/nOrientations;
+    m_handler->SetNormIndex(norm);
+
+    m_outcomingEnergy = ((HandlerGO*)m_handler)->ComputeTotalScatteringEnergy()*norm;
+    m_handler->m_outputEnergy = m_outcomingEnergy;
+#ifdef _CHECK_ENERGY_BALANCE
+    m_incomingEnergy *= norm;
+#endif
+
+    m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
+    OutputSummary(nOrientations, timer);
 }
 
 double TracerGO::CalcNorm(long long orNum)
