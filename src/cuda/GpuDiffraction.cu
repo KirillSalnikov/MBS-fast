@@ -201,6 +201,7 @@ struct GpuWorkspace
 
 static thread_local GpuWorkspace g_gpuWorkspace;
 static thread_local bool g_gpuMultiWorker = false;
+static thread_local bool g_gpuFftLowDirect = false;
 
 static inline double prepared_absorption_factor(const PreparedBeam &pb,
                                                 double scale,
@@ -3263,13 +3264,33 @@ bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOri
     if (computeNoShadow)
         lowMns.ClearArr();
 
-    bool savedFft = m_fftEnabled;
-    m_fftEnabled = false;
-    m_sphere = lowSphere;
+    struct FftLowDirectGuard
+    {
+        HandlerPO *handler;
+        ScatteringRange savedSphere;
+        bool savedFft;
+        bool savedLowDirect;
+
+        FftLowDirectGuard(HandlerPO *h, const ScatteringRange &low)
+            : handler(h),
+              savedSphere(h->m_sphere),
+              savedFft(h->m_fftEnabled),
+              savedLowDirect(g_gpuFftLowDirect)
+        {
+            g_gpuFftLowDirect = true;
+            handler->m_fftEnabled = false;
+            handler->m_sphere = low;
+        }
+
+        ~FftLowDirectGuard()
+        {
+            handler->m_sphere = savedSphere;
+            handler->m_fftEnabled = savedFft;
+            g_gpuFftLowDirect = savedLowDirect;
+        }
+    } lowGuard(this, lowSphere);
     bool ok = HandleOrientationsToLocalGpu(prepared, start, count, lowM, lowMns,
                                            scale, waveIndex);
-    m_sphere = fullSphere;
-    m_fftEnabled = savedFft;
     if (!ok)
         return failFft("low-direct");
 
@@ -3819,7 +3840,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         return true;
     const bool computeNoShadow = ComputeNoShadow();
 
-    if (!g_gpuMultiWorker)
+    if (!g_gpuMultiWorker && !g_gpuFftLowDirect)
     {
         const int nDevices = gpu_multi_device_count(nOrient);
         if (nDevices > 1)
