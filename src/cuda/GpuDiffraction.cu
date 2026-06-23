@@ -3981,8 +3981,10 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     const bool packNoVertexCache = (packNoVertexCacheMode >= 0)
         ? (packNoVertexCacheMode != 0)
         : false;
-    const bool canUseBeam8 = packFusedMueller && !computeNoShadow
-        && !packStageMueller && !packNoVertexCache;
+    // The compact 8-vertex packing path is a speed optimization only.  It has
+    // proven fragile for non-convex clipped beams in the threaded pack stage,
+    // while the general 32-vertex path is stable and handles the same beams.
+    const bool canUseBeam8 = false;
     const bool packBeam8 = allBeam8 && canUseBeam8;
     const bool packMixedBeam8 = !allBeam8 && canUseBeam8
                              && nBeams8 > 0 && nBeamsLarge > 0;
