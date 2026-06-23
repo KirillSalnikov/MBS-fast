@@ -600,9 +600,13 @@ double Handler::BeamCrossSection(const Beam &beam) const
 void Handler::PrecomputeEdgeData(const BeamInfo &info, const Beam &beam,
                                   BeamEdgeData &edgeData) const
 {
+    edgeData.nVertices = 0;
+    edgeData.valid = false;
+    if (beam.nVertices < 3 || beam.nVertices >= BeamEdgeData::MAX_EDGES)
+        return;
+
     edgeData.nVertices = beam.nVertices;
-    edgeData.valid = (beam.nVertices >= 3 && beam.nVertices < BeamEdgeData::MAX_EDGES);
-    if (!edgeData.valid) return;
+    edgeData.valid = true;
 
     int nv = beam.nVertices;
 

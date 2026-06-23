@@ -573,6 +573,11 @@ void Scattering::Intersect(int facetID, const Beam &beam, Polygon &intersection)
     {
         return;
     }
+    if (beam.nVertices <= 0 || beam.nVertices >= MAX_VERTEX_NUM)
+    {
+        intersection.nVertices = 0;
+        return;
+    }
 
     __m128 _normal_to_facet = _mm_setr_ps(-normal.cx, -normal.cy, -normal.cz, 0.0);
     __m128 *_output_ptr = _output_points;
@@ -583,6 +588,11 @@ void Scattering::Intersect(int facetID, const Beam &beam, Polygon &intersection)
     int bufferSize;
 
     int facetSize = facet.nVertices;
+    if (facetSize <= 0 || facetSize >= MAX_VERTEX_NUM)
+    {
+        intersection.nVertices = 0;
+        return;
+    }
 
     __m128 _p1, _p2; // vertices of facet
     __m128 _s_point, _e_point;	// points of projection
@@ -622,10 +632,20 @@ void Scattering::Intersect(int facetID, const Beam &beam, Polygon &intersection)
                                            _normal_to_facet, isIntersected);
                     if (isIntersected)
                     {
+                        if (outputSize >= MAX_VERTEX_NUM)
+                        {
+                            intersection.nVertices = 0;
+                            return;
+                        }
                         _output_ptr[outputSize++] = x;
                     }
                 }
 
+                if (outputSize >= MAX_VERTEX_NUM)
+                {
+                    intersection.nVertices = 0;
+                    return;
+                }
                 _output_ptr[outputSize++] = _e_point;
             }
             else if (isInsideS)
@@ -634,6 +654,11 @@ void Scattering::Intersect(int facetID, const Beam &beam, Polygon &intersection)
                                        _normal_to_facet, isIntersected);
                 if (isIntersected)
                 {
+                    if (outputSize >= MAX_VERTEX_NUM)
+                    {
+                        intersection.nVertices = 0;
+                        return;
+                    }
                     _output_ptr[outputSize++] = x;
                 }
             }
@@ -659,6 +684,8 @@ void Scattering::SetOutputPolygon(__m128 *_output_points, int outputSize,
         polygon.nVertices = 0;
         return;
     }
+    if (outputSize > MAX_VERTEX_NUM)
+        outputSize = MAX_VERTEX_NUM;
 
     Point3f p;
 

@@ -2956,6 +2956,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         };
 
         const bool pipelineTraceGpu = handlerPO->IsGpuEnabled()
+            && !handlerPO->IsFftEnabled()
             && gammaChunk < gammaFullCount
             && !hostMemConservative;
         if (pipelineTraceGpu)

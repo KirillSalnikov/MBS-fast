@@ -371,8 +371,8 @@ struct BeamEdgeData
     double intercept_x[MAX_EDGES]; ///< x[i] - slope_xy[i]*y[i]
     bool edge_valid_x[MAX_EDGES];  ///< |dx| > eps (usable for absB>absA branch)
     bool edge_valid_y[MAX_EDGES];  ///< |dy| > eps (usable for absA>=absB branch)
-    int nVertices;
-    bool valid;
+    int nVertices = 0;
+    bool valid = false;
 };
 
 class Handler

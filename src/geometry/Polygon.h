@@ -29,6 +29,8 @@ public:
 
     void InsertVertex(int index, const Point3f &v)
     {
+        if (nVertices >= MAX_VERTEX_NUM)
+            return;
         ++nVertices;
 
         for (int i = nVertices-1; i > index; --i)
@@ -86,6 +88,8 @@ public:
 
     void AddVertex(const Point3f &v)
     {
+        if (nVertices >= 512)
+            return;
         arr[nVertices++] = v;
     }
 
@@ -106,6 +110,8 @@ public:
 
     void Push(const Polygon &p)
     {
+        if (size >= MAX_POLYGON_NUM)
+            return;
         arr[size++] = p;
     }
 
