@@ -1500,7 +1500,9 @@ double HandlerPO::ComputeForwardExtinctionOt(
     {
         if (m_otPhaseAverage && !pb.isExternal)
             continue;
-        if (!pb.edgeData.valid)
+        if (!pb.edgeData.valid
+            || pb.edgeData.nVertices <= 0
+            || pb.edgeData.nVertices >= BeamEdgeData::MAX_EDGES)
             continue;
 
         ThetaCoeffs tc;
@@ -1708,7 +1710,9 @@ double HandlerPO::ComputeForwardExtinctionOtScaled(
     {
         if (m_otPhaseAverage && !pb.isExternal)
             continue;
-        if (!pb.edgeData.valid)
+        if (!pb.edgeData.valid
+            || pb.edgeData.nVertices <= 0
+            || pb.edgeData.nVertices >= BeamEdgeData::MAX_EDGES)
             continue;
 
         BeamEdgeData edge = pb.edgeData;
