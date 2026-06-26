@@ -12,7 +12,6 @@ public:
     Scattering* CloneFor(Particle *p, Light *l) override {
         ScatteringNonConvex *copy = new ScatteringNonConvex(p, l, true, m_nActs);
         copy->CopyRuntimeOptionsFrom(*this);
-        copy->CopyVisibilityCacheFrom(*this);
         return copy;
     }
     void PrepareForParallelTrace() override;
