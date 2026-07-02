@@ -65,6 +65,9 @@ protected:
 
     long long m_timeElapsed = 0;
     long long m_progressPollCounter = 0;
+    bool m_progressBaseSet = false;
+    long long m_progressBaseCount = 0;
+    double m_progressBaseTime = 0.0;
 
 protected:
     void OutputStartTime(CalcTimer &timer);

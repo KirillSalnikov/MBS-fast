@@ -184,7 +184,33 @@ J_beam(theta, phi) = F_edge(theta, phi) * R_out(theta, phi) * F_n(theta, phi)
 | `R_out` | `RotateJones` или `KarczewskiJones` | Поворот/проекция Jones базиса в базис рассеяния |
 | `F_n` | `ComputeFnJones` | Fresnel/Jones поправка для нормали пучка и направления |
 
-Флаг `--karczewski` заменяет стандартный `RotateJones` на матрицу Karczewski. По комментариям в коде `M11` при этом не меняется, потому что сохраняется Frobenius norm, но поляризационные элементы могут отличаться.
+### Флаг Karczewski для поляризации
+
+`--karczewski` заменяет стандартную проекцию базиса `RotateJones` на
+`HandlerPO::KarczewskiJones`. Он меняет только выходной поляризационный
+множитель `R_out`; трассировка, площади пучков, optical paths, Fresnel
+коэффициенты, дифракционная амплитуда и сетка рассеяния остаются теми же.
+
+Это не универсальный флаг "лучше", а инструмент для проверки поляризационной
+конвенции. В коде ветка помечена как experimental: она использует Karczewski
+матрицу в aperture-frame, но не полностью повторяет всю coordinate pipeline
+GOAD. Включать ее имеет смысл, когда сравниваются поляризационно-чувствительные
+элементы Mueller или reference calculation использует Karczewski convention.
+
+Ожидаемый эффект:
+
+| Величина | Что должно происходить |
+|---|---|
+| `M11` | Не должен меняться. `M11 = 0.5 * ||J||_F^2`, а Karczewski/default rotations сохраняют одну и ту же Frobenius norm. |
+| `M12`, `M22` | Обычно менее чувствительны, чем нижний поляризационный блок, но могут сдвигаться при другой convention базиса. |
+| `M33`, `M34`, `M44` | Могут заметно измениться, потому что меняется структура Jones-матрицы в базисе рассеяния. |
+| Интегральные величины, завязанные на интенсивность | Нельзя считать улучшенными только из-за `--karczewski`; нужно смотреть сами Mueller elements. |
+
+Практическое правило: если `M11` совпадает, а расходятся только `M33/M34/M44`,
+запусти тот же case с `--karczewski` и без него. Если `--karczewski` приближает
+результат к reference, проблема скорее в поляризационной convention. Если
+меняется `M11`, причина не в этом флаге, а в геометрии, diffraction, cutoff или
+normalization.
 
 ### Дифракционный интеграл Kirchhoff
 
@@ -388,13 +414,27 @@ J10.re, J10.im, J11.re, J11.im
 | `--multigrid` | `Dmin Dmax N` | Log-spaced scan по `Dmax`. |
 | `--multikeq` | `Kmin Kmax N` | Log-spaced scan по `k_eq`. |
 | `--multikeq_list` | `FILE` | Точный список `k_eq`, один на строку. |
-| `--multigrid_parallel` | `N` | Запуск scan points как child processes; `0` значит auto. |
+| `--multigrid_parallel` | `N` | Запуск scan points как child processes; `0` значит auto по списку GPU или числу CPU cores. |
 | `--multigrid_threads` | `N` | OpenMP threads на child process. |
 | `--gpu_devices` | `LIST` | Список CUDA devices, например `0,1,2,3,4`. |
 | `--multikeq_shared_batches` | none | Batch близких `k_eq` на GPU child с reuse tracing от максимального `k_eq`. |
 | `--multikeq_batch_ratio` | `R` | Максимальное `kmax/kmin` внутри shared batch; default `1.05`. |
 
-Exact multi-GPU:
+Parallel scheduler работает через отдельные процессы. Parent убирает scan-флаг
+из команды, создает подпапку в `-o` для каждого размера или batch, затем
+запускает child с `--rs SIZE`, `--k_eq K` или автоматически созданным
+`--multikeq_list FILE`. Лог каждого child пишется в
+`<output>/<label>.run.log`.
+
+С `--gpu` каждому child назначается одна CUDA-карта через
+`CUDA_VISIBLE_DEVICES` и `MBS_GPU_SLOT`. Если `--gpu_devices` не задан, берутся
+CUDA devices, видимые процессу. `--multigrid_parallel 0` обычно означает: для
+GPU использовать число видимых/перечисленных карт, для CPU ограничиться
+доступными threads. На общей машине лучше задавать `--multigrid_parallel N`
+явно.
+
+Exact multi-GPU: один процесс на активный GPU slot, каждый размер трассируется
+независимо:
 
 ```bash
 gpu/bin/mbs_po_gpu_float_fast --po --pf particle.dat \
@@ -404,7 +444,7 @@ gpu/bin/mbs_po_gpu_float_fast --po --pf particle.dat \
     -o scan_exact
 ```
 
-Shared-batch:
+Shared-batch `k_eq`:
 
 ```bash
 gpu/bin/mbs_po_gpu_float_fast --po --pf particle.dat \
@@ -415,11 +455,48 @@ gpu/bin/mbs_po_gpu_float_fast --po --pf particle.dat \
     -o scan_shared
 ```
 
+`--multikeq_shared_batches` применим только к scan по `k_eq`. Близкие значения
+группируются по `--multikeq_batch_ratio`; child трассирует максимальный `k_eq`
+в batch и переиспользует подготовленные пучки для меньших `k_eq`. Это быстрее,
+но не полностью эквивалентно независимым oldauto-сеткам. Для проверки точности
+уменьшай ratio, а если каждому размеру нужна своя oldauto reference grid,
+используй exact mode без shared batches.
+
 Fused multi-`k_eq`:
 
 ```bash
 MBS_GPU_MULTI_K_FULL=1 gpu/bin/mbs_po_gpu_float_fast ...
 ```
+
+Для больших direct-сеток `theta x phi` главным ограничением может быть host RAM,
+даже если GPU memory свободна. В oldauto log появляется строка:
+
+```text
+Oldauto/random memory: gamma chunk=... (GPU host-RAM guard, MemAvailable=... MB, VmRSS=... MB, grid-transient=... MB, budget=... MB)
+```
+
+Если `grid-transient` сравним с budget, один только меньший `--chunk` проблему
+не решит: нужно уменьшать `Nphi/Nth`, включать `--fft`, увеличивать host-memory
+budget или делить задачу на меньшие независимые сетки.
+
+Для oldauto/random checkpoint сетка Mueller без тени сохраняется только если
+запрошен no-shadow output. В обычных full-output расчетах код не держит и не
+пишет второй полный массив `theta x phi x 4 x 4`, что заметно снижает RSS на
+больших direct-сетках.
+
+Основные настройки scheduler и memory guard:
+
+| Переменная | Смысл |
+|---|---|
+| `MBS_PARALLEL_MEM_FRACTION` | Доля текущей `MemAvailable`, делится между GPU child processes; default `0.70`. |
+| `MBS_HOST_MEM_BUDGET_MB` | Жесткий host-memory budget для child. Scheduler задает автоматически, если переменная уже не выставлена. |
+| `MBS_HOST_MEM_FRACTION` | Доля total host RAM для oldauto/random chunking. |
+| `MBS_HOST_MEM_RESERVE_MB` | Резерв host RAM, который oldauto/random старается оставить свободным; default `4096`. |
+| `MBS_OLDAUTO_GRID_MEM_SAFETY` | Запас для transient массивов direct-grid; default `1.25`. |
+| `MBS_OLDAUTO_BYTES_PER_GAMMA_MB` | Оценка памяти на один gamma для prepared beams. |
+| `MBS_OLDAUTO_GAMMA_CHUNK` | Default oldauto gamma chunk до автоматического memory clamp. |
+| `MBS_PARALLEL_SHARED_KEQ=1` | Environment equivalent для `--multikeq_shared_batches`. |
+| `MBS_PARALLEL_KEQ_BATCH_RATIO=R` | Environment default для `--multikeq_batch_ratio`. |
 
 ## Все флаги
 
@@ -503,6 +580,19 @@ MBS_GPU_MULTI_K_FULL=1 gpu/bin/mbs_po_gpu_float_fast ...
 | `--trace_prefilter_stats` | none | Print prefilter counters. |
 | `-r` | `RATIO` | Beam area restriction ratio. |
 
+### Multi-size и multi-GPU
+
+| Флаг | Аргументы | Описание |
+|---|---:|---|
+| `--multigrid` | `Dmin Dmax N` | Log-spaced scan по максимальному размеру частицы. |
+| `--multikeq` | `Kmin Kmax N` | Log-spaced scan по equivalent size parameter `k_eq`. |
+| `--multikeq_list` | `FILE` | Точные значения `k_eq`, один на строку. |
+| `--multigrid_parallel` | `N` | Запускать scan points как child processes; `0` выбирает число jobs автоматически. |
+| `--multigrid_threads` | `N` | OpenMP threads на один child process. |
+| `--gpu_devices` | `LIST` | CUDA devices, назначаются child processes по кругу. |
+| `--multikeq_shared_batches` | none | Группировать близкие `k_eq` и переиспользовать трассировку от максимального `k_eq` в batch. |
+| `--multikeq_batch_ratio` | `R` | Максимальное `kmax/kmin` внутри shared batch; default `1.05`. |
+
 ### Output, diagnostics, legacy
 
 | Флаг | Аргументы | Описание |
@@ -550,10 +640,19 @@ MBS_GPU_MULTI_K_FULL=1 gpu/bin/mbs_po_gpu_float_fast ...
 | `MBS_HOST_MEM_FRACTION` | Доля host RAM для oldauto/random chunking. |
 | `MBS_HOST_MEM_RESERVE_MB` | Резерв host RAM в MB. |
 | `MBS_HOST_MEM_BUDGET_MB` | Жесткий host RAM budget. |
+| `MBS_OLDAUTO_GRID_MEM_SAFETY` | Коэффициент запаса для оценки host RAM больших сеток `theta x phi` в oldauto; default `1.25`. |
+| `MBS_OLDAUTO_BYTES_PER_GAMMA_MB` | Оценка памяти prepared-beams на один gamma для oldauto/random memory guard. |
+| `MBS_OLDAUTO_GAMMA_CHUNK` | Default oldauto gamma chunk до автоматического memory clamp. |
+| `MBS_OLDAUTO_BETA_MIDPOINT=0/1` | Midpoint beta rings в oldauto/random quadrature. |
+| `MBS_OLDAUTO_GAMMA_STAGGER=1` | Сдвигать gamma samples между beta rings, чтобы уменьшить aliasing узких событий. |
 | `MBS_FFT_PHI_FACTOR` | Override reduced phi factor для FFT. |
+| `MBS_FFT_THETA_FACTOR` | Override theta batching factor для FFT. |
+| `MBS_FFT_CHECK=1` | FFT diagnostic checks. |
+| `MBS_FFT_ADAPTIVE_PHI=1` | Adaptive reduced-phi behavior в FFT backend. |
 | `MBS_GPU_MULTI=0` | Отключить automatic multi-orientation GPU batching. |
 | `MBS_GPU_MULTI_MAX=N` | Ограничить GPU multi batching. |
 | `MBS_GPU_MULTI_K_FULL=1` | Experimental fused multi-`k_eq` diffraction. |
+| `MBS_GPU_BEAM_STATS=1` | Печатать GPU beam packing/count diagnostics. |
 | `MBS_SHARED_BETA_GROUP=N` | Override beta grouping для shared batch. |
 | `MBS_SHARED_ORIENT_CHUNK=N` | Override orientation chunk для shared batch. |
 | `MBS_PARALLEL_MEM_FRACTION` | Memory fraction scheduler для parallel multi-size. |
@@ -584,4 +683,3 @@ ScAngle 2pi*dcos M11 M12 M13 M14 M21 M22 M23 M24 M31 M32 M33 M34 M41 M42 M43 M44
 | Jones output | `--jones` | Raw Jones matrices в поддержанных PO modes. |
 
 Предупреждения про optical-theorem/integral mismatch являются диагностикой. Для non-absorbing runs физическое поглощение фиксируется нулем; integral characteristic не заменяет выходную Mueller матрицу.
-

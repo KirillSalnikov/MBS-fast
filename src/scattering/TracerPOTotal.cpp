@@ -103,12 +103,68 @@ static long long EffectiveMemAvailableMb()
     return std::max(1LL, availableMb);
 }
 
+static long long Arr2DStorageKb(int nAz, int nZen, int rows, int cols,
+                                bool complexValues)
+{
+    const long long nPhi = (long long)std::max(0, nAz) + 1LL;
+    const long long nTheta = (long long)std::max(0, nZen) + 1LL;
+    const long long cells = nPhi * nTheta;
+    const long long scalarBytes = complexValues ? (long long)sizeof(::complex)
+                                                : (long long)sizeof(double);
+    const long long dataBytes = cells * (long long)rows * (long long)cols
+        * scalarBytes;
+    const long long pointerBytes = nPhi * (long long)sizeof(void **)
+        + cells * (long long)sizeof(void *);
+    return (dataBytes + pointerBytes + 1023LL) / 1024LL;
+}
+
+static long long EstimateOldautoTransientGridKb(int nAz, int nZen,
+                                                bool computeNoShadow,
+                                                bool coherent,
+                                                bool gpuEnabled)
+{
+    const long long realGridKb = Arr2DStorageKb(nAz, nZen, 4, 4, false);
+    const long long jonesGridKb = Arr2DStorageKb(nAz, nZen, 2, 2, true);
+    long long transientKb = 0;
+
+    if (gpuEnabled)
+    {
+        // betaM and localM are allocated after the chunk decision.  The global
+        // M/M_noshadow arrays are already reflected in VmRSS at this point.
+        transientKb += 2LL * realGridKb;
+        if (computeNoShadow)
+            transientKb += 2LL * realGridKb;
+    }
+    else
+    {
+        transientKb += realGridKb;
+        if (computeNoShadow)
+            transientKb += realGridKb;
+        if (coherent)
+        {
+            transientKb += jonesGridKb;
+            if (computeNoShadow)
+                transientKb += jonesGridKb;
+        }
+    }
+
+    const double safety = EnvDouble("MBS_OLDAUTO_GRID_MEM_SAFETY", 1.25);
+    return (long long)std::ceil((double)transientKb
+                                * std::max(1.0, std::min(4.0, safety)));
+}
+
 static int HostMemoryAwareGammaChunk(int requested,
                                      bool noBeamCutoff,
+                                     int nAz,
+                                     int nZen,
+                                     bool computeNoShadow,
+                                     bool coherent,
+                                     bool gpuEnabled,
                                      long long *totalKbOut,
                                      long long *availableKbOut,
                                      long long *rssKbOut,
-                                     long long *budgetKbOut)
+                                     long long *budgetKbOut,
+                                     long long *gridKbOut)
 {
     const long long totalKb = ReadMeminfoKb("MemTotal:");
     const long long availableKb = ReadMeminfoKb("MemAvailable:");
@@ -116,6 +172,7 @@ static int HostMemoryAwareGammaChunk(int requested,
     if (totalKbOut) *totalKbOut = totalKb;
     if (availableKbOut) *availableKbOut = availableKb;
     if (rssKbOut) *rssKbOut = rssKb;
+    if (gridKbOut) *gridKbOut = 0;
 
     if (totalKb <= 0 || availableKb <= 0)
     {
@@ -127,11 +184,14 @@ static int HostMemoryAwareGammaChunk(int requested,
                                       noBeamCutoff ? 0.90 : 0.55);
     const long long reserveKb =
         (long long)EnvInt("MBS_HOST_MEM_RESERVE_MB", 4096) * 1024LL;
-    const long long totalBudgetKb =
-        (long long)(std::max(0.05, std::min(0.90, fraction)) * (double)totalKb);
     const long long freeBudgetKb = std::max(0LL, availableKb - reserveKb);
+    const double expandableFraction = std::max(0.05, std::min(0.95, fraction));
+    const long long expandableKb =
+        (long long)(expandableFraction * (double)freeBudgetKb);
+    const long long processCeilingKb = std::max(256LL * 1024LL,
+        totalKb > reserveKb ? totalKb - reserveKb : totalKb / 2);
     long long budgetKb = std::max(256LL * 1024LL,
-        std::min(totalBudgetKb, rssKb + freeBudgetKb));
+        std::min(processCeilingKb, rssKb + expandableKb));
     const long long overrideKb = HostMemoryBudgetOverrideKb();
     if (overrideKb > 0)
         budgetKb = std::min(budgetKb, overrideKb);
@@ -140,7 +200,11 @@ static int HostMemoryAwareGammaChunk(int requested,
     const int mbPerGamma = EnvInt("MBS_OLDAUTO_BYTES_PER_GAMMA_MB",
                                   noBeamCutoff ? 64 : 128);
     const long long perGammaKb = std::max(1, mbPerGamma) * 1024LL;
-    int byMemory = (int)std::max(1LL, budgetKb / perGammaKb);
+    const long long gridTransientKb = EstimateOldautoTransientGridKb(
+        nAz, nZen, computeNoShadow, coherent, gpuEnabled);
+    if (gridKbOut) *gridKbOut = gridTransientKb;
+    const long long remainingKb = budgetKb - rssKb - gridTransientKb;
+    int byMemory = (int)std::max(1LL, remainingKb / perGammaKb);
     return std::max(1, std::min(requested, byMemory));
 }
 
@@ -1662,6 +1726,9 @@ static void WriteAveragedRowsFile(const std::string &destName,
         const double qAbsGo = cAbsGo / incomingEnergy;
         const double qExt = cExt / incomingEnergy;
         const double qExtLegacy = cExtLegacy / incomingEnergy;
+        const double otIntegralMismatch = (hasExtinctionOt && std::fabs(cExt) > 0.0)
+            ? std::fabs(cscaIntegral - cExt) / std::fabs(cExt)
+            : 0.0;
 
         std::ostringstream log;
         log << std::fixed << std::setprecision(4);
@@ -1694,6 +1761,8 @@ static void WriteAveragedRowsFile(const std::string &destName,
                 << cExtLegacy << "\n";
             log << "Q_ext_legacy_GO = C_ext_legacy_GO / A_proj = "
                 << qExtLegacy << "\n";
+            log << "OT_integral_mismatch_rel = " << otIntegralMismatch
+                << " (diagnostic agreement of integral(M11 dOmega) with C_ext_OT)\n";
         }
         else
         {
@@ -1719,14 +1788,17 @@ static void WriteAveragedRowsFile(const std::string &destName,
             << "Qsca_integral=" << qScaIntegral << ' '
             << "Csca_integral=" << cscaIntegral << ' '
             << "Aproj=" << incomingEnergy << ' '
-            << "Eout=" << outputEnergy << "\n";
+            << "Eout=" << outputEnergy << ' '
+            << "OT_integral_mismatch_rel=" << otIntegralMismatch << ' '
+            << "integral_status="
+            << ((hasExtinctionOt && otIntegralMismatch > 1e-2)
+                ? "diagnostic_only" : "ok")
+            << "\n";
         if (hasExtinctionOt && !hasAbsorption)
         {
-            const double mismatch = (std::fabs(cExt) > 0.0)
-                ? std::fabs(cscaIntegral - cExt) / std::fabs(cExt) : 0.0;
-            if (mismatch > 1e-2)
+            if (otIntegralMismatch > 1e-2)
                 log << "WARNING: non-absorbing OT/integral mismatch = "
-                    << mismatch * 100.0
+                    << otIntegralMismatch * 100.0
                     << "%. C_sca_integral is diagnostic; physical C_abs is fixed to zero.\n";
         }
         std::ofstream logFile(destName + "_log.txt", std::ios::app);
@@ -2130,14 +2202,16 @@ static void SaveOldautoCheckpoint(const std::string &path,
                                   double energy, double outputEnergy,
                                   double extinctionOt, bool hasExtinctionOt,
                                   int completedBeta, int nBeta, int nGamma,
-                                  unsigned long paramHash, int nAz, int nZen)
+                                  unsigned long paramHash, int nAz, int nZen,
+                                  bool saveNoShadow)
 {
     std::string tmp = path + ".tmp";
     std::ofstream f(tmp, std::ios::binary);
     if (!f.is_open()) return;
     uint32_t magic = 0x4D425341; // "MBSA" oldauto checkpoint
-    uint32_t version = 1;
+    uint32_t version = 2;
     int hasExt = hasExtinctionOt ? 1 : 0;
+    int hasNoShadow = saveNoShadow ? 1 : 0;
     int completedOrient = completedBeta * nGamma;
     int totalOrient = nBeta * nGamma;
     f.write((char*)&magic, 4);
@@ -2152,6 +2226,7 @@ static void SaveOldautoCheckpoint(const std::string &path,
     f.write((char*)&outputEnergy, sizeof(outputEnergy));
     f.write((char*)&extinctionOt, sizeof(extinctionOt));
     f.write((char*)&hasExt, sizeof(hasExt));
+    f.write((char*)&hasNoShadow, sizeof(hasNoShadow));
     f.write((char*)&nAz, 4);
     f.write((char*)&nZen, 4);
     for (int p = 0; p < nAz; ++p)
@@ -2163,15 +2238,16 @@ static void SaveOldautoCheckpoint(const std::string &path,
                     f.write((char*)&v, 8);
                 }
         }
-    for (int p = 0; p < nAz; ++p)
-        for (int t = 0; t < nZen; ++t) {
-            matrix m = M_ns(p, t);
-            for (int r = 0; r < 4; ++r)
-                for (int c = 0; c < 4; ++c) {
-                    double v = m[r][c];
-                    f.write((char*)&v, 8);
-                }
-        }
+    if (saveNoShadow)
+        for (int p = 0; p < nAz; ++p)
+            for (int t = 0; t < nZen; ++t) {
+                matrix m = M_ns(p, t);
+                for (int r = 0; r < 4; ++r)
+                    for (int c = 0; c < 4; ++c) {
+                        double v = m[r][c];
+                        f.write((char*)&v, 8);
+                    }
+            }
     f.close();
     if (f.good())
         std::rename(tmp.c_str(), path.c_str());
@@ -2191,7 +2267,7 @@ static bool LoadOldautoCheckpoint(const std::string &path,
     uint32_t magic = 0, version = 0;
     f.read((char*)&magic, 4);
     f.read((char*)&version, 4);
-    if (magic != 0x4D425341 || version != 1) return false;
+    if (magic != 0x4D425341 || version != 2) return false;
     unsigned long storedHash = 0;
     f.read((char*)&storedHash, sizeof(storedHash));
     if (storedHash != paramHash) {
@@ -2212,6 +2288,8 @@ static bool LoadOldautoCheckpoint(const std::string &path,
     f.read((char*)&extinctionOt, sizeof(extinctionOt));
     int hasExt = 0;
     f.read((char*)&hasExt, sizeof(hasExt));
+    int hasNoShadow = 0;
+    f.read((char*)&hasNoShadow, sizeof(hasNoShadow));
     int nAz = 0, nZen = 0;
     f.read((char*)&nAz, 4);
     f.read((char*)&nZen, 4);
@@ -2227,18 +2305,21 @@ static bool LoadOldautoCheckpoint(const std::string &path,
                 }
             M.replace(p, t, m);
         }
-    for (int p = 0; p < nAz; ++p)
-        for (int t = 0; t < nZen; ++t)
-        {
-            matrix m(4, 4);
-            for (int r = 0; r < 4; ++r)
-                for (int c = 0; c < 4; ++c) {
-                    double v = 0.0;
-                    f.read((char*)&v, 8);
-                    m[r][c] = v;
-                }
-            M_ns.replace(p, t, m);
-        }
+    const bool loadNoShadow = hasNoShadow != 0 && StrArr(M_ns) > 0 && ColArr(M_ns) > 0;
+    if (hasNoShadow)
+        for (int p = 0; p < nAz; ++p)
+            for (int t = 0; t < nZen; ++t)
+            {
+                matrix m(4, 4);
+                for (int r = 0; r < 4; ++r)
+                    for (int c = 0; c < 4; ++c) {
+                        double v = 0.0;
+                        f.read((char*)&v, 8);
+                        m[r][c] = v;
+                    }
+                if (loadNoShadow)
+                    M_ns.replace(p, t, m);
+            }
     if (!f.good()) return false;
     completedBeta = storedCompletedBeta;
     hasExtinctionOt = hasExt != 0;
@@ -2634,6 +2715,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     long long hostMemAvailableKb = 0;
     long long hostMemRssKb = 0;
     long long hostMemBudgetKb = 0;
+    long long hostMemGridKb = 0;
     if (m_sobolChunkSize > 0)
     {
         gammaChunk = std::max(1, std::min(nGamma, m_sobolChunkSize));
@@ -2659,10 +2741,16 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         gammaChunk = HostMemoryAwareGammaChunk(
             requestedGammaChunk,
             noBeamCutoff,
+            nAz,
+            nZen,
+            handlerPO->ComputeNoShadow(),
+            handlerPO->isCoh,
+            handlerPO->IsGpuEnabled(),
             &hostMemTotalKb,
             &hostMemAvailableKb,
             &hostMemRssKb,
-            &hostMemBudgetKb);
+            &hostMemBudgetKb,
+            &hostMemGridKb);
         gammaChunk = std::max(1, std::min(nGamma, gammaChunk));
         hostMemGuarded = true;
         hostMemClamped = gammaChunk < requestedGammaChunk;
@@ -2681,11 +2769,14 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             {
                 line << ", MemAvailable=" << (hostMemAvailableKb / 1024)
                      << " MB, VmRSS=" << (hostMemRssKb / 1024)
+                     << " MB, grid-transient=" << (hostMemGridKb / 1024)
                      << " MB, budget=" << (hostMemBudgetKb / 1024)
                      << " MB";
                 if (HostMemoryBudgetOverrideKb() > 0)
                     line << ", shared-budget=" << (HostMemoryBudgetOverrideKb() / 1024)
                          << " MB";
+                if (hostMemRssKb + hostMemGridKb > hostMemBudgetKb)
+                    line << ", grid dominates budget";
             }
             if (hostMemConservative)
                 line << ", no-cutoff conservative mode";
@@ -3073,10 +3164,20 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
                                   handlerPO->m_extinctionCrossSectionOt,
                                   handlerPO->m_hasExtinctionOt,
                                   ib + 1, nBeta, nGamma,
-                                  oldautoParamHash, nAz + 1, nZen + 1);
+                                  oldautoParamHash, nAz + 1, nZen + 1,
+                                  handlerPO->ComputeNoShadow());
             std::ostringstream line;
-            line << "Oldauto checkpoint saved: beta " << (ib + 1)
-                 << "/" << nBeta << " -> " << oldautoCkptPath;
+            struct stat st;
+            const bool haveStat = stat(oldautoCkptPath.c_str(), &st) == 0;
+            line << "Oldauto checkpoint v2 saved: beta " << (ib + 1)
+                 << "/" << nBeta
+                 << ", orient " << ((long long)(ib + 1) * nGamma)
+                 << "/" << nOrientations
+                 << ", noShadow=" << (handlerPO->ComputeNoShadow() ? 1 : 0);
+            if (haveStat)
+                line << ", size=" << (st.st_size / (1024 * 1024)) << " MB";
+            line << " -> " << oldautoCkptPath;
+            std::cout << line.str() << std::endl;
             AppendTextLog(line.str() + "\n");
         }
     }

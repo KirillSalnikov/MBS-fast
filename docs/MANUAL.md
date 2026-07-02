@@ -199,7 +199,35 @@ where:
 | `R_out` | `RotateJones` or `KarczewskiJones` | Jones-basis rotation/projection from beam coordinates to scattering coordinates |
 | `F_n` | `ComputeFnJones` | Fresnel/Jones correction for the beam normal and direction |
 
-The optional `--karczewski` flag replaces the default rotation with the Karczewski polarization matrix. The code comments note that `M11` is unchanged because the Frobenius norm is preserved, while polarization-sensitive elements can change.
+### Karczewski polarization flag
+
+`--karczewski` replaces the default `RotateJones` basis projection with
+`HandlerPO::KarczewskiJones`. It changes only the outgoing polarization
+rotation/projection factor `R_out`; tracing, beam areas, optical paths,
+Fresnel coefficients, diffraction amplitude, and the scattering grid are left
+unchanged.
+
+This flag is mainly a polarization-convention and validation tool, not a
+universal accuracy switch. The current implementation is marked experimental
+in the code because it follows the Karczewski aperture-frame matrix but does
+not fully reproduce the whole GOAD coordinate pipeline. Use it when comparing
+polarization-sensitive Mueller elements or when a reference calculation uses
+the Karczewski convention.
+
+Expected behavior:
+
+| Quantity | Expected effect |
+|---|---|
+| `M11` | Should stay unchanged. `M11 = 0.5 * ||J||_F^2`, and the Karczewski/default rotations preserve the same Frobenius norm. |
+| `M12`, `M22` | Usually less sensitive than the lower polarization block, but can still shift if the reference basis convention differs. |
+| `M33`, `M34`, `M44` | Can change noticeably because the Jones matrix structure in the scattering basis changes. |
+| Integral quantities dominated by intensity | Should not be interpreted as improved just because `--karczewski` is enabled; check the Mueller elements directly. |
+
+Practical rule: if only `M33/M34/M44` disagree while `M11` agrees, run the same
+case with and without `--karczewski`. If `--karczewski` moves the result toward
+the reference, the mismatch is likely a polarization-basis convention issue.
+If `M11` changes, the difference is not explained by this flag and points to a
+different geometry, diffraction, cutoff, or normalization problem.
 
 ### Kirchhoff diffraction integral
 
@@ -421,20 +449,34 @@ Useful controls:
 
 Do not confuse this with full GPU ray tracing. The production GPU backend is primarily a diffraction and Mueller-accumulation accelerator. `--gpu_trace` only prefilters nonconvex tracing candidates; exact intersections remain CPU-side.
 
-### Multi-size scans
+### Multi-size and multi-GPU scans
 
 | Flag | Arguments | Description |
 |---|---:|---|
 | `--multigrid` | `Dmin Dmax N` | Log-spaced scan in maximum particle dimension. |
 | `--multikeq` | `Kmin Kmax N` | Log-spaced scan in equivalent size parameter. |
 | `--multikeq_list` | `FILE` | Exact list of `k_eq` values, one per line. |
-| `--multigrid_parallel` | `N` | Run scan points as child processes; `0` means auto. |
+| `--multigrid_parallel` | `N` | Run scan points as child processes; `0` means auto from the GPU list or CPU core count. |
 | `--multigrid_threads` | `N` | OpenMP threads per child process. |
 | `--gpu_devices` | `LIST` | Comma-separated CUDA device list, for example `0,1,2,3,4`. |
 | `--multikeq_shared_batches` | none | Batch nearby `k_eq` values per GPU child and reuse tracing from the largest value in the batch. |
 | `--multikeq_batch_ratio` | `R` | Maximum `kmax/kmin` inside one shared batch; default `1.05`. |
 
-Exact multi-GPU scan, one process per active GPU slot:
+The parallel scheduler is process-based. It removes the scan flag from the
+parent command, creates one output subdirectory per size or batch under `-o`,
+then launches children with either `--rs SIZE`, `--k_eq K`, or a generated
+`--multikeq_list FILE`. Each child writes stdout/stderr to
+`<output>/<label>.run.log`.
+
+With `--gpu`, each child is assigned one CUDA device by setting
+`CUDA_VISIBLE_DEVICES` and `MBS_GPU_SLOT`. If `--gpu_devices` is omitted, the
+code uses the CUDA devices visible to the process. `--multigrid_parallel 0`
+means "use as many jobs as useful": for GPU runs this normally becomes the
+number of listed/visible devices; for CPU runs it is limited by available host
+threads. Use explicit `--multigrid_parallel N` when the machine is shared.
+
+Exact multi-GPU scan, one process per active GPU slot and one independently
+traced size per child:
 
 ```bash
 gpu/bin/mbs_po_gpu_float_fast --po --pf particle.dat \
@@ -444,7 +486,7 @@ gpu/bin/mbs_po_gpu_float_fast --po --pf particle.dat \
     -o scan_exact
 ```
 
-Shared-batch scan:
+Shared-batch `k_eq` scan:
 
 ```bash
 gpu/bin/mbs_po_gpu_float_fast --po --pf particle.dat \
@@ -455,13 +497,48 @@ gpu/bin/mbs_po_gpu_float_fast --po --pf particle.dat \
     -o scan_shared
 ```
 
+`--multikeq_shared_batches` is only for `k_eq` scans. Values close enough by
+`--multikeq_batch_ratio` are grouped into one child. The child traces the
+largest `k_eq` in the batch and reuses that prepared beam set for smaller
+values, so it is faster but not identical to independent oldauto grids. Use a
+tighter ratio for validation, and use exact mode when every size must have its
+own oldauto reference grid.
+
 Experimental fused multi-`k_eq` GPU diffraction:
 
 ```bash
 MBS_GPU_MULTI_K_FULL=1 gpu/bin/mbs_po_gpu_float_fast ...
 ```
 
-Use tighter `--multikeq_batch_ratio` for accuracy; use exact mode when each size must have its own oldauto reference grid.
+For large direct `theta x phi` grids, host RAM can dominate even when GPU memory
+is mostly free. The oldauto log prints a line like:
+
+```text
+Oldauto/random memory: gamma chunk=... (GPU host-RAM guard, MemAvailable=... MB, VmRSS=... MB, grid-transient=... MB, budget=... MB)
+```
+
+If `grid-transient` is comparable to the budget, lowering `--chunk` alone cannot
+fix memory use; reduce `Nphi/Nth`, use `--fft`, increase the host RAM budget, or
+split the calculation into smaller independent grids.
+
+For oldauto/random checkpoints, the no-shadow Mueller grid is stored only when
+no-shadow output is requested. Normal full-output runs therefore avoid keeping
+and checkpointing a second full `theta x phi x 4 x 4` matrix, which matters for
+large direct grids.
+
+Common scheduler controls:
+
+| Variable | Meaning |
+|---|---|
+| `MBS_PARALLEL_MEM_FRACTION` | Fraction of current `MemAvailable` divided among GPU child processes; default `0.70`. |
+| `MBS_HOST_MEM_BUDGET_MB` | Hard host-memory budget seen by a child. The scheduler sets it automatically unless already set. |
+| `MBS_HOST_MEM_FRACTION` | Fraction of total host RAM allowed inside oldauto/random chunking. |
+| `MBS_HOST_MEM_RESERVE_MB` | Host RAM reserve kept free by oldauto/random chunking; default `4096`. |
+| `MBS_OLDAUTO_GRID_MEM_SAFETY` | Safety multiplier for direct-grid transient arrays; default `1.25`. |
+| `MBS_OLDAUTO_BYTES_PER_GAMMA_MB` | Per-gamma host-memory estimate for prepared beams; default is conservative. |
+| `MBS_OLDAUTO_GAMMA_CHUNK` | Default oldauto gamma chunk before the host-memory guard clamps it. |
+| `MBS_PARALLEL_SHARED_KEQ=1` | Environment equivalent of `--multikeq_shared_batches`. |
+| `MBS_PARALLEL_KEQ_BATCH_RATIO=R` | Environment default for `--multikeq_batch_ratio`. |
 
 ## All flags
 
@@ -545,6 +622,19 @@ Use tighter `--multikeq_batch_ratio` for accuracy; use exact mode when each size
 | `--trace_prefilter_stats` | none | Print prefilter counters. |
 | `-r` | `RATIO` | Beam area restriction ratio; default `100`. |
 
+### Multi-size and multi-GPU flags
+
+| Flag | Arguments | Description |
+|---|---:|---|
+| `--multigrid` | `Dmin Dmax N` | Log-spaced scan in maximum particle dimension. |
+| `--multikeq` | `Kmin Kmax N` | Log-spaced scan in equivalent size parameter. |
+| `--multikeq_list` | `FILE` | Exact `k_eq` values, one per line. |
+| `--multigrid_parallel` | `N` | Launch scan points as child processes; `0` chooses an automatic job count. |
+| `--multigrid_threads` | `N` | OpenMP threads per child process. |
+| `--gpu_devices` | `LIST` | CUDA devices assigned round-robin to child processes. |
+| `--multikeq_shared_batches` | none | Group nearby `k_eq` values and reuse tracing from the largest value in each batch. |
+| `--multikeq_batch_ratio` | `R` | Maximum `kmax/kmin` within one shared batch; default `1.05`. |
+
 ### Output, diagnostics, and legacy flags
 
 | Flag | Arguments | Description |
@@ -594,10 +684,19 @@ Production-use variables:
 | `MBS_HOST_MEM_FRACTION` | Host-memory fraction for oldauto/random chunking. |
 | `MBS_HOST_MEM_RESERVE_MB` | Host memory reserve in MB. |
 | `MBS_HOST_MEM_BUDGET_MB` | Hard host memory budget, also set for parallel children. |
+| `MBS_OLDAUTO_GRID_MEM_SAFETY` | Safety multiplier for oldauto host-RAM estimate of large `theta x phi` grids; default `1.25`. |
+| `MBS_OLDAUTO_BYTES_PER_GAMMA_MB` | Per-gamma prepared-beam memory estimate used by oldauto/random host-RAM guard. |
+| `MBS_OLDAUTO_GAMMA_CHUNK` | Default oldauto gamma chunk before automatic memory clamping. |
+| `MBS_OLDAUTO_BETA_MIDPOINT=0/1` | Use midpoint beta rings in oldauto/random quadrature. |
+| `MBS_OLDAUTO_GAMMA_STAGGER=1` | Stagger gamma samples between beta rings to reduce aliasing in narrow events. |
 | `MBS_FFT_PHI_FACTOR` | Override FFT reduced phi factor. |
+| `MBS_FFT_THETA_FACTOR` | Override FFT theta batching factor. |
+| `MBS_FFT_CHECK=1` | Enable FFT diagnostic checks. |
+| `MBS_FFT_ADAPTIVE_PHI=1` | Enable adaptive reduced-phi behavior in FFT backend. |
 | `MBS_GPU_MULTI=0` | Disable automatic multi-orientation GPU batching. |
 | `MBS_GPU_MULTI_MAX=N` | Cap automatic GPU multi batching. |
 | `MBS_GPU_MULTI_K_FULL=1` | Experimental fused multi-`k_eq` diffraction. |
+| `MBS_GPU_BEAM_STATS=1` | Print GPU beam packing/count diagnostics. |
 | `MBS_SHARED_BETA_GROUP=N` | Override shared-batch beta grouping. |
 | `MBS_SHARED_ORIENT_CHUNK=N` | Override shared-batch orientation chunk size. |
 | `MBS_PARALLEL_MEM_FRACTION` | Memory fraction used by parallel multi-size scheduler. |

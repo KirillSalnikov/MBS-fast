@@ -182,6 +182,9 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
         const double Q_abs_GO = C_abs_GO / nrg;
         const double Q_ext = C_ext / nrg;
         const double Q_ext_legacy = C_ext_legacy / nrg;
+        const double otIntegralMismatch = (m_hasExtinctionOt && std::fabs(C_ext) > 0.0)
+            ? std::fabs(C_sca_integral - C_ext) / std::fabs(C_ext)
+            : 0.0;
         const std::string label =
             (destName.find("noshadow") != std::string::npos) ? "no-shadow" : "full";
         if (label == "full")
@@ -220,6 +223,8 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
                     << C_ext_legacy << "\n";
                 log << "Q_ext_legacy_GO = C_ext_legacy_GO / A_proj = "
                     << Q_ext_legacy << "\n";
+                log << "OT_integral_mismatch_rel = " << otIntegralMismatch
+                    << " (diagnostic agreement of integral(M11 dOmega) with C_ext_OT)\n";
             }
             else
             {
@@ -244,7 +249,12 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
                 << "Qsca=" << Q_sca << ' '
                 << "Csca=" << C_sca << ' '
                 << "Qsca_integral=" << Q_sca_integral << ' '
-                << "Csca_integral=" << C_sca_integral << "\n";
+                << "Csca_integral=" << C_sca_integral << ' '
+                << "OT_integral_mismatch_rel=" << otIntegralMismatch << ' '
+                << "integral_status="
+                << ((m_hasExtinctionOt && otIntegralMismatch > 1e-2)
+                    ? "diagnostic_only" : "ok")
+                << "\n";
         }
         if (Q_sca_integral > 2.5)
         {
@@ -255,11 +265,9 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
         }
         if (label == "full" && m_hasExtinctionOt && !m_hasAbsorption)
         {
-            const double mismatch = (std::fabs(C_ext) > 0.0)
-                ? std::fabs(C_sca_integral - C_ext) / std::fabs(C_ext) : 0.0;
-            if (mismatch > 1e-2)
+            if (otIntegralMismatch > 1e-2)
                 log << "WARNING: non-absorbing OT/integral mismatch = "
-                    << mismatch * 100.0
+                    << otIntegralMismatch * 100.0
                     << "%. C_sca_integral is diagnostic; physical C_abs is fixed to zero.\n";
         }
         log << "=========================================\n";

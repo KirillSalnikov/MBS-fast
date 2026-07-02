@@ -6,6 +6,9 @@
 #include <fstream>
 #include <algorithm>
 #include <cstdlib>
+#include <cmath>
+#include <iomanip>
+#include <sstream>
 #include <assert.h>
 #ifdef _OPENMP
 #include <omp.h>
@@ -20,6 +23,50 @@
 #include "ScatteringNonConvex.h"
 
 using namespace std;
+
+namespace
+{
+long long ReadProcStatusKb(const char *key)
+{
+    std::ifstream f("/proc/self/status");
+    std::string name;
+    long long value = 0;
+    std::string unit;
+    while (f >> name >> value >> unit)
+        if (name == key)
+            return value;
+    return 0;
+}
+
+long long ReadMemAvailableKb()
+{
+    std::ifstream f("/proc/meminfo");
+    std::string name;
+    long long value = 0;
+    std::string unit;
+    while (f >> name >> value >> unit)
+        if (name == "MemAvailable:")
+            return value;
+    return 0;
+}
+
+std::string FormatDuration(double seconds)
+{
+    if (seconds < 0.0 || !std::isfinite(seconds))
+        return "n/a";
+    long long sec = (long long)(seconds + 0.5);
+    long long h = sec / 3600;
+    long long m = (sec % 3600) / 60;
+    long long s = sec % 60;
+    std::ostringstream out;
+    if (h > 0)
+        out << h << "h";
+    if (h > 0 || m > 0)
+        out << m << "m";
+    out << s << "s";
+    return out.str();
+}
+}
 
 Tracer::Tracer(Particle *particle, int nActs, const string &resultFileName)
     : m_handler(nullptr),
@@ -120,11 +167,41 @@ void Tracer::OutputProgress(int nOrientation, long long count,
 //        EraseConsoleLine(60);
 
         long long done = std::min<long long>(count, nOrientation);
-        int percent = nOrientation > 0 ? (int)((done * 100) / nOrientation) : 0;
+        if (!m_progressBaseSet)
+        {
+            m_progressBaseSet = true;
+            m_progressBaseCount = done;
+            m_progressBaseTime = now;
+        }
 
-        string progressLine = to_string(percent) + "%" + split
-                + "orient " + to_string(done) + "/" + to_string(nOrientation)
-                + split + timer.Elapsed();
+        const double percent = nOrientation > 0
+            ? (100.0 * (double)done / (double)nOrientation)
+            : 0.0;
+        const double activeElapsed = std::max(1e-9, now - m_progressBaseTime);
+        const long long activeDone = std::max(0LL, done - m_progressBaseCount);
+        const double orientPerSec = activeDone > 0
+            ? (double)activeDone / activeElapsed
+            : 0.0;
+        const double eta = orientPerSec > 0.0
+            ? (double)(nOrientation - done) / orientPerSec
+            : -1.0;
+
+        std::ostringstream progress;
+        progress << std::fixed << std::setprecision(2) << percent << "%"
+                 << split << "orient " << done << "/" << nOrientation
+                 << split << timer.Elapsed();
+        if (orientPerSec > 0.0)
+            progress << split << std::setprecision(2)
+                     << "rate=" << orientPerSec << "/s"
+                     << split << "eta=" << FormatDuration(eta);
+        const long long rssKb = ReadProcStatusKb("VmRSS:");
+        const long long availKb = ReadMemAvailableKb();
+        if (rssKb > 0)
+            progress << split << "rss=" << (rssKb / 1024) << "MB";
+        if (availKb > 0)
+            progress << split << "mem_avail=" << (availKb / 1024) << "MB";
+
+        string progressLine = progress.str();
         if (nBeams >= 0)
         {
             progressLine += split + "beams=" + to_string(nBeams);

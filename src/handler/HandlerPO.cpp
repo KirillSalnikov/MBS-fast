@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstdlib>
+#include <mutex>
 
 bool HandlerPO::IsParticleBeam(const Beam &beam)
 {
@@ -865,7 +866,9 @@ void HandlerPO::SetScatteringSphere(const ScatteringRange &grid)
 {
     m_sphere = grid;
     M = Arr2D(m_sphere.nAzimuth+1, m_sphere.nZenith+1, 4, 4);
-    M_noshadow = Arr2D(m_sphere.nAzimuth+1, m_sphere.nZenith+1, 4, 4);
+    M_noshadow = ComputeNoShadow()
+        ? Arr2D(m_sphere.nAzimuth+1, m_sphere.nZenith+1, 4, 4)
+        : Arr2D();
 
     m_sphere.ComputeSphereDirections(*m_incidentLight);
 }
@@ -1465,7 +1468,11 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
 
     // Log beam cutoff statistics (first call only)
     static bool logged = false;
-    if (!logged && skippedBeams > 0) {
+    static std::mutex loggedMutex;
+    if (skippedBeams > 0) {
+        std::lock_guard<std::mutex> lock(loggedMutex);
+        if (logged)
+            return;
         std::cerr << "Beam cutoff: " << skippedBeams << "/" << (skippedBeams + (int)out.beams.size())
                   << " beams skipped (relative OR: |J|^2<" << std::scientific << std::setprecision(1)
                   << jThreshold << " [eps=" << jRel << "], area<" << areaThreshold
