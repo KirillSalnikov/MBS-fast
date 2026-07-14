@@ -1,5 +1,15 @@
+CXX_ORIGIN := $(origin CXX)
 CXX ?= g++
 CUDA_PATH ?= /usr/local/cuda
+
+ifeq ($(USE_CUDA),1)
+NVCC ?= $(if $(wildcard $(CUDA_PATH)/bin/nvcc),$(CUDA_PATH)/bin/nvcc,nvcc)
+CUDA_HOST_CXX ?= $(shell bash scripts/select_cuda_host_compiler.sh "$(NVCC)" "$(CXX)")
+CUDA_HOST_COMPAT := $(abspath src/cuda/CudaHostCompat.h)
+ifeq ($(CXX_ORIGIN),default)
+CXX := $(CUDA_HOST_CXX)
+endif
+endif
 
 ifeq ($(USE_MPI),1)
 CXX := mpicxx
@@ -32,8 +42,8 @@ INCLUDES = -I$(SRC_DIR) -I$(SRC_DIR)/math -I$(SRC_DIR)/handler \
 SOURCES = $(shell find $(SRC_DIR) -name '*.cpp') \
           $(shell find src/bigint -name '*.cc' 2>/dev/null)
 ifeq ($(USE_CUDA),1)
-NVCC ?= nvcc
 NVCCFLAGS ?= -O3 -std=c++11 -U_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700
+override NVCCFLAGS += -ccbin $(CUDA_HOST_CXX) -include $(CUDA_HOST_COMPAT)
 GPU_PRECISION ?= double
 GPU_FAST_MATH ?= 0
 ifeq ($(GPU_PRECISION),float)
@@ -58,6 +68,23 @@ FFT_PROBE = bin/fft_aperture_probe
 GPU_TRACE_PROBE = bin/gpu_trace_projection_probe
 
 all: $(TARGET)
+
+ifeq ($(USE_CUDA),1)
+cuda_check:
+	@$(NVCC) --version >/dev/null 2>&1 || { \
+		echo "CUDA compiler not found: $(NVCC)" >&2; \
+		echo "Set CUDA_PATH=/path/to/cuda or NVCC=/path/to/nvcc." >&2; \
+		exit 1; \
+	}
+	@$(CUDA_HOST_CXX) --version >/dev/null 2>&1 || { \
+		echo "CUDA-compatible host compiler not found: $(CUDA_HOST_CXX)" >&2; \
+		echo "Install a GCC version supported by this CUDA toolkit or set CUDA_HOST_CXX." >&2; \
+		exit 1; \
+	}
+
+$(OBJECTS): | cuda_check
+$(TARGET): | cuda_check
+endif
 
 cpu:
 	$(MAKE) -C cpu all
@@ -87,6 +114,7 @@ $(TARGET): $(OBJECTS)
 	@echo "USE_MPI: $(USE_MPI)"
 ifeq ($(USE_CUDA),1)
 	@echo "GPU_PRECISION: $(GPU_PRECISION)"
+	@echo "CUDA_HOST_CXX: $(CUDA_HOST_CXX)"
 endif
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
@@ -150,6 +178,6 @@ gpu_trace_probe:
 	@false
 endif
 
-.PHONY: all cpu gpu gpu_float gpu_float_fast gpu_double_fast split clean clean_cuda_objects cuda_float cuda_float_fast cuda_double_fast cuda_variants fft_probe gpu_trace_probe
+.PHONY: all cuda_check cpu gpu gpu_float gpu_float_fast gpu_double_fast split clean clean_cuda_objects cuda_float cuda_float_fast cuda_double_fast cuda_variants fft_probe gpu_trace_probe
 
 -include $(DEPS)

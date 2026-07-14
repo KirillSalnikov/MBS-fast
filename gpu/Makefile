@@ -3,8 +3,14 @@ SRC_DIR := $(ROOT)/src
 CUDA_PATH ?= /usr/local/cuda
 CUDA_LIB_PATH ?= $(if $(wildcard $(CUDA_PATH)/lib64/libcudart.so),$(CUDA_PATH)/lib64,$(CUDA_PATH)/targets/x86_64-linux/lib)
 
+CXX_ORIGIN := $(origin CXX)
 CXX ?= g++
-NVCC ?= nvcc
+NVCC ?= $(if $(wildcard $(CUDA_PATH)/bin/nvcc),$(CUDA_PATH)/bin/nvcc,nvcc)
+CUDA_HOST_CXX ?= $(shell bash $(ROOT)/scripts/select_cuda_host_compiler.sh "$(NVCC)" "$(CXX)")
+CUDA_HOST_COMPAT := $(abspath $(SRC_DIR)/cuda/CudaHostCompat.h)
+ifeq ($(CXX_ORIGIN),default)
+CXX := $(CUDA_HOST_CXX)
+endif
 USE_MPI ?= 0
 GPU_PRECISION ?= float
 GPU_FAST_MATH ?= 1
@@ -30,7 +36,8 @@ endif
 LDFLAGS ?= -lm -lgomp -L$(CUDA_LIB_PATH) -lcufft -lcudart
 DEPFLAGS := -MMD -MP
 
-NVCCFLAGS ?= -O3 -std=c++11 -arch=sm_$(GPU_ARCH) -U_GNU_SOURCE -D_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700
+NVCCFLAGS ?= -O3 -std=c++11 -arch=sm_$(GPU_ARCH) -U_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700
+override NVCCFLAGS += -ccbin $(CUDA_HOST_CXX) -include $(CUDA_HOST_COMPAT)
 ifeq ($(GPU_PRECISION),float)
 override NVCCFLAGS += -DMBS_GPU_FLOAT
 endif
@@ -56,11 +63,27 @@ DEPS := $(OBJECTS:.o=.d)
 
 all: $(TARGET)
 
+cuda_check:
+	@$(NVCC) --version >/dev/null 2>&1 || { \
+		echo "CUDA compiler not found: $(NVCC)" >&2; \
+		echo "Set CUDA_PATH=/path/to/cuda or NVCC=/path/to/nvcc." >&2; \
+		exit 1; \
+	}
+	@$(CUDA_HOST_CXX) --version >/dev/null 2>&1 || { \
+		echo "CUDA-compatible host compiler not found: $(CUDA_HOST_CXX)" >&2; \
+		echo "Install a GCC version supported by this CUDA toolkit or set CUDA_HOST_CXX." >&2; \
+		exit 1; \
+	}
+
+$(OBJECTS): | cuda_check
+$(TARGET): | cuda_check
+
 $(TARGET): $(OBJECTS)
 	@mkdir -p $(dir $@)
 	@echo "CUDA GPU build"
 	@echo "CPU: $(CPU_MODEL)"
 	@echo "CXX: $(CXX)"
+	@echo "CUDA_HOST_CXX: $(CUDA_HOST_CXX)"
 	@echo "GPU_PRECISION: $(GPU_PRECISION)"
 	@echo "GPU_FAST_MATH: $(GPU_FAST_MATH)"
 	@echo "USE_MPI: $(USE_MPI)"
@@ -108,6 +131,6 @@ double_debug:
 clean:
 	rm -rf build bin
 
-.PHONY: all float float_fast double_fast double_fast_mpi float_debug double_debug clean
+.PHONY: all cuda_check float float_fast double_fast double_fast_mpi float_debug double_debug clean
 
 -include $(DEPS)

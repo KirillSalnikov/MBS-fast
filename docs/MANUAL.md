@@ -67,6 +67,14 @@ make -C gpu float_fast  -j   # gpu/bin/mbs_po_gpu_float_fast
 make -C gpu double_fast -j   # gpu/bin/mbs_po_gpu_double_fast
 ```
 
+`gpu/Makefile` also works when `nvcc` is not in `PATH`: it uses
+`$CUDA_PATH/bin/nvcc` (default `CUDA_PATH=/usr/local/cuda`). It reads the host
+GCC limit from the installed CUDA headers and selects the newest compatible
+versioned compiler, such as `g++-13` for CUDA 12.6. Override the detection with
+`CUDA_HOST_CXX=/path/to/g++` when needed. On distributions whose default GCC is
+newer than the CUDA limit, install a supported version alongside the system
+compiler; changing the system-wide GCC alternative is not required.
+
 | Target | Binary | CUDA precision | Fast math | Typical use |
 |---|---|---:|---:|---|
 | `make -C gpu` | `gpu/bin/mbs_po_gpu_float_fast` | FP32 | yes | Fast production scans |
