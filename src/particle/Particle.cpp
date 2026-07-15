@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <cstring>
 #include <sstream>
@@ -594,7 +595,16 @@ void Particle::Concate(const std::vector<Particle> &parts)
         }
     }
 
-    isAggregated = true;
+    isAggregated = !parts.empty();
+    nFacetsInPart = parts.empty() ? 0 : parts.front().nFacets;
+    for (const Particle &part : parts)
+    {
+        if (part.nFacets != nFacetsInPart)
+        {
+            nFacetsInPart = 0;
+            break;
+        }
+    }
 }
 
 double Particle::LongRadius() const
@@ -758,9 +768,26 @@ bool Particle::IsConcave() const
     return isConcave;
 }
 
-void Particle::Output(std::string name)
+void Particle::Output(const std::string &name) const
 {
+    if (isAggregated
+        && (nFacetsInPart <= 0 || nFacets % nFacetsInPart != 0))
+    {
+        throw std::runtime_error(
+            "cannot save aggregate geometry to '" + name
+            + "': FACETS_PER_PART is missing or inconsistent.\n"
+              "  Fix: define an equal positive facet count for every aggregate component.");
+    }
+
     std::ofstream file(name, std::ios::out);
+    if (!file.is_open())
+    {
+        throw std::runtime_error(
+            "cannot save particle geometry to '" + name + "'.\n"
+            "  Fix: create its parent directory and verify write permissions and free disk space.");
+    }
+
+    file << std::setprecision(17);
 
     file << (int)isConcave << std::endl;
     file << (int)isAggregated;
@@ -780,7 +807,7 @@ void Particle::Output(std::string name)
     {
         for (int j = 0; j < facets[i].nVertices; ++j)
         {
-            Point3f p = facets[i].arr[j];
+            const Point3f &p = facets[i].arr[j];
             file << p.coordinates[0] << ' '
                             << p.coordinates[1] << ' '
                             << p.coordinates[2] << ' '
@@ -795,6 +822,12 @@ void Particle::Output(std::string name)
     }
 
     file.close();
+    if (!file)
+    {
+        throw std::runtime_error(
+            "failed while writing particle geometry to '" + name + "'.\n"
+            "  Fix: verify free disk space and that the destination remains writable.");
+    }
 }
 
 void Particle::SetRefractiveIndex(const ::complex &value)

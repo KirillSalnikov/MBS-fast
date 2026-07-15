@@ -5,6 +5,7 @@
 #include "compl.hpp"
 #include "geometry_lib.h"
 #include "Facet.h"
+#include <string>
 #include <vector>
 
 #define ROT_MTR_RANK 3
@@ -78,7 +79,7 @@ public:
 
     bool IsConcave() const;
 
-    void Output(std::string name);
+    void Output(const std::string &name) const;
     void Scale(double ratio);
     // std::vector<unsigned> FindFlippedFacets() const;
     // void DisconnectParts(std::vector<Particle> &parts) const; ///< Get Particle's the aggregate consist of.

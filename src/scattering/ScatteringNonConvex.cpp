@@ -861,7 +861,11 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
             while (m_treeSize != 0 && (int)batch.size() < GpuTraceBatchBeamLimit())
             {
                 if (m_traceMaxBeams > 0 && ++processedBeams > m_traceMaxBeams)
+                {
+                    m_traceCutoffStatistics->configuredBeamLimitHits.fetch_add(
+                        1, std::memory_order_relaxed);
                     return false;
+                }
                 TraceBatchItem item;
                 item.beam = m_beamTree.back();
                 m_beamTree.pop_back();
@@ -901,7 +905,11 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
         }
 #endif
         if (m_traceMaxBeams > 0 && ++processedBeams > m_traceMaxBeams)
+        {
+            m_traceCutoffStatistics->configuredBeamLimitHits.fetch_add(
+                1, std::memory_order_relaxed);
             return false;
+        }
         Beam beam = m_beamTree.back();
         m_beamTree.pop_back();
         m_treeSize = (int)m_beamTree.size();
@@ -1412,15 +1420,19 @@ bool ScatteringNonConvex::SplitBeamByFacet(const Polygon &intersection,
 
             double r = a0/a1;
 
-            if (r >= restriction)
+            if (std::isfinite(restriction) && r >= restriction)
             {
                 beam = m_polygonBuffer.arr[0];
                 isDivided = false;
+                m_traceCutoffStatistics->smallFragmentSimplifications.fetch_add(
+                    1, std::memory_order_relaxed);
             }
-            else if (r < 1.0/restriction)
+            else if (std::isfinite(restriction) && r < 1.0/restriction)
             {
                 beam = m_polygonBuffer.arr[1];
                 isDivided = false;
+                m_traceCutoffStatistics->smallFragmentSimplifications.fetch_add(
+                    1, std::memory_order_relaxed);
             }
             else
             {

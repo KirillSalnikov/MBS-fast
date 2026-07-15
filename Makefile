@@ -140,6 +140,9 @@ test_adaptive: cpu
 test_regression: cpu
 	MBS=cpu/bin/mbs_po_mpi SKIP_BUILD=1 tests/run_tests.sh
 
+test_extinction: cpu
+	MBS=cpu/bin/mbs_po_mpi tests/run_extinction_reference.sh
+
 test_sanitize:
 	$(MAKE) -C cpu TARGET=bin/mbs_po_mpi_sanitize \
 		OBJDIR=build/sanitize/obj \
@@ -150,7 +153,7 @@ test_sanitize:
 		MBS=$(CURDIR)/cpu/bin/mbs_po_mpi_sanitize \
 		MBS_RELEASE_TIMEOUT_SECONDS=90 tests/run_release_cli_matrix.sh
 
-test: test_release test_adaptive test_regression
+test: test_release test_adaptive test_regression test_extinction
 
 $(TARGET): $(OBJECTS)
 	@mkdir -p bin

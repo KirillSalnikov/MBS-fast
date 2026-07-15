@@ -9,6 +9,8 @@
 \usepackage{xcolor}
 \usepackage[margin=20mm]{geometry}
 \usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\graphicspath{{docs/figures/}{figures/}{docs/}{./}}
 \setcounter{secnumdepth}{5}
 \usepackage{iftex}
 \ifPDFTeX
@@ -537,6 +539,9 @@ Flag & Arguments & Description \\
 \texttt{-p} & \texttt{TYPE\ PARAMETERS...} & Built-in particle.
 Exactly one of \texttt{-p} or \texttt{-\/-pf} is required. \\
 \texttt{-\/-pf} & \texttt{FILE} & Load particle from file. \\
+\texttt{-\/-save-geometry} & \texttt{FILE} & Save the effective particle,
+after input scaling and geometry classification, in the native text format.
+Alias: \texttt{-\/-save-particle}. The calculation then continues. \\
 \texttt{-\/-rs} & \texttt{SIZE} & Resize file particle to
 \texttt{Dmax\ =\ SIZE}. Mutually exclusive with \texttt{-\/-k\_eq}. \\
 \texttt{-\/-k\_eq} & \texttt{X} & Resize so
@@ -558,14 +563,78 @@ Type & Shape & Parameters \\
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-1 & Hexagonal column/plate & \texttt{L\ D} \\
-2 & Bullet & \texttt{L\ D} \\
-3 & Bullet rosette & \texttt{L\ D\ {[}cap{]}} \\
-4 & Droxtal & \texttt{SCALE}; legacy \texttt{L\ D\ SCALE} ignores \texttt{L,D} \\
-10 & Concave hexagonal & \texttt{L\ D\ CAVITY\_DEG}; cavities must not intersect \\
-12 & Two-column hexagonal aggregate & \texttt{L\ D\ 2} \\
-999 & Fixed built-in aggregate & \texttt{SCALE} \\
+1 & Hexagonal column/plate & \texttt{L\ D}: axial length and
+vertex-to-vertex diameter. The same type represents a column or a plate
+according to $L/D$. \\
+2 & Bullet & \texttt{L\ D}: total axial length and diameter. The pyramidal
+cap height is derived from the fixed $62^\circ$ construction angle. \\
+3 & Bullet rosette & \texttt{L\ D\ {[}CAP{]}}: six bullets arranged as a
+rosette. If \texttt{CAP} is omitted, the same $62^\circ$ construction is
+used. \\
+4 & Droxtal & \texttt{SCALE}: multiplies the fixed droxtal template. Legacy
+\texttt{L\ D\ SCALE} is accepted but \texttt{L,D} are ignored. \\
+10 & Concave hexagonal & \texttt{L\ D\ CAVITY\_DEG}: column with top and
+bottom pyramidal cavities. The angle must be positive and less than
+$\arctan(L/D)$. \\
+12 & Two-column hexagonal aggregate & \texttt{L\ D\ 2}: exactly two equal
+eight-facet columns in the built-in relative placement. Use a file for a
+general aggregate. \\
+999 & Fixed built-in aggregate & \texttt{SCALE}: multiplies the fixed
+aggregate template used as a reproducible regression geometry. \\
 \end{longtable}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.98\linewidth]{manual_particle_gallery.pdf}
+\caption{Geometries produced by the current built-in constructors. The images
+are rendered from the native files in \texttt{examples/particles}, not from
+separate drawing models.}
+\label{fig:particle-gallery}
+\end{figure}
+
+\subsection{Native particle file and geometry export}
+
+The native format starts with three nonempty header records:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{CONCAVE}
+\NormalTok{AGGREGATE [FACETS_PER_PART]}
+\NormalTok{BETA_DOMAIN_DEG GAMMA_DOMAIN_DEG}
+\NormalTok{}
+\NormalTok{x0 y0 z0}
+\NormalTok{x1 y1 z1}
+\NormalTok{x2 y2 z2}
+\NormalTok{}
+\NormalTok{x0 y0 z0      \# next facet}
+\NormalTok{...}
+\end{Highlighting}
+\end{Shaded}
+
+\texttt{CONCAVE} is 0 or 1. \texttt{AGGREGATE} is 0 for one object, or
+\texttt{1 FACETS\_PER\_PART} for equal-size aggregate components. The third
+record gives the positive beta and gamma fundamental-domain widths. Blank
+lines separate facets; each facet must have at least three finite,
+non-collinear vertices. Full-line and inline comments begin with
+\texttt{\#}. Vertex order defines the facet normal, so a hand-edited file
+must preserve one consistent winding convention.
+
+\texttt{-\/-save-geometry FILE} writes 17-digit coordinates and validates
+aggregate metadata before writing. A useful round-trip check is:
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\ExtensionTok{gpu/bin/mbs\_po\_gpu\_double\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}p}\NormalTok{ 10 20 12 15 }\DataTypeTok{\textbackslash{}}
+    \AttributeTok{{-}{-}save-geometry}\NormalTok{ concave.particle ...}
+\ExtensionTok{gpu/bin/mbs\_po\_gpu\_double\_fast} \AttributeTok{{-}{-}po} \AttributeTok{{-}{-}pf}\NormalTok{ concave.particle ...}
+\end{Highlighting}
+\end{Shaded}
+
+The exported file contains the effective scaled geometry. It is therefore
+the appropriate artifact for reproducing a run or inspecting the exact
+facets used by clipping. The automatically written
+\texttt{particle\_for\_check.dat} remains available in result directories;
+the explicit flag is preferable when a stable path is needed.
 
 Equivalent-size scaling:
 
@@ -756,7 +825,7 @@ selected values form a coupled fixed point. Regular Euler convergence
 alternates \(N_\beta\) and \(N_\gamma\), then doubles both together. Reaching
 any hard limit in phi, reflection, theta, Euler, or a unified mode is reported
 as an error rather than accepted as convergence. Standalone
-\texttt{-\/--adaptive-orientations} is exploratory: at its orientation cap it
+\texttt{-\/-adaptive-orientations} is exploratory: at its orientation cap it
 warns and writes the best result; unified modes use strict orientation
 convergence. The configured passing streak applies to phi, reflection, Euler,
 and orientation searches, while theta uses interval refinement directly.
@@ -765,7 +834,7 @@ Every trial is written to
 
 \subsection{Adaptive configuration file}
 
-Use \texttt{-\/--adaptive-config FILE} to keep production convergence
+Use \texttt{-\/-adaptive-config FILE} to keep production convergence
 settings outside a long command line. The documented template is
 \texttt{configs/adaptive.example.conf}. It uses strict
 \texttt{key = value} assignments and accepts inline comments after
@@ -785,8 +854,8 @@ coupled controller. A tolerance of \texttt{0.01} means one percent.
 
 Per-parameter tolerances in the file replace the mode-wide \texttt{EPS}; a
 missing tolerance inherits \texttt{EPS}. Explicit command-line
-\texttt{-\/--max-*}, \texttt{-\/--max-reflections}, and
-\texttt{-\/--convergence-passes} values override the file. Unknown keys,
+\texttt{-\/-max-*}, \texttt{-\/-max-reflections}, and
+\texttt{-\/-convergence-passes} values override the file. Unknown keys,
 duplicates, invalid ranges, non-power-of-two Sobol limits, and malformed lines
 are rejected before the calculation, with the file line and a corrective hint.
 
@@ -810,6 +879,99 @@ meaning of the existing phi controls; they do not enable an approximation.
 For full angular integrals use \texttt{-\/-grid\ 0\ 180\ Nphi\ Nth}.
 Endpoint rows are physical half-cells; they must not have zero weight.
 
+\section{Beam and trace cutoffs}\label{beam-and-trace-cutoffs}
+
+Cutoffs act at two different stages. Output-beam cutoffs discard a completed
+ray branch before PO diffraction. Trace cutoffs stop an internal branch while
+the reflection/refraction tree is being built. With reference values taken
+from the current orientation, the three dimensionless tests are
+\[
+ j_b=\frac{\lVert J_b\rVert_F^2}{J_{\mathrm{ref}}^2},\qquad
+ a_b=\frac{A_b}{A_{\mathrm{ref}}},\qquad
+ i_b=j_ba_b.
+\]
+Here $J_b$ is the accumulated Jones matrix of branch $b$, $A_b$ is its
+polygon area, and $i_b$ is a simple intensity-area importance estimate.
+When several tests are enabled, rejection uses logical \emph{OR}: satisfying
+any one smallness test removes the branch. Reason counters can therefore
+overlap.
+
+\subsection{Coherent presets}
+
+\texttt{-\/-cutoff-profile MODE} configures all relative thresholds and the
+small-fragment ratio together. It cannot be combined with an individual
+cutoff or \texttt{-\/-beam-area-ratio}.
+
+\begin{longtable}[]{@{}L{0.13\linewidth}L{0.17\linewidth}L{0.17\linewidth}L{0.17\linewidth}L{0.26\linewidth}@{}}
+\toprule\noalign{}
+Profile & Output $i_b$ & Trace $i_b$ & Area ratio & Intended use \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{off} & 0 & 0 & disabled & Reference and convergence runs; no
+configurable cutoff approximation. \\
+\texttt{safe} & $10^{-10}$ & $10^{-12}$ & $10^8$ & First production
+candidate after comparison with \texttt{off}. \\
+\texttt{balanced} & $10^{-8}$ & $10^{-10}$ & $10^5$ & Faster scans
+after particle-class calibration. \\
+\texttt{fast} & $10^{-6}$ & $10^{-8}$ & $10^3$ & Exploratory scans;
+not a validation setting. \\
+legacy default & 0 & 0 & 100 & Backward-compatible behavior when no profile
+or individual cutoff is supplied. \\
+\end{longtable}
+
+The preset values enable the combined importance criterion, not separate
+Jones and area OR thresholds. This avoids removing a large but weak branch or
+a small but intense branch solely because one factor is small. The legacy
+area-ratio simplification remains at 100 for reproducibility; use
+\texttt{-\/-cutoff-profile off} when a genuinely uncut reference is required.
+The profiles do not set \texttt{-\/-trace-max-beams}.
+
+\subsection{Individual controls}
+
+\begin{longtable}[]{@{}L{0.31\linewidth}L{0.13\linewidth}L{0.50\linewidth}@{}}
+\toprule\noalign{}
+Flag & Range & Exact action \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\texttt{-\/-beam-cutoff EPS} & $[0,1]$ & Legacy shortcut setting both
+output Jones and output area thresholds; a beam is rejected if either test
+passes. \\
+\texttt{-\/-beam-cutoff-jones EPS} & $[0,1]$ & Output test $j_b<\mathrm{EPS}$. \\
+\texttt{-\/-beam-cutoff-area EPS} & $[0,1]$ & Output test $a_b<\mathrm{EPS}$. \\
+\texttt{-\/-beam-cutoff-importance EPS} & $[0,1]$ & Output test
+$i_b<\mathrm{EPS}$. \\
+\texttt{-\/-trace-cutoff EPS} & $[0,1]$ & Legacy shortcut setting both
+internal Jones and area thresholds; pruning uses OR. \\
+\texttt{-\/-trace-cutoff-jones EPS} & $[0,1]$ & Internal test $j_b<\mathrm{EPS}$. \\
+\texttt{-\/-trace-cutoff-area EPS} & $[0,1]$ & Internal test $a_b<\mathrm{EPS}$. \\
+\texttt{-\/-trace-cutoff-importance EPS} & $[0,1]$ & Internal test
+$i_b<\mathrm{EPS}$. \\
+\texttt{-\/-beam-area-ratio R} & $R\ge1$ & After a nonconvex split,
+replace two fragments by the larger one only when their area ratio is at
+least $R$. \\
+\texttt{-\/-trace-max-beams N} & $N\ge0$ & Hard per-orientation beam-tree
+cap; 0 disables the configured cap. Any reported hit means that branches
+were truncated and the run is not a cutoff-convergence reference. \\
+\end{longtable}
+
+If a legacy common shortcut and a corresponding specific Jones/area option
+are supplied together, the specific value overrides that side and the
+program prints a warning. A profile instead rejects such mixing as an input
+error, so a command cannot silently become a partly modified preset.
+
+Every completed run appends \texttt{OUTPUT BEAM CUTOFF REPORT} and
+\texttt{TRACE CUTOFF REPORT} blocks to the log. They contain the selected
+profile, effective thresholds, candidate/kept/rejected counts, overlapping
+reason counts, fragment simplifications, configured-cap hits, and hard
+internal tree-limit hits. Calibrate a profile by running the same geometry,
+orientation set, $n$, theta grid, and $N_\phi$ with \texttt{off} and with
+the candidate profile; compare all 16 $M_{ij}/M_{11}$, not only runtime or
+the rejected-beam percentage.
+
 \section{GPU and multi-GPU}\label{gpu-and-multi-gpu}
 
 \subsection{CUDA backend}\label{cuda-backend}
@@ -825,10 +987,72 @@ Flag & Description \\
 \texttt{gpu/} binaries because they default to GPU. \\
 \texttt{-\/-cpu} & Force CPU backend from a GPU-capable binary. \\
 \texttt{-\/-fft} & Use cuFFT angular phi interpolation backend. Requires
-GPU. \\
+GPU. The direct-phi compression factor is selected automatically. \\
+\texttt{-\/-fft-factor N} & Enable FFT interpolation with an explicit
+compression factor $1\le N\le64$. $N=1$ keeps the direct phi grid and is
+useful as a same-backend reference. \\
+\texttt{-\/-fft-tolerance EPS} & Enable a nested-grid error estimate and
+one automatic refinement when the estimate exceeds $0<\mathrm{EPS}<1$. \\
 \texttt{-\/-threads\ N} & OpenMP host worker threads. Also controls
 tracing-side parallelism before GPU diffraction. \\
 \end{longtable}
+
+\subsection{FFT phi compression and error control}
+
+Let $N_\phi$ be the requested output azimuth count and $f$ the compression
+factor. The first CUDA pass evaluates approximately
+\[
+ N_{\phi,\mathrm{direct}}
+ =\max\!\left(16,\left\lfloor\frac{N_\phi}{f}\right\rfloor\right)
+\]
+direct samples, then uses periodic Fourier zero-padding to reconstruct the
+$N_\phi$ output grid. For $f=1$, $N_\phi<32$, or a factor that cannot
+reduce the grid, the implementation uses the direct path. The speed gain is
+therefore workload dependent and is bounded by the fraction of runtime spent
+in phi-direction diffraction; tracing itself is not reduced.
+
+\texttt{-\/-fft} asks the implementation to select $f$.
+\texttt{-\/-fft-factor N} makes the requested compression explicit and has
+priority over \texttt{MBS\_FFT\_PHI\_FACTOR}. Large factors are not an accuracy
+promise: sharp azimuthal structure has high Fourier modes and can be smoothed
+or aliased.
+
+With \texttt{-\/-fft-tolerance EPS}, the code also evaluates a nested grid
+with
+\[
+ N_{\phi,2}=\min(N_\phi,2N_{\phi,\mathrm{direct}}).
+\]
+It compares significant $M_{11}$ samples and all 16 Mueller elements using
+an $M_{11}$-based scale. The reported estimate is
+\[
+ \widehat e=\max\!\left(
+   \max_{M_{11}\ \mathrm{significant}}
+     \frac{|M_{11}^{(1)}-M_{11}^{(2)}|}{|M_{11}^{(2)}|},
+   \max_{i,j}\frac{|M_{ij}^{(1)}-M_{ij}^{(2)}|}
+     {\max(|M_{11}^{(2)}|,10^{-3}M_{11,\max}^{(2)})}
+ \right).
+\]
+If $\widehat e>\mathrm{EPS}$, the result reconstructed from the doubled direct grid
+is retained. This is a one-step a-posteriori estimator, not a rigorous bound
+and not an iterative convergence proof. It costs an additional diffraction
+pass and temporarily holds coarse, refined, and output arrays. For a final
+reference, omit all FFT flags or use \texttt{-\/-fft-factor 1}; for production,
+first calibrate $f$ and EPS on representative sizes and particle shapes.
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\CommentTok{\# Explicit 4x compression, refine once when the estimate exceeds 1 percent}
+\ExtensionTok{gpu/bin/mbs\_po\_gpu\_float\_fast}\NormalTok{ ... }\AttributeTok{{-}{-}fft-factor}\NormalTok{ 4 }\AttributeTok{{-}{-}fft-tolerance}\NormalTok{ 0.01}
+\end{Highlighting}
+\end{Shaded}
+
+The final \texttt{FFT INTERPOLATION REPORT} records the requested and effective
+factor, direct and output $N_\phi$, number of FFT-path and validation calls,
+number of refined calls, and the worst nested-grid estimate. Factor 1 is
+labelled as direct/no interpolation. The fused multi-
+\texttt{k\_eq} FFT path does not perform this validation; when tolerance or
+the diagnostic check is requested, the dispatcher uses a supported fallback
+instead of silently skipping the check.
 
 GPU runtime errors are fatal in the split GPU build. For debugging only:
 
@@ -1060,6 +1284,8 @@ Flag & Arguments & Description \\
 \texttt{-\/-go} & none & Geometrical Optics mode. \\
 \texttt{-p} & \texttt{TYPE\ L\ D\ {[}extra{]}} & Built-in particle. \\
 \texttt{-\/-pf} & \texttt{FILE} & Particle from file. \\
+\texttt{-\/-save-geometry} & \texttt{FILE} & Save the effective native
+particle and continue; alias \texttt{-\/-save-particle}. \\
 \texttt{-\/-rs} & \texttt{SIZE} & Resize file particle by Dmax. \\
 \texttt{-\/-k\_eq} & \texttt{X} & Resize by equivalent size
 parameter. \\
@@ -1163,25 +1389,32 @@ Flag & Arguments & Description \\
 \texttt{-\/-threads} & \texttt{N} & OpenMP worker threads. \\
 \texttt{-\/-gpu} & none & CUDA backend. \\
 \texttt{-\/-cpu} & none & Force CPU backend in GPU build. \\
-\texttt{-\/-fft} & none & cuFFT phi interpolation. \\
-\texttt{-\/-beam\_cutoff} & \texttt{EPS} & Set relative beam \texttt{J}
-and area cutoffs. \\
-\nolinkurl{--beam_cutoff_j} & \texttt{EPS} & Skip beams by relative
+\texttt{-\/-fft} & none & cuFFT phi interpolation with automatic
+compression. \\
+\texttt{-\/-fft-factor} & \texttt{N} & Explicit direct/output phi
+compression, $1\ldots64$; also enables FFT. \\
+\texttt{-\/-fft-tolerance} & \texttt{EPS} & Nested-grid estimate in
+$0<\mathrm{EPS}<1$ with one doubled-direct-grid refinement. \\
+\texttt{-\/-cutoff-profile} & \texttt{MODE} & Complete preset:
+\texttt{off}, \texttt{safe}, \texttt{balanced}, or \texttt{fast}. \\
+\texttt{-\/-beam-cutoff} & \texttt{EPS} & Legacy output shortcut; reject
+when relative Jones OR area is below EPS. \\
+\texttt{-\/-beam-cutoff-jones} & \texttt{EPS} & Output cutoff by relative
 squared Jones magnitude. \\
-\texttt{-\/-beam\_cutoff\_area} & \texttt{EPS} & Skip beams by relative
+\texttt{-\/-beam-cutoff-area} & \texttt{EPS} & Output cutoff by relative
 beam area. \\
-\nolinkurl{--beam_cutoff_importance} & \texttt{EPS} & Skip beams by
+\texttt{-\/-beam-cutoff-importance} & \texttt{EPS} & Output cutoff by
 relative Jones intensity times area. \\
-\texttt{-\/-trace\_cutoff} & \texttt{EPS} & Set trace pruning \texttt{J}
-and area cutoffs. \\
-\nolinkurl{--trace_cutoff_j} & \texttt{EPS} & Prune trace tree by
+\texttt{-\/-trace-cutoff} & \texttt{EPS} & Legacy internal shortcut;
+prune when relative Jones OR area is below EPS. \\
+\texttt{-\/-trace-cutoff-jones} & \texttt{EPS} & Prune trace tree by
 relative squared Jones magnitude. \\
-\texttt{-\/-trace\_cutoff\_area} & \texttt{EPS} & Prune trace tree by
+\texttt{-\/-trace-cutoff-area} & \texttt{EPS} & Prune trace tree by
 relative area. \\
-\nolinkurl{--trace_cutoff_importance} & \texttt{EPS} & Prune trace tree
+\texttt{-\/-trace-cutoff-importance} & \texttt{EPS} & Prune trace tree
 by relative Jones intensity times area. \\
-\texttt{-\/-trace\_max\_beams} & \texttt{N} & Abort one orientation
-after \texttt{N} beam nodes; \texttt{0} disables. \\
+\texttt{-\/-trace-max-beams} & \texttt{N} & Hard per-orientation beam-tree
+cap; \texttt{0} disables the configured cap. \\
 \texttt{-\/-gpu\_trace} & none & Experimental CUDA prefilter for
 nonconvex tracing candidates. \\
 \texttt{-\/-trace\_prefilter} & none & Enable CPU projected-AABB
@@ -1192,8 +1425,8 @@ prefilter. \\
 margin. \\
 \texttt{-\/-trace\_prefilter\_stats} & none & Print prefilter
 counters. \\
-\texttt{-r} & \texttt{RATIO} & Beam area restriction ratio; default
-\texttt{100}. \\
+\texttt{-r}, \texttt{-\/-beam-area-ratio} & \texttt{RATIO} & Small-fragment
+area ratio, at least 1; legacy default \texttt{100}. \\
 \end{longtable}
 
 \subsection{Output, diagnostics, and legacy
@@ -1276,7 +1509,8 @@ oldauto/random chunking. \\
 \texttt{MBS\_HOST\_MEM\_RESERVE\_MB} & Host memory reserve in MB. \\
 \texttt{MBS\_HOST\_MEM\_BUDGET\_MB} & Hard host memory budget, also set
 for parallel children. \\
-\texttt{MBS\_FFT\_PHI\_FACTOR} & Override FFT reduced phi factor. \\
+\texttt{MBS\_FFT\_PHI\_FACTOR} & Legacy FFT compression-factor override
+when \texttt{-\/-fft-factor} is absent; the explicit CLI value has priority. \\
 \texttt{MBS\_GPU\_MULTI=0} & Disable automatic multi-orientation GPU
 batching. \\
 \texttt{MBS\_GPU\_MULTI\_MAX=N} & Cap automatic GPU multi batching. \\
@@ -1327,7 +1561,7 @@ averaging. \\
 
 Common companion outputs:
 
-\begin{longtable}[]{@{}L{0.24\linewidth}L{0.28\linewidth}L{0.40\linewidth}@{}}
+\begin{longtable}[]{@{}L{0.25\linewidth}L{0.27\linewidth}L{0.40\linewidth}@{}}
 \toprule\noalign{}
 Output & Created by & Meaning \\
 \midrule\noalign{}
@@ -1344,15 +1578,65 @@ Jones output & \texttt{-\/-jones} & Raw Jones matrices in supported PO
 modes. \\
 \nolinkurl{particle_for_check.dat} & every calculation & Effective resized
 particle, stored inside the result directory. \\
+\texttt{FILE} from \texttt{-\/-save-geometry} & explicit request & Effective
+scaled native particle at a stable user-selected path. \\
+\texttt{<result>\_integrals.tsv} & PO and GO output & Machine-readable primary
+extinction, scattering, absorption, efficiencies, and the numerical
+$C_{\mathrm{sca}}$ error estimate. \\
 \end{longtable}
+
+The log and TSV expose exactly one method-specific definition of each physical
+quantity:
+\[
+ C_{\mathrm{ext}},\quad C_{\mathrm{sca}},\quad C_{\mathrm{abs}},
+ \qquad
+ Q_{\mathrm{ext}},\quad Q_{\mathrm{sca}},\quad Q_{\mathrm{abs}},
+ \qquad Q_x=\frac{C_x}{A_{\mathrm{proj}}}.
+\]
+For PO, $C_{\mathrm{ext}}$ comes from the forward-amplitude optical theorem.
+For an absorbing material,
+$C_{\mathrm{sca}}=\sum_jM_{11}(\theta_j)\Delta\Omega_j$ and
+$C_{\mathrm{abs}}=C_{\mathrm{ext}}-C_{\mathrm{sca}}$. For a nonabsorbing
+material, conservation gives $C_{\mathrm{sca}}=C_{\mathrm{ext}}$ and
+$C_{\mathrm{abs}}=0$. For GO, $C_{\mathrm{ext}}=A_{\mathrm{proj}}$; the
+absorbing case uses the total outgoing beam energy for $C_{\mathrm{sca}}$ and
+the difference for $C_{\mathrm{abs}}$. The nonabsorbing GO case again enforces
+$C_{\mathrm{sca}}=C_{\mathrm{ext}}$ and $C_{\mathrm{abs}}=0$. Legacy PO/GO
+hybrids and duplicate labels are deliberately omitted from the report.
+
+The $C_{\mathrm{sca}}$ integration estimate compares the full theta grid with
+a nested grid formed from every second theta row:
+\[
+ \widehat\epsilon_{\mathrm{sca}}=
+ \frac{|C_{\mathrm{sca},h}-C_{\mathrm{sca},2h}|}
+ {\max(|C_{\mathrm{sca},h}|,|C_{\mathrm{sca},2h}|)}.
+\]
+For a nonabsorbing run the report conservatively takes the larger of this
+estimate and the independent conservation mismatch: the $M_{11}$ integral
+versus optical-theorem extinction in PO, or outgoing beam sum versus projected
+area in GO. Fewer than five theta rows cannot form the estimate and are marked
+\texttt{unavailable}. A value above 1 percent produces
+\texttt{check\_csca\_integration}. This is an a-posteriori resolution check,
+not a rigorous error bound and not an orientation-convergence estimate.
+
+The TSV columns are \texttt{method}, \texttt{label}, \texttt{status}, the six
+$C/Q$ values, and \texttt{Csca\_error\_estimate\_rel}. It contains no legacy,
+GO-in-PO, or PO-in-GO alternatives.
+
+The startup and final log blocks also record hostname, CPU model, logical and
+physical core counts, effective OpenMP thread count, total/available RAM,
+process RSS and peak RSS, visible GPU models, and active-device VRAM when CUDA
+is available. The final log contains the FFT and cutoff audit blocks described
+above. These records make timing and accuracy comparisons attributable to a
+specific resource state; GPU timings obtained while another process occupies
+the device are not comparable to an idle-device benchmark.
 
 Normal runs do not create diagnostic files in the current working directory.
 Use \texttt{MBS\_BEAM\_LOG=PATH} only when an explicit first-beam dump is
 needed.
 
-Warnings about optical-theorem/integral mismatch are diagnostics. For
-non-absorbing runs the physical absorption is fixed to zero; the printed
-integral characteristic is a consistency check, not a replacement for
-the output Mueller matrix.
+For nonabsorbing runs physical absorption is fixed to zero. The reported
+$C_{\mathrm{sca}}$ error remains a convergence diagnostic and does not replace
+inspection of the output Mueller matrix.
 
 \end{document}

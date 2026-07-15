@@ -5,8 +5,11 @@
 #include "Particle.h"
 #include "Intersection.h"
 #include "Splitting.h"
+#include "CutoffStatistics.h"
 
 #include <float.h>
+#include <memory>
+#include <string>
 #include <vector>
 
 //#define MAX_BEAM_REFL_NUM 32768
@@ -55,6 +58,7 @@ protected:
     double m_traceRefArea = 0;
     double m_traceRefImportance = 0;
     bool m_trackIdsRequired = false;
+    std::shared_ptr<TraceCutoffStatistics> m_traceCutoffStatistics;
 
 public:
     Scattering(Particle *particle, Light *incidentLight, bool isOpticalPath,
@@ -75,12 +79,14 @@ public:
     double m_traceCutoffAreaRel = 0;
     double m_traceCutoffImportanceRel = 0;
     int m_traceMaxBeams = 0;
+    std::string m_cutoffProfileName = "legacy-default";
     bool m_gpuTracePrefilter = false;
     bool m_traceCpuProjectedPrefilter = true;
     double m_traceCpuProjectedPrefilterMargin = 8.0;
     bool m_tracePrefilterStats = false;
     void SetTrackIdsRequired(bool value) { m_trackIdsRequired = value; }
     void CopyRuntimeOptionsFrom(const Scattering &source);
+    std::string TraceCutoffReport() const;
 
     virtual bool ScatterLight(double /*beta*/, double /*gamma*/, std::vector<Beam> &/*scaterredBeams*/)
     {

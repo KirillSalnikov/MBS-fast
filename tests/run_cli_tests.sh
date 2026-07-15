@@ -11,6 +11,7 @@ mkdir -p "$BUILD_DIR"
     "$ROOT_DIR/tests/test_cli.cpp" \
     "$ROOT_DIR/src/AdaptiveConfig.cpp" \
     "$ROOT_DIR/src/CliOptions.cpp" \
+    "$ROOT_DIR/src/IntegralCharacteristics.cpp" \
     "$ROOT_DIR/src/RunConfig.cpp" \
     -o "$BUILD_DIR/test_cli"
 

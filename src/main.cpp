@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <vector>
 #include <memory>
+#include <limits>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <fcntl.h>
@@ -44,6 +45,7 @@
 #include "Droxtal.h"
 #include "GpuSupport.h"
 #include "CliOptions.h"
+#include "RuntimeInfo.h"
 #include "RunConfig.h"
 
 #ifdef _OUTPUT_NRG_CONV
@@ -113,6 +115,33 @@ void ConfigureOpenMPThreads(int threads)
 
 void ApplyBeamCutoffOptions(const ArgPP &args, Handler *handler)
 {
+    HandlerPO *po = dynamic_cast<HandlerPO *>(handler);
+    const std::string profile = args.IsCatched("cutoff_profile")
+        ? args.GetStringValue("cutoff_profile", 0)
+        : ((args.IsCatched("beam_cutoff") || args.IsCatched("beam_cutoff_j")
+            || args.IsCatched("beam_cutoff_area")
+            || args.IsCatched("beam_cutoff_importance") || args.IsCatched("r")
+            || args.IsCatched("trace_cutoff") || args.IsCatched("trace_cutoff_j")
+            || args.IsCatched("trace_cutoff_area")
+            || args.IsCatched("trace_cutoff_importance"))
+            ? "custom" : "legacy-default");
+    if (po)
+        po->m_cutoffProfileName = profile;
+    if (profile == "off")
+    {
+        handler->m_targetEps = 0.0;
+        handler->m_beamCutoffJRel = 0.0;
+        handler->m_beamCutoffAreaRel = 0.0;
+        handler->m_beamCutoffImportanceRel = 0.0;
+    }
+    else if (profile == "safe" || profile == "balanced" || profile == "fast")
+    {
+        handler->m_targetEps = 0.0;
+        handler->m_beamCutoffJRel = 0.0;
+        handler->m_beamCutoffAreaRel = 0.0;
+        handler->m_beamCutoffImportanceRel = profile == "safe" ? 1e-10
+            : (profile == "balanced" ? 1e-8 : 1e-6);
+    }
     if (args.IsCatched("beam_cutoff"))
         handler->m_targetEps = args.GetDoubleValue("beam_cutoff", 0);
     if (args.IsCatched("beam_cutoff_j"))
@@ -136,8 +165,43 @@ void ApplyPOOutputOptions(const ArgPP &args, HandlerPO *handler, double wave)
         handler->m_otPingDistance = args.GetDoubleValue("ot_ping", 0);
 }
 
+void ApplyFftOptions(const RunConfig &config, HandlerPO *handler)
+{
+    if (!handler)
+        return;
+    handler->SetFftEnabled(config.useFft);
+    handler->SetFftPhiFactor(config.fftFactor);
+    handler->SetFftTolerance(config.fftTolerance);
+}
+
 void ApplyTraceCutoffOptions(const ArgPP &args, Scattering *scattering)
 {
+    const std::string profile = args.IsCatched("cutoff_profile")
+        ? args.GetStringValue("cutoff_profile", 0)
+        : ((args.IsCatched("beam_cutoff") || args.IsCatched("beam_cutoff_j")
+            || args.IsCatched("beam_cutoff_area")
+            || args.IsCatched("beam_cutoff_importance") || args.IsCatched("r")
+            || args.IsCatched("trace_cutoff") || args.IsCatched("trace_cutoff_j")
+            || args.IsCatched("trace_cutoff_area")
+            || args.IsCatched("trace_cutoff_importance"))
+            ? "custom" : "legacy-default");
+    scattering->m_cutoffProfileName = profile;
+    if (profile == "off")
+    {
+        scattering->restriction = std::numeric_limits<double>::infinity();
+        scattering->m_traceCutoffJRel = 0.0;
+        scattering->m_traceCutoffAreaRel = 0.0;
+        scattering->m_traceCutoffImportanceRel = 0.0;
+    }
+    else if (profile == "safe" || profile == "balanced" || profile == "fast")
+    {
+        scattering->m_traceCutoffJRel = 0.0;
+        scattering->m_traceCutoffAreaRel = 0.0;
+        scattering->m_traceCutoffImportanceRel = profile == "safe" ? 1e-12
+            : (profile == "balanced" ? 1e-10 : 1e-8);
+        scattering->restriction = profile == "safe" ? 1e8
+            : (profile == "balanced" ? 1e5 : 1e3);
+    }
     if (args.IsCatched("r"))
         scattering->restriction = args.GetDoubleValue("r", 0);
     if (args.IsCatched("trace_cutoff"))
@@ -288,13 +352,16 @@ static int MirrorSafePhiCount(ArgPP &parser, int nphi)
 {
     if (nphi <= 0)
         return nphi;
-    if (parser.IsCatched("mirror_gamma") || parser.IsCatched("fft"))
+    const bool fftRequested = parser.IsCatched("fft")
+        || parser.IsCatched("fft_factor")
+        || parser.IsCatched("fft_tolerance");
+    if (parser.IsCatched("mirror_gamma") || fftRequested)
     {
         int rounded = RoundUpToMultiple(nphi, 6);
         if (rounded != nphi)
         {
             std::cerr << "WARNING: "
-                      << (parser.IsCatched("mirror_gamma") ? "--mirror_gamma" : "--fft")
+                      << (parser.IsCatched("mirror_gamma") ? "--mirror-gamma" : "--fft")
                       << " requires N_phi divisible by 6 for exact phi-sector "
                       << "mapping; using N_phi=" << rounded
                       << " instead of " << nphi << std::endl;
@@ -1428,9 +1495,9 @@ int main(int argc, const char* argv[])
         return RunParallelMultigrid(argc, argv, args, useGpu);
     }
 
+    GpuDeviceInfo gpuInfo;
     if (useGpu)
     {
-        GpuDeviceInfo gpuInfo;
         std::string gpuError;
         if (!CheckGpuRuntime(gpuInfo, gpuError))
         {
@@ -1445,7 +1512,9 @@ int main(int argc, const char* argv[])
         std::cout << "GPU backend: " << FormatGpuInfo(gpuInfo)
                   << (defaultGpu && config.backend == RunBackend::Auto ? " (default)" : "")
                   << std::endl;
+        additionalSummary += "GPU backend: " + FormatGpuInfo(gpuInfo) + "\n";
     }
+    additionalSummary += FormatRuntimeResourceReport("startup", useGpu);
 
     try
     {
@@ -1639,6 +1708,16 @@ int main(int argc, const char* argv[])
     additionalSummary += "\tk_eq:" + to_string(kEq)
             + " (2*pi*r_eq/lambda)\n\n";
 
+    // Geometry files must describe the same effective classification that is
+    // used by tracing, including an explicit user override.
+    if (config.geometry == GeometryClassification::Nonconvex)
+        particle->isConcave = true;
+    else if (config.geometry == GeometryClassification::Convex)
+        particle->isConcave = false;
+    if (args.IsCatched("save_geometry"))
+        additionalSummary += "Saved particle geometry: "
+            + args.GetStringValue("save_geometry", 0) + "\n";
+
     int reflNum = config.maxReflections;
     additionalSummary += "Number of secondary reflections: " + to_string(reflNum) + "\n";
     if (args.IsCatched("r"))
@@ -1703,6 +1782,14 @@ int main(int argc, const char* argv[])
                             "cannot create output directory '" + dir + "'.\n"
                             "  Fix: choose a writable --output path and verify free space and permissions.");
                 }
+                particle->Output(dir + "particle_for_check.dat");
+                if (args.IsCatched("save_geometry"))
+                {
+                    const std::string geometryPath =
+                        args.GetStringValue("save_geometry", 0);
+                    particle->Output(geometryPath);
+                    cout << "Saved particle geometry: " << geometryPath << endl;
+                }
             }
             catch (const std::exception &ex)
             {
@@ -1736,23 +1823,11 @@ int main(int argc, const char* argv[])
 #endif
         if (!setupOk)
             throw std::runtime_error(setupError);
-        if (mpi_rank == 0)
-            particle->Output(dir + "particle_for_check.dat");
         dirName = dir + dirName;
     }
 
     bool isOutputGroups = args.IsCatched("gr");
     additionalSummary += "Wavelength (um): " + to_string(wave) + "\n";
-
-    if (config.geometry == GeometryClassification::Nonconvex)
-    {
-        particle->isConcave = true;
-    }
-
-    if (config.geometry == GeometryClassification::Convex)
-    {
-        particle->isConcave = false;
-    }
 
     if (args.IsCatched("tr"))
     {
@@ -1810,7 +1885,7 @@ int main(int argc, const char* argv[])
 
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
-            handler->SetFftEnabled(useFft);
+            ApplyFftOptions(config, handler);
             ApplyPOOutputOptions(args, handler, wave);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
@@ -1993,7 +2068,7 @@ int main(int argc, const char* argv[])
 
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
-            handler->SetFftEnabled(useFft);
+            ApplyFftOptions(config, handler);
             ApplyPOOutputOptions(args, handler, wave);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
@@ -2212,7 +2287,7 @@ int main(int argc, const char* argv[])
 
                 handler->isCoh = !args.IsCatched("incoh");
                 handler->SetGpuEnabled(useGpu);
-                handler->SetFftEnabled(useFft);
+                ApplyFftOptions(config, handler);
                 ApplyPOOutputOptions(args, handler, wave);
                 handler->m_legacySign = args.IsCatched("legacy_sign");
                 handler->useKarczewski = args.IsCatched("karczewski");
@@ -2324,7 +2399,7 @@ int main(int argc, const char* argv[])
 
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
-            handler->SetFftEnabled(useFft);
+            ApplyFftOptions(config, handler);
             ApplyPOOutputOptions(args, handler, wave);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
@@ -2369,7 +2444,7 @@ int main(int argc, const char* argv[])
 
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
-            handler->SetFftEnabled(useFft);
+            ApplyFftOptions(config, handler);
             ApplyPOOutputOptions(args, handler, wave);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
@@ -2530,14 +2605,15 @@ int main(int argc, const char* argv[])
 
             handler->isCoh = !args.IsCatched("incoh");
             handler->SetGpuEnabled(useGpu);
-            handler->SetFftEnabled(useFft);
+            ApplyFftOptions(config, handler);
             ApplyPOOutputOptions(args, handler, wave);
             handler->m_legacySign = args.IsCatched("legacy_sign");
             handler->useKarczewski = args.IsCatched("karczewski");
             ApplyNphiOverride(args, conus);
             if (useFft && isAuto)
             {
-                if (!HandlerPO::HasNumericFftPhiFactorOverride())
+                if (handler->FftPhiFactor() == 0
+                    && !HandlerPO::HasNumericFftPhiFactorOverride())
                 {
                     double fftEps = isAutoFull
                         ? (isOldAutoFull ? args.GetDoubleValue("oldautofull", 0)
@@ -2557,7 +2633,8 @@ int main(int argc, const char* argv[])
                 }
                 else
                 {
-                    cout << "Auto FFT phi factor: using MBS_FFT_PHI_FACTOR override" << endl;
+                    cout << "Auto FFT phi factor: using explicit CLI/environment override"
+                         << endl;
                 }
             }
             handler->SetScatteringSphere(conus);

@@ -11,7 +11,6 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstdlib>
-#include <mutex>
 #include <stdexcept>
 
 bool HandlerPO::IsParticleBeam(const Beam &beam)
@@ -69,6 +68,8 @@ HandlerPO::HandlerPO(Particle *particle, Light *incidentLight, int nTheta,
                      double wavelength)
     : Handler(particle, incidentLight, nTheta, wavelength)
 {
+    m_beamCutoffStatistics = std::make_shared<BeamCutoffStatistics>();
+    m_fftStatistics = std::make_shared<FftInterpolationStatistics>();
     m_Lp = new matrix(4, 4);
 
     (*m_Lp)[0][0] = 1;
@@ -807,6 +808,22 @@ int HandlerPO::FftPhiFactor() const
     return m_fftPhiFactor;
 }
 
+void HandlerPO::SetFftTolerance(double value)
+{
+    m_fftTolerance = value > 0.0 ? value : 0.0;
+}
+
+double HandlerPO::FftTolerance() const
+{
+    return m_fftTolerance;
+}
+
+std::string HandlerPO::FftReport() const
+{
+    return FormatFftInterpolationReport(*m_fftStatistics, m_fftEnabled,
+                                        m_fftPhiFactor, m_fftTolerance);
+}
+
 void HandlerPO::AutoSelectFftPhiFactor(double eps)
 {
     SetFftPhiFactor(SelectAutoFftPhiFactor(m_sphere.nAzimuth, eps));
@@ -867,6 +884,18 @@ bool HandlerPO::HasAbsorptionAccounting() const
     return m_hasAbsorption;
 }
 
+std::string HandlerPO::BeamCutoffReport() const
+{
+    const double jRel = (m_beamCutoffJRel >= 0.0)
+        ? m_beamCutoffJRel : m_targetEps;
+    const double areaRel = (m_beamCutoffAreaRel >= 0.0)
+        ? m_beamCutoffAreaRel : m_targetEps;
+    const double importanceRel = std::max(0.0, m_beamCutoffImportanceRel);
+    return FormatBeamCutoffReport(*m_beamCutoffStatistics,
+                                  m_cutoffProfileName,
+                                  jRel, areaRel, importanceRel);
+}
+
 void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
                                                 Scattering *scattering)
 {
@@ -885,10 +914,14 @@ void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
     m_beamCutoffJRel = source.m_beamCutoffJRel;
     m_beamCutoffAreaRel = source.m_beamCutoffAreaRel;
     m_beamCutoffImportanceRel = source.m_beamCutoffImportanceRel;
+    m_cutoffProfileName = source.m_cutoffProfileName;
+    m_beamCutoffStatistics = source.m_beamCutoffStatistics;
     m_legacySign = source.m_legacySign;
     m_gpuEnabled = source.m_gpuEnabled;
     m_fftEnabled = source.m_fftEnabled;
     m_fftPhiFactor = source.m_fftPhiFactor;
+    m_fftTolerance = source.m_fftTolerance;
+    m_fftStatistics = source.m_fftStatistics;
     m_otFarReferencePath = source.m_otFarReferencePath;
     m_otPingDistance = source.m_otPingDistance;
     m_otPhaseAverage = source.m_otPhaseAverage;
@@ -1369,9 +1402,7 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
     int skippedJ = 0;
     int skippedArea = 0;
     int skippedImportanceCount = 0;
-    int skippedBoth = 0;
-    double totalImportance = 0;
-    double skippedImportance = 0;
+    int candidateBeams = 0;
 
     // Pass 2: prepare beams, skip negligible ones
     double localEnergy = 0;
@@ -1426,13 +1457,13 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
 
         if (beam.lastFacetId != __INT_MAX__)
         {
+            ++candidateBeams;
             matrix m_ = Mueller(beam.J);
             localEnergy += BeamCrossSection(beam)*m_[0][0]*sinZenith;
 
             double jn = beam.J.Norm();
             double ar = info.area;
             double importance = jn * ar;
-            totalImportance += importance;
             if (useBeamCutoff)
             {
                 bool smallJ = (jRel > 0 && jn < jThreshold);
@@ -1441,11 +1472,9 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
                 if (smallJ || smallArea || smallImportance)
                 {
                     skippedBeams++;
-                    skippedImportance += importance;
                     if (smallJ) skippedJ++;
                     if (smallArea) skippedArea++;
                     if (smallImportance) skippedImportanceCount++;
-                    if (smallJ && smallArea) skippedBoth++;
                     continue;
                 }
             }
@@ -1505,25 +1534,19 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
     m_extinctionCrossSectionOt += out.extinctionOt;
     m_hasExtinctionOt = true;
     m_outputEnergy += localEnergy;
-
-    // Log beam cutoff statistics (first call only)
-    static bool logged = false;
-    static std::mutex loggedMutex;
-    if (skippedBeams > 0) {
-        std::lock_guard<std::mutex> lock(loggedMutex);
-        if (logged)
-            return;
-        std::cerr << "Beam cutoff: " << skippedBeams << "/" << (skippedBeams + (int)out.beams.size())
-                  << " beams skipped (relative OR: |J|^2<" << std::scientific << std::setprecision(1)
-                  << jThreshold << " [eps=" << jRel << "], area<" << areaThreshold
-                  << " [eps=" << areaRel << "]; J=" << skippedJ
-                  << ", area=" << skippedArea << ", importance=" << skippedImportanceCount
-                  << " [thr=" << importanceThreshold << ", eps=" << importanceRel
-                  << "], bothJA=" << skippedBoth
-                  << ", skipped |J|^2*area=" << (totalImportance > 0 ? skippedImportance / totalImportance : 0)
-                  << ")" << std::endl;
-        logged = true;
-    }
+    m_beamCutoffStatistics->prepareCalls.fetch_add(1, std::memory_order_relaxed);
+    m_beamCutoffStatistics->candidates.fetch_add(candidateBeams,
+                                                  std::memory_order_relaxed);
+    m_beamCutoffStatistics->kept.fetch_add(candidateBeams - skippedBeams,
+                                            std::memory_order_relaxed);
+    m_beamCutoffStatistics->rejected.fetch_add(skippedBeams,
+                                                std::memory_order_relaxed);
+    m_beamCutoffStatistics->rejectedJones.fetch_add(skippedJ,
+                                                     std::memory_order_relaxed);
+    m_beamCutoffStatistics->rejectedArea.fetch_add(skippedArea,
+                                                    std::memory_order_relaxed);
+    m_beamCutoffStatistics->rejectedImportance.fetch_add(
+        skippedImportanceCount, std::memory_order_relaxed);
 }
 
 double HandlerPO::ComputeForwardExtinctionOt(

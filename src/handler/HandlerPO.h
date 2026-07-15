@@ -2,6 +2,9 @@
 
 #include "Handler.h"
 #include "BeamCache.h"
+#include "CutoffStatistics.h"
+#include "FftStatistics.h"
+#include <memory>
 #include <vector>
 
 /// Preprocessed beam data for parallel direction-loop processing.
@@ -167,6 +170,9 @@ public:
     bool IsFftEnabled() const;
     void SetFftPhiFactor(int value);
     int FftPhiFactor() const;
+    void SetFftTolerance(double value);
+    double FftTolerance() const;
+    std::string FftReport() const;
     void AutoSelectFftPhiFactor(double eps);
     static bool HasNumericFftPhiFactorOverride();
     static int SelectAutoFftPhiFactor(int nPhi, double eps);
@@ -174,6 +180,7 @@ public:
     bool IsFullOnly() const;
     bool ComputeNoShadow() const;
     bool HasAbsorptionAccounting() const;
+    std::string BeamCutoffReport() const;
 
     matrix *m_Lp;
     matrix *m_Ln;
@@ -235,8 +242,12 @@ public:
     bool m_gpuEnabled = false;
     bool m_fftEnabled = false;
     int m_fftPhiFactor = 0;
+    double m_fftTolerance = 0.0;
     bool m_fullOnly = true;
+    std::string m_cutoffProfileName = "legacy-default";
 protected:
+    std::shared_ptr<BeamCutoffStatistics> m_beamCutoffStatistics;
+    std::shared_ptr<FftInterpolationStatistics> m_fftStatistics;
     bool isNanOccured = false;
     bool isNan = false;
     bool isBackScatteringConusEnabled = false;

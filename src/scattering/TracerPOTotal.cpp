@@ -2,6 +2,7 @@
 #include "HandlerPOTotal.h"
 #include "HandlerPO.h"
 #include "BeamCache.h"
+#include "IntegralCharacteristics.h"
 #include "Sobol.h"
 
 #include <iostream>
@@ -1908,13 +1909,16 @@ static void WriteAveragedRowsFile(const std::string &destName,
                                   const ScatteringRange &sphere,
                                   const std::vector<matrix> &rows,
                                   double incomingEnergy,
-                                  double outputEnergy,
                                   double cExtOt,
                                   bool hasExtinctionOt,
                                   bool hasAbsorption,
                                   std::string &integralSummary)
 {
     std::ofstream outFile(destName + ".dat", std::ios::out);
+    if (!outFile.is_open())
+        throw std::runtime_error(
+            "cannot open Mueller output '" + destName
+            + ".dat'.\n  Fix: verify output permissions and free disk space.");
     outFile << std::setprecision(10);
     outFile << "ScAngle 2pi*dcos "
             << "M11 M12 M13 M14 "
@@ -1923,130 +1927,39 @@ static void WriteAveragedRowsFile(const std::string &destName,
             << "M41 M42 M43 M44";
 
     double cscaIntegral = 0.0;
+    std::vector<double> thetaRows;
+    std::vector<double> m11Rows;
+    thetaRows.reserve(sphere.nZenith + 1);
+    m11Rows.reserve(sphere.nZenith + 1);
     for (int t = 0; t <= sphere.nZenith; ++t)
     {
         double dcos = sphere.Compute2PiDcos(t);
         cscaIntegral += rows[t][0][0] * dcos;
+        thetaRows.push_back(sphere.GetZenith(t));
+        m11Rows.push_back(rows[t][0][0]);
         outFile << '\n' << RadToDeg(sphere.GetZenith(t)) << ' ' << dcos << ' ';
         outFile << rows[t];
     }
     outFile.close();
+    if (!outFile)
+        throw std::runtime_error(
+            "failed while writing Mueller output '" + destName
+            + ".dat'.\n  Fix: verify free disk space and filesystem health.");
 
-    if (incomingEnergy > 0.0)
-    {
-        const double cAbsGoRaw =
-            hasAbsorption ? (incomingEnergy - outputEnergy) : 0.0;
-        const double absTol = std::max(1.0, incomingEnergy) * 1e-10;
-        const double cAbsGo =
-            (std::fabs(cAbsGoRaw) < absTol) ? 0.0 : cAbsGoRaw;
-        const double cExtLegacy = cscaIntegral + cAbsGo;
-        const double cExt = hasExtinctionOt ? cExtOt : cExtLegacy;
-        double cAbs = 0.0;
-        double csca = cscaIntegral;
-        if (hasExtinctionOt)
-        {
-            if (hasAbsorption)
-            {
-                cAbs = cExt - cscaIntegral;
-            }
-            else
-            {
-                cAbs = 0.0;
-                csca = cExt;
-            }
-        }
-        else
-        {
-            cAbs = cAbsGo;
-        }
-        if (std::fabs(cAbs) < absTol)
-            cAbs = 0.0;
-        const double qSca = csca / incomingEnergy;
-        const double qScaIntegral = cscaIntegral / incomingEnergy;
-        const double qAbs = cAbs / incomingEnergy;
-        const double qAbsGo = cAbsGo / incomingEnergy;
-        const double qExt = cExt / incomingEnergy;
-        const double qExtLegacy = cExtLegacy / incomingEnergy;
-        const double otIntegralMismatch = (hasExtinctionOt && std::fabs(cExt) > 0.0)
-            ? std::fabs(cscaIntegral - cExt) / std::fabs(cExt)
-            : 0.0;
-
-        std::ostringstream log;
-        log << std::fixed << std::setprecision(4);
-        log << "\n===== SCATTERING EFFICIENCY: full =====\n";
-        log << "A_proj (incoming energy) = " << incomingEnergy << "\n";
-        log << "Outcoming energy = " << outputEnergy << "\n";
-        log << "C_abs_GO = A_proj - outcoming energy = " << cAbsGo << "\n";
-        log << "Q_abs_GO = C_abs_GO / A_proj = " << qAbsGo << "\n";
-        if (hasExtinctionOt)
-        {
-            log << "C_ext = C_ext_OT (optical theorem forward amplitude) = "
-                << cExtOt << "\n";
-            if (hasAbsorption)
-            {
-                log << "C_sca = C_sca_integral = integral(M11 dOmega) = "
-                    << csca << "\n";
-                log << "C_abs = C_ext - C_sca_integral = " << cAbs << "\n";
-            }
-            else
-            {
-                log << "C_abs = 0 (non-absorbing refractive index)\n";
-                log << "C_sca = C_ext_OT (non-absorbing energy balance) = "
-                    << csca << "\n";
-                log << "C_sca_integral = integral(M11 dOmega), diagnostic = "
-                    << cscaIntegral << "\n";
-            }
-            log << "Q_sca_integral = C_sca_integral / A_proj = "
-                << qScaIntegral << "\n";
-            log << "C_ext_legacy_GO = C_sca_integral + C_abs_GO = "
-                << cExtLegacy << "\n";
-            log << "Q_ext_legacy_GO = C_ext_legacy_GO / A_proj = "
-                << qExtLegacy << "\n";
-            log << "OT_integral_mismatch_rel = " << otIntegralMismatch
-                << " (diagnostic agreement of integral(M11 dOmega) with C_ext_OT)\n";
-        }
-        else
-        {
-            log << "C_sca = C_sca_integral = " << csca << "\n";
-            log << "C_abs = C_abs_GO (OT unavailable) = " << cAbs << "\n";
-            log << "C_ext = C_sca_integral + C_abs_GO = " << cExt << "\n";
-        }
-        log << "Q_sca = C_sca / A_proj = " << qSca << "\n";
-        log << "Q_abs = C_abs / A_proj = " << qAbs << "\n";
-        log << "Q_ext = C_ext / A_proj = " << qExt << "\n";
-        log << "EFFICIENCY_SUMMARY "
-            << "Qext=" << qExt << ' '
-            << "Cext=" << cExt << ' '
-            << "Qext_legacy=" << qExtLegacy << ' '
-            << "Cext_legacy=" << cExtLegacy << ' '
-            << "Cext_OT=" << (hasExtinctionOt ? cExtOt : 0.0) << ' '
-            << "Qabs=" << qAbs << ' '
-            << "Cabs=" << cAbs << ' '
-            << "Qabs_GO=" << qAbsGo << ' '
-            << "Cabs_GO=" << cAbsGo << ' '
-            << "Qsca=" << qSca << ' '
-            << "Csca=" << csca << ' '
-            << "Qsca_integral=" << qScaIntegral << ' '
-            << "Csca_integral=" << cscaIntegral << ' '
-            << "Aproj=" << incomingEnergy << ' '
-            << "Eout=" << outputEnergy << ' '
-            << "OT_integral_mismatch_rel=" << otIntegralMismatch << ' '
-            << "integral_status="
-            << ((hasExtinctionOt && otIntegralMismatch > 1e-2)
-                ? "diagnostic_only" : "ok")
-            << "\n";
-        if (hasExtinctionOt && !hasAbsorption)
-        {
-            if (otIntegralMismatch > 1e-2)
-                log << "WARNING: non-absorbing OT/integral mismatch = "
-                    << otIntegralMismatch * 100.0
-                    << "%. C_sca_integral is diagnostic; physical C_abs is fixed to zero.\n";
-        }
-        std::ofstream logFile(destName + "_log.txt", std::ios::app);
-        if (logFile.is_open())
-            logFile << log.str();
-        integralSummary = log.str();
-    }
+    const std::string label =
+        (destName.find("noshadow") != std::string::npos) ? "no-shadow" : "full";
+    const double cScaError = EstimateAngularIntegralRelativeError(
+        thetaRows, m11Rows, cscaIntegral);
+    const IntegralCharacteristics characteristics = ComputeIntegralCharacteristics(
+        IntegralMethod::PhysicalOptics, incomingEnergy, cscaIntegral, cExtOt,
+        hasExtinctionOt, hasAbsorption, cScaError);
+    const std::string log = FormatIntegralCharacteristicsLog(
+        characteristics, label);
+    WriteIntegralCharacteristicsTsv(destName, label, characteristics);
+    AppendIntegralCharacteristicsLog(destName, log);
+    std::cerr << log;
+    if (label == "full")
+        integralSummary = log;
 }
 
 static bool AutoFullSymmetryErrorProjectionEnabled(double betaSym,
@@ -6716,7 +6629,7 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
         }
 
         WriteAveragedRowsFile(m_resultDirName, outputSphere, rows,
-                              m_incomingEnergy, handlerPO->m_outputEnergy,
+                              m_incomingEnergy,
                               handlerPO->m_extinctionCrossSectionOt,
                               handlerPO->m_hasExtinctionOt,
                               handlerPO->HasAbsorptionAccounting(),
@@ -6734,7 +6647,7 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
             std::string nsName = m_resultDirName + "_noshadow";
             std::string dummySummary;
             WriteAveragedRowsFile(nsName, outputSphere, rowsNoShadow,
-                                  m_incomingEnergy, handlerPO->m_outputEnergy,
+                                  m_incomingEnergy,
                                   handlerPO->m_extinctionCrossSectionOt,
                                   handlerPO->m_hasExtinctionOt,
                                   false, dummySummary);
@@ -6852,6 +6765,7 @@ int TracerPOTotal::TraceAdaptivePhi(double eps, int nOrient,
     selectedSphere.ComputeSphereDirections(m_incidentLight);
     handler->SetScatteringSphere(selectedSphere);
     if (handler->IsFftEnabled()
+        && handler->FftPhiFactor() == 0
         && !HandlerPO::HasNumericFftPhiFactorOverride())
         handler->AutoSelectFftPhiFactor(eps);
     std::cout << "Adaptive phi selected N_phi=" << selectedPhi << std::endl;

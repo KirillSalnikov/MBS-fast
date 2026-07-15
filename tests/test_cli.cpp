@@ -2,6 +2,7 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -10,6 +11,7 @@
 
 #include "ArgPP.h"
 #include "CliOptions.h"
+#include "IntegralCharacteristics.h"
 #include "RunConfig.h"
 
 namespace
@@ -99,6 +101,21 @@ void ExpectFailureForBuild(const std::string &name,
             FailTest(name, "error is not actionable: " + message);
         else
             Pass(name);
+    }
+}
+
+void ExpectSuccessForBuild(const std::string &name,
+                           const std::vector<std::string> &arguments,
+                           bool gpuDefault, bool cudaCompiled)
+{
+    try
+    {
+        (void)ParseConfig(arguments, gpuDefault, cudaCompiled);
+        Pass(name);
+    }
+    catch (const std::exception &ex)
+    {
+        FailTest(name, ex.what());
     }
 }
 
@@ -398,6 +415,101 @@ int main()
     badCutoff.insert(badCutoff.end(), {"--beam-cutoff", "1.1"});
     ExpectFailure("relative cutoff range", badCutoff,
                   "must be in [0, 1]");
+
+    std::vector<std::string> badAreaRatio = CanonicalBase();
+    badAreaRatio.insert(badAreaRatio.end(), {"--beam-area-ratio", "0.5"});
+    ExpectFailure("beam area ratio range", badAreaRatio, "at least 1");
+
+    std::vector<std::string> badProfile = CanonicalBase();
+    badProfile.insert(badProfile.end(), {"--cutoff-profile", "turbo"});
+    ExpectFailure("unknown cutoff profile", badProfile,
+                  "unknown --cutoff-profile");
+
+    std::vector<std::string> profileConflict = CanonicalBase();
+    profileConflict.insert(profileConflict.end(), {
+        "--cutoff-profile", "safe", "--trace-cutoff-importance", "1e-8"
+    });
+    ExpectFailure("cutoff profile conflict", profileConflict,
+                  "cannot be combined");
+
+    std::vector<std::string> profileOff = CanonicalBase();
+    profileOff.insert(profileOff.end(), {"--cutoff-profile", "off"});
+    ExpectSuccess("cutoff profile off", profileOff);
+
+    std::vector<std::string> saveGeometry = CanonicalBase();
+    saveGeometry.insert(saveGeometry.end(), {
+        "--save-geometry", "saved.particle"
+    });
+    ExpectSuccess("save geometry option", saveGeometry);
+
+    std::vector<std::string> badFftFactor = CanonicalBase();
+    badFftFactor.insert(badFftFactor.end(), {"--fft-factor", "65"});
+    ExpectFailure("FFT factor range", badFftFactor, "from 1 to 64");
+
+    std::vector<std::string> badFftTolerance = CanonicalBase();
+    badFftTolerance.insert(badFftTolerance.end(), {"--fft-tolerance", "1"});
+    ExpectFailure("FFT tolerance range", badFftTolerance, "in (0, 1)");
+
+    std::vector<std::string> fftCuda = CanonicalBase();
+    for (size_t i = 0; i + 1 < fftCuda.size(); ++i)
+    {
+        if (fftCuda[i] == "--fixed-orientation")
+        {
+            fftCuda.erase(fftCuda.begin() + i, fftCuda.begin() + i + 3);
+            fftCuda.insert(fftCuda.end(), {"--sobol", "16"});
+            break;
+        }
+    }
+    for (size_t i = 0; i + 1 < fftCuda.size(); ++i)
+        if (fftCuda[i] == "--backend")
+            fftCuda[i + 1] = "cuda";
+    fftCuda.insert(fftCuda.end(), {
+        "--fft-factor", "3", "--fft-tolerance", "0.02"
+    });
+    ExpectSuccessForBuild("explicit FFT controls", fftCuda, true, true);
+
+    const IntegralCharacteristics absorbing = ComputeIntegralCharacteristics(
+        IntegralMethod::PhysicalOptics, 100.0, 150.0, 170.0,
+        true, true, 0.002);
+    if (std::fabs(absorbing.cAbs - 20.0) > 1e-12
+        || std::fabs(absorbing.qExt - 1.7) > 1e-12
+        || std::fabs(absorbing.cScaErrorEstimateRel - 0.002) > 1e-12)
+        FailTest("absorbing integral balance",
+                 "shared characteristics formula is inconsistent");
+    else
+        Pass("absorbing integral balance");
+
+    const IntegralCharacteristics goAbsorbing = ComputeIntegralCharacteristics(
+        IntegralMethod::GeometricalOptics, 100.0, 80.0, 0.0,
+        false, true, std::numeric_limits<double>::quiet_NaN());
+    if (std::fabs(goAbsorbing.cExt - 100.0) > 1e-12
+        || std::fabs(goAbsorbing.cSca - 80.0) > 1e-12
+        || std::fabs(goAbsorbing.cAbs - 20.0) > 1e-12)
+        FailTest("GO integral balance",
+                 "GO characteristics do not use projected-area balance");
+    else
+        Pass("GO integral balance");
+
+    const std::string compactLog = FormatIntegralCharacteristicsLog(
+        absorbing, "full");
+    if (compactLog.find("legacy") != std::string::npos
+        || compactLog.find("C_abs_GO") != std::string::npos
+        || compactLog.find("C_ext_OT") != std::string::npos)
+        FailTest("compact integral log", "alternate definitions leaked into output");
+    else
+        Pass("compact integral log");
+
+    const std::vector<double> theta = {
+        0.0, M_PI/4.0, M_PI/2.0, 3.0*M_PI/4.0, M_PI
+    };
+    const std::vector<double> constantM11(theta.size(), 1.0);
+    const double quadratureError = EstimateAngularIntegralRelativeError(
+        theta, constantM11, 4.0*M_PI);
+    if (!std::isfinite(quadratureError) || quadratureError > 1e-12)
+        FailTest("Csca quadrature estimate",
+                 "constant angular integral should be exact");
+    else
+        Pass("Csca quadrature estimate");
 
     std::vector<std::string> badAdaptiveTolerance = CanonicalBase();
     for (size_t i = 0; i + 2 < badAdaptiveTolerance.size(); ++i)

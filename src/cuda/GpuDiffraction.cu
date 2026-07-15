@@ -660,11 +660,11 @@ static bool gpu_report_cuda_error(cudaError_t err, const char *where)
 
 static int choose_fft_phi_factor(int nFull, int configured)
 {
+    if (configured > 0)
+        return configured;
     int requested = gpu_fft_phi_factor();
     if (requested > 0)
         return requested;
-    if (configured > 0)
-        return configured;
     if (nFull >= 2400)
         return 8;
     if (nFull >= 600)
@@ -2987,20 +2987,31 @@ static std::vector<int> detect_fft_phi_spike_rows(const Arr2D &m,
     return rows;
 }
 
-static void report_fft_check(const Arr2D &fftM, const Arr2D &refM,
-                             int nAz, int nZen, const char *name)
+struct FftCheckResult
 {
+    double maxAbs = 0.0;
+    double maxRel = 0.0;
+    double significantM11MaxRel = 0.0;
+    double normalizedMuellerMaxRel = 0.0;
+    double rmsRel = 0.0;
+    int samples = 0;
+    int significantSamples = 0;
+
+    double EstimatedRelativeError() const
+    {
+        return std::max(significantM11MaxRel, normalizedMuellerMaxRel);
+    }
+};
+
+static FftCheckResult report_fft_check(const Arr2D &fftM, const Arr2D &refM,
+                                       int nAz, int nZen, const char *name)
+{
+    FftCheckResult result;
     double refMax = 0.0;
     for (int p = 0; p < nAz; ++p)
         for (int t = 0; t <= nZen; ++t)
             refMax = std::max(refMax, fabs(refM(p, t, 0, 0)));
     double significant = 1e-3 * refMax;
-    double maxAbs = 0.0;
-    double maxRel = 0.0;
-    double sigMaxRel = 0.0;
-    double rmsRel = 0.0;
-    int count = 0;
-    int sigCount = 0;
     for (int p = 0; p < nAz; ++p)
         for (int t = 0; t <= nZen; ++t)
         {
@@ -3008,20 +3019,36 @@ static void report_fft_check(const Arr2D &fftM, const Arr2D &refM,
             double b = fftM(p, t, 0, 0);
             double absErr = fabs(b - a);
             double relErr = absErr / std::max(fabs(a), 1e-12);
-            maxAbs = std::max(maxAbs, absErr);
-            maxRel = std::max(maxRel, relErr);
+            result.maxAbs = std::max(result.maxAbs, absErr);
+            result.maxRel = std::max(result.maxRel, relErr);
             if (fabs(a) >= significant)
             {
-                sigMaxRel = std::max(sigMaxRel, relErr);
-                ++sigCount;
+                result.significantM11MaxRel = std::max(
+                    result.significantM11MaxRel, relErr);
+                ++result.significantSamples;
             }
-            rmsRel += relErr * relErr;
-            ++count;
+            const double muellerScale = std::max(fabs(a), significant);
+            for (int element = 0; element < 16; ++element)
+            {
+                const double normalizedError = fabs(
+                    fftM(p, t, element / 4, element % 4)
+                    - refM(p, t, element / 4, element % 4)) / muellerScale;
+                result.normalizedMuellerMaxRel = std::max(
+                    result.normalizedMuellerMaxRel, normalizedError);
+            }
+            result.rmsRel += relErr * relErr;
+            ++result.samples;
         }
-    rmsRel = sqrt(rmsRel / std::max(1, count));
+    result.rmsRel = sqrt(result.rmsRel / std::max(1, result.samples));
     std::fprintf(stderr,
-                 "GPU FFT check %s M11: max_abs=%.6g max_rel=%.6g sig_max_rel=%.6g rms_rel=%.6g samples=%d sig_samples=%d\n",
-                 name, maxAbs, maxRel, sigMaxRel, rmsRel, count, sigCount);
+                 "GPU FFT check %s: M11 max_abs=%.6g max_rel=%.6g "
+                 "significant_max_rel=%.6g rms_rel=%.6g, "
+                 "Mueller/M11 max_rel=%.6g, samples=%d significant_samples=%d\n",
+                 name, result.maxAbs, result.maxRel,
+                 result.significantM11MaxRel, result.rmsRel,
+                 result.normalizedMuellerMaxRel, result.samples,
+                 result.significantSamples);
+    return result;
 }
 
 static bool fft_upsample_phi_arr2d_impl(const Arr2D &low,
@@ -3303,16 +3330,23 @@ bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOri
     const bool computeNoShadow = ComputeNoShadow();
     int factor = choose_fft_phi_factor(nFull, m_fftPhiFactor);
     if (factor <= 1 || nFull < 32)
+    {
+        m_fftStatistics->RecordCall(nFull, nFull, 1);
         return HandleOrientationsToLocalGpu(prepared, start, count,
                                             localM, localM_noshadow,
                                             scale, waveIndex);
+    }
 
     int nLow = nFull / factor;
     if (nLow < 16) nLow = std::min(nFull, 16);
     if (nLow >= nFull)
+    {
+        m_fftStatistics->RecordCall(nFull, nFull, 1);
         return HandleOrientationsToLocalGpu(prepared, start, count,
                                             localM, localM_noshadow,
                                             scale, waveIndex);
+    }
+    m_fftStatistics->RecordCall(nFull, nLow, factor);
 
     int thetaFactor = gpu_fft_theta_factor();
     int nZenLow = nZen;
@@ -3381,7 +3415,8 @@ bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOri
     if (!ok)
         return failFft("low-direct");
 
-    bool doCheck = gpu_fft_check_enabled() && factor > 2;
+    bool doCheck = (gpu_fft_check_enabled() || m_fftTolerance > 0.0)
+        && factor > 1;
     if (!doCheck)
     {
         if (!computeNoShadow)
@@ -3528,9 +3563,29 @@ bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOri
             if (!fft_upsample_phi_arr2d(checkLowMns, nCheck, nFull, nZen, checkMns))
                 return false;
         }
-        report_fft_check(fftM, checkM, nFull, nZen, "full");
+        const FftCheckResult fullCheck = report_fft_check(
+            fftM, checkM, nFull, nZen, "full");
+        double estimatedError = fullCheck.EstimatedRelativeError();
         if (computeNoShadow)
-            report_fft_check(fftMns, checkMns, nFull, nZen, "no-shadow");
+        {
+            const FftCheckResult noShadowCheck = report_fft_check(
+                fftMns, checkMns, nFull, nZen, "no-shadow");
+            estimatedError = std::max(
+                estimatedError, noShadowCheck.EstimatedRelativeError());
+        }
+        const bool refine = m_fftTolerance > 0.0
+            && estimatedError > m_fftTolerance;
+        m_fftStatistics->RecordValidation(estimatedError, refine);
+        if (refine)
+        {
+            fftM = checkM;
+            if (computeNoShadow)
+                fftMns = checkMns;
+            std::fprintf(stderr,
+                         "GPU FFT validation exceeded tolerance: estimate=%.6g, "
+                         "tolerance=%.6g; using doubled direct Nphi=%d result.\n",
+                         estimatedError, m_fftTolerance, nCheck);
+        }
     }
 
     if (gpu_fft_adaptive_phi_enabled())
@@ -3608,21 +3663,29 @@ bool HandlerPO::HandleOrientationsToLocalGpuFftPhiMultiK(
         return failFft("disabled");
     if (!isCoh || ComputeNoShadow())
         return failFft("unsupported-mode");
-    if (gpu_fft_check_enabled() || gpu_fft_adaptive_phi_enabled())
+    if (gpu_fft_check_enabled() || m_fftTolerance > 0.0
+        || gpu_fft_adaptive_phi_enabled())
         return failFft("check-or-adaptive-enabled");
 
     const int nFull = m_sphere.nAzimuth;
     const int nZen = m_sphere.nZenith;
     int factor = choose_fft_phi_factor(nFull, m_fftPhiFactor);
     if (factor <= 1 || nFull < 32)
+    {
+        m_fftStatistics->RecordCall(nFull, nFull, 1);
         return HandleOrientationsToLocalGpuMultiK(prepared, start, count,
                                                  scales, waveIndex, localMs);
+    }
 
     int nLow = nFull / factor;
     if (nLow < 16) nLow = std::min(nFull, 16);
     if (nLow >= nFull)
+    {
+        m_fftStatistics->RecordCall(nFull, nFull, 1);
         return HandleOrientationsToLocalGpuMultiK(prepared, start, count,
                                                  scales, waveIndex, localMs);
+    }
+    m_fftStatistics->RecordCall(nFull, nLow, factor);
 
     int thetaFactor = gpu_fft_theta_factor();
     int nZenLow = nZen;

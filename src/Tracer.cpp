@@ -15,6 +15,8 @@
 #endif
 #include "global.h"
 #include "macro.h"
+#include "HandlerPO.h"
+#include "RuntimeInfo.h"
 //#ifdef _TRACK_ALLOW
 //ofstream trackMapFile("tracks_deb.dat", ios::out);
 //#endif
@@ -257,6 +259,7 @@ void Tracer::OutputStatisticsPO(CalcTimer &timer, long long orNumber, const stri
                  + "End of calc.  : " + endTime
                  + "\nTotal time  : " + totalTime
                  + "\nTotal number of body orientations: " + to_string(orNumber);
+    AppendFinalResourceReport();
 
 //    m_summary += "\nTotal incoming energy = " + to_string(m_incomingEnergy)
 //                 + "\nTotal outcoming energy (GO) = " + to_string(m_handler->m_outputEnergy)
@@ -282,6 +285,23 @@ void Tracer::OutputStatisticsPO(CalcTimer &timer, long long orNumber, const stri
     AppendTextLog("\n===== RUN SUMMARY =====\n" + m_summary + "\n");
 
     cout << m_summary;
+}
+
+void Tracer::AppendFinalResourceReport()
+{
+    if (m_finalResourceReportWritten)
+        return;
+    const HandlerPO *handlerPO = dynamic_cast<const HandlerPO *>(m_handler);
+    const bool gpuActive = handlerPO && handlerPO->IsGpuEnabled();
+    if (handlerPO)
+    {
+        m_summary += handlerPO->BeamCutoffReport();
+        m_summary += handlerPO->FftReport();
+    }
+    if (m_scattering)
+        m_summary += m_scattering->TraceCutoffReport();
+    m_summary += FormatRuntimeResourceReport("final", gpuActive);
+    m_finalResourceReportWritten = true;
 }
 
 void Tracer::SetIsOutputGroups(bool value)

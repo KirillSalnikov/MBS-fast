@@ -6,6 +6,15 @@ bool CheckGpuRuntime(GpuDeviceInfo &/*info*/, std::string &error)
     return false;
 }
 
+bool QueryActiveGpuMemory(long long &freeBytes, long long &totalBytes,
+                          std::string &error)
+{
+    freeBytes = 0;
+    totalBytes = 0;
+    error = "CPU binary has no active CUDA device";
+    return false;
+}
+
 std::string FormatGpuInfo(const GpuDeviceInfo &/*info*/)
 {
     return "CUDA unavailable in CPU MPI/OpenMP binary";

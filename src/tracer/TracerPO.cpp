@@ -46,6 +46,8 @@ void TracerPO::TraceRandom(const AngleRange &betaRange, const AngleRange &gammaR
 
 void TracerPO::TraceFixed(const double &beta, const double &gamma)
 {
+	CalcTimer timer;
+	OutputStartTime(timer);
 	vector<Beam> outBeams;
 
 	double b = DegToRad(beta);
@@ -62,4 +64,5 @@ void TracerPO::TraceFixed(const double &beta, const double &gamma)
     {
         poHandler->WriteJonesToFile(m_resultDirName);
     }
+	OutputStatisticsPO(timer, 1, m_resultDirName);
 }

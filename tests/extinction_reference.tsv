@@ -1,0 +1,4 @@
+# Values copied from /home/user/cluster/extinction/Qext_updated on 2026-07-15.
+case	type	p1	p2	reference_Aproj	reference_Cext	reference_Qext	relative_tolerance
+bullet	2	10	9.853987	123.25724589398	241.61743637164	1.9602696346101	0.003
+droxtal	4	5	-	67.323835323067	129.31524156851	1.9207943360322	0.003

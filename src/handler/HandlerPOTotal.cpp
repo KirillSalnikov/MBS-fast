@@ -1,5 +1,6 @@
 #include "HandlerPOTotal.h"
 
+#include "IntegralCharacteristics.h"
 #include "Mueller.hpp"
 #include <iostream>
 #include <iomanip>
@@ -9,36 +10,10 @@
 #include <cmath>
 #include <algorithm>
 #include <stdexcept>
+#include <vector>
 
 namespace
 {
-std::string LogNameForResult(const std::string &destName)
-{
-    const std::string suffix = "_noshadow";
-    if (destName.size() >= suffix.size()
-            && destName.compare(destName.size() - suffix.size(), suffix.size(), suffix) == 0)
-    {
-        return destName.substr(0, destName.size() - suffix.size()) + "_log.txt";
-    }
-    return destName + "_log.txt";
-}
-
-void AppendTextLog(const std::string &destName, const std::string &text)
-{
-    const std::string path = LogNameForResult(destName);
-    std::ofstream out(path.c_str(), std::ios::app);
-    if (!out.is_open())
-        throw std::runtime_error(
-            "cannot open output log '" + path
-            + "'.\n  Fix: verify output permissions and free disk space.");
-    out << text;
-    out.flush();
-    if (!out)
-        throw std::runtime_error(
-            "failed while writing output log '" + path
-            + "'.\n  Fix: verify free disk space and filesystem health.");
-}
-
 void ApplyForwardPoleSymmetry(matrix &m)
 {
     const double M00 = m[0][0];
@@ -101,9 +76,11 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
     int &nZen = m_sphere.nZenith;
     int &nAz = m_sphere.nAzimuth;
 
-    // Diagnostic angular integral of M11. The physical scattering cross section
-    // reported below is computed from C_ext - C_abs when OT extinction exists.
     double C_sca_integral = 0.0;
+    std::vector<double> thetaRows;
+    std::vector<double> m11Rows;
+    thetaRows.reserve(nZen + 1);
+    m11Rows.reserve(nZen + 1);
 
     for (int iZen = 0; iZen <= nZen; ++iZen)
 //    for (int iZen = nZen; iZen >= 0; --iZen)
@@ -146,8 +123,9 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
             ApplyForwardPoleSymmetry(Msum);
         }
 
-        // Diagnostic angular integral from azimuth-averaged M11.
         C_sca_integral += Msum[0][0] * _2Pi_dcos;
+        thetaRows.push_back(radZen);
+        m11Rows.push_back(Msum[0][0]);
 
         outFile << std::endl << RadToDeg(radZen) << ' ' << _2Pi_dcos << ' ' /*<< nrg << ' '*/;
         outFile << Msum;
@@ -160,136 +138,21 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
             + ".dat'.\n  Fix: verify free disk space and filesystem health.");
     outFile.close();
 
-    // Compute efficiencies. nrg is the orientation-averaged projected area.
-    if (nrg > 0)
-    {
-        const double C_abs_go_raw =
-            m_hasAbsorption ? (nrg - m_outputEnergy) : 0.0;
-        const double absTol = std::max(1.0, nrg) * 1e-10;
-        const double C_abs_GO =
-            (std::fabs(C_abs_go_raw) < absTol) ? 0.0 : C_abs_go_raw;
-        const double C_ext_legacy = C_sca_integral + C_abs_GO;
-        const double C_ext = m_hasExtinctionOt
-            ? m_extinctionCrossSectionOt : C_ext_legacy;
-        double C_abs = 0.0;
-        double C_sca = C_sca_integral;
-        if (m_hasExtinctionOt)
-        {
-            if (m_hasAbsorption)
-            {
-                C_abs = C_ext - C_sca_integral;
-            }
-            else
-            {
-                C_abs = 0.0;
-                C_sca = C_ext;
-            }
-        }
-        else
-        {
-            C_abs = C_abs_GO;
-        }
-        if (std::fabs(C_abs) < absTol)
-            C_abs = 0.0;
-        const double Q_sca = C_sca / nrg;
-        const double Q_sca_integral = C_sca_integral / nrg;
-        const double Q_abs = C_abs / nrg;
-        const double Q_abs_GO = C_abs_GO / nrg;
-        const double Q_ext = C_ext / nrg;
-        const double Q_ext_legacy = C_ext_legacy / nrg;
-        const double otIntegralMismatch = (m_hasExtinctionOt && std::fabs(C_ext) > 0.0)
-            ? std::fabs(C_sca_integral - C_ext) / std::fabs(C_ext)
-            : 0.0;
-        const std::string label =
-            (destName.find("noshadow") != std::string::npos) ? "no-shadow" : "full";
-        if (label == "full")
-            m_integralSummary.clear();
-
-        std::ostringstream log;
-        log << std::fixed << std::setprecision(4);
-        log << "\n===== SCATTERING EFFICIENCY: " << label << " =====\n";
-        log << "A_proj (incoming energy) = " << nrg << "\n";
-        if (label == "full")
-        {
-            log << "Outcoming energy = " << m_outputEnergy << "\n";
-            log << "C_abs_GO = A_proj - outcoming energy = " << C_abs_GO << "\n";
-            log << "Q_abs_GO = C_abs_GO / A_proj = " << Q_abs_GO << "\n";
-            if (m_hasExtinctionOt)
-            {
-                log << "C_ext = C_ext_OT (optical theorem forward amplitude) = "
-                    << m_extinctionCrossSectionOt << "\n";
-                if (m_hasAbsorption)
-                {
-                    log << "C_sca = C_sca_integral = integral(M11 dOmega) = "
-                        << C_sca << "\n";
-                    log << "C_abs = C_ext - C_sca_integral = " << C_abs << "\n";
-                }
-                else
-                {
-                    log << "C_abs = 0 (non-absorbing refractive index)\n";
-                    log << "C_sca = C_ext_OT (non-absorbing energy balance) = "
-                        << C_sca << "\n";
-                    log << "C_sca_integral = integral(M11 dOmega), diagnostic = "
-                        << C_sca_integral << "\n";
-                }
-                log << "Q_sca_integral = C_sca_integral / A_proj = "
-                    << Q_sca_integral << "\n";
-                log << "C_ext_legacy_GO = C_sca_integral + C_abs_GO = "
-                    << C_ext_legacy << "\n";
-                log << "Q_ext_legacy_GO = C_ext_legacy_GO / A_proj = "
-                    << Q_ext_legacy << "\n";
-                log << "OT_integral_mismatch_rel = " << otIntegralMismatch
-                    << " (diagnostic agreement of integral(M11 dOmega) with C_ext_OT)\n";
-            }
-            else
-            {
-                log << "C_sca = C_sca_integral = " << C_sca << "\n";
-                log << "C_abs = C_abs_GO (OT unavailable) = " << C_abs << "\n";
-                log << "C_ext = C_sca_integral + C_abs_GO = " << C_ext << "\n";
-            }
-            log << "Q_sca = C_sca / A_proj = " << Q_sca << "\n";
-            log << "Q_abs = C_abs / A_proj = " << Q_abs << "\n";
-            log << "Q_ext = C_ext / A_proj = " << Q_ext << "\n";
-            log << "EFFICIENCY_SUMMARY "
-                << "Qext=" << Q_ext << ' '
-                << "Cext=" << C_ext << ' '
-                << "Qext_legacy=" << Q_ext_legacy << ' '
-                << "Cext_legacy=" << C_ext_legacy << ' '
-                << "Cext_OT=" << (m_hasExtinctionOt
-                    ? m_extinctionCrossSectionOt : 0.0) << ' '
-                << "Qabs=" << Q_abs << ' '
-                << "Cabs=" << C_abs << ' '
-                << "Qabs_GO=" << Q_abs_GO << ' '
-                << "Cabs_GO=" << C_abs_GO << ' '
-                << "Qsca=" << Q_sca << ' '
-                << "Csca=" << C_sca << ' '
-                << "Qsca_integral=" << Q_sca_integral << ' '
-                << "Csca_integral=" << C_sca_integral << ' '
-                << "OT_integral_mismatch_rel=" << otIntegralMismatch << ' '
-                << "integral_status="
-                << ((m_hasExtinctionOt && otIntegralMismatch > 1e-2)
-                    ? "diagnostic_only" : "ok")
-                << "\n";
-        }
-        if (Q_sca_integral > 2.5)
-        {
-            log << "WARNING: Q_sca_integral = " << Q_sca_integral
-                << " > 2. Angular M11 integral may overestimate scattering at this size parameter.\n"
-                << "  Physical limit (extinction paradox): Q_ext -> 2 for large x.\n"
-                << "  This is a known PO limitation.\n";
-        }
-        if (label == "full" && m_hasExtinctionOt && !m_hasAbsorption)
-        {
-            if (otIntegralMismatch > 1e-2)
-                log << "WARNING: non-absorbing OT/integral mismatch = "
-                    << otIntegralMismatch * 100.0
-                    << "%. C_sca_integral is diagnostic; physical C_abs is fixed to zero.\n";
-        }
-        log << "=========================================\n";
-        std::cerr << log.str();
-        m_integralSummary += log.str();
-        AppendTextLog(destName, log.str());
-    }
+    const std::string label =
+        (destName.find("noshadow") != std::string::npos) ? "no-shadow" : "full";
+    const double cScaError = EstimateAngularIntegralRelativeError(
+        thetaRows, m11Rows, C_sca_integral);
+    const IntegralCharacteristics characteristics = ComputeIntegralCharacteristics(
+        IntegralMethod::PhysicalOptics, nrg, C_sca_integral,
+        m_extinctionCrossSectionOt, m_hasExtinctionOt, m_hasAbsorption,
+        cScaError);
+    const std::string log = FormatIntegralCharacteristicsLog(
+        characteristics, label);
+    WriteIntegralCharacteristicsTsv(destName, label, characteristics);
+    AppendIntegralCharacteristicsLog(destName, log);
+    std::cerr << log;
+    if (label == "full")
+        m_integralSummary = log;
 }
 
 void HandlerPOTotal::AddToMueller()

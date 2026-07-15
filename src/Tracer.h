@@ -75,8 +75,10 @@ protected:
                         int zenith, int azimuth, CalcTimer &timer, int nBeams);
     void OutputOrientationToLog(int i, int j, std::ostream &logfile);
     void AppendTextLog(const std::string &text) const;
+    void AppendFinalResourceReport();
 
 private:
     void HandleBeamsPO2(std::vector<Beam> &outBeams, const ScatteringRange &bsCone, int groupID);
     void SetIncidentLight(Particle *particle);
+    bool m_finalResourceReportWritten = false;
 };

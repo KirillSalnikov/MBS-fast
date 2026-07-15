@@ -5,9 +5,11 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyArrowPatch, Polygon, Circle, Rectangle
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 
 OUT = Path(__file__).resolve().parent / "figures"
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def setup(name, w=8.0, h=4.4):
@@ -153,6 +155,107 @@ def gpu_atomics():
     save(fig, path)
 
 
+def read_particle(path):
+    """Read the native particle format without inventing geometry for figures."""
+    lines = path.read_text(encoding="ascii").splitlines()
+    records = []
+    cursor = 0
+    while len(records) < 3 and cursor < len(lines):
+        text = lines[cursor].split("#", 1)[0].strip()
+        cursor += 1
+        if text:
+            records.append(text)
+    if len(records) != 3:
+        raise ValueError(f"{path}: missing native particle headers")
+
+    facets = []
+    current = []
+    for line in lines[cursor:]:
+        text = line.split("#", 1)[0].strip()
+        if not text:
+            if current:
+                facets.append(np.asarray(current, dtype=float))
+                current = []
+            continue
+        values = [float(value) for value in text.split()]
+        if len(values) != 3:
+            raise ValueError(f"{path}: vertex must contain x y z")
+        current.append(values)
+    if current:
+        facets.append(np.asarray(current, dtype=float))
+    if not facets:
+        raise ValueError(f"{path}: no facets")
+    return {
+        "concave": bool(int(records[0].split()[0])),
+        "aggregate": bool(int(records[1].split()[0])),
+        "symmetry": tuple(float(value) for value in records[2].split()),
+        "facets": facets,
+    }
+
+
+def draw_particle(ax, particle, color):
+    points = np.vstack(particle["facets"])
+    center = 0.5 * (points.min(axis=0) + points.max(axis=0))
+    span = max(np.ptp(points, axis=0).max(), 1e-12)
+    facets = [(facet - center) / span for facet in particle["facets"]]
+    collection = Poly3DCollection(
+        facets, facecolor=color, edgecolor="#20252b", linewidth=0.45,
+        alpha=0.78)
+    ax.add_collection3d(collection)
+    ax.set_xlim(-0.58, 0.58)
+    ax.set_ylim(-0.58, 0.58)
+    ax.set_zlim(-0.58, 0.58)
+    ax.set_box_aspect((1, 1, 1))
+    ax.view_init(elev=22, azim=-52)
+    ax.set_axis_off()
+
+
+def particle_gallery():
+    specs = [
+        ("hexagonal_column", "1  Hexagonal column", "L=2, D=1"),
+        ("bullet", "2  Bullet", "L=2, D=1; cap=auto"),
+        ("bullet_rosette", "3  Bullet rosette", "L=2, D=1; cap=auto"),
+        ("droxtal", "4  Droxtal", "scale=1"),
+        ("concave_hexagonal", "10  Concave column", "L=2, D=1; cavity=30 deg"),
+        ("two_column_aggregate", "12  Two-column aggregate", "L=2, D=1; parts=2"),
+        ("fixed_aggregate", "999  Fixed aggregate", "scale=1"),
+    ]
+    colors = ["#6baed6", "#74c476", "#fd8d3c", "#9e9ac8",
+              "#e6550d", "#31a354", "#756bb1"]
+    fig = plt.figure(figsize=(10.8, 8.0))
+    for index, ((stem, title, params), color) in enumerate(zip(specs, colors), 1):
+        particle = read_particle(ROOT / "examples" / "particles" / f"{stem}.particle")
+        ax = fig.add_subplot(2, 4, index, projection="3d")
+        draw_particle(ax, particle, color)
+        kind = "nonconvex" if particle["concave"] else "convex"
+        if particle["aggregate"]:
+            kind += ", aggregate"
+        ax.set_title(f"{title}\n{params}\n{kind}", fontsize=9, pad=0)
+
+        # Also provide an inspectable raster for each native example.
+        single = plt.figure(figsize=(4.0, 4.0))
+        single_ax = single.add_subplot(111, projection="3d")
+        draw_particle(single_ax, particle, color)
+        single_ax.set_title(f"{title}\n{params}", fontsize=11)
+        single.savefig(OUT / f"particle_{stem}.png", dpi=220,
+                       bbox_inches="tight", facecolor="white")
+        plt.close(single)
+
+    note = fig.add_subplot(2, 4, 8)
+    note.axis("off")
+    note.text(
+        0.03, 0.72,
+        "Rendered from the native files\nwritten by --save-geometry.\n\n"
+        "D: vertex-to-vertex hexagon diameter\n"
+        "L: prism or branch length\n"
+        "scale: uniform geometry scale",
+        va="top", fontsize=10, linespacing=1.45)
+    fig.subplots_adjust(left=0.02, right=0.98, bottom=0.03, top=0.96,
+                        wspace=0.02, hspace=0.12)
+    fig.savefig(OUT / "manual_particle_gallery.pdf", bbox_inches="tight")
+    plt.close(fig)
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     pipeline()
@@ -161,8 +264,8 @@ def main():
     aggregate_clip()
     avx512_pack()
     gpu_atomics()
+    particle_gallery()
 
 
 if __name__ == "__main__":
     main()
-

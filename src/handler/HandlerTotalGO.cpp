@@ -1,5 +1,9 @@
 #include "HandlerTotalGO.h"
 
+#include "IntegralCharacteristics.h"
+
+#include <iostream>
+#include <limits>
 
 HandlerTotalGO::HandlerTotalGO(Particle *particle, Light *incidentLight, int nTheta,
                                float wavelength)
@@ -35,6 +39,16 @@ void HandlerTotalGO::WriteMatricesToFile(std::string &destName, double nrg)
 {
     AverageOverAlpha(true, m_normIndex, m_totalContrib, destName);
     WriteToFile(m_totalContrib, m_normIndex, destName + "_all");
+
+    const IntegralCharacteristics characteristics = ComputeIntegralCharacteristics(
+        IntegralMethod::GeometricalOptics, nrg, m_outputEnergy, 0.0,
+        false, m_hasAbsorption, std::numeric_limits<double>::quiet_NaN());
+    const std::string log = FormatIntegralCharacteristicsLog(
+        characteristics, "full");
+    WriteIntegralCharacteristicsTsv(destName, "full", characteristics);
+    AppendIntegralCharacteristicsLog(destName, log);
+    std::cerr << log;
+    m_integralSummary = log;
 }
 
 void HandlerTotalGO::SetScatteringSphere(const ScatteringRange &grid)

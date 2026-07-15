@@ -264,25 +264,28 @@ void TracerGO::TraceRandom(const AngleRange &betaRange, const AngleRange &gammaR
 
     // m_incomingEnergy *= normIndex;
     m_handler->m_outputEnergy = ((HandlerGO*)m_handler)->ComputeTotalScatteringEnergy();
-    m_handler->WriteMatricesToFile(m_resultDirName, 1000);
+    m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
     OutputSummary(orNum, timer);
 }
 
 void TracerGO::TraceFixed(const double &beta, const double &gamma)
 {
+	CalcTimer timer;
+	OutputStartTime(timer);
 	double b = DegToRad(beta);
 	double g = DegToRad(gamma);
 
 	vector<Beam> outBeams;
 	m_particle->Rotate(b, g, 0);
 	m_scattering->ScatterLight(0, 0, outBeams);
+	m_incomingEnergy = m_scattering->GetIncedentEnergy();
     m_handler->HandleBeams(outBeams, 1);
 	outBeams.clear();
 
-//	double D_tot = CalcTotalScatteringEnergy();
-
-    m_handler->WriteMatricesToFile(m_resultDirName, 1000);
-    //	WriteStatisticsToFileGO(1, D_tot, 1, timer); // TODO: раскомментить
+    m_handler->m_outputEnergy =
+        ((HandlerGO*)m_handler)->ComputeTotalScatteringEnergy();
+    m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
+	OutputSummary(1, timer);
 }
 
 void TracerGO::TraceMonteCarlo(const AngleRange &betaRange, const AngleRange &gammaRange, int nOrientations)
@@ -579,8 +582,9 @@ void TracerGO::OutputSummary(int orNumber, CalcTimer &timer)
 	m_summary += "\nStart of calculation = " + startTime
 			+ "End of calculation   = " + endTime
 			+ "\nTotal time of calculation = " + totalTime
-			+ "\nTotal number of body orientation = " + to_string(orNumber)
-            /*+ "\nTotal scattering energy = " + to_string(D_tot)*/;
+				+ "\nTotal number of body orientation = " + to_string(orNumber)
+	            /*+ "\nTotal scattering energy = " + to_string(D_tot)*/;
+	AppendFinalResourceReport();
 
 #ifdef _CHECK_ENERGY_BALANCE
     double passedEnergy = (m_handler->m_outputEnergy/m_incomingEnergy)*100;
@@ -600,6 +604,8 @@ void TracerGO::OutputSummary(int orNumber, CalcTimer &timer)
 			"  Fix: verify output permissions and free disk space.");
 	}
 	out << m_summary;
+	if (!m_handler->m_integralSummary.empty())
+		out << "\n" << m_handler->m_integralSummary;
 	out.flush();
 	if (!out)
 	{

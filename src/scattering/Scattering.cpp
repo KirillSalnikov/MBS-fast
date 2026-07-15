@@ -40,6 +40,7 @@ Scattering::Scattering(Particle *particle, Light *incidentLight, bool isOpticalP
       m_nActs(nActs),
       m_incidentEnergy(0.0)
 {
+    m_traceCutoffStatistics = std::make_shared<TraceCutoffStatistics>();
     m_facets = m_particle->facets;
 
     m_incidentDir = m_incidentLight->direction;
@@ -83,6 +84,8 @@ void Scattering::CopyRuntimeOptionsFrom(const Scattering &source)
     m_traceCutoffAreaRel = source.m_traceCutoffAreaRel;
     m_traceCutoffImportanceRel = source.m_traceCutoffImportanceRel;
     m_traceMaxBeams = source.m_traceMaxBeams;
+    m_cutoffProfileName = source.m_cutoffProfileName;
+    m_traceCutoffStatistics = source.m_traceCutoffStatistics;
     m_gpuTracePrefilter = source.m_gpuTracePrefilter;
     m_traceCpuProjectedPrefilter = source.m_traceCpuProjectedPrefilter;
     m_traceCpuProjectedPrefilterMargin = source.m_traceCpuProjectedPrefilterMargin;
@@ -113,10 +116,14 @@ bool Scattering::PushBeamToTree(Beam &beam, int facetId, int level, Location loc
     }
     if (m_treeSize >= MAX_BEAM_REFL_NUM)
     {
+        m_traceCutoffStatistics->hardBeamLimitHits.fetch_add(
+            1, std::memory_order_relaxed);
         return false;
     }
     if (m_traceMaxBeams > 0 && m_treeSize >= m_traceMaxBeams)
     {
+        m_traceCutoffStatistics->configuredBeamLimitHits.fetch_add(
+            1, std::memory_order_relaxed);
         return false;
     }
     if (!EnsureBeamTree())
@@ -401,6 +408,8 @@ bool Scattering::IsTracePruned(const Beam &beam) const
     if (!useJ && !useArea && !useImportance)
         return false;
 
+    m_traceCutoffStatistics->evaluated.fetch_add(1, std::memory_order_relaxed);
+
     double jn = 0;
     double ar = 0;
     if (useJ || useImportance)
@@ -408,9 +417,35 @@ bool Scattering::IsTracePruned(const Beam &beam) const
     if (useArea || useImportance)
         ar = beam.Area();
 
-    return (useJ && jn < m_traceCutoffJRel * m_traceRefJNorm)
-        || (useArea && ar < m_traceCutoffAreaRel * m_traceRefArea)
-        || (useImportance && jn * ar < m_traceCutoffImportanceRel * m_traceRefImportance);
+    const bool smallJ = useJ && jn < m_traceCutoffJRel * m_traceRefJNorm;
+    const bool smallArea = useArea && ar < m_traceCutoffAreaRel * m_traceRefArea;
+    const bool smallImportance = useImportance
+        && jn * ar < m_traceCutoffImportanceRel * m_traceRefImportance;
+    if (!(smallJ || smallArea || smallImportance))
+        return false;
+
+    m_traceCutoffStatistics->rejected.fetch_add(1, std::memory_order_relaxed);
+    if (smallJ)
+        m_traceCutoffStatistics->rejectedJones.fetch_add(
+            1, std::memory_order_relaxed);
+    if (smallArea)
+        m_traceCutoffStatistics->rejectedArea.fetch_add(
+            1, std::memory_order_relaxed);
+    if (smallImportance)
+        m_traceCutoffStatistics->rejectedImportance.fetch_add(
+            1, std::memory_order_relaxed);
+    return true;
+}
+
+std::string Scattering::TraceCutoffReport() const
+{
+    return FormatTraceCutoffReport(*m_traceCutoffStatistics,
+                                   m_cutoffProfileName,
+                                   m_traceCutoffJRel,
+                                   m_traceCutoffAreaRel,
+                                   m_traceCutoffImportanceRel,
+                                   restriction,
+                                   m_traceMaxBeams);
 }
 
 void Scattering::Difference(const Polygon &subject, const Vector3f &subjNormal,

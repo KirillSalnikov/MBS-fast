@@ -81,11 +81,14 @@ struct RunConfig
 
     bool useGpu;
     bool useFft;
+    int fftFactor;
+    double fftTolerance;
     double refractiveReal;
     double refractiveImag;
     double wavelengthUm;
     int maxReflections;
     int threads;
+    std::string cutoffProfile;
     AdaptiveConvergenceLimits adaptive;
     std::vector<std::string> warnings;
 };

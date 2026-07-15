@@ -28,6 +28,12 @@ struct SelectedMode
     OrientationMode mode;
 };
 
+bool IsFftRequested(const ArgPP &args)
+{
+    return args.IsCatched("fft") || args.IsCatched("fft_factor")
+        || args.IsCatched("fft_tolerance");
+}
+
 std::string JoinFlags(const std::vector<std::string> &keys)
 {
     std::ostringstream out;
@@ -970,7 +976,7 @@ ThetaGridMode ValidateThetaGrid(const ArgPP &args, std::vector<std::string> &war
                      "correct the first --scattering-grid value.");
             RequirePositiveInt(args, "grid", 1);
             RequirePositiveInt(args, "grid", 2);
-            if ((args.IsCatched("mirror_gamma") || args.IsCatched("fft"))
+            if ((args.IsCatched("mirror_gamma") || IsFftRequested(args))
                 && IntValue(args, "grid", 1) > std::numeric_limits<int>::max() - 5)
                 Fail("NPHI is too large to round safely to a multiple of six.",
                      "reduce NPHI to at most "
@@ -991,7 +997,7 @@ ThetaGridMode ValidateThetaGrid(const ArgPP &args, std::vector<std::string> &war
                      "use distinct ordered endpoints, or use the three-value R NPHI NTH form for a backscatter cone.");
             RequirePositiveInt(args, "grid", 2);
             RequirePositiveInt(args, "grid", 3);
-            if ((args.IsCatched("mirror_gamma") || args.IsCatched("fft"))
+            if ((args.IsCatched("mirror_gamma") || IsFftRequested(args))
                 && IntValue(args, "grid", 2) > std::numeric_limits<int>::max() - 5)
                 Fail("NPHI is too large to round safely to a multiple of six.",
                      "reduce NPHI to at most "
@@ -1166,11 +1172,14 @@ RunConfig::RunConfig()
       thetaGrid(ThetaGridMode::Default),
       useGpu(false),
       useFft(false),
+      fftFactor(0),
+      fftTolerance(0.0),
       refractiveReal(0.0),
       refractiveImag(0.0),
       wavelengthUm(0.0),
       maxReflections(6),
-      threads(0)
+      threads(0),
+      cutoffProfile("legacy-default")
 {
 }
 
@@ -1231,11 +1240,27 @@ RunConfig RunConfig::FromCommandLine(const ArgPP &args,
     config.useGpu = config.method == RunMethod::PhysicalOptics
         && (config.backend == RunBackend::Cuda
             || (config.backend == RunBackend::Auto && gpuDefaultBuild));
-    config.useFft = args.IsCatched("fft");
+    config.useFft = IsFftRequested(args);
+    if (args.IsCatched("fft_factor"))
+    {
+        config.fftFactor = IntValue(args, "fft_factor", 0);
+        if (config.fftFactor < 1 || config.fftFactor > 64)
+            Fail("--fft-factor must be an integer from 1 to 64.",
+                 "use 1 for direct N_phi, 2 for half as many direct samples, or a moderate factor such as 3 or 4.");
+    }
+    if (args.IsCatched("fft_tolerance"))
+    {
+        config.fftTolerance = DoubleValue(args, "fft_tolerance", 0);
+        if (!(config.fftTolerance > 0.0 && config.fftTolerance < 1.0))
+            Fail("--fft-tolerance must be a relative tolerance in (0, 1).",
+                 "use a fraction such as 0.01 for a 1% nested-grid estimate.");
+    }
     if (config.useFft && config.method != RunMethod::PhysicalOptics)
-        Fail("--fft is available only for physical optics.", "select --method po or remove --fft.");
+        Fail("FFT interpolation is available only for physical optics.",
+             "select --method po or remove --fft, --fft-factor, and --fft-tolerance.");
     if (config.useFft && !config.useGpu)
-        Fail("--fft requires the CUDA backend.", "select --backend cuda or remove --fft.");
+        Fail("FFT interpolation requires the CUDA backend.",
+             "select --backend cuda or remove --fft, --fft-factor, and --fft-tolerance.");
 
     std::vector<std::string> geometrySelectors;
     if (args.IsCatched("geometry")) geometrySelectors.push_back("geometry");
@@ -1372,7 +1397,7 @@ RunConfig RunConfig::FromCommandLine(const ArgPP &args,
         Fail("--phi-points leaves no room for the required endpoint allocation.",
              "use a value below 2147483647 and size the grid to available memory.");
     if (args.IsCatched("nphi")
-        && (args.IsCatched("mirror_gamma") || args.IsCatched("fft"))
+        && (args.IsCatched("mirror_gamma") || IsFftRequested(args))
         && IntValue(args, "nphi", 0) > std::numeric_limits<int>::max() - 5)
         Fail("--phi-points is too large to round safely to a multiple of six.",
              "reduce it to at most "
@@ -1468,6 +1493,9 @@ RunConfig RunConfig::FromCommandLine(const ArgPP &args,
     RequireNonnegativeInt(args, "trace_max_beams");
     RequireNonnegativeInt(args, "log");
     RequirePositiveDouble(args, "r");
+    if (args.IsCatched("r") && DoubleValue(args, "r", 0) < 1.0)
+        Fail("--beam-area-ratio must be at least 1.",
+             "use 1 or greater; use --cutoff-profile off to disable fragment simplification.");
     RequireNonnegativeDouble(args, "trace_prefilter_margin");
     if (args.IsCatched("ot_phase_shift"))
         (void)DoubleValue(args, "ot_phase_shift", 0);
@@ -1515,6 +1543,48 @@ RunConfig RunConfig::FromCommandLine(const ArgPP &args,
     for (const char *key : cutoffKeys)
         RequireRelativeCutoff(args, key);
 
+    const char *explicitCutoffKeys[] = {
+        "r", "beam_cutoff", "beam_cutoff_j", "beam_cutoff_area",
+        "beam_cutoff_importance", "trace_cutoff", "trace_cutoff_j",
+        "trace_cutoff_area", "trace_cutoff_importance"
+    };
+    bool hasExplicitCutoff = false;
+    for (const char *key : explicitCutoffKeys)
+        hasExplicitCutoff = hasExplicitCutoff || args.IsCatched(key);
+    if (args.IsCatched("cutoff_profile"))
+    {
+        const std::string profile = args.GetStringValue("cutoff_profile", 0);
+        if (profile != "off" && profile != "safe"
+            && profile != "balanced" && profile != "fast")
+        {
+            Fail("unknown --cutoff-profile value '" + profile + "'.",
+                 "use --cutoff-profile off, safe, balanced, or fast.");
+        }
+        if (hasExplicitCutoff)
+        {
+            Fail("--cutoff-profile cannot be combined with individual cutoff thresholds.",
+                 "keep the profile alone, or remove it and configure --beam-cutoff*, --trace-cutoff*, and --beam-area-ratio explicitly.");
+        }
+        config.cutoffProfile = profile;
+    }
+    else if (hasExplicitCutoff)
+    {
+        config.cutoffProfile = "custom";
+    }
+
+    if (args.IsCatched("beam_cutoff")
+        && (args.IsCatched("beam_cutoff_j") || args.IsCatched("beam_cutoff_area")))
+    {
+        config.warnings.push_back(
+            "--beam-cutoff supplies both legacy OR thresholds; a specific --beam-cutoff-jones/--beam-cutoff-area value overrides its corresponding side.");
+    }
+    if (args.IsCatched("trace_cutoff")
+        && (args.IsCatched("trace_cutoff_j") || args.IsCatched("trace_cutoff_area")))
+    {
+        config.warnings.push_back(
+            "--trace-cutoff supplies both legacy OR thresholds; a specific --trace-cutoff-jones/--trace-cutoff-area value overrides its corresponding side.");
+    }
+
     if (args.IsCatched("all") && !args.IsCatched("tr"))
         Fail("--all-trajectories requires --trajectories FILE.", "add a trajectory file or remove --all-trajectories.");
     if (args.IsCatched("gr") && !args.IsCatched("tr"))
@@ -1523,6 +1593,10 @@ RunConfig RunConfig::FromCommandLine(const ArgPP &args,
 
     if (args.IsCatched("o") && args.GetStringValue("o", 0).empty())
         Fail("--output path is empty.", "provide a nonempty output path.");
+    if (args.IsCatched("save_geometry")
+        && args.GetStringValue("save_geometry", 0).empty())
+        Fail("--save-geometry path is empty.",
+             "provide a writable file path such as examples/particles/column.particle.");
     ValidateOutputTemplate(args);
 
     ValidateScan(args, config);

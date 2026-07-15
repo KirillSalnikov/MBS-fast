@@ -39,7 +39,7 @@ fail_test() {
     echo "  [FAIL] $1: $2"
 }
 
-# Extract Q_sca from stdout (printed by MBS-raw as "Q_sca = C_sca / A_proj = VALUE")
+# Extract the primary method-specific Q_sca from stdout.
 # Args: $1 = stdout file path
 extract_qsca_from_stdout() {
     local stdoutfile="$1"
@@ -47,8 +47,8 @@ extract_qsca_from_stdout() {
         echo "NaN"
         return
     fi
-    { grep -oP 'Q_sca \(full\) = C_sca / A_proj = \K[0-9.]+' "$stdoutfile" \
-        || grep -oP 'Q_sca = C_sca / A_proj = \K[0-9.]+' "$stdoutfile"; } | head -1 || echo "NaN"
+    { grep -oP '^Q_sca = \K[-+0-9.eE]+' "$stdoutfile" \
+        || grep -oP 'EFFICIENCY_SUMMARY .*Qsca=\K[-+0-9.eE]+' "$stdoutfile"; } | head -1 || echo "NaN"
 }
 
 # Extract C_sca from .dat file: sum of M11 * 2pi*dcos
