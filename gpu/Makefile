@@ -38,6 +38,7 @@ DEPFLAGS := -MMD -MP
 
 NVCCFLAGS ?= -O3 -std=c++11 -arch=sm_$(GPU_ARCH) -U_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700
 override NVCCFLAGS += -ccbin $(CUDA_HOST_CXX) -include $(CUDA_HOST_COMPAT)
+override NVCCFLAGS += -Xcompiler -fopenmp
 ifeq ($(GPU_PRECISION),float)
 override NVCCFLAGS += -DMBS_GPU_FLOAT
 endif
