@@ -5,7 +5,7 @@
 # Usage:
 #   1. Edit parameters below (particle, wavelength, orientations, etc.)
 #   2. Submit: sbatch cluster_mpi.sh
-#   3. Results in: results/M.dat, results/M_noshadow.dat
+#   3. Results in the directory selected by OUTPUT below.
 #
 # Adjust #SBATCH directives for your cluster.
 # =============================================================================
@@ -27,11 +27,12 @@ export OMP_PROC_BIND=false
 unset OMP_PLACES
 
 # --- Path to binary ---
-MBS=./bin/mbs_po_mpi
+MBS=./cpu/bin/mbs_po_mpi
 
 # --- Check binary exists ---
 if [ ! -x "$MBS" ]; then
-    echo "ERROR: $MBS not found. Run: bash build_mpi.sh"
+    echo "ERROR: $MBS not found."
+    echo "  Fix: run bash build_mpi.sh from the repository root."
     exit 1
 fi
 
@@ -54,16 +55,18 @@ RI_RE=1.31  # refractive index (real)
 RI_IM=0     # refractive index (imaginary, 0 = no absorption)
 N_REFL=14   # max internal reflections
 N_ORIENT=8192  # Sobol orientations (power of 2)
-OUTPUT=results
+OUTPUT=results/cluster_run
 
 # =============================================================================
 # RUN
 # =============================================================================
 
-srun $MBS --po --sobol $N_ORIENT --auto_tgrid --auto_phi \
-    -p 1 $L $D -w $WAVE --ri $RI_RE $RI_IM -n $N_REFL \
-    --close -o $OUTPUT
+srun "$MBS" --method po --sobol "$N_ORIENT" \
+    --auto-theta-grid 0.02 --auto-phi \
+    --particle 1 "$L" "$D" --wavelength-um "$WAVE" \
+    --refractive-index "$RI_RE" "$RI_IM" --max-reflections "$N_REFL" \
+    --threads "$OMP_NUM_THREADS" --close --output "$OUTPUT"
 
 echo ""
 echo "=== Done ==="
-echo "Output: ${OUTPUT}.dat, ${OUTPUT}_noshadow.dat"
+echo "Output directory: $OUTPUT"

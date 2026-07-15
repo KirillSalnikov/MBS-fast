@@ -26,7 +26,7 @@ class Tracer
 {
 public:
     Tracer(Particle *particle, int nActs, const std::string &resultFileName);
-    ~Tracer();
+    virtual ~Tracer();
 
     // REF: delete?
     void TraceRandomPO2(int betaNumber, int gammaNumber, const ScatteringRange &bsCone,

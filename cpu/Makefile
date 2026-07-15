@@ -9,9 +9,10 @@ OBJDIR ?= build/obj
 
 CPU_MODEL := $(shell lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -1)
 ARCH_FLAGS ?= $(shell bash $(ROOT)/scripts/detect_arch_flags.sh "$(CXX)")
+GIT_DESCRIBE ?= $(shell git -C $(ROOT) describe --tags --always --dirty --long 2>/dev/null || echo unknown)
 OPT_FLAGS ?= -O3 -funroll-loops
 CXXFLAGS ?= $(OPT_FLAGS) $(ARCH_FLAGS) -std=gnu++11 -fopenmp
-CXXFLAGS += -DUSE_MPI
+CXXFLAGS += -DUSE_MPI -DMBS_GIT_DESCRIBE=\"$(GIT_DESCRIBE)\"
 LDFLAGS ?= -lm -lgomp
 DEPFLAGS := -MMD -MP
 

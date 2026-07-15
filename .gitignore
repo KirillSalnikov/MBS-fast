@@ -3,6 +3,8 @@
 *.d
 bin/
 build/
+tests/.build/
+tests/.adaptive/
 
 # Output data
 *.dat

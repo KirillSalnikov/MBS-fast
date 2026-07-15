@@ -14,13 +14,12 @@ using ::complex;
 Handler::Handler(Particle *particle, Light *incidentLight, int nTheta,
                  double wavelength)
     : m_incidentLight(incidentLight),
+      nTheta(nTheta),
+      m_sphere(0.0, 0.0, 0, 0),
       m_particle(particle),
       m_wavelength(wavelength),
       m_hasAbsorption(false),
-      m_normIndex(1),
-      m_nBadBeams(0),
-      m_sphere(0.0, 0.0, 0, 0),
-      nTheta(nTheta)
+      m_normIndex(1)
 {
 //	m_wavelength = 0.532;
     m_waveIndex = M_2PI/m_wavelength;
@@ -50,6 +49,9 @@ void Handler::SetTracks(Tracks *tracks)
 //	}
 
     m_tracks = tracks;
+    if (m_scattering)
+        m_scattering->SetTrackIdsRequired(
+            m_hasAbsorption || (m_tracks && !m_tracks->empty()));
 }
 
 void Handler::WriteMatricesToFile(string &/*destName*/, double nrg)
@@ -74,6 +76,9 @@ void Handler::SetSinZenith(double value)
 void Handler::SetAbsorptionAccounting(bool value)
 {
     m_hasAbsorption = value;
+    if (m_scattering)
+        m_scattering->SetTrackIdsRequired(
+            m_hasAbsorption || (m_tracks && !m_tracks->empty()));
     m_ri = m_particle->GetRefractiveIndex();
     m_riIm = imag(m_ri);
     m_cAbs = -m_riIm*m_waveIndex;
@@ -93,6 +98,9 @@ void Handler::SetScatteringSphere(const ScatteringRange &grid)
 void Handler::SetScattering(Scattering *scattering)
 {
     m_scattering = scattering;
+    if (m_scattering)
+        m_scattering->SetTrackIdsRequired(
+            m_hasAbsorption || (m_tracks && !m_tracks->empty()));
 }
 
 void Handler::ExtropolateOpticalLenght(Beam &beam, const std::vector<int> &tr)

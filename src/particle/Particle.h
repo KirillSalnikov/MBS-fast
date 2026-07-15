@@ -26,6 +26,7 @@ class Particle
 {
 public:
     Particle();
+    virtual ~Particle() = default;
 
     void SetFromFile(const std::string &filename);
 

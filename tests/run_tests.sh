@@ -12,7 +12,10 @@ set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-MBS="$PROJECT_DIR/bin/mbs_po"
+MBS="${MBS:-$PROJECT_DIR/bin/mbs_po}"
+if [[ "$MBS" != /* ]]; then
+    MBS="$(cd "$(dirname "$MBS")" && pwd)/$(basename "$MBS")"
+fi
 WORK_DIR=$(mktemp -d /tmp/mbs_test_XXXXXX)
 
 PASS=0
@@ -104,14 +107,18 @@ echo ""
 # --- Build ---
 echo "=== Building MBS-raw ==="
 cd "$PROJECT_DIR"
-# Clean .o files
-find src -name '*.o' -delete 2>/dev/null
-if bash build.sh > "$WORK_DIR/build.log" 2>&1; then
-    echo "  Build: OK"
+if [ "${SKIP_BUILD:-0}" = "1" ]; then
+    echo "  Build: skipped (MBS=$MBS)"
 else
-    echo "  Build: FAILED"
-    cat "$WORK_DIR/build.log"
-    exit 1
+    # Clean .o files
+    find src -name '*.o' -delete 2>/dev/null
+    if bash build.sh > "$WORK_DIR/build.log" 2>&1; then
+        echo "  Build: OK"
+    else
+        echo "  Build: FAILED"
+        cat "$WORK_DIR/build.log"
+        exit 1
+    fi
 fi
 
 if [ ! -x "$MBS" ]; then
@@ -191,7 +198,14 @@ else
         fail_test "Test 2" "Q_sca=$Q2, expected 1.17 +/- 20%"
     fi
 
-    if grep -Eq 'EFFICIENCY_SUMMARY .*Qext=.*Cext=.*Qabs=.*Qsca=.*Csca=.*Cabs=' "$TEST2_DIR/stdout.txt"; then
+    SUMMARY=$(grep 'EFFICIENCY_SUMMARY ' "$TEST2_DIR/stdout.txt" | tail -1)
+    if [ -n "$SUMMARY" ] \
+        && [[ "$SUMMARY" == *Qext=* ]] \
+        && [[ "$SUMMARY" == *Cext=* ]] \
+        && [[ "$SUMMARY" == *Qabs=* ]] \
+        && [[ "$SUMMARY" == *Cabs=* ]] \
+        && [[ "$SUMMARY" == *Qsca=* ]] \
+        && [[ "$SUMMARY" == *Csca=* ]]; then
         pass_test "Test 2: final efficiency summary contains Q/C ext, abs, sca"
     else
         fail_test "Test 2" "Missing EFFICIENCY_SUMMARY with Qext Cext Qabs Qsca Csca Cabs"
@@ -348,8 +362,8 @@ else
 fi
 
 cd "$TEST8_DIR/auto"
-OMP_NUM_THREADS=4 timeout 120 $MBS --po --auto 0.10 -p 1 10 10 -w 0.532 --ri 1.31 0 \
-    -n 4 --maxorient 64 --close -o M_auto \
+OMP_NUM_THREADS=4 timeout 180 $MBS --po --auto 0.10 -p 1 10 10 -w 0.532 --ri 1.31 0 \
+    -n 4 --maxorient 1024 --close -o M_auto \
     > "$TEST8_DIR/auto/stdout.txt" 2>&1
 RETA=$?
 

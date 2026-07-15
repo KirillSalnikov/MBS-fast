@@ -7,7 +7,7 @@ class HandlerPOTotal : public HandlerPO
 public:
     HandlerPOTotal(Particle *particle, Light *incidentLight, int nTheta,
                    double wavelength);
-    ~HandlerPOTotal() { delete betaMueller; }
+    ~HandlerPOTotal() override { delete betaMueller; }
     void WriteMatricesToFile(std::string &destName, double nrg) override;
     void AddToMueller() override;
 

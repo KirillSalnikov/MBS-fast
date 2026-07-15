@@ -1,6 +1,7 @@
 CXX_ORIGIN := $(origin CXX)
 CXX ?= g++
 CUDA_PATH ?= /usr/local/cuda
+XELATEX ?= xelatex
 
 ifeq ($(USE_CUDA),1)
 NVCC ?= $(if $(wildcard $(CUDA_PATH)/bin/nvcc),$(CUDA_PATH)/bin/nvcc,nvcc)
@@ -17,9 +18,11 @@ endif
 
 CPU_MODEL := $(shell lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -1)
 ARCH_FLAGS ?= $(shell bash scripts/detect_arch_flags.sh "$(CXX)")
+GIT_DESCRIBE ?= $(shell git describe --tags --always --dirty --long 2>/dev/null || echo unknown)
 
 OPT_FLAGS ?= -O3 -funroll-loops
 CXXFLAGS ?= $(OPT_FLAGS) $(ARCH_FLAGS) -std=gnu++11 -fopenmp
+CXXFLAGS += -DMBS_GIT_DESCRIBE=\"$(GIT_DESCRIBE)\"
 LDFLAGS ?= -lm -lgomp
 DEPFLAGS = -MMD -MP
 
@@ -48,9 +51,11 @@ GPU_PRECISION ?= double
 GPU_FAST_MATH ?= 0
 ifeq ($(GPU_PRECISION),float)
 override NVCCFLAGS += -DMBS_GPU_FLOAT
+CXXFLAGS += -DMBS_GPU_FLOAT
 endif
 ifeq ($(GPU_FAST_MATH),1)
 override NVCCFLAGS += --use_fast_math
+CXXFLAGS += -DMBS_GPU_FAST_MATH
 endif
 override NVCCFLAGS += -Xcompiler -fopenmp
 SOURCES += $(shell find $(SRC_DIR) -name '*.cu')
@@ -105,6 +110,47 @@ gpu_double_fast_mpi:
 	$(MAKE) -C gpu double_fast_mpi
 
 split: cpu gpu_float_fast
+
+docs:
+	@command -v $(XELATEX) >/dev/null 2>&1 || { \
+		echo "XeLaTeX not found: $(XELATEX)" >&2; \
+		echo "Install XeLaTeX and the packages/fonts imported by docs/MANUAL*.tex." >&2; \
+		exit 1; \
+	}
+	cd docs && $(XELATEX) -interaction=nonstopmode -halt-on-error MANUAL.tex
+	cd docs && $(XELATEX) -interaction=nonstopmode -halt-on-error MANUAL.tex
+	cd docs && $(XELATEX) -interaction=nonstopmode -halt-on-error MANUAL_RU.tex
+	cd docs && $(XELATEX) -interaction=nonstopmode -halt-on-error MANUAL_RU.tex
+	@if grep -Eq 'Overfull|LaTeX Error|Undefined control sequence|Emergency stop' \
+		docs/MANUAL.log docs/MANUAL_RU.log; then \
+		echo "Manual layout/error diagnostics found in docs/MANUAL*.log." >&2; \
+		echo "Fix every Overfull box and LaTeX error before release." >&2; \
+		exit 1; \
+	fi
+
+test_cli:
+	tests/run_cli_tests.sh
+
+test_release: cpu test_cli
+	MBS=cpu/bin/mbs_po_mpi tests/run_release_cli_matrix.sh
+
+test_adaptive: cpu
+	MBS=cpu/bin/mbs_po_mpi tests/run_adaptive_tests.sh
+
+test_regression: cpu
+	MBS=cpu/bin/mbs_po_mpi SKIP_BUILD=1 tests/run_tests.sh
+
+test_sanitize:
+	$(MAKE) -C cpu TARGET=bin/mbs_po_mpi_sanitize \
+		OBJDIR=build/sanitize/obj \
+		OPT_FLAGS='-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined' \
+		LDFLAGS='-lm -lgomp -fsanitize=address,undefined' -j
+	ASAN_OPTIONS=detect_leaks=0:halt_on_error=1:abort_on_error=1 \
+		UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+		MBS=$(CURDIR)/cpu/bin/mbs_po_mpi_sanitize \
+		MBS_RELEASE_TIMEOUT_SECONDS=90 tests/run_release_cli_matrix.sh
+
+test: test_release test_adaptive test_regression
 
 $(TARGET): $(OBJECTS)
 	@mkdir -p bin
@@ -178,6 +224,9 @@ gpu_trace_probe:
 	@false
 endif
 
-.PHONY: all cuda_check cpu gpu gpu_float gpu_float_fast gpu_double_fast split clean clean_cuda_objects cuda_float cuda_float_fast cuda_double_fast cuda_variants fft_probe gpu_trace_probe
+.PHONY: all cuda_check cpu gpu gpu_float gpu_float_fast gpu_double_fast split docs \
+	test test_cli test_release test_adaptive test_regression test_sanitize clean \
+	clean_cuda_objects cuda_float cuda_float_fast cuda_double_fast cuda_variants \
+	fft_probe gpu_trace_probe
 
 -include $(DEPS)

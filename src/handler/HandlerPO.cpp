@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <mutex>
+#include <stdexcept>
 
 bool HandlerPO::IsParticleBeam(const Beam &beam)
 {
@@ -91,6 +92,12 @@ HandlerPO::HandlerPO(Particle *particle, Light *incidentLight, int nTheta,
     (*m_Ln) = (*m_Lp);
 }
 
+HandlerPO::~HandlerPO()
+{
+    delete m_Lp;
+    delete m_Ln;
+}
+
 void HandlerPO::CleanJ()
 {
     m_diffractedMatrices.clear();
@@ -108,6 +115,10 @@ void HandlerPO::WriteMatricesToFile(std::string &destName, double nrg)
 //    if (!m_tracks->shouldComputeTracksOnly)
     {
         std::ofstream outFile(destName + ".dat", std::ios::app);
+        if (!outFile.is_open())
+            throw std::runtime_error(
+                "cannot open Mueller output '" + destName
+                + ".dat'.\n  Fix: verify output permissions and free disk space.");
 
         outFile /*<< std::to_string(m_sphere.radius) << ' '*/
                 << std::to_string(m_sphere.nZenith) << ' '
@@ -127,6 +138,11 @@ void HandlerPO::WriteMatricesToFile(std::string &destName, double nrg)
                 outFile << m;
             }
         }
+        outFile.flush();
+        if (!outFile)
+            throw std::runtime_error(
+                "failed while writing Mueller output '" + destName
+                + ".dat'.\n  Fix: verify free disk space and filesystem health.");
     }
 }
 
@@ -136,6 +152,10 @@ void HandlerPO::WriteGroupMatrices(Arr2D &matrices, const std::string &name)
     auto &Ln = *m_Ln;
 
     std::ofstream outFile(name, std::ios::out);
+    if (!outFile.is_open())
+        throw std::runtime_error(
+            "cannot open group output '" + name
+            + "'.\n  Fix: verify output permissions and free disk space.");
 
     outFile /*<< std::to_string(m_sphere.radius) << ' '*/
             << std::to_string(m_sphere.nZenith) << ' '
@@ -179,12 +199,21 @@ void HandlerPO::WriteGroupMatrices(Arr2D &matrices, const std::string &name)
         outFile << std::endl << tt << " ";
         outFile << sum/m_sphere.nAzimuth;
     }
+    outFile.flush();
+    if (!outFile)
+        throw std::runtime_error(
+            "failed while writing group output '" + name
+            + "'.\n  Fix: verify free disk space and filesystem health.");
 }
 
 void HandlerPO::WriteJonesToFile(const std::string &destName)
 {
     std::string jonesFile = destName + "_jones.dat";
     std::ofstream outFile(jonesFile, std::ios::out);
+    if (!outFile.is_open())
+        throw std::runtime_error(
+            "cannot open Jones output '" + jonesFile
+            + "'.\n  Fix: verify output permissions and free disk space.");
     outFile << std::scientific << std::setprecision(15);
 
     outFile << "# theta(deg) phi(deg)"
@@ -219,6 +248,11 @@ void HandlerPO::WriteJonesToFile(const std::string &destName)
                     << std::endl;
         }
     }
+    outFile.flush();
+    if (!outFile)
+        throw std::runtime_error(
+            "failed while writing Jones output '" + jonesFile
+            + "'.\n  Fix: verify free disk space and filesystem health.");
 }
 
 void HandlerPO::WriteTotalMatricesToFile(const std::string &destName)
@@ -910,34 +944,40 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
     int groupId;
     CleanJ();
 
-    // --- BEAM LOGGING (first call only) ---
-    static int handleBeamsCallCount = 0;
-    ++handleBeamsCallCount;
-    if (handleBeamsCallCount == 1)
+    const char *beamLogPath = std::getenv("MBS_BEAM_LOG");
+    if (beamLogPath && *beamLogPath)
     {
-        std::ofstream logFile("beam_log.dat");
-        logFile << "# beam_num  nActs  area  opticalPath  |Jones|  cx  cy  cz  nVertices\n";
-        logFile << std::scientific << std::setprecision(8);
-        int beamCounter = 0;
-        for (const Beam &b : beams)
-        {
-            double jonesNorm = std::sqrt(b.J.Norm());
-            logFile << beamCounter
-                    << "  " << b.nActs
-                    << "  " << b.Area()
-                    << "  " << b.opticalPath
-                    << "  " << jonesNorm
-                    << "  " << b.direction.cx
-                    << "  " << b.direction.cy
-                    << "  " << b.direction.cz
-                    << "  " << b.nVertices
-                    << "\n";
-            ++beamCounter;
-        }
-        logFile.close();
-        std::cerr << "[beam_log] Logged " << beamCounter << " beams to beam_log.dat\n";
+        static std::once_flag beamLogOnce;
+        std::call_once(beamLogOnce, [&]() {
+            std::ofstream logFile(beamLogPath);
+            if (!logFile.is_open())
+            {
+                std::cerr << "WARNING: cannot open MBS_BEAM_LOG path '"
+                          << beamLogPath << "'.\n";
+                return;
+            }
+            logFile << "# beam_num  nActs  area  opticalPath  |Jones|  cx  cy  cz  nVertices\n";
+            logFile << std::scientific << std::setprecision(8);
+            int beamCounter = 0;
+            for (const Beam &b : beams)
+            {
+                const double jonesNorm = std::sqrt(b.J.Norm());
+                logFile << beamCounter
+                        << "  " << b.nActs
+                        << "  " << b.Area()
+                        << "  " << b.opticalPath
+                        << "  " << jonesNorm
+                        << "  " << b.direction.cx
+                        << "  " << b.direction.cy
+                        << "  " << b.direction.cz
+                        << "  " << b.nVertices
+                        << "\n";
+                ++beamCounter;
+            }
+            std::cerr << "[beam_log] Logged " << beamCounter << " beams to "
+                      << beamLogPath << "\n";
+        });
     }
-    // --- END BEAM LOGGING ---
 
     auto beam_loop_start = std::chrono::high_resolution_clock::now();
 
@@ -1076,7 +1116,7 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
             // --- Theta-coefficients: precompute per-phi ---
             double cp = cos_phi_arr[i], sp = sin_phi_arr[i];
 
-            ThetaCoeffs tc;
+            ThetaCoeffs tc = {};
             if (edgeData.valid) {
                 precompute_theta_coeffs(
                     edgeData.x, edgeData.y, edgeData.nVertices,
@@ -1512,7 +1552,7 @@ double HandlerPO::ComputeForwardExtinctionOt(
             || pb.edgeData.nVertices >= BeamEdgeData::MAX_EDGES)
             continue;
 
-        ThetaCoeffs tc;
+        ThetaCoeffs tc = {};
         precompute_theta_coeffs(
             pb.edgeData.x, pb.edgeData.y, pb.edgeData.nVertices,
             pb.horAx, pb.horAy, pb.horAz,
@@ -1731,7 +1771,7 @@ double HandlerPO::ComputeForwardExtinctionOtScaled(
             edge.intercept_y[e] *= scale;
         }
 
-        ThetaCoeffs tc;
+        ThetaCoeffs tc = {};
         precompute_theta_coeffs(
             edge.x, edge.y, edge.nVertices,
             pb.horAx, pb.horAy, pb.horAz,
@@ -1982,7 +2022,7 @@ void HandlerPO::DiffractControlPoints(const PreparedOrientation &prepared,
             double cp = cos(iPhi * m_sphere.azinuthStep);
             double sp = sin(iPhi * m_sphere.azinuthStep);
 
-            ThetaCoeffs tc;
+            ThetaCoeffs tc = {};
             precompute_theta_coeffs(
                 edgeData.x, edgeData.y, nv,
                 horAx, horAy, horAz, verAx, verAy, verAz,
@@ -2117,7 +2157,7 @@ void HandlerPO::DiffractAtThetas(const PreparedOrientation &prepared,
         {
             double cp = cosPhi[iPhi], sp = sinPhi[iPhi];
 
-            ThetaCoeffs tc;
+            ThetaCoeffs tc = {};
             precompute_theta_coeffs(
                 edgeData.x, edgeData.y, nv,
                 horAx,horAy,horAz,verAx,verAy,verAz,
@@ -2254,7 +2294,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
         {
             double cp = cos_phi_arr[i], sp = sin_phi_arr[i];
 
-            ThetaCoeffs tc;
+            ThetaCoeffs tc = {};
             if (edgeData.valid) {
                 precompute_theta_coeffs(
                     edgeData.x, edgeData.y, edgeData.nVertices,

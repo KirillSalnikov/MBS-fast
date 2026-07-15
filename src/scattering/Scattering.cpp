@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <stdexcept>
 
 #include "geometry_lib.h"
 
@@ -86,13 +87,14 @@ void Scattering::CopyRuntimeOptionsFrom(const Scattering &source)
     m_traceCpuProjectedPrefilter = source.m_traceCpuProjectedPrefilter;
     m_traceCpuProjectedPrefilterMargin = source.m_traceCpuProjectedPrefilterMargin;
     m_tracePrefilterStats = source.m_tracePrefilterStats;
+    m_trackIdsRequired = source.m_trackIdsRequired;
 }
 
 IdType Scattering::Scattering::RecomputeTrackId(const IdType &oldId, int facetId)
 {
-    if (DisableTraceTrackIds())
+    if (DisableTraceTrackIds() && !m_trackIdsRequired)
         return 0;
-    if (!ForceTraceTrackIds()
+    if (!m_trackIdsRequired && !ForceTraceTrackIds()
         && std::fabs(imag(m_particle->GetRefractiveIndex())) <= DBL_EPSILON)
         return 0;
 
@@ -415,6 +417,25 @@ void Scattering::Difference(const Polygon &subject, const Vector3f &subjNormal,
                          const Polygon &clip, const Vector3f &clipNormal,
                          const Vector3f &clipDir, PolygonArray &difference) const
 {
+    if (subject.nVertices < MIN_VERTEX_NUM)
+        return;
+    if (clip.nVertices < MIN_VERTEX_NUM)
+    {
+        difference.Push(subject);
+        return;
+    }
+
+    const auto appendVertex = [](__m128 *vertices, int &size, __m128 vertex) {
+        if (size >= MAX_VERTEX_NUM)
+        {
+            throw std::runtime_error(
+                "polygon clipping produced more than 64 vertices.\n"
+                "  Fix: simplify the input facets or split high-vertex facets "
+                "into smaller convex polygons.");
+        }
+        vertices[size++] = vertex;
+    };
+
     __m128 _clip[MAX_VERTEX_NUM];
     bool isProjected = ProjectToFacetPlane(clip, clipDir, subjNormal, _clip);
 
@@ -460,6 +481,11 @@ void Scattering::Difference(const Polygon &subject, const Vector3f &subjNormal,
         int subjSize = bufSize;
         bufSize = 0;
 
+        // Once the retained intersection has no area, later clip edges cannot
+        // add either an interior polygon or another difference polygon.
+        if (subjSize < MIN_VERTEX_NUM)
+            break;
+
         _first_p = _subj[subjSize-1];
         isInFirst = is_inside_i(_first_p, _p1, _p2, _clip_normal);
 
@@ -479,12 +505,12 @@ void Scattering::Difference(const Polygon &subject, const Vector3f &subjNormal,
 
                     if (isIntersected && is_layOnLine_i(x, _first_p, _second_p))
                     {
-                        _diff_pol[difSize++] = x;
-                        _buff[bufSize++] = x;
+                        appendVertex(_diff_pol, difSize, x);
+                        appendVertex(_buff, bufSize, x);
                     }
                 }
 
-                _buff[bufSize++] = _second_p;
+                appendVertex(_buff, bufSize, _second_p);
             }
             else
             {
@@ -495,12 +521,12 @@ void Scattering::Difference(const Polygon &subject, const Vector3f &subjNormal,
 
                     if (isIntersected && is_layOnLine_i(x, _first_p, _second_p))
                     {
-                        _diff_pol[difSize++] = x;
-                        _buff[bufSize++] = x;
+                        appendVertex(_diff_pol, difSize, x);
+                        appendVertex(_buff, bufSize, x);
                     }
                 }
 
-                _diff_pol[difSize++] = _second_p;
+                appendVertex(_diff_pol, difSize, _second_p);
             }
 
             _first_p = _second_p;
@@ -700,7 +726,7 @@ void Scattering::SetOutputPolygon(__m128 *_output_points, int outputSize,
         __m128 abs = _mm_andnot_ps(sign_mask, difference);
         __m128 cmp = _mm_cmplt_ps(eps, abs);
 
-        int res = _mm_movemask_ps(cmp) & 0b111;
+        int res = _mm_movemask_ps(cmp) & 0x7;
 
         if (res != 0)
         {

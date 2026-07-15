@@ -35,7 +35,8 @@ void  SinCos(long double, long double&, long double &);
 class complex {
 	double re, im;
 public:
-	complex(double r = 0, double i = 0) : re(r), im(i) {}
+		complex(double r = 0, double i = 0) : re(r), im(i) {}
+		complex(const complex&) = default;
 	// members
 	complex&  operator=(const complex& b)
 		{ this->re = b.re; this->im = b.im; return *this; }

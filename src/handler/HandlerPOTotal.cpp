@@ -8,6 +8,7 @@
 #include <sstream>
 #include <cmath>
 #include <algorithm>
+#include <stdexcept>
 
 namespace
 {
@@ -24,9 +25,18 @@ std::string LogNameForResult(const std::string &destName)
 
 void AppendTextLog(const std::string &destName, const std::string &text)
 {
-    std::ofstream out(LogNameForResult(destName), std::ios::app);
-    if (out.is_open())
-        out << text;
+    const std::string path = LogNameForResult(destName);
+    std::ofstream out(path.c_str(), std::ios::app);
+    if (!out.is_open())
+        throw std::runtime_error(
+            "cannot open output log '" + path
+            + "'.\n  Fix: verify output permissions and free disk space.");
+    out << text;
+    out.flush();
+    if (!out)
+        throw std::runtime_error(
+            "failed while writing output log '" + path
+            + "'.\n  Fix: verify free disk space and filesystem health.");
 }
 
 void ApplyForwardPoleSymmetry(matrix &m)
@@ -74,9 +84,9 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
     std::ofstream outFile(destName + ".dat", std::ios::out);
 
     if (!outFile.is_open())
-    {
-        // int fff = 0;
-    }
+        throw std::runtime_error(
+            "cannot open Mueller output '" + destName
+            + ".dat'.\n  Fix: verify output permissions and free disk space.");
 
     outFile << std::setprecision(10);
     outFile << "ScAngle 2pi*dcos "\
@@ -143,6 +153,11 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
         outFile << Msum;
     }
 
+    outFile.flush();
+    if (!outFile)
+        throw std::runtime_error(
+            "failed while writing Mueller output '" + destName
+            + ".dat'.\n  Fix: verify free disk space and filesystem health.");
     outFile.close();
 
     // Compute efficiencies. nrg is the orientation-averaged projected area.

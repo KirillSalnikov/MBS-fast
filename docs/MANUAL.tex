@@ -83,11 +83,15 @@
 \newcommand{\WarningTok}[1]{\textcolor[rgb]{0.38,0.63,0.69}{\textbf{\textit{#1}}}}
 \usepackage{longtable,booktabs,array}
 \usepackage{calc} % for calculating minipage widths
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash\sloppy}p{#1}}
 % Correct order of tables after \paragraph or \subparagraph
 \usepackage{etoolbox}
 \makeatletter
 \patchcmd\longtable{\par}{\if@noskipsec\mbox{}\fi\par}{}{}
 \makeatother
+\AtBeginEnvironment{longtable}{\small}
+\setlength\LTleft{0pt}
+\setlength\LTright{0pt}
 % Allow footnotes in longtable head/foot
 \IfFileExists{footnotehyper.sty}{\usepackage{footnotehyper}}{\usepackage{footnote}}
 \makesavenoteenv{longtable}
@@ -108,7 +112,7 @@
 
 \title{MBS-fast Manual}
 \author{}
-\date{June 9, 2026}
+\date{July 15, 2026}
 
 \begin{document}
 \maketitle
@@ -129,7 +133,7 @@ used by the implementation.
 
 \subsection{Requirements}\label{requirements}
 
-\begin{longtable}[]{@{}lll@{}}
+\begin{longtable}[]{@{}L{0.24\linewidth}L{0.28\linewidth}L{0.40\linewidth}@{}}
 \toprule\noalign{}
 Component & Required for & Notes \\
 \midrule\noalign{}
@@ -193,22 +197,22 @@ Debug help build:
 \end{Highlighting}
 \end{Shaded}
 
-\begin{longtable}[]{@{}llrrl@{}}
+\begin{longtable}[]{@{}L{0.20\linewidth}L{0.32\linewidth}L{0.10\linewidth}L{0.10\linewidth}L{0.18\linewidth}@{}}
 \toprule\noalign{}
 Target & Binary & CUDA precision & Fast math & Typical use \\
 \midrule\noalign{}
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-\texttt{make\ -C\ gpu} & \texttt{gpu/bin/mbs\_po\_gpu\_float\_fast} &
+\texttt{make\ -C\ gpu} & \nolinkurl{gpu/bin/mbs_po_gpu_float_fast} &
 FP32 & yes & Fast production scans \\
-\texttt{make\ -C\ gpu\ float} & \texttt{gpu/bin/mbs\_po\_gpu\_float} &
+\texttt{make\ -C\ gpu\ float} & \nolinkurl{gpu/bin/mbs_po_gpu_float} &
 FP32 & no & FP32 check without fast math \\
 \texttt{make\ -C\ gpu\ double\_fast} &
-\texttt{gpu/bin/mbs\_po\_gpu\_double\_fast} & FP64 & yes & Reference GPU
+\nolinkurl{gpu/bin/mbs_po_gpu_double_fast} & FP64 & yes & Reference GPU
 checks \\
 \texttt{make\ -C\ gpu\ double\_debug} &
-\texttt{gpu/bin/mbs\_po\_gpu\_double\_debug} & FP64 & yes & Debug help
+\nolinkurl{gpu/bin/mbs_po_gpu_double_debug} & FP64 & yes & Debug help
 and diagnostics \\
 \end{longtable}
 
@@ -249,7 +253,7 @@ option is usually:
 
 For named AMD targets:
 
-\begin{longtable}[]{@{}lll@{}}
+\begin{longtable}[]{@{}L{0.24\linewidth}L{0.28\linewidth}L{0.40\linewidth}@{}}
 \toprule\noalign{}
 CPU target & GCC/Clang flags & Notes \\
 \midrule\noalign{}
@@ -322,7 +326,7 @@ Prefer the split \texttt{cpu/} and \texttt{gpu/} builds for normal work.
 
 \subsection{Pipeline}\label{pipeline}
 
-\begin{longtable}[]{@{}lll@{}}
+\begin{longtable}[]{@{}L{0.24\linewidth}L{0.28\linewidth}L{0.40\linewidth}@{}}
 \toprule\noalign{}
 Stage & Main code path & Result \\
 \midrule\noalign{}
@@ -334,8 +338,8 @@ normals, area, volume, symmetry \\
 Geometrical tracing & \texttt{src/scattering}, \texttt{src/tracer},
 \texttt{src/Splitting.cpp} & Output beams with direction, polygon, area,
 optical path, Jones matrix \\
-PO diffraction & \texttt{HandlerPO::ApplyDiffraction*},
-\texttt{Handler::DiffractIncline*}, CUDA equivalents & Far-field Jones
+PO diffraction & \nolinkurl{HandlerPO::ApplyDiffraction*},
+\nolinkurl{Handler::DiffractIncline*}, CUDA equivalents & Far-field Jones
 amplitude per beam and direction \\
 Coherent sum & \texttt{HandlerPO::AddToMueller}, GPU fused Mueller
 kernels & Sum Jones matrices over beams for one orientation \\
@@ -375,7 +379,7 @@ matrix must be expressed in the detector polarization basis.
 \texttt{HandlerPO::RotateJones} and \texttt{RotateJonesFast} build this
 2x2 rotation/projection using dot products between:
 
-\begin{longtable}[]{@{}ll@{}}
+\begin{longtable}[]{@{}L{0.30\linewidth}L{0.64\linewidth}@{}}
 \toprule\noalign{}
 Vector & Meaning \\
 \midrule\noalign{}
@@ -400,7 +404,7 @@ The effective far-field Jones contribution has the structure used in
 
 where:
 
-\begin{longtable}[]{@{}lll@{}}
+\begin{longtable}[]{@{}L{0.24\linewidth}L{0.28\linewidth}L{0.40\linewidth}@{}}
 \toprule\noalign{}
 Factor & Code & Meaning \\
 \midrule\noalign{}
@@ -429,18 +433,18 @@ For each traced output beam the illuminated aperture is a polygon. The
 PO far field is evaluated by a boundary/edge form of the Kirchhoff
 integral. In code this lives in:
 
-\begin{longtable}[]{@{}ll@{}}
+\begin{longtable}[]{@{}L{0.30\linewidth}L{0.64\linewidth}@{}}
 \toprule\noalign{}
 Function & Use \\
 \midrule\noalign{}
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-\texttt{Handler::DiffractIncline} & CPU scalar non-absorbing edge
+\nolinkurl{Handler::DiffractIncline} & CPU scalar non-absorbing edge
 integral \\
-\texttt{Handler::DiffractInclineFast} & CPU optimized edge integral with
+\nolinkurl{Handler::DiffractInclineFast} & CPU optimized edge integral with
 precomputed edge data \\
-\texttt{Handler::DiffractInclineAbs} & Absorbing variant \\
+\nolinkurl{Handler::DiffractInclineAbs} & Absorbing variant \\
 \texttt{GpuDiffraction.cu} kernels & CUDA implementation of the same
 aperture/edge calculation \\
 \end{longtable}
@@ -523,14 +527,14 @@ requested range. For a full \texttt{0..180} grid the sum of
 
 \section{Particles and sizes}\label{particles-and-sizes}
 
-\begin{longtable}[]{@{}lrl@{}}
+\begin{longtable}[]{@{}L{0.24\linewidth}L{0.22\linewidth}L{0.46\linewidth}@{}}
 \toprule\noalign{}
 Flag & Arguments & Description \\
 \midrule\noalign{}
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-\texttt{-p} & \texttt{TYPE\ L\ D\ {[}extra{]}} & Built-in particle.
+\texttt{-p} & \texttt{TYPE\ PARAMETERS...} & Built-in particle.
 Exactly one of \texttt{-p} or \texttt{-\/-pf} is required. \\
 \texttt{-\/-pf} & \texttt{FILE} & Load particle from file. \\
 \texttt{-\/-rs} & \texttt{SIZE} & Resize file particle to
@@ -547,7 +551,7 @@ depth. \\
 
 Built-in particle types:
 
-\begin{longtable}[]{@{}rll@{}}
+\begin{longtable}[]{@{}L{0.09\linewidth}L{0.35\linewidth}L{0.48\linewidth}@{}}
 \toprule\noalign{}
 Type & Shape & Parameters \\
 \midrule\noalign{}
@@ -557,10 +561,10 @@ Type & Shape & Parameters \\
 1 & Hexagonal column/plate & \texttt{L\ D} \\
 2 & Bullet & \texttt{L\ D} \\
 3 & Bullet rosette & \texttt{L\ D\ {[}cap{]}} \\
-4 & Droxtal & \texttt{L\ D\ extra}, uses the extra shape parameter \\
-10 & Concave hexagonal & \texttt{L\ D\ concavity} \\
-12 & Hexagonal aggregate & \texttt{L\ D\ count} \\
-999 & Built-in aggregate & \texttt{extra} \\
+4 & Droxtal & \texttt{SCALE}; legacy \texttt{L\ D\ SCALE} ignores \texttt{L,D} \\
+10 & Concave hexagonal & \texttt{L\ D\ CAVITY\_DEG}; cavities must not intersect \\
+12 & Two-column hexagonal aggregate & \texttt{L\ D\ 2} \\
+999 & Fixed built-in aggregate & \texttt{SCALE} \\
 \end{longtable}
 
 Equivalent-size scaling:
@@ -575,7 +579,7 @@ Equivalent-size scaling:
 
 \section{Orientation grids}\label{orientation-grids}
 
-\begin{longtable}[]{@{}lrll@{}}
+\begin{longtable}[]{@{}L{0.20\linewidth}L{0.14\linewidth}L{0.28\linewidth}L{0.28\linewidth}@{}}
 \toprule\noalign{}
 Mode & Arguments & Best use & Notes \\
 \midrule\noalign{}
@@ -609,19 +613,23 @@ generator & Debug/experimental. \\
 periodic gamma & High-order quadrature. \\
 \texttt{-\/-euler\_adapt} & \texttt{Nb\ NgMax} & Adaptive gamma count
 per beta ring & Reduces work near beta poles. \\
-\texttt{-\/-adaptive} & \texttt{EPS} & Adaptive Sobol count & Doubles
-orientations until relative convergence target. \\
+\texttt{-\/-adaptive\_euler} & \texttt{EPS} & Converged regular Euler grid &
+Refines \(N_\beta\) and \(N_\gamma\) separately, then together. \\
+\texttt{-\/-adaptive} & \texttt{EPS} & Adaptive Sobol count only & Doubles
+\(N\); it does not silently alter theta, phi, or reflection depth. \\
 \texttt{-\/-auto} & \texttt{EPS} & Auto theta, phi, orientation count &
-Convenience mode. \\
+Keeps the requested reflection depth fixed. \\
 \texttt{-\/-autofull} & \texttt{EPS} & Auto \texttt{n}, theta, phi,
 orientations & Slower, more complete search. \\
-\texttt{-\/-oldautofull} & \texttt{EPS} & Autofull search with oldauto
-final grid & Useful when final regular grid is required. \\
+\texttt{-\/-oldautofull} & \texttt{EPS} & Autofull with converged Euler
+grid & Independently converges \(N_\beta\) and \(N_\gamma\). \\
+\texttt{-\/-adaptive-config} & \texttt{FILE} & Reproducible adaptive
+settings & Per-parameter minimum, maximum, and tolerance. \\
 \end{longtable}
 
 Orientation modifiers:
 
-\begin{longtable}[]{@{}lrl@{}}
+\begin{longtable}[]{@{}L{0.24\linewidth}L{0.22\linewidth}L{0.46\linewidth}@{}}
 \toprule\noalign{}
 Flag & Arguments & Description \\
 \midrule\noalign{}
@@ -640,6 +648,10 @@ range is \texttt{pi/Sb}, gamma range is \texttt{2*pi/Sg}. \\
 \texttt{-\/-random}. \\
 \texttt{-\/-maxorient} & \texttt{N} & Maximum orientations for adaptive
 modes. \\
+\texttt{-\/-max\_beta\_points} & \texttt{N} & Hard adaptive
+\(N_\beta\) limit. \\
+\texttt{-\/-max\_gamma\_points} & \texttt{N} & Hard adaptive
+\(N_\gamma\) limit. \\
 \texttt{-\/-chunk} & \texttt{N} & Orientation/gamma chunk size. \\
 \texttt{-\/-coh\_orient} & none & Legacy coherent-across-orientations
 mode. \\
@@ -654,7 +666,7 @@ environment. \\
 
 \section{Scattering grids}\label{scattering-grids}
 
-\begin{longtable}[]{@{}lrl@{}}
+\begin{longtable}[]{@{}L{0.24\linewidth}L{0.22\linewidth}L{0.46\linewidth}@{}}
 \toprule\noalign{}
 Flag & Arguments & Description \\
 \midrule\noalign{}
@@ -669,33 +681,131 @@ radius \texttt{R} degrees. \\
 \texttt{-\/-tgrid} & \texttt{FILE} & Non-uniform theta grid in degrees,
 one row per theta value. \\
 \texttt{-\/-auto\_tgrid} & \texttt{EPS} & Adaptive theta grid by
-bisection. \\
-\texttt{-\/-auto\_phi} & none & Choose \texttt{Nphi} automatically from
-size parameter. \\
+bisection of measured full-Mueller interpolation error; no fixed halo
+angles are used. \\
+\texttt{-\/-auto\_phi} & none & Compatibility form of measured phi
+convergence with tolerance \(0.02\). \\
+\texttt{-\/-adaptive\_phi} & \texttt{EPS} & Converge \(N_\phi\) only. \\
+\texttt{-\/-adaptive\_reflections} & \texttt{EPS} & Converge internal
+reflection depth \(n\) only. \\
 \texttt{-\/-nphi} & \texttt{N} & Override phi count. Highest priority
 for phi. \\
+\texttt{-\/-max\_theta\_points} & \texttt{N} & Hard theta-point limit;
+default 4097. \\
+\texttt{-\/-max\_phi\_points} & \texttt{N} & Hard \(N_\phi\) limit;
+default 2400. \\
+\texttt{-\/-convergence\_passes} & \texttt{N} & Consecutive passing
+refinements required; default 2. \\
 \texttt{-\/-filter} & \texttt{DEG} & Restrict output to a backscattering
 cone. Legacy/debug use. \\
 \texttt{-\/-point} & none & Backscatter point mode. Legacy; avoid for
 optimized regular-grid production. \\
 \end{longtable}
 
-Priority:
+Selection rules:
 
-\begin{longtable}[]{@{}ll@{}}
+\begin{longtable}[]{@{}L{0.30\linewidth}L{0.64\linewidth}@{}}
 \toprule\noalign{}
-Quantity & Priority \\
+Quantity & Rule \\
 \midrule\noalign{}
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-Theta grid & \texttt{-\/-tgrid} \textgreater{} \texttt{-\/-grid}
-\textgreater{} \texttt{-\/-auto\_tgrid} \textgreater{} \texttt{-\/-auto}
-\textgreater{} default \\
-Phi grid & \texttt{-\/-nphi} \textgreater{} \texttt{-\/-grid}
-\textgreater{} \texttt{-\/-auto\_phi} \textgreater{} \texttt{-\/-auto}
-\textgreater{} default \\
+Theta grid & Exactly one of \texttt{-\/-tgrid}, \texttt{-\/-grid}, or
+\texttt{-\/-auto\_tgrid}; unified auto modes treat an explicit grid as fixed. \\
+Phi grid & Standalone adaptive phi selection and explicit
+\texttt{-\/-nphi} are mutually exclusive. Unified auto modes treat explicit
+\texttt{-\/-nphi} as fixed and tune the remaining dimensions. \\
 \end{longtable}
+
+\subsection{Unified convergence criterion}
+
+For two approximations \(A\) and \(B\), phi, reflection, and Euler
+candidate comparisons use the row error
+\[
+ e_{\mathrm{row}}=\max\!\left(
+ \frac{|M^{A}_{11}-M^{B}_{11}|}
+      {\max(|M^{A}_{11}|,|M^{B}_{11}|,\epsilon_0)},
+ \max_{(i,j)\ne(1,1)}
+ \frac{|R^{A}_{ij}-R^{B}_{ij}|}
+      {\max(1,|R^{A}_{ij}|,|R^{B}_{ij}|)}
+ \right),
+ \qquad R_{ij}=\frac{M_{ij}}{M_{11}}.
+\]
+Here \(M_{ij}\) is a Mueller element, \(R_{ij}\) is its normalized
+value, and \(\epsilon_0\) protects a vanishing \(M_{11}\).  The maximum
+over theta rows is combined with the relative change of
+\(\int M_{11}\,d\Omega\). Reflection-depth tests also include outgoing
+energy. Theta convergence is different: it evaluates the actual Mueller row
+at one-third and two-thirds of every interval against interpolation and checks
+the same integrated \(M_{11}\). Sobol orientation convergence checks incoming
+energy and all 16 Mueller elements on control-theta rows selected from the
+actual scattering grid.
+
+The parameters are not strictly independent. Reflection depth changes the
+beam tree; phi changes the azimuth average used to expose theta structure;
+and orientation sampling changes every averaged row. Therefore the joint
+order is
+\[
+ n\longrightarrow N_\phi\longrightarrow
+ \{\theta_j\}\longrightarrow N_{\mathrm{orient}}.
+\]
+The \texttt{-\/-auto} modes repeat the complete sequence on a common larger
+pilot set until the pilot implied by the selected orientation count and all
+selected values form a coupled fixed point. Regular Euler convergence
+alternates \(N_\beta\) and \(N_\gamma\), then doubles both together. Reaching
+any hard limit in phi, reflection, theta, Euler, or a unified mode is reported
+as an error rather than accepted as convergence. Standalone
+\texttt{-\/--adaptive-orientations} is exploratory: at its orientation cap it
+warns and writes the best result; unified modes use strict orientation
+convergence. The configured passing streak applies to phi, reflection, Euler,
+and orientation searches, while theta uses interval refinement directly.
+Every trial is written to
+\texttt{<output>/<name>\_convergence.tsv}.
+
+\subsection{Adaptive configuration file}
+
+Use \texttt{-\/--adaptive-config FILE} to keep production convergence
+settings outside a long command line. The documented template is
+\texttt{configs/adaptive.example.conf}. It uses strict
+\texttt{key = value} assignments and accepts inline comments after
+\texttt{\#} or \texttt{;}.
+
+The file defines separate minimum, maximum, and relative tolerance values for
+reflection depth, laboratory alpha (internally \(N_\phi\)), theta points,
+Sobol orientations, beta points, and gamma points. It also defines the number
+of consecutive passing refinements and the pilot and sweep limits of the
+coupled controller. A tolerance of \texttt{0.01} means one percent.
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\NormalTok{mbs_po --autofull 0.02 --adaptive-config configs/adaptive.example.conf ...}
+\end{Highlighting}
+\end{Shaded}
+
+Per-parameter tolerances in the file replace the mode-wide \texttt{EPS}; a
+missing tolerance inherits \texttt{EPS}. Explicit command-line
+\texttt{-\/--max-*}, \texttt{-\/--max-reflections}, and
+\texttt{-\/--convergence-passes} values override the file. Unknown keys,
+duplicates, invalid ranges, non-power-of-two Sobol limits, and malformed lines
+are rejected before the calculation, with the file line and a corrective hint.
+
+\subsection{Why column symmetry does not divide Nphi}
+
+The code uses the Euler convention
+\[
+ \mathbf{R}=R_z(\alpha)R_y(\beta)R_z(\gamma).
+\]
+The scattering-azimuth loop is the rotationally covariant implementation of
+the laboratory-angle \(\alpha\) average, so \(N_\phi=N_\alpha\) in this
+context. A hexagonal column has the body-axis symmetry
+\(R_z(2\pi/6)\); it reduces the \(\gamma\) domain to
+\(0\leq\gamma<\pi/3\). For \(\beta\ne0,\pi\), it does not make the tilted
+particle invariant under a laboratory \(R_z(2\pi/6)\) rotation, hence
+\(0\leq\alpha<2\pi\) is still required. An automatic division of
+\(N_\phi\) by six would therefore be incorrect. The aliases
+\texttt{-\/-alpha-points} and \texttt{-\/-adaptive-alpha} only clarify the
+meaning of the existing phi controls; they do not enable an approximation.
 
 For full angular integrals use \texttt{-\/-grid\ 0\ 180\ Nphi\ Nth}.
 Endpoint rows are physical half-cells; they must not have zero weight.
@@ -704,7 +814,7 @@ Endpoint rows are physical half-cells; they must not have zero weight.
 
 \subsection{CUDA backend}\label{cuda-backend}
 
-\begin{longtable}[]{@{}ll@{}}
+\begin{longtable}[]{@{}L{0.30\linewidth}L{0.64\linewidth}@{}}
 \toprule\noalign{}
 Flag & Description \\
 \midrule\noalign{}
@@ -737,7 +847,7 @@ The CPU traces rays and prepares compact beam records; the GPU then
 evaluates diffraction and, in the fast paths, Mueller accumulation on a
 large regular grid.
 
-\begin{longtable}[]{@{}llll@{}}
+\begin{longtable}[]{@{}L{0.20\linewidth}L{0.22\linewidth}L{0.28\linewidth}L{0.20\linewidth}@{}}
 \toprule\noalign{}
 Work item & CPU path & GPU path & Parallel granularity \\
 \midrule\noalign{}
@@ -783,35 +893,35 @@ accumulation}\label{atomic-and-no-atomic-gpu-accumulation}
 There are two families of CUDA accumulation paths in
 \texttt{src/cuda/GpuDiffraction.cu}.
 
-\begin{longtable}[]{@{}llll@{}}
+\begin{longtable}[]{@{}L{0.20\linewidth}L{0.22\linewidth}L{0.28\linewidth}L{0.20\linewidth}@{}}
 \toprule\noalign{}
 Mode & Main kernels & How accumulation works & When useful \\
 \midrule\noalign{}
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-Atomic Jones accumulation & \texttt{diffraction\_kernel} & Each thread
+Atomic Jones accumulation & \nolinkurl{diffraction_kernel} & Each thread
 computes one beam/grid contribution and uses \texttt{atomicAdd} into the
-complex Jones buffer. Afterwards \texttt{mueller\_batch\_kernel}
+complex Jones buffer. Afterwards \nolinkurl{mueller_batch_kernel}
 converts the summed Jones matrix to Mueller. & General fallback,
 supports more combinations such as no-shadow output. \\
-No-atomic grid kernels & \texttt{diffraction\_grid\_kernel} & Work is
+No-atomic grid kernels & \nolinkurl{diffraction_grid_kernel} & Work is
 reorganized so a thread owns a grid/output slot and loops over beams,
 avoiding multiple writers to the same Jones cell. & Full-only output
 when memory/layout allows it. \\
-Fused Mueller kernels & \texttt{diffraction\_grid\_mueller\_kernel},
-\texttt{diffraction\_grid\_mueller\_full\_kernel},
-\texttt{*\_full8\_kernel}, \texttt{*\_mixed8\_kernel} & The kernel
+Fused Mueller kernels & \nolinkurl{diffraction_grid_mueller_kernel},
+\nolinkurl{diffraction_grid_mueller_full_kernel},
+\nolinkurl{*_full8_kernel}, \nolinkurl{*_mixed8_kernel} & The kernel
 computes coherent Jones locally for an output slot and immediately
 converts/adds Mueller, avoiding large intermediate Jones buffers. & Fast
 production path for full-only GPU runs. \\
 Staged orientation Mueller &
-\texttt{diffraction\_grid\_mueller\_orient\_kernel} +
-\texttt{reduce\_mueller\_orient\_kernel} & First writes per-orientation
+\nolinkurl{diffraction_grid_mueller_orient_kernel} +
+\nolinkurl{reduce_mueller_orient_kernel} & First writes per-orientation
 Mueller, then reduces orientations. & Reduces contention and gives a
 deterministic reduction shape for large orientation batches. \\
 Multi-\texttt{k\_eq} fused &
-\texttt{diffraction\_grid\_mueller\_multik\_kernel} & Computes several
+\nolinkurl{diffraction_grid_mueller_multik_kernel} & Computes several
 nearby equivalent sizes from one packed beam batch. & Shared-batch
 \texttt{-\/-multikeq} scans. \\
 \end{longtable}
@@ -841,7 +951,7 @@ disabled for diagnostic modes that require extra outputs.
 
 Useful controls:
 
-\begin{longtable}[]{@{}ll@{}}
+\begin{longtable}[]{@{}L{0.30\linewidth}L{0.64\linewidth}@{}}
 \toprule\noalign{}
 Environment variable & Effect \\
 \midrule\noalign{}
@@ -871,7 +981,7 @@ exact intersections remain CPU-side.
 
 \subsection{Multi-size scans}\label{multi-size-scans}
 
-\begin{longtable}[]{@{}lrl@{}}
+\begin{longtable}[]{@{}L{0.24\linewidth}L{0.22\linewidth}L{0.46\linewidth}@{}}
 \toprule\noalign{}
 Flag & Arguments & Description \\
 \midrule\noalign{}
@@ -879,7 +989,8 @@ Flag & Arguments & Description \\
 \bottomrule\noalign{}
 \endlastfoot
 \texttt{-\/-multigrid} & \texttt{Dmin\ Dmax\ N} & Log-spaced scan in
-maximum particle dimension. \\
+absolute maximum particle dimension; each value uses
+\(x=\pi D_{\max}/\lambda\), independent of the source size. \\
 \texttt{-\/-multikeq} & \texttt{Kmin\ Kmax\ N} & Log-spaced scan in
 equivalent size parameter. \\
 \texttt{-\/-multikeq\_list} & \texttt{FILE} & Exact list of
@@ -890,7 +1001,7 @@ processes; \texttt{0} means auto. \\
 process. \\
 \texttt{-\/-gpu\_devices} & \texttt{LIST} & Comma-separated CUDA device
 list, for example \texttt{0,1,2,3,4}. \\
-\texttt{-\/-multikeq\_shared\_batches} & none & Batch nearby
+\nolinkurl{--multikeq_shared_batches} & none & Batch nearby
 \texttt{k\_eq} values per GPU child and reuse tracing from the largest
 value in the batch. \\
 \texttt{-\/-multikeq\_batch\_ratio} & \texttt{R} & Maximum
@@ -938,7 +1049,7 @@ mode when each size must have its own oldauto reference grid.
 \subsection{Method, particle, and physical
 parameters}\label{method-particle-and-physical-parameters}
 
-\begin{longtable}[]{@{}lrl@{}}
+\begin{longtable}[]{@{}L{0.24\linewidth}L{0.22\linewidth}L{0.46\linewidth}@{}}
 \toprule\noalign{}
 Flag & Arguments & Description \\
 \midrule\noalign{}
@@ -963,7 +1074,7 @@ sampling: center point or all polygon vertices. \\
 
 \subsection{Orientation flags}\label{orientation-flags}
 
-\begin{longtable}[]{@{}lrl@{}}
+\begin{longtable}[]{@{}L{0.24\linewidth}L{0.22\linewidth}L{0.46\linewidth}@{}}
 \toprule\noalign{}
 Flag & Arguments & Description \\
 \midrule\noalign{}
@@ -988,16 +1099,20 @@ generator. \\
 quadrature. \\
 \texttt{-\/-euler\_adapt} & \texttt{Nb\ NgMax} & Gauss beta with
 adaptive gamma count. \\
+\texttt{-\/-adaptive\_euler} & \texttt{EPS} & Independently converge
+\(N_\beta\) and \(N_\gamma\), then verify them jointly. \\
 \texttt{-\/-montecarlo} & \texttt{N} & Pseudo-random Monte Carlo
 orientations. \\
-\texttt{-\/-adaptive} & \texttt{EPS} & Adaptive orientation
-convergence. \\
+\texttt{-\/-adaptive} & \texttt{EPS} & Adaptive Sobol orientation count
+only. \\
 \texttt{-\/-auto} & \texttt{EPS} & Auto theta, phi, and orientation
 count. \\
 \texttt{-\/-autofull} & \texttt{EPS} & Auto \texttt{n}, theta, phi, and
 orientations. \\
-\texttt{-\/-oldautofull} & \texttt{EPS} & Autofull search with oldauto
-final grid. \\
+\texttt{-\/-oldautofull} & \texttt{EPS} & Autofull search with a
+converged regular Euler final grid. \\
+\texttt{-\/-adaptive-config} & \texttt{FILE} & Load per-parameter
+adaptive ranges and tolerances. \\
 \texttt{-\/-owen\_avg} & \texttt{K} & Average final Owen seeds. \\
 \texttt{-\/-owen\_seeds} & \texttt{S...} & Explicit final Owen seeds. \\
 \texttt{-\/-oldauto} & \texttt{DIV} & Physics-based regular grid. \\
@@ -1012,6 +1127,10 @@ from file. \\
 \texttt{-\/-random}. \\
 \texttt{-\/-maxorient} & \texttt{N} & Maximum adaptive orientation
 count. \\
+\texttt{-\/-max\_beta\_points} & \texttt{N} & Maximum adaptive
+\(N_\beta\). \\
+\texttt{-\/-max\_gamma\_points} & \texttt{N} & Maximum adaptive
+\(N_\gamma\). \\
 \texttt{-\/-chunk} & \texttt{N} & Chunk size for orientation/gamma
 processing. \\
 \texttt{-\/-coh\_orient} & none & Legacy coherent orientation mode. \\
@@ -1022,7 +1141,7 @@ processing. \\
 \subsection{Scattering grid and acceleration
 flags}\label{scattering-grid-and-acceleration-flags}
 
-\begin{longtable}[]{@{}lrl@{}}
+\begin{longtable}[]{@{}L{0.24\linewidth}L{0.22\linewidth}L{0.46\linewidth}@{}}
 \toprule\noalign{}
 Flag & Arguments & Description \\
 \midrule\noalign{}
@@ -1033,28 +1152,34 @@ Flag & Arguments & Description \\
 \texttt{-\/-grid} & \texttt{R\ Nphi\ Nth} & Backscatter cone. \\
 \texttt{-\/-tgrid} & \texttt{FILE} & Non-uniform theta grid. \\
 \texttt{-\/-auto\_tgrid} & \texttt{EPS} & Adaptive theta grid. \\
-\texttt{-\/-auto\_phi} & none & Automatic phi count. \\
+\texttt{-\/-auto\_phi} & none & Measured phi convergence at tolerance
+0.02. \\
+\texttt{-\/-adaptive\_phi} & \texttt{EPS} & Converge \(N_\phi\) only. \\
+\texttt{-\/-adaptive\_reflections} & \texttt{EPS} & Converge \(n\) only. \\
 \texttt{-\/-nphi} & \texttt{N} & Override phi count. \\
+\texttt{-\/-max\_theta\_points} & \texttt{N} & Adaptive theta limit. \\
+\texttt{-\/-max\_phi\_points} & \texttt{N} & Adaptive phi limit. \\
+\texttt{-\/-convergence\_passes} & \texttt{N} & Required passing streak. \\
 \texttt{-\/-threads} & \texttt{N} & OpenMP worker threads. \\
 \texttt{-\/-gpu} & none & CUDA backend. \\
 \texttt{-\/-cpu} & none & Force CPU backend in GPU build. \\
 \texttt{-\/-fft} & none & cuFFT phi interpolation. \\
 \texttt{-\/-beam\_cutoff} & \texttt{EPS} & Set relative beam \texttt{J}
 and area cutoffs. \\
-\texttt{-\/-beam\_cutoff\_j} & \texttt{EPS} & Skip beams by relative
-` \\
+\nolinkurl{--beam_cutoff_j} & \texttt{EPS} & Skip beams by relative
+squared Jones magnitude. \\
 \texttt{-\/-beam\_cutoff\_area} & \texttt{EPS} & Skip beams by relative
 beam area. \\
-\texttt{-\/-beam\_cutoff\_importance} & \texttt{EPS} & Skip beams by
-relative ` \\
+\nolinkurl{--beam_cutoff_importance} & \texttt{EPS} & Skip beams by
+relative Jones intensity times area. \\
 \texttt{-\/-trace\_cutoff} & \texttt{EPS} & Set trace pruning \texttt{J}
 and area cutoffs. \\
-\texttt{-\/-trace\_cutoff\_j} & \texttt{EPS} & Prune trace tree by
-relative ` \\
+\nolinkurl{--trace_cutoff_j} & \texttt{EPS} & Prune trace tree by
+relative squared Jones magnitude. \\
 \texttt{-\/-trace\_cutoff\_area} & \texttt{EPS} & Prune trace tree by
 relative area. \\
-\texttt{-\/-trace\_cutoff\_importance} & \texttt{EPS} & Prune trace tree
-by ` \\
+\nolinkurl{--trace_cutoff_importance} & \texttt{EPS} & Prune trace tree
+by relative Jones intensity times area. \\
 \texttt{-\/-trace\_max\_beams} & \texttt{N} & Abort one orientation
 after \texttt{N} beam nodes; \texttt{0} disables. \\
 \texttt{-\/-gpu\_trace} & none & Experimental CUDA prefilter for
@@ -1063,7 +1188,7 @@ nonconvex tracing candidates. \\
 prefilter. \\
 \texttt{-\/-no\_trace\_prefilter} & none & Disable CPU projected-AABB
 prefilter. \\
-\texttt{-\/-trace\_prefilter\_margin} & \texttt{M} & AABB prefilter
+\nolinkurl{--trace_prefilter_margin} & \texttt{M} & AABB prefilter
 margin. \\
 \texttt{-\/-trace\_prefilter\_stats} & none & Print prefilter
 counters. \\
@@ -1074,7 +1199,7 @@ counters. \\
 \subsection{Output, diagnostics, and legacy
 flags}\label{output-diagnostics-and-legacy-flags}
 
-\begin{longtable}[]{@{}lrl@{}}
+\begin{longtable}[]{@{}L{0.24\linewidth}L{0.22\linewidth}L{0.46\linewidth}@{}}
 \toprule\noalign{}
 Flag & Arguments & Description \\
 \midrule\noalign{}
@@ -1121,7 +1246,7 @@ cone. \\
 
 Production-use variables:
 
-\begin{longtable}[]{@{}ll@{}}
+\begin{longtable}[]{@{}L{0.30\linewidth}L{0.64\linewidth}@{}}
 \toprule\noalign{}
 Variable & Meaning \\
 \midrule\noalign{}
@@ -1157,6 +1282,8 @@ batching. \\
 \texttt{MBS\_GPU\_MULTI\_MAX=N} & Cap automatic GPU multi batching. \\
 \texttt{MBS\_GPU\_MULTI\_K\_FULL=1} & Experimental fused
 multi-\texttt{k\_eq} diffraction. \\
+\texttt{MBS\_BEAM\_LOG=PATH} & Write the first handled PO beam set to the
+explicit diagnostic path. No beam log is written by default. \\
 \texttt{MBS\_SHARED\_BETA\_GROUP=N} & Override shared-batch beta
 grouping. \\
 \texttt{MBS\_SHARED\_ORIENT\_CHUNK=N} & Override shared-batch
@@ -1165,7 +1292,7 @@ orientation chunk size. \\
 multi-size scheduler. \\
 \texttt{MBS\_PARALLEL\_SHARED\_KEQ=1} & Environment equivalent of shared
 \texttt{k\_eq} batching. \\
-\texttt{MBS\_PARALLEL\_KEQ\_BATCH\_RATIO=R} & Environment default for
+\nolinkurl{MBS_PARALLEL_KEQ_BATCH_RATIO=R} & Environment default for
 shared batch ratio. \\
 \end{longtable}
 
@@ -1185,7 +1312,7 @@ Main output is a whitespace-separated \texttt{.dat} file:
 \end{Highlighting}
 \end{Shaded}
 
-\begin{longtable}[]{@{}ll@{}}
+\begin{longtable}[]{@{}L{0.30\linewidth}L{0.64\linewidth}@{}}
 \toprule\noalign{}
 Column & Meaning \\
 \midrule\noalign{}
@@ -1200,7 +1327,7 @@ averaging. \\
 
 Common companion outputs:
 
-\begin{longtable}[]{@{}lll@{}}
+\begin{longtable}[]{@{}L{0.24\linewidth}L{0.28\linewidth}L{0.40\linewidth}@{}}
 \toprule\noalign{}
 Output & Created by & Meaning \\
 \midrule\noalign{}
@@ -1215,7 +1342,13 @@ checkpoint files & \texttt{-\/-checkpoint} & Resume data for long
 orientation-grid runs. \\
 Jones output & \texttt{-\/-jones} & Raw Jones matrices in supported PO
 modes. \\
+\nolinkurl{particle_for_check.dat} & every calculation & Effective resized
+particle, stored inside the result directory. \\
 \end{longtable}
+
+Normal runs do not create diagnostic files in the current working directory.
+Use \texttt{MBS\_BEAM\_LOG=PATH} only when an explicit first-beam dump is
+needed.
 
 Warnings about optical-theorem/integral mismatch are diagnostics. For
 non-absorbing runs the physical absorption is fixed to zero; the printed

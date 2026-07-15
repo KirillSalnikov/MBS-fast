@@ -20,7 +20,7 @@ class Beam;
 class TrackGroup
 {
 public:
-    int groupID;
+    int groupID = 0;
     IdType arr[MAX_GROUP_NUM];
     int size = 0;
     std::vector<std::vector<int>> tracks;
@@ -60,6 +60,6 @@ public:
     static void RecoverTrack(const Beam &beam, int facetNum,
                              std::vector<int> &track);
 
-    bool shouldComputeTracksOnly;
-    bool shouldOutputGroups;
+    bool shouldComputeTracksOnly = false;
+    bool shouldOutputGroups = false;
 };

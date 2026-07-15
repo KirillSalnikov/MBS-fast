@@ -1,6 +1,5 @@
 #include "Polygon.h"
 #include <math.h>
-#include <string.h>
 #include <algorithm>
 
 #define EPS_NORMAL 0.1
@@ -8,21 +7,23 @@
 Polygon::Polygon(const Polygon &other)
 {
 	nVertices = std::min(other.nVertices, MAX_VERTEX_NUM);
-	memcpy(arr, other.arr, nVertices * sizeof(Point3f));
+	std::copy_n(other.arr, nVertices, arr);
 }
 
 Polygon::Polygon(Polygon &&other)
 {
 	nVertices = std::min(other.nVertices, MAX_VERTEX_NUM);
-	memcpy(arr, other.arr, nVertices * sizeof(Point3f));
+	std::copy_n(other.arr, nVertices, arr);
 
 	other.nVertices = 0;
 }
 
 void Polygon::AddVertex(const Point3f &v)
 {
-    if (nVertices >= MAX_VERTEX_NUM)
-        return;
+	if (nVertices >= MAX_VERTEX_NUM)
+	{
+		return;
+	}
 	arr[nVertices++] = v;
 }
 
@@ -31,7 +32,7 @@ Polygon &Polygon::operator =(const Polygon &other)
 	if (this != &other)
 	{
 		nVertices = std::min(other.nVertices, MAX_VERTEX_NUM);
-		memcpy(arr, other.arr, nVertices * sizeof(Point3f));
+		std::copy_n(other.arr, nVertices, arr);
 	}
 
 	return *this;
@@ -42,7 +43,7 @@ Polygon &Polygon::operator = (Polygon &&other)
 	if (this != &other)
 	{
 		nVertices = std::min(other.nVertices, MAX_VERTEX_NUM);
-		memcpy(arr, other.arr, nVertices * sizeof(Point3f));
+		std::copy_n(other.arr, nVertices, arr);
 
 		other.nVertices = 0;
 	}

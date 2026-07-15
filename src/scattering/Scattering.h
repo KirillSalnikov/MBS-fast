@@ -54,6 +54,7 @@ protected:
     double m_traceRefJNorm = 0;
     double m_traceRefArea = 0;
     double m_traceRefImportance = 0;
+    bool m_trackIdsRequired = false;
 
 public:
     Scattering(Particle *particle, Light *incidentLight, bool isOpticalPath,
@@ -78,6 +79,7 @@ public:
     bool m_traceCpuProjectedPrefilter = true;
     double m_traceCpuProjectedPrefilterMargin = 8.0;
     bool m_tracePrefilterStats = false;
+    void SetTrackIdsRequired(bool value) { m_trackIdsRequired = value; }
     void CopyRuntimeOptionsFrom(const Scattering &source);
 
     virtual bool ScatterLight(double /*beta*/, double /*gamma*/, std::vector<Beam> &/*scaterredBeams*/)

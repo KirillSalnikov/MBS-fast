@@ -1,9 +1,8 @@
 #include "HandlerGO.h"
 
-#include <limits>
 #include <iostream>
-#include <iomanip>
 #include <cmath>
+#include <stdexcept>
 
 #include "Mueller.hpp"
 
@@ -11,8 +10,6 @@ HandlerGO::HandlerGO(Particle *particle, Light *incidentLight, int nTheta,
                      double wavelength)
     : Handler(particle, incidentLight, nTheta, wavelength)
 {
-    m_logFile.open("log1.txt", std::ios::out);
-    m_logFile << std::setprecision(std::numeric_limits<long double>::digits10 + 1);
 }
 
 void HandlerGO::SetTracks(Tracks *tracks)
@@ -54,6 +51,10 @@ void HandlerGO::ExtractPeaks(double *b, double *f, double norm,
 {
     std::ofstream bck(destDir + "_back.dat", std::ios::out);
     std::ofstream frw(destDir + "_forward.dat", std::ios::out);
+    if (!bck.is_open() || !frw.is_open())
+        throw std::runtime_error(
+            "cannot open GO pole output files.\n"
+            "  Fix: verify output permissions and free disk space.");
     frw << "M11 M22/M11 M33/M11 M44/M11";
     bck << "M11 M22/M11 M33/M11 M44/M11";
 
@@ -81,8 +82,12 @@ void HandlerGO::ExtractPeaks(double *b, double *f, double norm,
             << " " << b[2]/b[0];
     }
 
-    bck.close();
-    frw.close();
+    bck.flush();
+    frw.flush();
+    if (!bck || !frw)
+        throw std::runtime_error(
+            "failed while writing GO pole output files.\n"
+            "  Fix: verify free disk space and filesystem health.");
 }
 
 void HandlerGO::AverageOverAlpha(int EDF, double norm, ContributionGO &contrib,
@@ -174,6 +179,10 @@ void HandlerGO::WriteToFile(ContributionGO &contrib, double norm,
 {
     std::string name = CreateUniqueFileName(filename, ".dat");
     std::ofstream allFile(name, std::ios::out);
+    if (!allFile.is_open())
+        throw std::runtime_error(
+            "cannot open GO Mueller output '" + name
+            + "'.\n  Fix: verify output permissions and free disk space.");
 
     allFile << "ScAngle 2pi*dcos M11 M12 M13 M14 "\
                 "M21 M22 M23 M24 "\
@@ -232,7 +241,11 @@ void HandlerGO::WriteToFile(ContributionGO &contrib, double norm,
         }
     }
 
-    allFile.close();
+    allFile.flush();
+    if (!allFile)
+        throw std::runtime_error(
+            "failed while writing GO Mueller output '" + name
+            + "'.\n  Fix: verify free disk space and filesystem health.");
 }
 
 Point3f HandlerGO::CalcK(std::vector<int> &tr)

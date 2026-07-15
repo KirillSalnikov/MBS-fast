@@ -5,6 +5,9 @@
 #include <cstdlib>
 #include <cmath>
 #include <iostream>
+#include <stdexcept>
+#include <atomic>
+#include <exception>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -136,6 +139,8 @@ void TracerGO::TraceRandom(const AngleRange &betaRange, const AngleRange &gammaR
     {
         m_scattering->PrepareForParallelTrace();
         double incomingEnergySum = 0.0;
+        std::atomic<bool> parallelFailed(false);
+        std::exception_ptr parallelError;
 
 #pragma omp parallel reduction(+:incomingEnergySum)
         {
@@ -151,6 +156,10 @@ void TracerGO::TraceRandom(const AngleRange &betaRange, const AngleRange &gammaR
 #pragma omp for schedule(dynamic, 1)
             for (long long idx = 0; idx < orNum; ++idx)
             {
+                if (parallelFailed.load(std::memory_order_relaxed))
+                    continue;
+                try
+                {
                 const int i = (int)(idx/nGamma);
                 const int j = (int)(idx%nGamma);
                 const double beta = OldautoBetaAngleGO(betaRange, i,
@@ -189,6 +198,16 @@ void TracerGO::TraceRandom(const AngleRange &betaRange, const AngleRange &gammaR
                         OutputProgress(orNum, done, i, j, timer, beamCount);
                     }
                 }
+                }
+                catch (...)
+                {
+                    parallelFailed.store(true, std::memory_order_relaxed);
+#pragma omp critical(go_parallel_exception)
+                    {
+                        if (!parallelError)
+                            parallelError = std::current_exception();
+                    }
+                }
             }
 
 #pragma omp critical(go_merge)
@@ -202,6 +221,8 @@ void TracerGO::TraceRandom(const AngleRange &betaRange, const AngleRange &gammaR
 #ifdef _CHECK_ENERGY_BALANCE
         m_incomingEnergy += incomingEnergySum;
 #endif
+        if (parallelError)
+            std::rethrow_exception(parallelError);
     }
     else
     {
@@ -302,6 +323,8 @@ void TracerGO::TraceMonteCarlo(const AngleRange &betaRange, const AngleRange &ga
     {
         m_scattering->PrepareForParallelTrace();
         double incomingEnergySum = 0.0;
+        std::atomic<bool> parallelFailed(false);
+        std::exception_ptr parallelError;
 
 #pragma omp parallel reduction(+:incomingEnergySum)
         {
@@ -317,6 +340,8 @@ void TracerGO::TraceMonteCarlo(const AngleRange &betaRange, const AngleRange &ga
 #pragma omp for schedule(dynamic, 1)
             for (int i = 0; i < nOrientations; ++i)
             {
+                if (parallelFailed.load(std::memory_order_relaxed))
+                    continue;
                 try
                 {
                     localParticle.Rotate(betas[i], gammas[i], 0);
@@ -328,6 +353,12 @@ void TracerGO::TraceMonteCarlo(const AngleRange &betaRange, const AngleRange &ga
                 }
                 catch (...)
                 {
+                    parallelFailed.store(true, std::memory_order_relaxed);
+#pragma omp critical(go_parallel_exception)
+                    {
+                        if (!parallelError)
+                            parallelError = std::current_exception();
+                    }
                 }
 
                 const int beamCount = (int)localBeams.size();
@@ -355,6 +386,8 @@ void TracerGO::TraceMonteCarlo(const AngleRange &betaRange, const AngleRange &ga
 #ifdef _CHECK_ENERGY_BALANCE
         m_incomingEnergy += incomingEnergySum;
 #endif
+        if (parallelError)
+            std::rethrow_exception(parallelError);
     }
     else
     {
@@ -363,18 +396,12 @@ void TracerGO::TraceMonteCarlo(const AngleRange &betaRange, const AngleRange &ga
             beta = betas[i];
             gamma = gammas[i];
 
-            try
-            {
-                m_particle->Rotate(beta, gamma, 0);
-                m_scattering->ScatterLight(0, 0, outBeams);
-                m_handler->HandleBeams(outBeams, 1.0);
+            m_particle->Rotate(beta, gamma, 0);
+            m_scattering->ScatterLight(0, 0, outBeams);
+            m_handler->HandleBeams(outBeams, 1.0);
 #ifdef _CHECK_ENERGY_BALANCE
-                m_incomingEnergy += m_scattering->GetIncedentEnergy();
+            m_incomingEnergy += m_scattering->GetIncedentEnergy();
 #endif
-            }
-            catch (...)
-            {
-            }
 
             const int beamCount = (int)outBeams.size();
             outBeams.clear();
@@ -436,6 +463,8 @@ void TracerGO::TraceSobol(int nOrientations, unsigned int seed,
     {
         m_scattering->PrepareForParallelTrace();
         double incomingEnergySum = 0.0;
+        std::atomic<bool> parallelFailed(false);
+        std::exception_ptr parallelError;
 
 #pragma omp parallel reduction(+:incomingEnergySum)
         {
@@ -451,6 +480,8 @@ void TracerGO::TraceSobol(int nOrientations, unsigned int seed,
 #pragma omp for schedule(dynamic, 1)
             for (int i = 0; i < nOrientations; ++i)
             {
+                if (parallelFailed.load(std::memory_order_relaxed))
+                    continue;
                 try
                 {
                     localParticle.Rotate(betas[i], gammas[i], 0);
@@ -462,6 +493,12 @@ void TracerGO::TraceSobol(int nOrientations, unsigned int seed,
                 }
                 catch (...)
                 {
+                    parallelFailed.store(true, std::memory_order_relaxed);
+#pragma omp critical(go_parallel_exception)
+                    {
+                        if (!parallelError)
+                            parallelError = std::current_exception();
+                    }
                 }
 
                 const int beamCount = (int)localBeams.size();
@@ -489,6 +526,8 @@ void TracerGO::TraceSobol(int nOrientations, unsigned int seed,
 #ifdef _CHECK_ENERGY_BALANCE
         m_incomingEnergy += incomingEnergySum;
 #endif
+        if (parallelError)
+            std::rethrow_exception(parallelError);
     }
     else
     {
@@ -497,18 +536,12 @@ void TracerGO::TraceSobol(int nOrientations, unsigned int seed,
             const double beta = betas[i];
             const double gamma = gammas[i];
 
-            try
-            {
-                m_particle->Rotate(beta, gamma, 0);
-                m_scattering->ScatterLight(0, 0, outBeams);
-                m_handler->HandleBeams(outBeams, 1.0);
+            m_particle->Rotate(beta, gamma, 0);
+            m_scattering->ScatterLight(0, 0, outBeams);
+            m_handler->HandleBeams(outBeams, 1.0);
 #ifdef _CHECK_ENERGY_BALANCE
-                m_incomingEnergy += m_scattering->GetIncedentEnergy();
+            m_incomingEnergy += m_scattering->GetIncedentEnergy();
 #endif
-            }
-            catch (...)
-            {
-            }
 
             const int beamCount = (int)outBeams.size();
             outBeams.clear();
@@ -559,9 +592,21 @@ void TracerGO::OutputSummary(int orNumber, CalcTimer &timer)
 #endif
 
 	// out << "\nAveraged cross section = " << incomingEnergy*NRM;
-    ofstream out(m_resultDirName+"_out.txt", ios::out);
+	ofstream out(m_resultDirName + "_out.txt", ios::out);
+	if (!out.is_open())
+	{
+		throw std::runtime_error(
+			"cannot open GO summary output.\n"
+			"  Fix: verify output permissions and free disk space.");
+	}
 	out << m_summary;
-	out.close();
+	out.flush();
+	if (!out)
+	{
+		throw std::runtime_error(
+			"failed while writing GO summary output.\n"
+			"  Fix: verify free disk space and filesystem health.");
+	}
 
 	cout << m_summary;
 }

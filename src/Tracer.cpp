@@ -94,6 +94,8 @@ Tracer::Tracer(Particle *particle, int nActs, const string &resultFileName)
 
 Tracer::~Tracer()
 {
+    delete m_scattering;
+    m_scattering = nullptr;
 }
 
 void Tracer::CalcCsBeta(int betaNorm, double beta, const AngleRange &betaRange,

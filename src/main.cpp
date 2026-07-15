@@ -15,6 +15,7 @@
 #include <cctype>
 #include <stdexcept>
 #include <vector>
+#include <memory>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <fcntl.h>
@@ -42,6 +43,8 @@
 #include "HandlerTracksGO.h"
 #include "Droxtal.h"
 #include "GpuSupport.h"
+#include "CliOptions.h"
+#include "RunConfig.h"
 
 #ifdef _OUTPUT_NRG_CONV
 ofstream energyFile("energy.dat", ios::out);
@@ -135,6 +138,8 @@ void ApplyPOOutputOptions(const ArgPP &args, HandlerPO *handler, double wave)
 
 void ApplyTraceCutoffOptions(const ArgPP &args, Scattering *scattering)
 {
+    if (args.IsCatched("r"))
+        scattering->restriction = args.GetDoubleValue("r", 0);
     if (args.IsCatched("trace_cutoff"))
     {
         double eps = args.GetDoubleValue("trace_cutoff", 0);
@@ -188,489 +193,88 @@ static int FinishWithCode(int code)
     return code;
 }
 
+class MpiFinalizeGuard
+{
+public:
+    ~MpiFinalizeGuard()
+    {
+        FinishWithCode(0);
+    }
+};
+
 static void PrintCommandLineError(const std::string &msg)
 {
-    std::cerr << "\nERROR: " << msg << "\n\n"
+    std::cerr << "\nERROR: " << msg;
+    if (msg.find("Fix:") == std::string::npos)
+        std::cerr << "\n  Fix: correct the command using the generated help below.";
+    std::cerr << "\n\n"
               << "Run with --help for common options or --help-debug for the full flag list.\n"
               << "Minimal example:\n"
-              << "  mbs_po --po -p 1 100 70 --ri 1.31 0 -w 0.532 -n 8 \\\n"
-              << "      --oldauto 2 --grid 0 180 600 180 --close -o out\n";
-}
-
-static void ValidatePositiveInt(const ArgPP &args, const std::string &key,
-                                const std::string &label)
-{
-    if (args.IsCatched(key) && args.GetIntValue(key, 0) < 1)
-        throw std::runtime_error(label + " must be >= 1.");
-}
-
-static void ValidateNonNegativeInt(const ArgPP &args, const std::string &key,
-                                   const std::string &label)
-{
-    if (args.IsCatched(key) && args.GetIntValue(key, 0) < 0)
-        throw std::runtime_error(label + " must be >= 0.");
-}
-
-static void ValidateCommandLine(const ArgPP &args)
-{
-    if (args.IsCatched("gpu") && args.IsCatched("cpu"))
-        throw std::runtime_error("--gpu and --cpu are mutually exclusive.");
-
-    if (args.IsCatched("p") == args.IsCatched("pf"))
-        throw std::runtime_error("specify exactly one particle source: -p TYPE L D [extra] or --pf FILE.");
-
-    if (args.IsCatched("rs") && args.IsCatched("k_eq"))
-        throw std::runtime_error("--rs and --k_eq are both size controls; use only one.");
-
-    if (args.IsCatched("p"))
-    {
-        const unsigned n = args.GetArgNumber("p");
-        if (n < 1)
-            throw std::runtime_error("-p requires a particle type.");
-        const int type = args.GetIntValue("p", 0);
-        unsigned required = 3;
-        if (type == (int)ParticleType::BulletRosette)
-            required = (n == 4) ? 4 : 3;
-        else if (type == (int)ParticleType::Droxtal
-                 || type == (int)ParticleType::ConcaveHexagonal
-                 || type == (int)ParticleType::HexagonalAggregate)
-            required = 4;
-        else if (type == (int)ParticleType::CertainAggregate)
-            required = 2;
-        else if (type != (int)ParticleType::Hexagonal
-                 && type != (int)ParticleType::Bullet)
-            throw std::runtime_error("unknown -p particle type " + std::to_string(type)
-                                     + ". Supported types: 1, 2, 3, 4, 10, 12, 999.");
-        if (n < required)
-            throw std::runtime_error("-p type " + std::to_string(type)
-                                     + " expects at least " + std::to_string(required)
-                                     + " value(s), got " + std::to_string(n) + ".");
-    }
-
-    if (args.IsCatched("grid"))
-    {
-        const unsigned n = args.GetArgNumber("grid");
-        if (n != 3 && n != 4)
-            throw std::runtime_error("--grid expects either 3 values (R Nphi Nth) or 4 values (T1 T2 Nphi Nth).");
-        const int nphi = (n == 3) ? args.GetIntValue("grid", 1) : args.GetIntValue("grid", 2);
-        const int nth = (n == 3) ? args.GetIntValue("grid", 2) : args.GetIntValue("grid", 3);
-        if (nphi < 1)
-            throw std::runtime_error("--grid Nphi must be >= 1.");
-        if (nth < 1)
-            throw std::runtime_error("--grid Nth must be >= 1.");
-    }
-
-    ValidatePositiveInt(args, "threads", "--threads");
-    ValidatePositiveInt(args, "ring_points", "--ring_points");
-    ValidatePositiveInt(args, "nphi", "--nphi");
-    ValidatePositiveInt(args, "oldauto", "--oldauto");
-    ValidatePositiveInt(args, "random", "--random Nb");
-    if (args.IsCatched("random") && args.GetIntValue("random", 1) < 1)
-        throw std::runtime_error("--random Ng must be >= 1.");
-    ValidatePositiveInt(args, "sobol", "--sobol");
-    ValidatePositiveInt(args, "so3_quat", "--so3_quat");
-    ValidatePositiveInt(args, "sobol_seed", "--sobol_seed N");
-    ValidatePositiveInt(args, "sobol_ring", "--sobol_ring Nb");
-    if (args.IsCatched("sobol_ring") && args.GetIntValue("sobol_ring", 1) < 1)
-        throw std::runtime_error("--sobol_ring Ng must be >= 1.");
-    ValidatePositiveInt(args, "hammersley", "--hammersley");
-    ValidatePositiveInt(args, "lattice", "--lattice");
-    ValidatePositiveInt(args, "lattice_z", "--lattice_z N");
-    ValidatePositiveInt(args, "euler_quad", "--euler_quad Nb");
-    if (args.IsCatched("euler_quad") && args.GetIntValue("euler_quad", 1) < 1)
-        throw std::runtime_error("--euler_quad Ng must be >= 1.");
-    ValidatePositiveInt(args, "euler_adapt", "--euler_adapt Nb");
-    if (args.IsCatched("euler_adapt") && args.GetIntValue("euler_adapt", 1) < 1)
-        throw std::runtime_error("--euler_adapt NgMax must be >= 1.");
-    ValidatePositiveInt(args, "montecarlo", "--montecarlo");
-    ValidatePositiveInt(args, "maxorient", "--maxorient");
-    ValidatePositiveInt(args, "chunk", "--chunk");
-    ValidateNonNegativeInt(args, "multigrid_parallel", "--multigrid_parallel");
-    ValidatePositiveInt(args, "multigrid_threads", "--multigrid_threads");
-    ValidateNonNegativeInt(args, "trace_max_beams", "--trace_max_beams");
-
-    if (args.IsCatched("multigrid") && args.GetIntValue("multigrid", 2) < 1)
-        throw std::runtime_error("--multigrid N must be >= 1.");
-    if (args.IsCatched("multikeq") && args.GetIntValue("multikeq", 2) < 1)
-        throw std::runtime_error("--multikeq N must be >= 1.");
+              << "  mbs_po --method po --particle 1 100 70 \\\n"
+              << "      --refractive-index 1.31 0 --wavelength-um 0.532 \\\n"
+              << "      --max-reflections 8 --diffraction-grid 2 \\\n"
+              << "      --scattering-grid 0 180 600 180 --close --output out\n";
 }
 
 Tracks trackGroups;
 
 void SetArgRules(ArgPP &parser)
 {
-    int zero = 0;
-    parser.AddRule("p", '+', true); // particle (type, size, ...)
-    parser.AddRule("ri", 2); // refractive index (Re and Im parts)
-    parser.AddRule("n", 1, true); // number of internal reflection (optional for --autofull)
-    parser.AddRule("pf", 1, true); // particle (filename)
-    parser.AddRule("rs", 1, true, "pf"); // resize particle (new size)
-    parser.AddRule("k_eq", 1, true); // resize particle to equivalent-volume size parameter
-    parser.AddRule("fixed", 2, true); // fixed orientarion (beta, gamma)
-    parser.AddRule("random", 2, true); // random orientarion (beta number, gamma number)
-    parser.AddRule("montecarlo", 1, true); // random orientarion (beta number, gamma number)
-    parser.AddRule("orientfile", 1, true); // orientations from file
-    parser.AddRule("karczewski", 0, true); // use Karczewski polarization matrix
-    parser.AddRule("go", 0, true); // geometrical optics method
-    parser.AddRule("po", 0, true); // phisical optics method
-    parser.AddRule("w", 1, true); // wavelength
-    parser.AddRule("b", 2, true); // beta range (begin, end)
-    parser.AddRule("g", 2, true); // gamma range (begin, end)
-    parser.AddRule("grid", '+', true); /* backscattering grid:
- (radius, Nphi, Ntheta) when 3 parameters
- (theta1, theta2, Nphi, Ntheta) when 4 parameters*/
-    parser.AddRule("point", zero, true, "po"); // calculate only backscatter point
-    parser.AddRule("tr", 1, true); // file with trajectories
-    parser.AddRule("all", 0, true); // calculate all trajectories
-    parser.AddRule("abs", zero, true, "w"); // accounting of absorbtion
-    parser.AddRule("abs_points", 1, true); // absorption samples: 1=center, all=all polygon vertices
-    parser.AddRule("close", 0, true); // closing of program after calculation
-    parser.AddRule("o", 1, true); // output folder name
-    parser.AddRule("gr", zero, true);
-    parser.AddRule("filter", 1, true); // scattering angle filter
-    parser.AddRule("shadow", zero, true);
-    parser.AddRule("incoh", zero, true);
-    parser.AddRule("jones", zero, true);
-    parser.AddRule("shadow_off", zero, true);
-    parser.AddRule("full_only", zero, true);
-    parser.AddRule("noshadow_output", zero, true);
-    parser.AddRule("forced_nonconvex", zero, true);
-    parser.AddRule("forced_convex", zero, true);
-    parser.AddRule("r", 1, true); // restriction ratio for small beams when intersection (100 by default)
-    parser.AddRule("log", 1, true); // time of writing progress (in seconds)
-    parser.AddRule("multigrid", 3, true); // multi-size: Dmin Dmax Nsizes (log scale)
-    parser.AddRule("multikeq", 3, true); // multi-size by k_eq: Kmin Kmax Nsizes (log scale)
-    parser.AddRule("multikeq_list", 1, true); // multi-size by exact k_eq values from file
-    parser.AddRule("multigrid_parallel", 1, true); // run multigrid sizes as child processes
-    parser.AddRule("multigrid_threads", 1, true); // per-child OpenMP threads for multigrid_parallel
-    parser.AddRule("gpu_devices", 1, true); // comma-separated CUDA devices for multigrid_parallel
-    parser.AddRule("multikeq_shared_batches", 0, true); // batch k_eq values per GPU; trace once per batch
-    parser.AddRule("multikeq_batch_ratio", 1, true); // max kmax/kmin inside shared k_eq batch
-    parser.AddRule("save_betas", 0, true); // save intermediate Mueller for each beta to betas/ subfolder
-    parser.AddRule("checkpoint", 0, true); // enable checkpoint save/resume for long orientfile and oldauto/random runs
-    parser.AddRule("tgrid", 1, true); // non-uniform theta grid file
-    parser.AddRule("beam_cutoff", 1, true); // common relative beam cutoff
-    parser.AddRule("beam_cutoff_j", 1, true); // relative |J|^2 beam cutoff
-    parser.AddRule("beam_cutoff_area", 1, true); // relative area beam cutoff
-    parser.AddRule("beam_cutoff_importance", 1, true); // relative |J|^2*area beam cutoff
-    parser.AddRule("ot_phase_avg", 0, true); // average optical-theorem extinction over far-reference phase
-    parser.AddRule("ot_phase_shift", 1, true); // diagnostic OT far-reference phase shift in wavelengths
-    parser.AddRule("ot_ping", 1, true); // legacy far-screen OT phase correction distance
-    parser.AddRule("trace_cutoff", 1, true); // common relative tracing prune cutoff
-    parser.AddRule("trace_cutoff_j", 1, true); // relative |J|^2 tracing prune cutoff
-    parser.AddRule("trace_cutoff_area", 1, true); // relative area tracing prune cutoff
-    parser.AddRule("trace_cutoff_importance", 1, true); // relative |J|^2*area tracing prune cutoff
-    parser.AddRule("trace_max_beams", 1, true); // max traced beam nodes per orientation
-    parser.AddRule("gpu_trace", 0, true); // experimental CUDA tracing prefilter
-    parser.AddRule("trace_prefilter", 0, true); // enable CPU projected AABB prefilter for nonconvex tracing
-    parser.AddRule("no_trace_prefilter", 0, true); // disable CPU projected AABB prefilter
-    parser.AddRule("trace_prefilter_margin", 1, true); // projected AABB margin for nonconvex CPU trace prefilter
-    parser.AddRule("trace_prefilter_stats", 0, true); // print CPU/GPU trace prefilter counters
-    parser.AddRule("sobol", 1, true); // Sobol quasi-random orientations (number, power of 2)
-    parser.AddRule("so3_quat", 1, true); // Hammersley orientations directly on SO(3) as quaternions
-    parser.AddRule("sobol_seed", 2, true); // Sobol orientations with nested Owen scramble seed (N seed)
-    parser.AddRule("sobol_ring", 2, true); // Sobol beta x uniform gamma ring (Nbeta Ngamma)
-    parser.AddRule("hammersley", 1, true); // Hammersley orientation set (N)
-    parser.AddRule("lattice", 1, true); // rank-1 lattice orientation set (N)
-    parser.AddRule("lattice_z", 2, true); // rank-1 lattice with explicit generator (N Z)
-    parser.AddRule("euler_quad", 2, true); // high-order Euler quadrature (Nbeta Ngamma)
-    parser.AddRule("euler_adapt", 2, true); // Gauss beta with adaptive gamma count (Nbeta NgammaMax)
-    parser.AddRule("auto_tgrid", 1, true); // adaptive theta grid (arg: tolerance, e.g. 0.05)
-    parser.AddRule("auto_phi", 0, true); // auto-select N_phi based on size parameter
-    parser.AddRule("nphi", 1, true); // override N_phi (takes priority over --grid and --auto_phi)
-    parser.AddRule("adaptive", 1, true); // adaptive convergence (target relative accuracy)
-    parser.AddRule("autofull", 1, true); // full 3D sequential: n → N_phi → N_orient
-    parser.AddRule("oldautofull", 1, true); // autofull search + oldauto regular final grid
-    parser.AddRule("owen_avg", 1, true); // --autofull final: average K nested Owen Sobol seeds
-    parser.AddRule("owen_seeds", '+', true); // explicit seeds for --autofull final averaging
-    parser.AddRule("auto", 1, true); // full auto: auto_tgrid + auto_phi + adaptive (one arg: eps)
-    parser.AddRule("maxorient", 1, true); // max orientations for adaptive (power of 2)
-    parser.AddRule("chunk", 1, true); // max Sobol orientations per memory chunk
-    parser.AddRule("oldauto", 1, true); // physics-based: div2/div4/div8 of diffraction-limited grid
-    parser.AddRule("ring_points", 1, true); // points per diffraction ring for orientation estimates
-    parser.AddRule("mirror_gamma", 0, true); // use mirror symmetry: gamma fundamental range is halved
-    parser.AddRule("threads", 1, true); // OpenMP worker threads
-    parser.AddRule("gpu", 0, true); // enable CUDA GPU backend
-    parser.AddRule("cpu", 0, true); // force CPU backend in GPU-default builds
-    parser.AddRule("fft", 0, true); // enable experimental FFT angular interpolation backend
-    parser.AddRule("coh_orient", 0, true); // coherent across orientations (legacy mode)
-    parser.AddRule("pole", 0, true); // fast pole shortcut: one gamma value at beta poles
-    parser.AddRule("legacy_sign", 0, true); // use old (+) Fresnel sign for forward direction
-    parser.AddRule("sym", 2, true); // symmetry override: beta_factor gamma_factor (e.g. --sym 2 6)
-    parser.AddRule("help", 0, true); // print help
-    parser.AddRule("help-debug", 0, true); // print full debug/experimental help
-}
-
-void PrintFullHelp()
-{
-    using namespace std;
-    cout << "MBS-fast: Physical Optics for Ice Crystals\n"
-         << "Usage: mbs_po --po [orientation] [options] -p TYPE L D [-w LAMBDA] [--ri Re Im] [-n N]\n\n"
-
-         << "=== Particle ===\n"
-         << "  -p TYPE L D [extra]    Particle: 1=hex, 2=bullet, 3=rosette, 4=droxtal,\n"
-         << "                         10=concave hex, 12=hex aggregate\n"
-         << "  --pf FILE              Particle from .obj file\n"
-         << "  --rs SIZE              Resize particle to Dmax=SIZE (with --pf)\n"
-         << "  --k_eq X               Resize particle so 2*pi*r_eq/lambda = X\n"
-         << "  --ri Re Im             Refractive index (default 1.31 0)\n"
-         << "  -w LAMBDA              Wavelength in um (default 0.532)\n"
-         << "  -n N                   Max internal reflections (default 6)\n\n"
-
-         << "=== Method ===\n"
-         << "  --po                   Physical optics (default)\n"
-         << "  --go                   Geometric optics\n\n"
-
-         << "=== Orientation ===\n"
-         << "  --fixed BETA GAMMA     Single orientation (degrees)\n"
-         << "  --random Nb Ng         Regular beta x gamma grid\n"
-         << "  --sobol N              Sobol quasi-random (N orientations)\n"
-         << "  --so3_quat N           Hammersley on full SO(3), stored as quaternions\n"
-         << "  --sobol_seed N S       Sobol with nested Owen scramble seed S\n"
-         << "  --sobol_ring Nb Ng     Sobol beta x shifted uniform gamma ring\n"
-         << "  --hammersley N         Hammersley low-discrepancy orientations\n"
-         << "  --lattice N            Rank-1 lattice orientations\n"
-         << "  --lattice_z N Z        Rank-1 lattice with explicit generator Z\n"
-         << "  --euler_quad Nb Ng     High-order: Gauss in cos(beta) x periodic gamma\n"
-         << "  --euler_adapt Nb NgMax Gauss beta x adaptive gamma per beta ring\n"
-         << "  --montecarlo N         Monte Carlo random (N orientations)\n"
-         << "  --adaptive EPS         Adaptive Sobol (converge to EPS relative accuracy)\n"
-         << "  --auto EPS             Full auto: adaptive theta + phi + orientations\n"
-         << "  --autofull EPS         Full auto including n search\n"
-         << "  --oldautofull EPS      Autofull search, oldauto regular final orientation grid\n"
-         << "  --owen_avg K           With --autofull, average K nested Owen final seeds (default 5)\n"
-         << "  --owen_seeds S...      Explicit final Owen seeds for --autofull averaging\n"
-         << "  --oldauto DIV          Physics-based grid (div2/div4/div8 of diffraction limit)\n"
-         << "  --ring_points N        Points per diffraction ring for orientation estimates (default 3)\n"
-         << "  --mirror_gamma         Use mirror symmetry: gamma range is halved (60 -> 30 deg)\n"
-         << "  --orientfile FILE      Orientations from file (beta gamma per line)\n"
-         << "  --b B1 B2              Beta range in degrees for --random\n"
-         << "  --g G1 G2              Gamma range in degrees for --random\n"
-         << "  --maxorient N          Max orientations for adaptive (power of 2)\n"
-         << "  --chunk N              Max orientations/gamma values per memory chunk\n"
-         << "  --coh_orient           Coherent across orientations (legacy)\n"
-         << "  --pole                 Fast pole gamma: use one gamma value at beta poles\n\n"
-
-         << "=== Scattering grid ===\n"
-         << "  --grid T1 T2 Nphi Nth  Theta range [T1,T2] deg, Nphi azimuth, Nth zenith\n"
-         << "  --grid R Nphi Nth      Backscatter cone with angular radius R deg\n"
-         << "  --tgrid FILE           Non-uniform theta grid from file (degrees, one per line)\n"
-         << "  --auto_tgrid EPS       Adaptive theta grid via bisection (tolerance EPS)\n"
-         << "  --auto_phi             Auto N_phi = x/5 + 48\n"
-         << "  --nphi N               Override N_phi (highest priority)\n\n"
-
-         << "=== Grid priority ===\n"
-         << "  Theta: --tgrid > --grid > --auto_tgrid > --auto > default\n"
-         << "  Phi:   --nphi  > --grid > --auto_phi   > --auto > default\n\n"
-
-         << "=== Optimization ===\n"
-         << "  --threads N            OpenMP worker threads (default: physical cores)\n"
-         << "  --gpu                  Use CUDA GPU backend for diffraction (default in gpu/ build)\n"
-         << "  --cpu                  Force CPU backend in gpu/ build\n"
-         << "  --fft                  With --gpu, use experimental cuFFT phi interpolation backend\n"
-         << "                         Auto modes select phi factor from EPS/Nphi; env MBS_FFT_PHI_FACTOR=N overrides\n"
-         << "  --beam_cutoff EPS      Set both relative beam cutoffs below; skip if either matches\n"
-         << "  --beam_cutoff_j EPS    Skip beams with |J|^2/max < EPS (0 disables J test)\n"
-         << "  --beam_cutoff_area EPS Skip beams with area/max < EPS (0 disables area test)\n"
-         << "  --beam_cutoff_importance EPS Skip beams with |J|^2*area/max < EPS\n"
-         << "  --ot_phase_avg         Average OT extinction over one far-reference phase period\n"
-         << "  --ot_phase_shift F     Diagnostic OT phase shift in wavelengths (default 0)\n"
-         << "  --ot_ping D            Legacy far-screen OT phase rotation for old Ping-style files\n"
-         << "  --trace_cutoff EPS     Stop tracing internal beams if either relative test matches\n"
-         << "  --trace_cutoff_j EPS   Trace prune by |J|^2/initial-max < EPS\n"
-         << "  --trace_cutoff_area EPS Trace prune by area/initial-max < EPS\n"
-         << "  --trace_cutoff_importance EPS Trace prune by |J|^2*area/max < EPS\n"
-         << "  --trace_max_beams N    Abort one orientation after N traced beam nodes (0 disables)\n"
-         << "  --gpu_trace            Experimental CUDA prefilter for nonconvex tracing candidates\n"
-         << "  --trace_prefilter      Enable CPU projected AABB prefilter for nonconvex tracing\n"
-         << "  --no_trace_prefilter   Disable CPU projected AABB prefilter\n"
-         << "  --trace_prefilter_margin M Projected AABB margin (default 8)\n"
-         << "  --trace_prefilter_stats Print trace prefilter candidate counters\n"
-         << "                         Not full GPU tracing; exact intersections remain CPU-side\n"
-         << "                         Env: MBS_GPU_TRACE_BATCH_BEAMS=1024, MBS_GPU_TRACE_MIN_CANDIDATES=65536\n"
-         << "                         Disabled with OpenMP>1 unless MBS_GPU_TRACE_OPENMP=1\n"
-         << "  -r RATIO               Beam area restriction ratio (default 100)\n"
-         << "  --sym Sb Sg            Override symmetry: beta/Sb, 360/Sg degrees\n"
-         << "  --filter DEG           Restrict output to backscattering cone\n"
-         << "  --point                Backscatter point mode (legacy; not for optimized --random)\n"
-         << "  --shadow               Legacy flag, currently no effect\n"
-         << "  --shadow_off           Disable shadow beam\n"
-         << "  --full_only            Do not compute/write no-shadow Mueller output (default)\n"
-         << "  --noshadow_output      Also compute/write _noshadow Mueller output\n"
-         << "  --forced_convex        Force convex-particle processing\n"
-         << "  --forced_nonconvex     Force non-convex-particle processing\n\n"
-
-         << "=== Trajectories ===\n"
-         << "  --tr FILE              Load trajectory file\n"
-         << "  --all                  Calculate all loaded trajectories\n"
-         << "  --gr                   Output trajectory groups\n\n"
-
-         << "=== Multi-size ===\n"
-         << "  --multigrid Dmin Dmax N  N sizes from Dmin to Dmax (log scale)\n"
-         << "                           -p must specify largest particle\n\n"
-         << "  --multikeq Kmin Kmax N   N equivalent-size parameters k_eq from Kmin to Kmax (log scale)\n"
-         << "  --multikeq_list FILE     Exact k_eq values, one per line; --oldauto traces max once\n"
-         << "  --multigrid_parallel N   Run multigrid/multikeq as N child processes (0 = auto)\n"
-         << "                           With --gpu, children are assigned distinct CUDA devices\n"
-         << "  --multigrid_threads N    OpenMP threads per child in --multigrid_parallel\n"
-         << "  --gpu_devices LIST       CUDA devices for parallel children, e.g. 0,1,2,3,4\n"
-         << "  --multikeq_shared_batches\n"
-         << "                           For --gpu --multigrid_parallel with --multikeq(_list),\n"
-         << "                           send several k_eq values to each GPU child and trace once\n"
-         << "                           on the largest k_eq in that batch. Faster for scans;\n"
-         << "                           lower k_eq values use the batch reference orientation grid.\n\n"
-         << "  --multikeq_batch_ratio R\n"
-         << "                           Max kmax/kmin inside --multikeq_shared_batches\n"
-         << "                           (default 1.05). Smaller is closer to independent\n"
-         << "                           oldauto grids; larger reuses more tracing.\n"
-         << "                           Env MBS_GPU_MULTI_K_FULL=1 fuses nearby k_eq\n"
-         << "                           values into one CUDA diffraction pass (experimental).\n\n"
-
-
-         << "=== Output ===\n"
-         << "  -o NAME                Output path/name\n"
-         << "  --close                Exit after computation\n"
-         << "  --save_betas           Save per-beta Mueller to _betas/ folder\n"
-         << "  --checkpoint           Enable checkpoint save/resume for --orientfile and --oldauto/--random\n"
-         << "  --incoh                Incoherent per-beam Mueller (no Jones sum)\n"
-         << "  --jones                Output Jones matrices\n"
-         << "  --abs                  Enable absorption (requires Im(ri) > 0)\n"
-         << "  --abs_points N|all     Absorption samples: 1=center (default), all=all polygon vertices\n"
-         << "  --karczewski           Use Karczewski polarization matrix\n"
-         << "  --legacy_sign          Use old (+) Fresnel sign\n"
-         << "  --log SEC              Progress output interval (seconds)\n\n"
-         << "  --help, -h             Print this help\n\n"
-
-         << "=== Examples ===\n"
-         << "  # Full auto, hex column 100x70 um\n"
-         << "  mbs_po --po --auto 0.05 -p 1 100 70 -w 0.532 --ri 1.31 0 -n 8 --close\n\n"
-         << "  # Manual Sobol with adaptive theta\n"
-         << "  mbs_po --po --sobol 1024 --auto_tgrid 0.05 --auto_phi -p 1 100 70 ...\n\n"
-         << "  # Multi-size scan\n"
-         << "  mbs_po --po --sobol 1024 --multigrid 50 500 20 -p 1 500 62.5 ...\n\n"
-         << "  # Physics-based grid\n"
-         << "  mbs_po --po --oldauto 8 -p 1 200 25 -w 0.532 --ri 1.31 0 -n 4 ...\n"
-         << endl;
-}
-
-void PrintReleaseHelp()
-{
-    using namespace std;
-    cout << "MBS-fast: Physical Optics for Ice Crystals\n"
-         << "Usage:\n"
-         << "  mbs_po --po PARTICLE ORIENTATION GRID [options] -o OUT --close\n"
-         << "  mbs_po --go PARTICLE ORIENTATION GRID [options] -o OUT --close\n\n"
-
-         << "Required blocks:\n"
-         << "  PARTICLE      exactly one of: -p TYPE L D [extra], or --pf FILE [--rs SIZE|--k_eq K]\n"
-         << "  PHYSICS       --ri Re Im -w LAMBDA -n N  (n can be omitted only in some auto modes)\n"
-         << "  ORIENTATION   e.g. --oldauto DIV, --random Nb Ng, --sobol N, --fixed BETA GAMMA\n"
-         << "  GRID          e.g. --grid 0 180 Nphi Nth, --tgrid FILE --nphi N\n\n"
-
-         << "=== Particle ===\n"
-         << "  -p TYPE L D [extra]    Built-in particle. TYPE: 1 hex, 2 bullet, 3 rosette,\n"
-         << "                         4 droxtal, 10 concave hex, 12 hex aggregate, 999 built-in aggregate.\n"
-         << "                         L and D are micrometers; extra is shape-specific.\n"
-         << "  --pf FILE              Load particle geometry from file instead of -p.\n"
-         << "  --rs SIZE              With --pf, scale particle to Dmax=SIZE micrometers.\n"
-         << "  --k_eq K               With --pf, scale to k_eq=2*pi*r_eq/lambda. Mutually exclusive with --rs.\n"
-         << "  --ri Re Im             Complex refractive index. Nonzero Im enables absorption accounting.\n"
-         << "  -w LAMBDA              Wavelength in micrometers.\n"
-         << "  -n N                   Max internal reflection/refraction depth.\n\n"
-
-         << "=== Method ===\n"
-         << "  --po                   Physical Optics: trace rays, then compute Kirchhoff diffraction.\n"
-         << "  --go                   Geometrical Optics only; faster, no PO diffraction integral.\n"
-         << "  --incoh                Sum Mueller per beam. Default PO mode sums Jones coherently first.\n"
-         << "  --karczewski           Use Karczewski polarization rotation; M11 should be unchanged.\n\n"
-
-         << "=== Orientation ===\n"
-         << "  --oldauto DIV          Recommended production regular beta/gamma grid from diffraction scale.\n"
-         << "                         Smaller DIV means denser grid; common values: 2, 4, 8.\n"
-         << "  --pole                 For endpoint grids, trace one gamma at exact beta poles and multiply weight.\n"
-         << "  --ring_points N        Points per diffraction ring for oldauto estimates (default 3).\n"
-         << "  --random Nb Ng         Manual regular beta x gamma grid over the symmetry domain.\n"
-         << "  --fixed BETA GAMMA     Single orientation in degrees; useful for debugging.\n"
-         << "  --orientfile FILE      Load beta/gamma orientations from file.\n"
-         << "  --sobol N              Sobol quasi-random orientations.\n"
-         << "  --so3_quat N           Full SO(3) quaternion orientations.\n"
-         << "  --sobol_seed N S       Sobol with explicit nested Owen seed.\n"
-         << "  --sobol_ring Nb Ng     Sobol beta samples with uniform gamma rings.\n"
-         << "  --euler_quad Nb Ng     Gauss in cos(beta) x periodic gamma quadrature.\n"
-         << "  --euler_adapt Nb NgMax Gauss beta with adaptive gamma count per ring.\n"
-         << "  --mirror_gamma         Use half gamma domain and mirror the Mueller output.\n"
-         << "  --sym Sb Sg            Override symmetry: beta range pi/Sb, gamma range 2*pi/Sg.\n\n"
-
-         << "=== Scattering grid ===\n"
-         << "  --grid T1 T2 Nphi Nth  Uniform theta grid from T1 to T2 degrees; outputs Nth+1 rows.\n"
-         << "                         Example: --grid 0 180 600 180.\n"
-         << "  --grid R Nphi Nth      Backscatter cone grid with angular radius R degrees.\n"
-         << "  --tgrid FILE           Non-uniform theta grid, degrees, one theta per line.\n"
-         << "  --auto_tgrid EPS       Adaptive theta grid by bisection.\n"
-         << "  --auto_phi             Choose Nphi from size parameter.\n"
-         << "  --nphi N               Override phi grid size; highest priority for phi.\n\n"
-
-         << "=== Acceleration ===\n"
-         << "  --threads N            OpenMP host worker threads. Use physical cores for CPU tracing.\n"
-         << "  --gpu                  Use CUDA diffraction backend. Default in gpu/ binaries.\n"
-         << "  --cpu                  Force CPU backend from a GPU-capable binary.\n"
-         << "  --fft                  With --gpu, use cuFFT phi interpolation backend.\n"
-         << "  --chunk N              Orientation/gamma chunk size for memory control.\n"
-         << "  --beam_cutoff EPS      Set both beam |J|^2 and area cutoffs.\n"
-         << "  --beam_cutoff_j EPS    Skip weak output beams by relative |J|^2.\n"
-         << "  --beam_cutoff_area EPS Skip small output beams by relative area.\n"
-         << "  --beam_cutoff_importance EPS  Skip by relative |J|^2*area.\n"
-         << "  --trace_cutoff EPS     Set both internal trace |J|^2 and area pruning cutoffs.\n"
-         << "  --trace_cutoff_j EPS   Prune internal beam tree by relative |J|^2.\n"
-         << "  --trace_cutoff_area EPS Prune internal beam tree by relative area.\n"
-         << "  --trace_cutoff_importance EPS Prune by relative |J|^2*area.\n"
-         << "  --trace_max_beams N    Abort one orientation after N traced beam nodes (0 disables).\n\n"
-
-         << "=== Multi-size ===\n"
-         << "  --multigrid Dmin Dmax N     Log-spaced scan in Dmax.\n"
-         << "  --multikeq Kmin Kmax N      Log-spaced scan in k_eq.\n"
-         << "  --multikeq_list FILE        Exact k_eq values, one per line.\n"
-         << "  --multigrid_parallel N      Run scan points as child processes; 0 = auto.\n"
-         << "  --multigrid_threads N       OpenMP threads per child process.\n"
-         << "  --gpu_devices LIST          CUDA devices for children, e.g. 0,1,2,3,4.\n"
-         << "  --multikeq_shared_batches   Batch nearby k_eq values per GPU and reuse tracing.\n"
-         << "  --multikeq_batch_ratio R    Max kmax/kmin per shared k_eq batch (default 1.05).\n"
-         << "  Env MBS_GPU_MULTI_K_FULL=1  Experimental fused CUDA diffraction for shared batches\n\n"
-
-         << "=== Output / diagnostics kept in release ===\n"
-         << "  -o NAME                Output path/name\n"
-         << "  --close                Exit after computation\n"
-         << "  --log SEC              Progress output interval\n"
-         << "  --checkpoint           Save/resume oldauto/random and orientfile runs\n"
-         << "  --noshadow_output      Also compute _noshadow output\n"
-         << "  --full_only            Only full output (default)\n"
-         << "  --save_betas           Save per-beta Mueller files\n"
-         << "  --jones                Output Jones matrices where supported\n"
-         << "  --shadow               Legacy flag; currently no effect\n"
-         << "  --abs                  Force absorption accounting.\n"
-         << "  --abs_points N|all     Absorption samples: center point or all polygon vertices.\n\n"
-
-         << "=== Examples ===\n"
-         << "  gpu/bin/mbs_po_gpu_float_fast --po --pf Afine30.dat --k_eq 58.81 \\\n"
-         << "      --ri 1.6 0.002 -w 1.064 -n 14 --oldauto 2 \\\n"
-         << "      --grid 0 180 600 180 --gpu --fft --threads 12 --close -o out\n\n"
-         << "  cpu/bin/mbs_po_mpi --po -p 1 100 70 --ri 1.31 0 -w 0.532 \\\n"
-         << "      -n 8 --oldauto 2 --grid 0 180 600 180 --close -o out\n\n"
-         << "Full debug/experimental help: --help-debug\n";
+    RegisterCliOptions(parser);
 }
 
 void PrintHelp()
 {
-#ifdef MBS_DEBUG_HELP
-    PrintFullHelp();
-#else
-    PrintReleaseHelp();
-#endif
+    PrintGeneratedHelp(false);
 }
 
 void PrintDebugHelp()
 {
-    PrintFullHelp();
+    PrintGeneratedHelp(true);
+}
+
+void PrintVersion()
+{
+#ifndef MBS_GIT_DESCRIBE
+#define MBS_GIT_DESCRIBE "unknown"
+#endif
+    std::cout << "MBS-fast " << MBS_GIT_DESCRIBE << "\n";
+#ifdef USE_CUDA
+    std::cout << "backend-build: CUDA";
+#ifdef MBS_GPU_BUILD_ARCH
+    std::cout << " sm_" << MBS_GPU_BUILD_ARCH;
+#endif
+#ifdef MBS_GPU_FLOAT
+    std::cout << " float";
+#else
+    std::cout << " double";
+#endif
+#ifdef MBS_GPU_FAST_MATH
+    std::cout << " fast-math";
+#else
+    std::cout << " precise-math";
+#endif
+    std::cout << "\n";
+#else
+    std::cout << "backend-build: CPU double\n";
+#endif
+#if defined(__clang__)
+    std::cout << "compiler: Clang " << __clang_version__ << "\n";
+#elif defined(__GNUC__)
+    std::cout << "compiler: GCC " << __VERSION__ << "\n";
+#else
+    std::cout << "compiler: unknown\n";
+#endif
+#ifdef _OPENMP
+    std::cout << "openmp: enabled (_OPENMP=" << _OPENMP << ")\n";
+#else
+    std::cout << "openmp: disabled\n";
+#endif
+#ifdef USE_MPI
+    std::cout << "mpi: enabled\n";
+#else
+    std::cout << "mpi: disabled\n";
+#endif
 }
 
 static int RoundUpToMultiple(int value, int multiple)
@@ -891,30 +495,12 @@ void ApplyAutoThetaGrid(ScatteringRange &range, double D, double wave)
         }
     }
 
-    // Zone 3: Medium [transition_end, 120°] — 0.5° for small x, 1° otherwise
-    // BUT: add fine zones around halo angles (22° and 46° for hex prisms)
+    // Zone 3: generic side-scattering seed. Particle-specific halo/rainbow
+    // angles must be discovered by --auto-theta-grid, not embedded here.
     double medium_step = (x < 100) ? 0.5 : 1.0;
-
-    // Halo fine zones: 0.1° step around 22° and 46° (±4°)
-    // Only for particles large enough to produce halos (x > 50)
-    double halo_step = std::max(0.05, std::min(0.2, peak_width_deg));
-    double halo1_center = 22.0;  // 22° halo (two prism faces)
-    double halo2_center = 46.0;  // 46° halo (basal + prism face)
-    double halo_half = 4.0;      // ±4° around halo center
-
-    for (double t = transition_end + medium_step; t <= 120.0 + 1e-9; )
-    {
+    for (double t = transition_end + medium_step;
+         t <= 120.0 + 1e-9; t += medium_step)
         thetas.push_back(t);
-
-        // Check if next step enters a halo zone
-        bool in_halo1 = (x > 50) && (t >= halo1_center - halo_half) && (t <= halo1_center + halo_half);
-        bool in_halo2 = (x > 50) && (t >= halo2_center - halo_half) && (t <= halo2_center + halo_half);
-
-        if (in_halo1 || in_halo2)
-            t += halo_step;
-        else
-            t += medium_step;
-    }
 
     // Zone 4: Side/back [120°, 175°] — 1° step
     for (double t = 121.0; t <= 175.0 + 1e-9; t += 1.0)
@@ -1045,10 +631,20 @@ std::vector<double> ReadSizeList(const std::string &fileName)
         char *end = nullptr;
         errno = 0;
         double value = std::strtod(first.c_str(), &end);
-        if (errno != 0 || end == first.c_str() || (end && *end != '\0') || value <= 0.0)
+        if (errno != 0 || end == first.c_str() || (end && *end != '\0')
+            || !std::isfinite(value) || value <= 0.0)
         {
             std::ostringstream msg;
-            msg << "bad positive size in " << fileName << ":" << lineNo;
+            msg << "bad positive finite size in " << fileName << ":" << lineNo
+                << "\n  Fix: use one finite k_eq value greater than zero per line.";
+            throw std::runtime_error(msg.str());
+        }
+        if (std::find(values.begin(), values.end(), value) != values.end())
+        {
+            std::ostringstream msg;
+            msg << "duplicate size " << value << " in " << fileName << ":"
+                << lineNo
+                << "\n  Fix: keep each k_eq value once so output names remain unique.";
             throw std::runtime_error(msg.str());
         }
         values.push_back(value);
@@ -1076,6 +672,72 @@ std::string SizeLabel(double value)
             c = 'm';
     }
     return s.empty() ? "0" : s;
+}
+
+struct SerialSizeScan
+{
+    std::vector<double> xValues;
+    std::vector<std::string> labels;
+    std::string description;
+};
+
+SerialSizeScan BuildSerialSizeScan(const ArgPP &args, Particle *particle,
+                                   double wave)
+{
+    SerialSizeScan scan;
+    if (!(wave > 0.0))
+        throw std::runtime_error(
+            "serial size scan requires a positive wavelength.\n"
+            "  Fix: pass --wavelength-um with a value greater than zero.");
+
+    if (args.IsCatched("multigrid"))
+    {
+        const double dMin = args.GetDoubleValue("multigrid", 0);
+        const double dMax = args.GetDoubleValue("multigrid", 1);
+        const int count = args.GetIntValue("multigrid", 2);
+        const std::vector<double> sizes = GenerateLogSizes(dMin, dMax, count);
+        scan.xValues.reserve(sizes.size());
+        scan.labels.reserve(sizes.size());
+        for (double d : sizes)
+        {
+            scan.xValues.push_back(M_PI * d / wave);
+            scan.labels.push_back("D" + SizeLabel(d));
+        }
+        scan.description = "Dmax " + std::to_string(dMin) + ".."
+            + std::to_string(dMax);
+        return scan;
+    }
+
+    std::vector<double> sizes;
+    if (args.IsCatched("multikeq_list"))
+        sizes = ReadSizeList(args.GetStringValue("multikeq_list", 0));
+    else if (args.IsCatched("multikeq"))
+        sizes = GenerateLogSizes(args.GetDoubleValue("multikeq", 0),
+                                 args.GetDoubleValue("multikeq", 1),
+                                 args.GetIntValue("multikeq", 2));
+    else
+        throw std::logic_error("BuildSerialSizeScan called without a size scan");
+
+    const double volume = particle->Volume();
+    const double req = volume > 0.0
+        ? std::pow(3.0 * volume / (4.0 * M_PI), 1.0 / 3.0) : 0.0;
+    const double kRef = 2.0 * M_PI * req / wave;
+    const double xRef = M_PI * particle->MaximalDimention() / wave;
+    if (!(kRef > 0.0) || !(xRef > 0.0))
+        throw std::runtime_error(
+            "k_eq scan cannot scale a particle with zero volume or Dmax.\n"
+            "  Fix: use a closed, nondegenerate particle geometry.");
+
+    scan.xValues.reserve(sizes.size());
+    scan.labels.reserve(sizes.size());
+    for (double k : sizes)
+    {
+        scan.xValues.push_back(xRef * (k / kRef));
+        scan.labels.push_back("keq" + SizeLabel(k));
+    }
+    scan.description = "k_eq " + SizeLabel(sizes.front()) + ".."
+        + SizeLabel(sizes.back());
+    return scan;
 }
 
 std::string ShellQuote(const std::string &s)
@@ -1186,7 +848,47 @@ double EnvDoubleMain(const char *name, double fallback)
 
 bool FlagMatches(const std::string &arg, const std::string &name)
 {
-    return arg == "--" + name || (name.size() == 1 && arg == "-" + name);
+    std::string token;
+    if (arg.size() > 2 && arg[0] == '-' && arg[1] == '-')
+        token = arg.substr(2);
+    else if (arg.size() == 2 && arg[0] == '-')
+        token = arg.substr(1);
+    else
+        return false;
+    const CliOptionSpec *spec = FindCliOptionSpec(token);
+    return spec ? spec->key == name : token == name;
+}
+
+std::string ExpandOutputTemplate(const ArgPP &args, std::string path)
+{
+    size_t percent = 0;
+    while ((percent = path.find('%', percent)) != std::string::npos)
+    {
+        const size_t end = path.find('_', percent + 1);
+        if (end == std::string::npos)
+            throw std::runtime_error("unterminated output placeholder");
+
+        std::string placeholder = path.substr(percent + 1, end - percent - 1);
+        size_t digitCount = 0;
+        while (digitCount < placeholder.size()
+               && std::isdigit(static_cast<unsigned char>(placeholder[digitCount])))
+            ++digitCount;
+        size_t valueIndex = 0;
+        if (digitCount != 0)
+        {
+            valueIndex = static_cast<size_t>(std::strtoul(
+                placeholder.substr(0, digitCount).c_str(), nullptr, 10));
+            placeholder.erase(0, digitCount);
+        }
+        const CliOptionSpec *spec = FindCliOptionSpec(placeholder);
+        if (!spec)
+            throw std::runtime_error("unknown output placeholder");
+
+        const std::string value = args.GetStringValue(spec->key, valueIndex);
+        path.replace(percent, end - percent, value);
+        percent += value.size();
+    }
+    return path;
 }
 
 int ParallelMultigridRemoveCount(const std::string &arg)
@@ -1314,7 +1016,9 @@ int RunParallelMultigrid(int argc, const char *argv[], const ArgPP &args, bool u
                       : std::max(1, DefaultPhysicalCoreCount());
     int childThreads = args.IsCatched("multigrid_threads")
         ? args.GetIntValue("multigrid_threads", 0)
-        : (useGpu ? 1 : std::max(1, DefaultPhysicalCoreCount() / jobs));
+        : (args.IsCatched("threads")
+            ? args.GetIntValue("threads", 0)
+            : (useGpu ? 1 : std::max(1, DefaultPhysicalCoreCount() / jobs)));
     if (childThreads < 1)
     {
         std::cerr << "ERROR: --multigrid_threads must be >= 1." << std::endl;
@@ -1348,7 +1052,9 @@ int RunParallelMultigrid(int argc, const char *argv[], const ArgPP &args, bool u
         sizes = GenerateLogSizes(minValue, maxValue, count);
     }
 
-    std::string baseOut = args.IsCatched("o") ? args.GetStringValue("o", 0) : "multigrid_parallel";
+    std::string baseOut = args.IsCatched("o")
+        ? ExpandOutputTemplate(args, args.GetStringValue("o", 0))
+        : "multigrid_parallel";
     if (!EnsureDirectoryRecursive(baseOut))
     {
         std::cerr << "ERROR: could not create output root '" << baseOut
@@ -1636,49 +1342,11 @@ int main(int argc, const char* argv[])
     }
 
     // Check --help before full parse (avoids required arg errors)
-    bool rawGpu = false;
-    bool rawCpu = false;
     for (int i = 1; i < argc; ++i) {
         std::string a(argv[i]);
         if (a == "--help" || a == "-h") { PrintHelp(); return FinishWithCode(0); }
         if (a == "--help-debug") { PrintDebugHelp(); return FinishWithCode(0); }
-        if (a == "--gpu") rawGpu = true;
-        if (a == "--cpu") rawCpu = true;
-    }
-    if (rawGpu && rawCpu)
-    {
-        PrintCommandLineError("--gpu and --cpu are mutually exclusive.");
-        return FinishWithCode(2);
-    }
-
-    ArgPP args;
-    SetArgRules(args);
-    try
-    {
-        args.Parse(argc, argv);
-        ValidateCommandLine(args);
-    }
-    catch (const std::exception &ex)
-    {
-        PrintCommandLineError(ex.what());
-        return FinishWithCode(2);
-    }
-
-    if (args.IsCatched("threads"))
-    {
-        int threads = args.GetIntValue("threads", 0);
-        if (threads < 1)
-        {
-            PrintCommandLineError("--threads must be >= 1.");
-            return FinishWithCode(2);
-        }
-        ConfigureOpenMPThreads(threads);
-    }
-
-    if (args.IsCatched("gpu") && args.IsCatched("cpu"))
-    {
-        PrintCommandLineError("--gpu and --cpu are mutually exclusive.");
-        return FinishWithCode(2);
+        if (a == "--version") { PrintVersion(); return FinishWithCode(0); }
     }
 
 #if defined(USE_CUDA) && defined(MBS_GPU_DEFAULT_ON)
@@ -1686,44 +1354,78 @@ int main(int argc, const char* argv[])
 #else
     const bool defaultGpu = false;
 #endif
-    const bool useGpu = args.IsCatched("gpu") || (defaultGpu && !args.IsCatched("cpu"));
+#ifdef USE_CUDA
+    const bool cudaCompiled = true;
+#else
+    const bool cudaCompiled = false;
+#endif
 
-    const bool useFft = args.IsCatched("fft");
-    if (useFft && !useGpu)
+    ArgPP args;
+    SetArgRules(args);
+    RunConfig config;
+    try
     {
-        PrintCommandLineError("--fft currently requires --gpu.");
+        args.Parse(argc, argv);
+        config = RunConfig::FromCommandLine(args, defaultGpu, cudaCompiled);
+    }
+    catch (const std::exception &ex)
+    {
+        PrintCommandLineError(ex.what());
         return FinishWithCode(2);
     }
 
-    if (args.IsCatched("p") == args.IsCatched("pf"))
+    for (const std::string &warning : config.warnings)
+        std::cerr << "WARNING: " << warning << std::endl;
+
+    if (config.threads > 0)
     {
-        PrintCommandLineError("specify exactly one particle source: -p ... or --pf FILE.");
-        return FinishWithCode(2);
+        ConfigureOpenMPThreads(config.threads);
     }
-    if (args.IsCatched("rs") && args.IsCatched("k_eq"))
-    {
-        PrintCommandLineError("--rs and --k_eq are both size controls; use only one.");
-        return FinishWithCode(2);
-    }
+
+    const bool useGpu = config.useGpu;
+    const bool useFft = config.useFft;
 
 #ifdef USE_MPI
     MPI_Init(&argc, const_cast<char***>(&argv));
+    MpiFinalizeGuard mpiFinalizeGuard;
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
     if (mpi_rank == 0 && mpi_size > 1)
         std::cout << "MPI: " << mpi_size << " processes" << std::endl;
 #endif
+    if (mpi_rank == 0 && config.adaptive.loadedFromFile)
+        std::cout << DescribeAdaptiveConvergenceLimits(config.adaptive);
+
+    if (mpi_size > 1
+        && (config.orientation == OrientationMode::Fixed
+            || config.orientation == OrientationMode::File))
+    {
+        if (mpi_rank == 0)
+            std::cerr << "ERROR: " << OrientationModeName(config.orientation)
+                      << " does not partition work across MPI ranks and would race on output files.\n"
+                      << "  Fix: run this orientation mode with one MPI rank, or use a supported averaged mode such as --sobol or --euler-grid."
+                      << std::endl;
+        return 2;
+    }
 
     RenameConsole("MBS");
 
     if (args.IsCatched("multigrid_parallel")
-        || (args.IsCatched("go")
+        || (config.method == RunMethod::GeometricalOptics
             && (args.IsCatched("multigrid")
                 || args.IsCatched("multikeq")
                 || args.IsCatched("multikeq_list"))))
     {
-        return RunParallelMultigrid(argc, argv, args,
-                                    useGpu && !args.IsCatched("go"));
+        if (mpi_size > 1)
+        {
+            if (mpi_rank == 0)
+                std::cerr << "ERROR: process-parallel size scans cannot run inside a multi-rank MPI job.\n"
+                          << "  Fix: launch this command directly with --scan-jobs N, or remove "
+                             "--scan-jobs and use one supported serial PO scan path."
+                          << std::endl;
+            return 2;
+        }
+        return RunParallelMultigrid(argc, argv, args, useGpu);
     }
 
     if (useGpu)
@@ -1733,18 +1435,24 @@ int main(int argc, const char* argv[])
         if (!CheckGpuRuntime(gpuInfo, gpuError))
         {
             std::cerr << "ERROR: CUDA GPU backend is unavailable: "
-                      << gpuError << std::endl;
+                      << gpuError << "\n"
+                      << "  Fix: verify that nvidia-smi sees the GPU and that the CUDA "
+                      << "runtime libraries are available, or select --backend cpu."
+                      << std::endl;
             return 1;
         }
 
         std::cout << "GPU backend: " << FormatGpuInfo(gpuInfo)
-                  << (defaultGpu && !args.IsCatched("gpu") ? " (default)" : "")
+                  << (defaultGpu && config.backend == RunBackend::Auto ? " (default)" : "")
                   << std::endl;
     }
 
-    double re = args.GetDoubleValue("ri", 0);
-    double im = args.GetDoubleValue("ri", 1);
-    double wave = args.IsCatched("w") ? args.GetDoubleValue("w") : 0;
+    try
+    {
+
+    double re = config.refractiveReal;
+    double im = config.refractiveImag;
+    double wave = config.wavelengthUm;
     int ringPoints = args.IsCatched("ring_points") ? args.GetIntValue("ring_points", 0) : 3;
     if (ringPoints < 1)
     {
@@ -1764,6 +1472,7 @@ int main(int argc, const char* argv[])
     // TODO: AggregateBuilder
 
     Particle *particle = nullptr;
+    std::unique_ptr<Particle> particleOwner;
 
 
     additionalSummary += "Particle: ";
@@ -1771,7 +1480,8 @@ int main(int argc, const char* argv[])
     if (args.IsCatched("pf"))
     {
         std::string filename = args.GetStringValue("pf", 0);
-        particle = new Particle();
+        particleOwner.reset(new Particle());
+        particle = particleOwner.get();
         particle->SetFromFile(filename);
         particle->SetRefractiveIndex(refrIndex);
 
@@ -1815,13 +1525,15 @@ int main(int argc, const char* argv[])
         case ParticleType::Hexagonal:
             height = args.GetDoubleValue("p", 1);
             diameter = args.GetDoubleValue("p", 2);
-            particle = new Hexagonal(refrIndex, diameter, height);
+            particleOwner.reset(new Hexagonal(refrIndex, diameter, height));
+            particle = particleOwner.get();
             break;
         case ParticleType::Bullet:
             height = args.GetDoubleValue("p", 1);
             diameter = args.GetDoubleValue("p", 2);
             sup = (diameter*sqrt(3)*tan(DegToRad(62)))/4;
-            particle = new Bullet(refrIndex, diameter, height, sup);
+            particleOwner.reset(new Bullet(refrIndex, diameter, height, sup));
+            particle = particleOwner.get();
             break;
         case ParticleType::BulletRosette:
             height = args.GetDoubleValue("p", 1);
@@ -1829,11 +1541,15 @@ int main(int argc, const char* argv[])
             sup = (args.GetArgNumber("p") == 4)
                     ? args.GetDoubleValue("p", 3)
                     : diameter*sqrt(3)*tan(DegToRad(62))/4;
-            particle = new BulletRosette(refrIndex, diameter, height, sup);
+            particleOwner.reset(new BulletRosette(refrIndex, diameter, height, sup));
+            particle = particleOwner.get();
             break;
         case ParticleType::Droxtal:
-            sup = args.GetDoubleValue("p", 3);
-            particle = new Droxtal(refrIndex, DegToRad(32.35), DegToRad(71.81), sup);
+            sup = args.GetDoubleValue(
+                "p", args.GetArgNumber("p") == 2 ? 1 : 3);
+            particleOwner.reset(new Droxtal(
+                refrIndex, DegToRad(32.35), DegToRad(71.81), sup));
+            particle = particleOwner.get();
             break;
 //		case ParticleType::TiltedHexagonal:
 //			sup = parser.argToValue<double>(vec[3]);
@@ -1843,17 +1559,22 @@ int main(int argc, const char* argv[])
             height = args.GetDoubleValue("p", 1);
             diameter = args.GetDoubleValue("p", 2);
             sup = args.GetDoubleValue("p", 3);
-            particle = new ConcaveHexagonal(refrIndex, diameter, height, sup);
+            particleOwner.reset(new ConcaveHexagonal(
+                refrIndex, diameter, height, sup));
+            particle = particleOwner.get();
             break;
         case ParticleType::HexagonalAggregate:
             height = args.GetDoubleValue("p", 1);
             diameter = args.GetDoubleValue("p", 2);
             num = args.GetIntValue("p", 3);
-            particle = new HexagonalAggregate(refrIndex, diameter, height, num);
+            particleOwner.reset(new HexagonalAggregate(
+                refrIndex, diameter, height, num));
+            particle = particleOwner.get();
             break;
         case ParticleType::CertainAggregate:
             sup = args.GetDoubleValue("p", 1);
-            particle = new CertainAggregate(refrIndex, sup);
+            particleOwner.reset(new CertainAggregate(refrIndex, sup));
+            particle = particleOwner.get();
             break;
         default:
             assert(false && "ERROR! Incorrect type of particle.");
@@ -1881,7 +1602,9 @@ int main(int argc, const char* argv[])
             : 0.0;
         if (currentReq <= DBL_EPSILON)
         {
-            std::cerr << "ERROR: cannot apply --k_eq because current equivalent radius is zero." << std::endl;
+            std::cerr << "ERROR: cannot apply --k_eq because current equivalent radius is zero.\n"
+                      << "  Fix: use a closed particle with nonzero volume, or remove --k-eq."
+                      << std::endl;
             return 1;
         }
 
@@ -1904,7 +1627,6 @@ int main(int argc, const char* argv[])
 
     additionalSummary += "\n";
 
-    particle->Output("particle_for_check.dat");
     double particleArea = particle->Area();
     double particleVolume = particle->Volume();
     double rEq = (particleVolume > 0)
@@ -1917,8 +1639,11 @@ int main(int argc, const char* argv[])
     additionalSummary += "\tk_eq:" + to_string(kEq)
             + " (2*pi*r_eq/lambda)\n\n";
 
-    int reflNum = args.IsCatched("n") ? (int)args.GetDoubleValue("n") : 6; // default n=6
+    int reflNum = config.maxReflections;
     additionalSummary += "Number of secondary reflections: " + to_string(reflNum) + "\n";
+    if (args.IsCatched("r"))
+        additionalSummary += "Beam area restriction ratio: "
+            + std::to_string(args.GetDoubleValue("r", 0)) + "\n";
 
     string dirName;
     if (args.IsCatched("o"))
@@ -1937,80 +1662,94 @@ int main(int argc, const char* argv[])
         dirName = outDir + "/run_" + ts;
         cout << "Output: " << dirName << endl;
     }
-    size_t pos = 0;
+    dirName = ExpandOutputTemplate(args, dirName);
 
-    while ((pos = dirName.find('%', pos)) != string::npos)
-    {
-        size_t start = pos;
-        ++pos;
-        string key;
-
-        while (dirName[pos] != '_' && pos < dirName.size())
-        {
-            key += dirName[pos++];
-        }
-
-        if (key.size())
-        {
-            string val;
-            int i = 0;
-
-            if (isdigit(key[0]))
-            {
-                i = (int)key[0]-48;
-                key = key.substr(1);
-            }
-
-            val += args.GetStringValue(key, i);
-
-            dirName.replace(start, pos-start, val);
-            pos = start + val.size();
-        }
-    }
-
-    // Create output folder once, before any tracer runs
+    // Create the output folder on rank 0, then make success or failure
+    // collective before any rank enters the calculation.
     {
         string dir;
-        if (mpi_rank == 0) {
-            struct stat st;
-            if (args.IsCatched("checkpoint") && stat(dirName.c_str(), &st) == 0
-                && S_ISDIR(st.st_mode))
+        string setupError;
+        int setupOk = 1;
+        if (mpi_rank == 0)
+        {
+            try
             {
-                string fullDir = dirName;
-                size_t slash = fullDir.rfind('/');
-                dirName = (slash == string::npos) ? fullDir : fullDir.substr(slash + 1);
-                dir = fullDir + "/";
-                cout << "Checkpoint resume: reusing output folder " << fullDir << endl;
+                struct stat st;
+                if (args.IsCatched("checkpoint") && stat(dirName.c_str(), &st) == 0
+                    && S_ISDIR(st.st_mode))
+                {
+                    string fullDir = dirName;
+                    size_t slash = fullDir.rfind('/');
+                    dirName = (slash == string::npos) ? fullDir : fullDir.substr(slash + 1);
+                    dir = fullDir + "/";
+                    cout << "Checkpoint resume: reusing output folder " << fullDir << endl;
+                }
+                else
+                {
+                    const size_t slash = dirName.rfind('/');
+                    if (slash != string::npos)
+                    {
+                        const string parent = slash == 0 ? "/" : dirName.substr(0, slash);
+                        if (!EnsureDirectoryRecursive(parent))
+                            throw std::runtime_error(
+                                "cannot create output parent directory '" + parent
+                                + "': " + std::strerror(errno)
+                                + "\n  Fix: choose a writable --output path or create its parent directory.");
+                    }
+                    dir = CreateFolder(dirName);
+                    struct stat created;
+                    if (stat(dir.c_str(), &created) != 0 || !S_ISDIR(created.st_mode))
+                        throw std::runtime_error(
+                            "cannot create output directory '" + dir + "'.\n"
+                            "  Fix: choose a writable --output path and verify free space and permissions.");
+                }
             }
-            else
+            catch (const std::exception &ex)
             {
-                dir = CreateFolder(dirName);
+                setupOk = 0;
+                setupError = ex.what();
             }
         }
 #ifdef USE_MPI
-        if (mpi_size > 1) {
-            int dirLen = dir.size();
-            MPI_Bcast(&dirLen, 1, MPI_INT, 0, MPI_COMM_WORLD);
-            dir.resize(dirLen);
-            MPI_Bcast(&dir[0], dirLen, MPI_CHAR, 0, MPI_COMM_WORLD);
-            int nameLen = dirName.size();
-            MPI_Bcast(&nameLen, 1, MPI_INT, 0, MPI_COMM_WORLD);
-            dirName.resize(nameLen);
-            MPI_Bcast(&dirName[0], nameLen, MPI_CHAR, 0, MPI_COMM_WORLD);
+        if (mpi_size > 1)
+        {
+            MPI_Bcast(&setupOk, 1, MPI_INT, 0, MPI_COMM_WORLD);
+            int errorLen = mpi_rank == 0 ? (int)setupError.size() : 0;
+            MPI_Bcast(&errorLen, 1, MPI_INT, 0, MPI_COMM_WORLD);
+            setupError.resize(errorLen);
+            if (errorLen > 0)
+                MPI_Bcast(&setupError[0], errorLen, MPI_CHAR, 0, MPI_COMM_WORLD);
+            if (setupOk)
+            {
+                int dirLen = mpi_rank == 0 ? (int)dir.size() : 0;
+                MPI_Bcast(&dirLen, 1, MPI_INT, 0, MPI_COMM_WORLD);
+                dir.resize(dirLen);
+                if (dirLen > 0)
+                    MPI_Bcast(&dir[0], dirLen, MPI_CHAR, 0, MPI_COMM_WORLD);
+                int nameLen = mpi_rank == 0 ? (int)dirName.size() : 0;
+                MPI_Bcast(&nameLen, 1, MPI_INT, 0, MPI_COMM_WORLD);
+                dirName.resize(nameLen);
+                if (nameLen > 0)
+                    MPI_Bcast(&dirName[0], nameLen, MPI_CHAR, 0, MPI_COMM_WORLD);
+            }
         }
 #endif
+        if (!setupOk)
+            throw std::runtime_error(setupError);
+        if (mpi_rank == 0)
+            particle->Output(dir + "particle_for_check.dat");
         dirName = dir + dirName;
     }
 
     bool isOutputGroups = args.IsCatched("gr");
     additionalSummary += "Wavelength (um): " + to_string(wave) + "\n";
 
-    if (args.IsCatched("forced_nonconvex"))
+    if (config.geometry == GeometryClassification::Nonconvex)
     {
         particle->isConcave = true;
     }
 
-    if (args.IsCatched("forced_convex"))
+    if (config.geometry == GeometryClassification::Convex)
     {
         particle->isConcave = false;
     }
@@ -2038,7 +1777,7 @@ int main(int argc, const char* argv[])
 
     additionalSummary += "Method: ";
 
-    if (args.IsCatched("po"))
+    if (config.method == RunMethod::PhysicalOptics)
     {
         additionalSummary += "Physical optics";
 
@@ -2063,6 +1802,7 @@ int main(int argc, const char* argv[])
 
             HandlerPO *handler = new HandlerPO(particle, &tracer.m_incidentLight,
                                                nTheta, wave);
+            std::unique_ptr<HandlerPO> handlerOwner(handler);
             if (args.IsCatched("r"))
             {
                 tracer.m_scattering->restriction = args.GetDoubleValue("r", 0);
@@ -2148,7 +1888,6 @@ int main(int argc, const char* argv[])
             if (div < 1) div = 8;
 
             double L = particle->MaximalDimention();
-            double D_particle = L; // will be overridden below
             // D = 6.96 * sqrt(L) from Excel formula
             // But actual D is from -p argument, use particle geometry
             // L is the height (first -p arg), D is the diameter (second -p arg)
@@ -2239,6 +1978,7 @@ int main(int argc, const char* argv[])
             }
 
             TracerPOTotal *tracer = new TracerPOTotal(particle, reflNum, dirName);
+            std::unique_ptr<TracerPOTotal> tracerOwner(tracer);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
             tracer->m_scattering->m_wave = wave;
             ApplyTraceCutoffOptions(args, tracer->m_scattering);
@@ -2246,6 +1986,7 @@ int main(int argc, const char* argv[])
             trackGroups.push_back(TrackGroup());
             HandlerPOTotal *handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
                                          nTheta, wave);
+            std::unique_ptr<HandlerPOTotal> handlerOwner(handler);
 
             cout << additionalSummary;
             tracer->m_summary = additionalSummary;
@@ -2358,7 +2099,6 @@ int main(int argc, const char* argv[])
             {
                 tracer->TraceRandom(betaRange, gammaRange);
             }
-            delete handler;
         }
         else if (args.IsCatched("random"))
         {
@@ -2414,11 +2154,14 @@ int main(int argc, const char* argv[])
             else
             {
                 TracerPO *tracer;
+                std::unique_ptr<TracerPO> tracerOwner;
+                std::unique_ptr<HandlerPO> handlerOwner;
                 ScatteringRange conus = SetConus(args);
 
                 if (args.IsCatched("all"))
                 {
                     tracer = new TracerPOTotal(particle, reflNum, dirName);
+                    tracerOwner.reset(tracer);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
                     tracer->m_scattering->m_wave = wave;
             ApplyTraceCutoffOptions(args, tracer->m_scattering);
@@ -2431,6 +2174,7 @@ int main(int argc, const char* argv[])
                     trackGroups.push_back(TrackGroup());
                     handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
                                                  nTheta, wave);
+                    handlerOwner.reset(handler);
                     handler->normIndexGamma = gamma.step/gamma.norm;
 
                     if (args.IsCatched("filter"))
@@ -2442,6 +2186,7 @@ int main(int argc, const char* argv[])
                 {
                     // Use TracerPOTotal for OpenMP + batched sincos acceleration
                     tracer = new TracerPOTotal(particle, reflNum, dirName);
+                    tracerOwner.reset(tracer);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
                     tracer->m_scattering->m_wave = wave;
             ApplyTraceCutoffOptions(args, tracer->m_scattering);
@@ -2454,6 +2199,7 @@ int main(int argc, const char* argv[])
                     trackGroups.push_back(TrackGroup());
                     handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
                                                  nTheta, wave);
+                    handlerOwner.reset(handler);
 
                     if (args.IsCatched("filter"))
                     {
@@ -2483,11 +2229,15 @@ int main(int argc, const char* argv[])
                 }
                 tracer->SetIsOutputGroups(isOutputGroups);
                 tracer->SetHandler(handler);
+                TracerPOTotal *gridTracer = dynamic_cast<TracerPOTotal*>(tracer);
+                if (!gridTracer)
+                    throw std::runtime_error("Euler-grid requires TracerPOTotal");
+                gridTracer->m_adaptiveLimits = config.adaptive;
 
                 // Adaptive theta grid for --random
                 if (args.IsCatched("auto_tgrid") && !args.IsCatched("grid") && !args.IsCatched("tgrid"))
                 {
-                    TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer);
+                    TracerPOTotal *tpt = gridTracer;
                     if (tpt) {
                         double tgridEps = args.GetDoubleValue("auto_tgrid", 0);
                         if (tgridEps <= 0) tgridEps = 0.05;
@@ -2506,10 +2256,31 @@ int main(int argc, const char* argv[])
                     }
                 }
 
-                tracer->TraceRandom(beta, gamma);
+                if (args.IsCatched("multigrid") || args.IsCatched("multikeq")
+                    || args.IsCatched("multikeq_list"))
+                {
+                    SerialSizeScan scan = BuildSerialSizeScan(args, particle, wave);
+                    const double xRef = M_PI * particle->MaximalDimention() / wave;
+                    std::cout << "Euler-grid serial scan: " << scan.description
+                              << " (" << scan.xValues.size() << " sizes)"
+                              << std::endl;
+                    if (mpi_size == 1 && scan.xValues.size() <= 32)
+                    {
+                        gridTracer->TraceRandomMultiSize(
+                            beta, gamma, scan.xValues, scan.labels);
+                    }
+                    else
+                    {
+                        gridTracer->TraceRandomMultiSizeIndependent(
+                            beta, gamma, scan.xValues, scan.labels, xRef);
+                    }
+                }
+                else
+                {
+                    tracer->TraceRandom(beta, gamma);
+                }
             }
 
-            delete handler;
         }
         else if (args.IsCatched("montecarlo"))
         {
@@ -2536,6 +2307,7 @@ int main(int argc, const char* argv[])
             ScatteringRange conus = SetConus(args);
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
+            std::unique_ptr<TracerPOTotal> tracerOwner(tracer);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
             tracer->m_scattering->m_wave = wave;
             ApplyTraceCutoffOptions(args, tracer->m_scattering);
@@ -2545,6 +2317,7 @@ int main(int argc, const char* argv[])
             trackGroups.push_back(TrackGroup());
             handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
                                          nTheta, wave);
+            std::unique_ptr<HandlerPO> handlerOwner(handler);
 
             cout << additionalSummary;
             tracer->m_summary = additionalSummary;
@@ -2554,6 +2327,7 @@ int main(int argc, const char* argv[])
             handler->SetFftEnabled(useFft);
             ApplyPOOutputOptions(args, handler, wave);
             handler->m_legacySign = args.IsCatched("legacy_sign");
+            handler->useKarczewski = args.IsCatched("karczewski");
             ApplyNphiOverride(args, conus);
             handler->SetScatteringSphere(conus);
             handler->SetTracks(&trackGroups);
@@ -2580,6 +2354,7 @@ int main(int argc, const char* argv[])
             ScatteringRange conus = SetConus(args);
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
+            std::unique_ptr<TracerPOTotal> tracerOwner(tracer);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
             tracer->m_scattering->m_wave = wave;
             ApplyTraceCutoffOptions(args, tracer->m_scattering);
@@ -2587,6 +2362,7 @@ int main(int argc, const char* argv[])
             trackGroups.push_back(TrackGroup());
             HandlerPOTotal *handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
                                          nTheta, wave);
+            std::unique_ptr<HandlerPOTotal> handlerOwner(handler);
 
             cout << additionalSummary;
             tracer->m_summary = additionalSummary;
@@ -2611,7 +2387,6 @@ int main(int argc, const char* argv[])
 
             tracer->TraceFromFile(orientFileName);
 
-            delete handler;
         }
         else if (args.IsCatched("sobol") || args.IsCatched("so3_quat")
               || args.IsCatched("sobol_seed")
@@ -2619,15 +2394,15 @@ int main(int argc, const char* argv[])
               || args.IsCatched("hammersley") || args.IsCatched("lattice")
               || args.IsCatched("lattice_z")
               || args.IsCatched("euler_quad") || args.IsCatched("euler_adapt")
+              || args.IsCatched("adaptive_euler")
               || args.IsCatched("adaptive") || args.IsCatched("auto")
               || args.IsCatched("autofull") || args.IsCatched("oldautofull"))
         {
-            // --auto EPS implies --adaptive EPS + --auto_tgrid + --auto_phi
             bool isOldAutoFull = args.IsCatched("oldautofull");
             bool isAuto = args.IsCatched("auto") || args.IsCatched("autofull")
                 || isOldAutoFull;
             bool isAutoFull = args.IsCatched("autofull") || isOldAutoFull;
-            bool isAdaptive = args.IsCatched("adaptive") || isAuto;
+            bool isAdaptive = args.IsCatched("adaptive");
             bool isSobolSeed = args.IsCatched("sobol_seed");
             bool isSO3Quat = args.IsCatched("so3_quat");
             bool isSobolRing = args.IsCatched("sobol_ring");
@@ -2635,6 +2410,7 @@ int main(int argc, const char* argv[])
             bool isLattice = args.IsCatched("lattice") || args.IsCatched("lattice_z");
             bool isEulerQuad = args.IsCatched("euler_quad");
             bool isEulerAdapt = args.IsCatched("euler_adapt");
+            bool isEulerConvergence = args.IsCatched("adaptive_euler");
             bool oldAutoFullMultiSize = isOldAutoFull
                 && (args.IsCatched("multikeq") || args.IsCatched("multikeq_list")
                     || args.IsCatched("multigrid"));
@@ -2697,7 +2473,9 @@ int main(int argc, const char* argv[])
                         + "\n";
                 }
             }
-            if (isAdaptive)
+            if (isAuto)
+                additionalSummary += ", joint automatic convergence\n\n";
+            else if (isAdaptive)
                 additionalSummary += ", adaptive Sobol\n\n";
             else if (isSO3Quat)
                 additionalSummary += ", SO(3) quaternion orientations\n\n";
@@ -2709,6 +2487,8 @@ int main(int argc, const char* argv[])
                 additionalSummary += ", Hammersley orientations\n\n";
             else if (isLattice)
                 additionalSummary += ", rank-1 lattice orientations\n\n";
+            else if (isEulerConvergence)
+                additionalSummary += ", converged Euler beta/gamma quadrature\n\n";
             else if (isEulerAdapt)
                 additionalSummary += ", Euler adaptive gamma quadrature\n\n";
             else if (isEulerQuad)
@@ -2718,39 +2498,32 @@ int main(int argc, const char* argv[])
 
             TracerPOTotal *tracer;
             // --grid optional for --auto/--autofull/--tgrid
+            const bool needsAdaptiveGrid = isAuto
+                || args.IsCatched("auto_tgrid")
+                || args.IsCatched("auto_phi")
+                || args.IsCatched("adaptive_phi")
+                || args.IsCatched("adaptive_reflections")
+                || isEulerConvergence;
             ScatteringRange conus = (args.IsCatched("grid") || args.IsCatched("tgrid"))
                 ? SetConus(args)
-                : ScatteringRange(0, M_PI, 1, 1);
+                : (needsAdaptiveGrid
+                    ? ScatteringRange(0, M_PI, 24, 32)
+                    : ScatteringRange(0, M_PI, 1, 1));
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
-            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_oldAutoFullFinal = isOldAutoFull; tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
+            std::unique_ptr<TracerPOTotal> tracerOwner(tracer);
+            { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
+            tracer->m_adaptiveLimits = config.adaptive;
             tracer->m_scattering->m_wave = wave;
             ApplyTraceCutoffOptions(args, tracer->m_scattering);
             tracer->shadowOff = args.IsCatched("shadow_off");
             trackGroups.push_back(TrackGroup());
             HandlerPOTotal *handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
                                          nTheta, wave);
+            std::unique_ptr<HandlerPOTotal> handlerOwner(handler);
 
-            // Auto theta grid: use adaptive bisection for both --auto and --auto_tgrid
-            // (no static zones anymore)
-
-            // Apply auto_phi if requested (or implied by --auto)
-            // --grid phi has priority: don't overwrite explicit N_phi
-            if ((args.IsCatched("auto_phi") || isAuto) && !args.IsCatched("grid"))
-            {
-                double D = particle->MaximalDimention();
-                double x = (wave > 0) ? M_PI * D / wave : 100;
-                // Phi convergence depends on x (linear, validated by --autofull):
-                //   x=100->72, x=300->108, x=600->168, x=1000->252, x=2000->360
-                // Validated: autofull found phi=168 for x=618 (matches formula)
-                // Formula: N_phi = min(360, x/5 + 48), rounded to multiple of 6
-                int nPhi_raw = std::max(48, std::min(360, (int)(x / 5.0 + 48)));
-                int nPhi = ((nPhi_raw + 5) / 6) * 6;
-
-                conus.nAzimuth = nPhi;
-                conus.azinuthStep = 2.0 * M_PI / nPhi;
-                cout << "Auto phi: x=" << x << ", N_phi=" << nPhi << endl;
-            }
+            // Adaptive searches start from a small generic grid. The selected
+            // N_phi is measured from the Mueller matrix, not predicted from x.
 
             cout << additionalSummary;
             tracer->m_summary = additionalSummary;
@@ -2820,14 +2593,16 @@ int main(int argc, const char* argv[])
             // Beam cutoff is opt-in only.  Autofull accuracy targets must not
             // silently discard beams; use --beam_cutoff* explicitly.
 
-            if (isAutoFull)
+            if (isAuto)
             {
                 double epsAdapt = isOldAutoFull
                     ? args.GetDoubleValue("oldautofull", 0)
-                    : args.GetDoubleValue("autofull", 0);
-                int maxOrientUser = args.IsCatched("maxorient")
-                    ? args.GetIntValue("maxorient", 0) : 0;
-                tracer->m_owenAverageSeeds = BuildOwenAverageSeeds(args);
+                    : (isAutoFull
+                        ? args.GetDoubleValue("autofull", 0)
+                        : args.GetDoubleValue("auto", 0));
+                int maxOrientUser = config.adaptive.maxOrientations;
+                if (isAutoFull)
+                    tracer->m_owenAverageSeeds = BuildOwenAverageSeeds(args);
                 if (!tracer->m_owenAverageSeeds.empty())
                 {
                     std::cout << "Autofull final Owen averaging seeds:";
@@ -2853,8 +2628,11 @@ int main(int argc, const char* argv[])
                               << "--oldautofull for regular oldauto-style "
                               << "mirror averaging." << std::endl;
                 }
-                tracer->TraceAutoFull(epsAdapt, betaSym, gammaSym, maxOrientUser,
-                                      particle, wave, conus, handler);
+                tracer->TraceAutoConverged(
+                    epsAdapt, betaSym, gammaSym, maxOrientUser,
+                    isAutoFull, isOldAutoFull, conus,
+                    !args.IsCatched("nphi"),
+                    !args.IsCatched("grid") && !args.IsCatched("tgrid"));
                 if (oldAutoFullMultiSize)
                 {
                     if (!tracer->m_lastOldAutoFullGridValid)
@@ -2863,20 +2641,14 @@ int main(int argc, const char* argv[])
                         return 1;
                     }
 
-                    AngleRange betaRange(0.0, tracer->m_lastOldAutoFullBetaSym,
-                                         tracer->m_lastOldAutoFullNBeta);
-                    AngleRange gammaRange(0.0, tracer->m_lastOldAutoFullGammaSym,
-                                          tracer->m_lastOldAutoFullNGamma);
-
                     std::cout << std::endl
                               << "Oldautofull shared multi-size: reusing tuned"
                               << " reference grid n=" << tracer->m_lastOldAutoFullN
                               << ", N_phi=" << tracer->m_lastOldAutoFullNphi
                               << ", beta/gamma="
-                              << (tracer->m_lastOldAutoFullNBeta + 1)
+                              << tracer->m_lastOldAutoFullNBeta
                               << " x " << tracer->m_lastOldAutoFullNGamma
-                              << " (div" << tracer->m_lastOldAutoFullDiv
-                              << ")" << std::endl;
+                              << " (adaptively converged)" << std::endl;
 
                     std::vector<double> xSizes;
                     std::vector<std::string> labels;
@@ -2965,64 +2737,51 @@ int main(int argc, const char* argv[])
                                   << std::endl;
                     }
 
-                    const bool useSharedOldAutoFullMulti =
-                        std::getenv("MBS_OLDAUTOFULL_SHARED_MULTI")
-                        && std::atoi(std::getenv(
-                            "MBS_OLDAUTOFULL_SHARED_MULTI")) != 0;
-                    if (useSharedOldAutoFullMulti)
-                    {
-                        std::cerr << "WARNING: MBS_OLDAUTOFULL_SHARED_MULTI=1 "
-                                  << "uses experimental reference-size beam "
-                                  << "cache reuse for --oldautofull "
-                                  << "multikeq/multigrid. For non-convex file "
-                                  << "particles this can be inaccurate; the "
-                                  << "release default is independent retrace."
-                                  << std::endl;
-                        tracer->TraceRandomMultiSize(betaRange, gammaRange,
-                                                     xSizes, labels);
-                    }
-                    else
-                    {
-                        const double xRefIndependent =
-                            M_PI * particle->MaximalDimention() / wave;
-                        tracer->TraceRandomMultiSizeIndependent(
-                            betaRange, gammaRange, xSizes, labels,
-                            xRefIndependent);
-                    }
+                    const double xRefIndependent =
+                        M_PI * particle->MaximalDimention() / wave;
+                    tracer->TraceEulerQuadratureMultiSize(
+                        tracer->m_lastOldAutoFullNBeta,
+                        tracer->m_lastOldAutoFullNGamma,
+                        tracer->m_lastOldAutoFullBetaSym,
+                        tracer->m_lastOldAutoFullGammaSym,
+                        xSizes, xRefIndependent);
                 }
             }
             else if (isAdaptive)
             {
-                if (args.IsCatched("sobol") || args.IsCatched("sobol_seed")
-                    || args.IsCatched("so3_quat")
-                    || args.IsCatched("sobol_ring")
-                    || args.IsCatched("hammersley") || args.IsCatched("lattice")
-                    || args.IsCatched("lattice_z")
-                    || args.IsCatched("euler_quad") || args.IsCatched("euler_adapt"))
-                    std::cerr << "WARNING: explicit orientation rule ignored (--auto/--adaptive overrides with adaptive orientations)." << std::endl;
-                double epsAdapt = isAuto ? args.GetDoubleValue("auto", 0)
-                                         : args.GetDoubleValue("adaptive", 0);
-                int maxOrientUser = args.IsCatched("maxorient")
-                    ? args.GetIntValue("maxorient", 0) : 0;
-
-                // Adaptive theta grid probe (bisection) before adaptive orient
-                if (!args.IsCatched("tgrid") && !args.IsCatched("grid"))
+                double epsAdapt = ResolveAdaptiveTolerance(
+                    config.adaptive.orientationTolerance,
+                    args.GetDoubleValue("adaptive", 0));
+                int maxOrientUser = config.adaptive.maxOrientations;
+                const bool individualSearch = args.IsCatched("auto_tgrid")
+                    || args.IsCatched("auto_phi")
+                    || args.IsCatched("adaptive_phi")
+                    || args.IsCatched("adaptive_reflections");
+                tracer->ResetConvergenceReport(
+                    individualSearch ? "individual+adaptive-N"
+                                     : "adaptive-orientations",
+                    epsAdapt);
+                const int pilot = std::min(
+                    config.adaptive.maxPilotOrientations,
+                    std::max(config.adaptive.minPilotOrientations, 128));
+                if (args.IsCatched("adaptive_reflections"))
+                    tracer->TraceAdaptiveReflections(
+                        args.GetDoubleValue("adaptive_reflections", 0),
+                        pilot, betaSym, gammaSym);
+                if (args.IsCatched("auto_phi")
+                    || args.IsCatched("adaptive_phi"))
+                    tracer->TraceAdaptivePhi(
+                        args.IsCatched("adaptive_phi")
+                            ? args.GetDoubleValue("adaptive_phi", 0)
+                            : ResolveAdaptiveTolerance(
+                                config.adaptive.phiTolerance, 0.02),
+                        pilot, betaSym, gammaSym);
+                if (args.IsCatched("auto_tgrid"))
                 {
-                    double tgridEps = args.IsCatched("auto_tgrid")
-                        ? args.GetDoubleValue("auto_tgrid", 0) : 0.05;
-                    if (tgridEps <= 0) tgridEps = 0.05;
-                    // Probe count from div16 physics estimate
-                    double Dmax_p = particle->MaximalDimention();
-                    double dd_p = 0.69 * wave / Dmax_p * (180.0 / M_PI) / ringPoints;
-                    int nb_p = std::max(1, (int)(RadToDeg(betaSym) / dd_p / 16));
-                    int ng_p = std::max(1, (int)(RadToDeg(gammaSym) / dd_p / 16));
-                    int nProbeAuto = nb_p * ng_p;
-                    int p2a = 1; while (p2a * 2 <= nProbeAuto) p2a *= 2;
-                    nProbeAuto = std::max(64, p2a);
-                    tracer->TraceAdaptiveTheta(nProbeAuto, betaSym, gammaSym, tgridEps, 8, true);
-                    // Grid now set. TraceAdaptive will compute full Mueller.
+                    tracer->TraceAdaptiveTheta(
+                        pilot, betaSym, gammaSym,
+                        args.GetDoubleValue("auto_tgrid", 0), 12, true);
                 }
-
                 tracer->TraceAdaptive(epsAdapt, betaSym, gammaSym, maxOrientUser);
             }
             else
@@ -3034,9 +2793,51 @@ int main(int argc, const char* argv[])
                 bool useLattice = args.IsCatched("lattice") || args.IsCatched("lattice_z");
                 bool useEulerQuad = args.IsCatched("euler_quad");
                 bool useEulerAdapt = args.IsCatched("euler_adapt");
+                bool useEulerConvergence = args.IsCatched("adaptive_euler");
                 int nSobol = args.IsCatched("sobol") ? args.GetIntValue("sobol", 0) : 0;
 
-                if (useSO3Quat)
+                const bool individualSearch = args.IsCatched("auto_tgrid")
+                    || args.IsCatched("auto_phi")
+                    || args.IsCatched("adaptive_phi")
+                    || args.IsCatched("adaptive_reflections");
+                if (individualSearch)
+                    tracer->ResetConvergenceReport("individual", 0.0);
+                const int individualPilot = std::min(
+                    config.adaptive.maxPilotOrientations,
+                    std::max(config.adaptive.minPilotOrientations, 128));
+                if (args.IsCatched("adaptive_reflections"))
+                    tracer->TraceAdaptiveReflections(
+                        args.GetDoubleValue("adaptive_reflections", 0),
+                        individualPilot, betaSym, gammaSym);
+                if (args.IsCatched("auto_phi")
+                    || args.IsCatched("adaptive_phi"))
+                    tracer->TraceAdaptivePhi(
+                        args.IsCatched("adaptive_phi")
+                            ? args.GetDoubleValue("adaptive_phi", 0)
+                            : ResolveAdaptiveTolerance(
+                                config.adaptive.phiTolerance, 0.02),
+                        individualPilot, betaSym, gammaSym);
+
+                if (useEulerConvergence)
+                {
+                    const double epsEuler =
+                        args.GetDoubleValue("adaptive_euler", 0);
+                    const int maxOrientUser =
+                        config.adaptive.maxOrientations;
+                    if (!individualSearch)
+                        tracer->ResetConvergenceReport(
+                            "adaptive-euler-grid", epsEuler);
+                    if (args.IsCatched("auto_tgrid"))
+                        tracer->TraceAdaptiveTheta(
+                            individualPilot, betaSym, gammaSym,
+                            args.GetDoubleValue("auto_tgrid", 0), 12, true);
+                    int nBeta = 0;
+                    int nGamma = 0;
+                    tracer->TraceAdaptiveEuler(
+                        epsEuler, betaSym, gammaSym, maxOrientUser,
+                        nBeta, nGamma, true);
+                }
+                else if (useSO3Quat)
                 {
                     if (args.IsCatched("sobol") || args.IsCatched("sobol_seed")
                         || args.IsCatched("sobol_ring") || args.IsCatched("euler_quad")
@@ -3141,20 +2942,14 @@ int main(int argc, const char* argv[])
                         double logMin = log(Dmin), logMax = log(Dmax_mg);
                         for (int i = 0; i < nSizes; ++i) {
                             double D_user = exp(logMin + (logMax - logMin) * i / (nSizes - 1));
-                            double x = x_ref * (D_user / Dmax_mg);
+                            double x = M_PI * D_user / wave;
                             x_sizes.push_back(x);
                         }
-                        x_sizes.back() = x_ref;
 
                         cout << "Multigrid: " << nSizes << " sizes, D=" << Dmin
                              << ".." << Dmax_mg << " (log), Dmax_particle=" << D_current
                              << ", x_ref=" << x_ref << endl;
                         cout << "  x range: " << x_sizes.front() << " .. " << x_sizes.back() << endl;
-
-                        if (D_current < Dmax_mg * 0.99)
-                            std::cerr << "WARNING: -p particle Dmax=" << D_current
-                                      << " < multigrid Dmax=" << Dmax_mg
-                                      << ". Use -p with largest size." << endl;
 
                         tracer->TraceLatticeMultiSize(nOrient, betaSym, gammaSym,
                                                       x_sizes, x_ref,
@@ -3214,20 +3009,14 @@ int main(int argc, const char* argv[])
                         double logMin = log(Dmin), logMax = log(Dmax_mg);
                         for (int i = 0; i < nSizes; ++i) {
                             double D_user = exp(logMin + (logMax - logMin) * i / (nSizes - 1));
-                            double x = x_ref * (D_user / Dmax_mg);
+                            double x = M_PI * D_user / wave;
                             x_sizes.push_back(x);
                         }
-                        x_sizes.back() = x_ref;
 
                         cout << "Multigrid: " << nSizes << " sizes, D=" << Dmin
                              << ".." << Dmax_mg << " (log), Dmax_particle=" << D_current
                              << ", x_ref=" << x_ref << endl;
                         cout << "  x range: " << x_sizes.front() << " .. " << x_sizes.back() << endl;
-
-                        if (D_current < Dmax_mg * 0.99)
-                            std::cerr << "WARNING: -p particle Dmax=" << D_current
-                                      << " < multigrid Dmax=" << Dmax_mg
-                                      << ". Use -p with largest size." << endl;
 
                         tracer->TraceEulerQuadratureMultiSize(nBeta, nGamma,
                                                               betaSym, gammaSym,
@@ -3245,36 +3034,24 @@ int main(int argc, const char* argv[])
                     int nSizes = args.GetIntValue("multigrid", 2);
                     if (nSizes < 2) nSizes = 2;
 
-                    // Generate x_sizes in log scale
-                    // x_ref = x of the -p particle (reference, largest)
-                    // x_sizes are SCALED relative to x_ref:
-                    //   x(D) = x_ref * (D / Dmax_particle)
-                    // This ensures x_sizes[Dmax] == x_ref exactly.
+                    // Convert every requested physical Dmax directly to x.
+                    // The original particle is only the shape reference; it
+                    // need not already have the scan's largest Dmax.
                     double D_current = particle->MaximalDimention();
                     double x_ref = M_PI * D_current / wave;
 
-                    // Scale Dmin/Dmax to MaximalDimention scale
-                    // User gives "characteristic D" but particle Dmax may differ
-                    // Last size MUST equal x_ref for correctness
                     std::vector<double> x_sizes;
                     double logMin = log(Dmin), logMax = log(Dmax_mg);
                     for (int i = 0; i < nSizes; ++i) {
                         double D_user = exp(logMin + (logMax - logMin) * i / (nSizes - 1));
-                        double x = x_ref * (D_user / Dmax_mg);
+                        double x = M_PI * D_user / wave;
                         x_sizes.push_back(x);
                     }
-                    // Force last = x_ref
-                    x_sizes.back() = x_ref;
 
                     cout << "Multigrid: " << nSizes << " sizes, D=" << Dmin
                          << ".." << Dmax_mg << " (log), Dmax_particle=" << D_current
                          << ", x_ref=" << x_ref << endl;
                     cout << "  x range: " << x_sizes.front() << " .. " << x_sizes.back() << endl;
-
-                    if (D_current < Dmax_mg * 0.99)
-                        std::cerr << "WARNING: -p particle Dmax=" << D_current
-                                  << " < multigrid Dmax=" << Dmax_mg
-                                  << ". Use -p with largest size." << endl;
 
                     tracer->TraceSobolMultiSize(nSobol, betaSym, gammaSym, x_sizes, x_ref);
                 }
@@ -3290,7 +3067,6 @@ int main(int argc, const char* argv[])
                 }
             }
 
-            delete handler;
         }
         else
         {
@@ -3317,15 +3093,18 @@ int main(int argc, const char* argv[])
         }
 
         HandlerGO *handler;
+        std::unique_ptr<HandlerGO> handlerOwner;
 
         if (args.IsCatched("tr"))
         {
             handler = new HandlerTracksGO(particle, &tracer.m_incidentLight, nTheta, wave);
+            handlerOwner.reset(handler);
             handler->SetTracks(&trackGroups);
         }
         else
         {
             handler = new HandlerTotalGO(particle, &tracer.m_incidentLight, nTheta, wave);
+            handlerOwner.reset(handler);
         }
 
         tracer.m_summary = additionalSummary;
@@ -3464,7 +3243,16 @@ int main(int argc, const char* argv[])
             tracer.TraceSobol(nOr, seed, betaMax, gammaMax);
         }
 
-        delete handler;
+    }
+
+    }
+    catch (const std::exception &ex)
+    {
+        std::cerr << "ERROR: calculation failed: " << ex.what();
+        if (std::string(ex.what()).find("Fix:") == std::string::npos)
+            std::cerr << "\n  Fix: correct the reported runtime condition and rerun the same command.";
+        std::cerr << std::endl;
+        return 1;
     }
 
     if (mpi_rank == 0)
@@ -3478,6 +3266,7 @@ int main(int argc, const char* argv[])
             && !args.IsCatched("hammersley") && !args.IsCatched("lattice")
             && !args.IsCatched("lattice_z")
             && !args.IsCatched("euler_quad") && !args.IsCatched("euler_adapt")
+            && !args.IsCatched("adaptive_euler")
             && !args.IsCatched("adaptive")
             && !args.IsCatched("auto") && !args.IsCatched("autofull")
             && !args.IsCatched("oldautofull"))
@@ -3507,8 +3296,5 @@ int main(int argc, const char* argv[])
         getchar();
     }
 
-#ifdef USE_MPI
-    MPI_Finalize();
-#endif
     return 0;
 }

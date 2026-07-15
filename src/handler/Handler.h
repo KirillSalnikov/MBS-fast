@@ -380,6 +380,7 @@ class Handler
 public:
     Handler(Particle *particle, Light *incidentLight, int nTheta,
             double wavelength);
+    virtual ~Handler() = default;
 
     virtual double ComputeTotalScatteringEnergy() { return 0.0; }
     virtual void HandleBeams(std::vector<Beam> &beams, double sinZenith);
@@ -398,16 +399,16 @@ public:
 
     Light *m_incidentLight;
 
-    double m_sinZenith;
-    Tracks *m_tracks;
+    double m_sinZenith = 0.0;
+    Tracks *m_tracks = nullptr;
     int m_absorptionPointCount = 1;
 
     int nTheta;
-    int m_nBadBeams;
-    bool m_isBadBeam;
+    int m_nBadBeams = 0;
+    bool m_isBadBeam = false;
     bool isCoh = true;
     ScatteringRange m_sphere;
-    double normIndexGamma;
+    double normIndexGamma = 1.0;
     double m_outputEnergy = 0;
     double m_extinctionCrossSectionOt = 0;
     bool m_hasExtinctionOt = false;
@@ -416,7 +417,7 @@ public:
     bool m_otPhaseAverage = false;
     std::string m_integralSummary;
 
-    std::ofstream *betaFile;
+    std::ofstream *betaFile = nullptr;
     int m_fixedItr = -1;
 
 protected:
@@ -455,24 +456,24 @@ protected:
     void ComputeLengthIndices(const Beam &beam, BeamInfo &info);
 
 protected:
-    Scattering *m_scattering;
+    Scattering *m_scattering = nullptr;
 
     Particle *m_particle;
     double m_wavelength; // must be double type!!!
     bool m_hasAbsorption;
     double m_normIndex;
     std::ofstream m_logFile;
-    double m_cAbs;
+    double m_cAbs = 0.0;
 
     complex m_ri;
-    double m_riIm;
+    double m_riIm = 0.0;
 
     double m_waveIndex;
     double m_wi2;
 
     complex m_complWave;
     complex m_invComplWave;
-    double m_absMag;
+    double m_absMag = 0.0;
 
     double m_eps1;
     double m_eps2;

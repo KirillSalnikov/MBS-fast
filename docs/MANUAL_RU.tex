@@ -72,7 +72,7 @@
 \title{\textbf{MBS-fast}\\
 Подробное руководство по физике, математике, численным методам и запуску}
 \author{Актуальная PDF-версия для ветки \code{main}}
-\date{9 июня 2026}
+\date{15 июля 2026}
 
 \begin{document}
 \maketitle
@@ -765,7 +765,7 @@ $N_c$ & Число кандидатов после быстрых фильтро
 
 \subsection{Built-in и file particles}
 
-Частица задается либо \code{-p TYPE L D [extra]}, либо \code{--pf FILE}. Встроенные частицы создаются в коде, file particle читается из файла с геометрией. Нельзя одновременно задавать оба источника геометрии.
+Частица задается либо \code{-p TYPE PARAMETERS...}, либо \code{--pf FILE}. Встроенные частицы создаются в коде, file particle читается из файла с геометрией. Нельзя одновременно задавать оба источника геометрии.
 
 \begin{longtable}{L{0.12\linewidth} L{0.30\linewidth} L{0.48\linewidth}}
 \caption{Основные встроенные частицы.}\\
@@ -780,10 +780,10 @@ Type & Форма & Параметры \\
 1 & Hexagonal column/plate & \code{L D}: длина и диаметр. \\
 2 & Bullet & \code{L D}. \\
 3 & Bullet rosette & \code{L D [cap]}. \\
-4 & Droxtal & \code{L D extra}. \\
-10 & Concave hexagonal & \code{L D concavity}. \\
-12 & Hexagonal aggregate & \code{L D count}. \\
-999 & Built-in aggregate/debug & Параметры зависят от генератора. \\
+4 & Droxtal & \code{SCALE}; legacy-форма \code{L D SCALE} игнорирует \code{L,D}. \\
+10 & Concave hexagonal & \code{L D CAVITY\_DEG}; полости не должны пересекаться. \\
+12 & Двухкомпонентный hexagonal aggregate & \code{L D 2}. \\
+999 & Fixed built-in aggregate & \code{SCALE}. \\
 \bottomrule
 \end{longtable}
 
@@ -816,8 +816,9 @@ Type & Форма & Параметры \\
 \endhead
 \code{--rs SIZE} & Масштабировать file particle так, чтобы $D_{\max}=\code{SIZE}$. \\
 \code{--k_eq X} & Масштабировать так, чтобы $k_{\mathrm{eq}}=X$. Требуется \code{-w}. \\
-\code{--size_range A B N} & Посчитать диапазон размеров; обычно используется вместе с shared beam cache. \\
-\code{--multi_k X1 X2 ...} & Несколько $k_{\mathrm{eq}}$ в одном запуске, если подходит batch layout. \\
+\code{--multigrid A B N} & Логарифмический диапазон $D_{\max}$; canonical name \code{--dmax-grid}. \\
+\code{--multikeq A B N} & Логарифмический диапазон $k_{\mathrm{eq}}$; canonical name \code{--k-eq-grid}. \\
+\code{--multikeq_list FILE} & Точный список положительных $k_{\mathrm{eq}}$ из файла. \\
 \bottomrule
 \end{longtable}
 
@@ -917,7 +918,7 @@ Type & Форма & Параметры \\
 \endhead
 \code{--fixed B G} & Одна ориентация beta/gamma, удобно для отладки CPU/GPU. \\
 \code{--orientfile FILE} & Ориентации из файла. \\
-\code{--beta_grid NB NG} & Явная регулярная beta/gamma сетка. \\
+\code{--random NB NG} & Явная регулярная beta/gamma сетка; canonical name \code{--euler-grid}. \\
 \code{--oldauto DIV} & Production-сетка из дифракционного масштаба. \\
 \code{--sobol N} & Sobol quasi-random orientations. \\
 \code{--sobol_seed N SEED} & Sobol с Owen scrambling seed. \\
@@ -930,28 +931,82 @@ Type & Форма & Параметры \\
 
 \subsection{Adaptive и формула выбора числа ориентаций}
 
-Для автоматического выбора числа ориентаций используется идея сравнения двух последовательных приближений:
+При сравнении кандидатов по $N_\phi$, глубине отражений и Euler-сетке для двух приближений $A$ и $B$ ошибка одной theta-строки равна
 \[
-  \varepsilon_N
-  =
-  \max_{r\in\mathcal R}
-  \frac{
-    \norm{\matr M_N(r)-\matr M_{N/2}(r)}_\infty
-  }{
-    |M_{11,N}(r)|+\varepsilon_0
-  }.
+e_{\mathrm{row}}=
+\max\!\left(
+\frac{|M^{A}_{11}-M^{B}_{11}|}
+{\max(|M^{A}_{11}|,|M^{B}_{11}|,\varepsilon_0)},
+\max_{(i,j)\ne(1,1)}
+\frac{|R^{A}_{ij}-R^{B}_{ij}|}
+{\max(1,|R^{A}_{ij}|,|R^{B}_{ij}|)}
+\right),
+\qquad
+R_{ij}=\frac{M_{ij}}{M_{11}}.
 \]
-Расчет продолжается, пока
-\[
-  \varepsilon_N\le \code{EPS}
-  \quad\text{или}\quad
-  N=\code{--maxorient}.
-\]
-Здесь $\mathcal R$ --- набор контрольных theta rows, $\varepsilon_0$ --- малое число для защиты от деления на ноль. Это не строгая математическая гарантия, а практический критерий сходимости наблюдаемых Mueller-элементов.
+Здесь $M_{ij}$ --- элемент матрицы Мюллера, $R_{ij}$ --- тот же элемент, нормированный на $M_{11}$, а $\varepsilon_0$ --- малое защитное число. Затем берется максимум по theta-строкам и добавляется относительное изменение интеграла $\int M_{11}\,d\Omega$. Для глубины внутренних отражений дополнительно проверяется выходная энергия. Theta-поиск использует другой тест: в точках $1/3$ и $2/3$ каждого интервала реальная матрица сравнивается с интерполяцией, после чего отдельно проверяется интеграл $M_{11}$. Поиск числа Sobol-ориентаций проверяет входную энергию и все 16 элементов на контрольных theta-строках текущей сетки.
+
+По умолчанию для orientation, phi, reflection и Euler-поиска нужны два последовательных успешных уточнения; theta-поиск уточняет интервалы напрямую.
+\code{--convergence-passes N} меняет число только для этих streak-проверок. Достижение верхнего предела является ошибкой для phi, reflection, theta, Euler и unified-auto режимов. Отдельный \code{--adaptive-orientations} оставлен exploratory-режимом: на верхнем пределе он выдает предупреждение и записывает лучший результат; внутри unified-auto та же проверка является строгой.
+
+\subsection{Файл настроек адаптивной сходимости}
+
+Флаг \code{--adaptive-config FILE} загружает все production-пределы из одного
+текстового файла. Полный шаблон с пояснением каждой строки находится в
+\code{configs/adaptive.example.conf}. Формат строгий: \code{key = value}; после
+символа \texttt{\#} или \texttt{;} разрешен комментарий. Например:
+
+\begin{lstlisting}
+reflections.min = 2
+reflections.max = 30
+reflections.tolerance = 0.01  # 1 percent
+alpha.min_points = 12
+alpha.max_points = 2400
+alpha.tolerance = 0.01
+orientations.min = 128
+orientations.max = 262144
+orientations.tolerance = 0.02
+\end{lstlisting}
+
+Отдельные группы \code{reflections}, \code{alpha}, \code{theta},
+\code{orientations}, \code{beta} и \code{gamma} задают минимум, максимум и
+свою относительную точность. Группа \code{controller} задает число
+последовательных успешных уточнений, диапазон pilot-набора и максимальное число
+совместных проходов. Значение \code{0.01} означает 1\%, а не 0.01\%.
+
+Если индивидуальная точность отсутствует в файле, используется общий
+\code{EPS} из \code{--auto}, \code{--autofull} или другого выбранного режима.
+Индивидуальная точность из файла имеет приоритет над общим \code{EPS}. Явные
+флаги командной строки \code{--max-*}, \code{--max-reflections} и
+\code{--convergence-passes} имеют приоритет над файлом. Неизвестный или
+повторный ключ, неверный диапазон и неправильный тип значения останавливают
+запуск до расчета с указанием файла, номера строки и способа исправления.
+
+\begin{lstlisting}
+cpu/bin/mbs_po_mpi --method po --particle 1 100 70 \
+  --refractive-index 1.3116 0 --wavelength-um 0.532 \
+  --autofull 0.02 \
+  --adaptive-config configs/adaptive.example.conf \
+  --backend cpu --threads 64 --output converged --close
+\end{lstlisting}
 
 \subsection{Auto, autofull, oldautofull}
 
-\code{--auto EPS} подбирает theta grid, phi grid и число ориентаций. \code{--autofull EPS} дополнительно может подбирать глубину трассировки \code{-n}. \code{--oldautofull EPS} использует автоматический поиск, но финальное усреднение делает regular oldauto-сеткой. Практически:
+Параметры не являются строго независимыми. Глубина $n$ меняет дерево лучей; $N_\phi$ меняет азимутальное усреднение, по которому обнаруживаются особенности по theta; число ориентаций меняет каждую усредненную строку. Поэтому общий порядок имеет вид
+\[
+n\longrightarrow N_\phi\longrightarrow
+\{\theta_j\}\longrightarrow N_{\mathrm{orient}}.
+\]
+\code{--auto EPS} оставляет $n$ фиксированным и подбирает $N_\phi$, theta grid и Sobol $N$. \code{--autofull EPS} дополнительно подбирает $n$. \code{--oldautofull EPS} теперь заканчивает не эвристической oldauto-сеткой, а регулярной квадратурой Эйлера: $N_\beta$ и $N_\gamma$ уточняются по очереди, после чего оба увеличиваются совместно. Весь цикл повторяется на общем увеличенном pilot-наборе, пока pilot, следующий из выбранного числа ориентаций, и все параметры не образуют совместную неподвижную точку.
+
+В unified-auto явный \code{--phi-points N} фиксирует $N_\phi$, а
+\code{--scattering-grid} или \code{--theta-grid-file} фиксирует theta-сетку;
+остальные параметры продолжают подбираться. Чтобы искать эту размерность,
+соответствующий явный флаг надо убрать. Отдельные \code{--adaptive-phi} и
+\code{--auto-phi} по-прежнему несовместимы с \code{--phi-points}, потому что их
+единственная задача --- подобрать $N_\phi$.
+
+\code{--auto_tgrid EPS} проверяет две внутренние точки каждого theta-интервала по полной матрице Мюллера и по интегралу $M_{11}$. В алгоритме нет фиксированных областей $22^\circ$ и $46^\circ$: особенности конкретной формы должны обнаруживаться из рассчитанной кривой. Практически:
 \[
   \text{стоимость}\approx
   N_{\mathrm{ori}}\,
@@ -961,11 +1016,26 @@ Type & Форма & Параметры \\
 \]
 Поэтому автоматический режим может быть сильно дороже одной ручной production-сетки, но он полезен для выбора параметров.
 
+Каждая попытка записывается в файл
+\code{<output>/<name>_convergence.tsv}: параметр, номер совместного прохода, кандидат, максимальная ошибка, худший theta-угол, номер элемента и статус.
+
+\subsection{Почему симметрия столбика не делит Nphi на шесть}
+
+В коде используется соглашение
+\[
+\matr R=R_z(\alpha)R_y(\beta)R_z(\gamma).
+\]
+Цикл по азимуту рассеяния за счет вращательной ковариантности реализует усреднение по лабораторному углу $\alpha$, поэтому в этом контексте $N_\phi=N_\alpha$. У шестигранного столбика есть осевая симметрия $R_z(2\pi/6)$ в системе частицы. Она уже сокращает область $\gamma$ до
+\[
+0\leq\gamma<\frac{\pi}{3}=60^\circ.
+\]
+Но при $\beta\ne0,\pi$ наклоненный столбик не инвариантен относительно поворота на $60^\circ$ вокруг лабораторной оси падающего луча. Поэтому для $\alpha$ остается область $0\leq\alpha<2\pi$, и автоматическое деление $N_\phi$ на шесть было бы физически неверным. \code{--alpha-points} является понятным алиасом \code{--phi-points}, а \code{--adaptive-alpha} --- алиасом \code{--adaptive-phi}; они не включают дополнительное приближение.
+
 \section{Scattering grid}
 
 \subsection{Theta rows и solid angle}
 
-Uniform theta grid с \code{--grid T0 T1 NTH NPHI} печатает $N_{\theta}+1$ строк. Вес строки:
+Uniform theta grid с \code{--grid T0 T1 NPHI NTH} печатает $N_{\theta}+1$ строк. Вес строки:
 \[
   \Delta\Omega_j=
   2\pi\left[
@@ -1146,6 +1216,7 @@ Multi-GPU делит работу по независимым блокам: orie
 \code{MBS_GPU_MULTI=0} & Отключить automatic multi-orientation GPU batching. \\
 \code{MBS_GPU_MULTI_K_FULL=1} & Experimental fused multi-\code{k_eq} diffraction. \\
 \code{MBS_SHARED_ORIENT_CHUNK=N} & Переопределить размер orientation chunk. \\
+\code{MBS_BEAM_LOG=PATH} & Явно записать первый обработанный набор PO-пучков; по умолчанию beam log не создается. \\
 \bottomrule
 \end{longtable}
 
@@ -1228,7 +1299,7 @@ gpu/bin/mbs_po_gpu_double_fast --po -p 1 125.9 78.09 \
 \endhead
 \code{--po} & нет & Physical Optics: трассировка + дифракция. \\
 \code{--go} & нет & Только geometrical optics, без PO-интеграла. \\
-\code{-p} & \code{TYPE L D [extra]} & Built-in particle. \\
+\code{-p} & \code{TYPE PARAMETERS...} & Built-in particle; точный синтаксис зависит от TYPE. \\
 \code{--pf} & \code{FILE} & Частица из файла. \\
 \code{--rs} & \code{SIZE} & Масштабировать file particle по $D_{\max}$. \\
 \code{--k_eq} & \code{X} & Масштабировать по equivalent size parameter. \\
@@ -1236,7 +1307,7 @@ gpu/bin/mbs_po_gpu_double_fast --po -p 1 125.9 78.09 \
 \code{-w} & \code{LAMBDA} & Длина волны. \\
 \code{-n} & \code{N} & Максимальная глубина трассировки. \\
 \code{--abs} & нет & Включить absorption integral. \\
-\code{--close} & нет & Закрыть симметричные endpoint/periodic ranges. \\
+\code{--close} & нет & Завершить процесс после расчета; compatibility-флаг. \\
 \bottomrule
 \end{longtable}
 
@@ -1254,7 +1325,7 @@ gpu/bin/mbs_po_gpu_double_fast --po -p 1 125.9 78.09 \
 \endhead
 \code{--fixed} & \code{BETA GAMMA} & Одна ориентация в градусах. \\
 \code{--orientfile} & \code{FILE} & Загрузить ориентации из файла. \\
-\code{--beta_grid} & \code{NB NG} & Явная beta/gamma grid. \\
+\code{--random}, \code{--euler-grid} & \code{NB NG} & Явная beta/gamma grid. \\
 \code{--oldauto} & \code{DIV} & Physics-based grid из diffraction scale. \\
 \code{--ring_points} & \code{N} & Точек на diffraction ring для oldauto estimates. \\
 \code{--sobol} & \code{N} & Sobol orientations. \\
@@ -1264,13 +1335,17 @@ gpu/bin/mbs_po_gpu_double_fast --po -p 1 125.9 78.09 \
 \code{--hammersley} & \code{N} & Hammersley orientations. \\
 \code{--lattice} & \code{N} & Rank-1 lattice orientations. \\
 \code{--montecarlo} & \code{N} & Random orientations. \\
-\code{--adaptive} & \code{EPS} & Подбор числа ориентаций по сходимости. \\
-\code{--auto} & \code{EPS} & Auto theta, phi, orientations. \\
+\code{--adaptive_euler} & \code{EPS} & Раздельный подбор $N_\beta$ и $N_\gamma$ с совместной проверкой. \\
+\code{--adaptive} & \code{EPS} & Подбор только числа Sobol-ориентаций. \\
+\code{--auto} & \code{EPS} & Auto phi, theta, Sobol orientations при фиксированном $n$. \\
 \code{--autofull} & \code{EPS} & Auto \code{-n}, theta, phi, orientations. \\
-\code{--oldautofull} & \code{EPS} & Auto search, final oldauto grid. \\
+\code{--oldautofull} & \code{EPS} & Auto search, финальная адаптивная регулярная Euler grid. \\
+\code{--adaptive-config} & \code{FILE} & Загрузить min/max/точность каждого adaptive-параметра. \\
 \code{--maxorient} & \code{N} & Верхняя граница adaptive orientations. \\
+\code{--max_beta_points} & \code{N} & Верхняя граница $N_\beta$. \\
+\code{--max_gamma_points} & \code{N} & Верхняя граница $N_\gamma$. \\
 \code{--chunk} & \code{N} & Max orientations/gamma values per memory chunk. \\
-\code{--mirror_gamma} & нет & Половина gamma domain + mirrored Mueller. \\
+\code{--mirror_gamma} & нет & Делит default gamma-domain пополам; явный gamma-range считается уже сокращенным. \\
 \code{--pole} & нет & Считать beta-poles как одну gamma с полным весом. \\
 \code{--coh_orient} & нет & Legacy coherent-across-orientations mode. \\
 \bottomrule
@@ -1278,7 +1353,7 @@ gpu/bin/mbs_po_gpu_double_fast --po -p 1 125.9 78.09 \
 
 \subsection{Сетка, ускорение, cutoffs}
 
-\begin{longtable}{L{0.25\linewidth} L{0.20\linewidth} L{0.45\linewidth}}
+\begin{longtable}{L{0.30\linewidth} L{0.20\linewidth} L{0.40\linewidth}}
 \caption{Grid, acceleration, cutoffs.}\\
 \toprule
 Флаг & Аргументы & Описание \\
@@ -1288,19 +1363,26 @@ gpu/bin/mbs_po_gpu_double_fast --po -p 1 125.9 78.09 \
 Флаг & Аргументы & Описание \\
 \midrule
 \endhead
-\code{--grid} & \code{T0 T1 NTH NPHI} & Uniform scattering grid. \\
-\code{--auto_tgrid} & \code{EPS} & Adaptive theta grid. \\
-\code{--auto_phi} & \code{X} & Auto phi count estimate. \\
+\code{--grid} & \code{T0 T1 NPHI NTH} & Uniform scattering grid; выводится $NTH+1$ строк. \\
+\code{--auto_tgrid} & \code{EPS} & Adaptive theta grid по полной Mueller-ошибке, без фиксированных halo-углов. \\
+\code{--auto_phi} & нет & Измеряемая сходимость $N_\phi$ с допуском 0.02. \\
+\code{--adaptive_phi} & \code{EPS} & Подбор только $N_\phi$. \\
+\code{--adaptive_reflections} & \code{EPS} & Подбор только глубины $n$. \\
+\code{--max_theta_points} & \code{N} & Верхняя граница числа theta-точек. \\
+\code{--max_phi_points} & \code{N} & Верхняя граница $N_\phi$. \\
+\code{--convergence_passes} & \code{N} & Streak для orientation/phi/reflection/Euler; не для theta. \\
 \code{--gpu} & нет & Использовать CUDA backend. \\
 \code{--cpu} & нет & Принудительно CPU backend из GPU binary. \\
 \code{--threads} & \code{N} & OpenMP threads. \\
-\code{--beam_eps} & \code{EPS} & Cutoff по амплитуде/интенсивности beam. \\
-\code{--eps_area} & \code{EPS} & Cutoff по площади beam polygon. \\
-\code{--eps_int} & \code{EPS} & Cutoff по $|J|^2A$. \\
+\code{--beam_cutoff_j} & \code{EPS} & Cutoff по относительному $|J|^2$. \\
+\code{--beam_cutoff_area} & \code{EPS} & Cutoff по площади beam polygon. \\
+\code{--beam_cutoff_importance} & \code{EPS} & Cutoff по $|J|^2A$. \\
 \code{--trace_max_beams} & \code{N} & Abort orientation after N beam nodes; 0 disables. \\
 \code{--trace_prefilter} & нет & Projected-AABB prefilter for non-convex clipping. \\
-\code{--size_range} & \code{A B N} & Диапазон размеров. \\
-\code{--multi_k} & \code{LIST} & Несколько $k_{\mathrm{eq}}$ в одном запуске. \\
+\code{--multigrid} & \code{A B N} & Log-grid абсолютных физических
+$D_{\max}$; для каждой точки $x=\pi D_{\max}/\lambda$, независимо от размера
+исходной формы. \\
+\code{--multikeq}, \code{--multikeq_list} & range/file & Диапазон или список $k_{\mathrm{eq}}$. \\
 \bottomrule
 \end{longtable}
 
@@ -1350,8 +1432,13 @@ gpu/bin/mbs_po_gpu_double_fast --po -p 1 125.9 78.09 \
 \code{*_noshadow} & Output без shadow/external beam, если включен \code{--noshadow_output}. \\
 \code{*_betas/} & Per-beta intermediate outputs, если включен \code{--save_betas}. \\
 \code{checkpoint} & Resume files для длинных orientation-grid runs. \\
+\nolinkurl{particle_for_check.dat} & Фактически использованная после масштабирования частица внутри каталога результата. \\
 \bottomrule
 \end{longtable}
+
+Обычный запуск не создает диагностические файлы в текущем рабочем каталоге.
+Первый набор PO-пучков записывается только при явно заданном
+\code{MBS_BEAM_LOG=PATH}.
 
 \section{Практические правила валидации}
 
@@ -1990,10 +2077,10 @@ Group & Flags \\
 \midrule
 \endhead
 Method & \code{--po}, \code{--go}, \code{--incoh}. \\
-Particle & \code{-p}, \code{--pf}, \code{--rs}, \code{--k_eq}, \code{--size_range}, \code{--multi_k}. \\
+Particle & \code{-p}, \code{--pf}, \code{--rs}, \code{--k_eq}, \code{--multigrid}, \code{--multikeq}, \code{--multikeq_list}. \\
 Optics & \code{--ri}, \code{-w}, \code{-n}, \code{--abs}, \code{--legacy_sign}. \\
 Orientation & \code{--fixed}, \code{--oldauto}, \code{--sobol}, \code{--adaptive}, \code{--auto}, \code{--autofull}, \code{--pole}. \\
-Scattering grid & \code{--grid}, \code{--auto_tgrid}, \code{--auto_phi}, \code{--close}. \\
+Scattering grid & \code{--grid}, \code{--tgrid}, \code{--auto_tgrid}, \code{--auto_phi}, \code{--nphi}. \\
 Backend & \code{--gpu}, \code{--cpu}, \code{--threads}. \\
 Diagnostics & \code{--jones}, \code{--save_betas}, \code{--noshadow_output}, \code{--karczewski}, \code{--help-debug}. \\
 \bottomrule

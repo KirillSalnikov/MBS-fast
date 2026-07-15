@@ -17,9 +17,9 @@ GPU_FAST_MATH ?= 1
 TARGET ?= bin/mbs_po_gpu_float_fast
 FAST_SUFFIX := $(if $(filter 1,$(GPU_FAST_MATH)),_fast,)
 MPI_SUFFIX := $(if $(filter 1,$(USE_MPI)),_mpi,)
-OBJDIR ?= build/$(GPU_PRECISION)$(FAST_SUFFIX)$(MPI_SUFFIX)/obj
 GPU_ARCH ?= $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.' | sed 's/[^0-9].*//')
 GPU_ARCH := $(if $(GPU_ARCH),$(GPU_ARCH),86)
+OBJDIR ?= build/$(GPU_PRECISION)$(FAST_SUFFIX)$(MPI_SUFFIX)_sm$(GPU_ARCH)/obj
 
 ifeq ($(USE_MPI),1)
 CXX := mpicxx
@@ -27,9 +27,11 @@ endif
 
 CPU_MODEL := $(shell lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -1)
 ARCH_FLAGS ?= $(shell bash $(ROOT)/scripts/detect_arch_flags.sh "$(CXX)")
+GIT_DESCRIBE ?= $(shell git -C $(ROOT) describe --tags --always --dirty --long 2>/dev/null || echo unknown)
 OPT_FLAGS ?= -O3 -funroll-loops
 CXXFLAGS ?= $(OPT_FLAGS) $(ARCH_FLAGS) -std=gnu++11 -fopenmp
-CXXFLAGS += -DUSE_CUDA -DMBS_GPU_DEFAULT_ON -DMBS_GPU_BUILD_ARCH=$(GPU_ARCH) -I$(CUDA_PATH)/include
+CXXFLAGS += -DUSE_CUDA -DMBS_GPU_DEFAULT_ON -DMBS_GPU_BUILD_ARCH=$(GPU_ARCH) \
+            -DMBS_GIT_DESCRIBE=\"$(GIT_DESCRIBE)\" -I$(CUDA_PATH)/include
 ifeq ($(USE_MPI),1)
 CXXFLAGS += -DUSE_MPI
 endif
@@ -41,9 +43,11 @@ override NVCCFLAGS += -ccbin $(CUDA_HOST_CXX) -include $(CUDA_HOST_COMPAT)
 override NVCCFLAGS += -Xcompiler -fopenmp
 ifeq ($(GPU_PRECISION),float)
 override NVCCFLAGS += -DMBS_GPU_FLOAT
+CXXFLAGS += -DMBS_GPU_FLOAT
 endif
 ifeq ($(GPU_FAST_MATH),1)
 override NVCCFLAGS += --use_fast_math
+CXXFLAGS += -DMBS_GPU_FAST_MATH
 endif
 
 INCLUDES := -I$(SRC_DIR) -I$(SRC_DIR)/math -I$(SRC_DIR)/handler \

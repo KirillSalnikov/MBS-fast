@@ -2,8 +2,11 @@
 
 #include "TracerPO.h"
 #include "BeamCache.h"
+#include "AdaptiveConfig.h"
 #include <vector>
 #include <string>
+
+struct PreparedOrientation;
 
 class TracerPOTotal : public TracerPO
 {
@@ -75,17 +78,36 @@ public:
     /// then full diffraction on the found grid.
     /// gridOnly=true: only build theta grid, don't compute full Mueller
     void TraceAdaptiveTheta(int nOrient, double betaSym, double gammaSym,
-                             double eps = 0.05, int maxDepth = 8, bool gridOnly = false);
+                            double eps = 0.05, int maxDepth = 8,
+                            bool gridOnly = false);
+
+    /// Converge the azimuthal scattering grid while keeping the current theta
+    /// grid and reflection depth fixed. Returns the selected N_phi.
+    int TraceAdaptivePhi(double eps, int nOrient, double betaSym,
+                         double gammaSym);
+
+    /// Converge the maximum internal reflection depth. Returns the selected n.
+    int TraceAdaptiveReflections(double eps, int nOrient, double betaSym,
+                                 double gammaSym, int startReflection = 0);
+
+    /// Independently refine Gauss beta and periodic gamma counts, then verify
+    /// their joint refinement. Returns the selected pair through the outputs.
+    void TraceAdaptiveEuler(double eps, double betaSym, double gammaSym,
+                            int maxOrientOverride, int &nBeta, int &nGamma,
+                            bool runFinalDiffraction = true);
 
     /// Adaptive convergence mode
     int TraceAdaptive(double eps, double betaSym, double gammaSym,
                       int maxOrientOverride = 0, bool runFinalDiffraction = true,
                       bool strictConvergence = false);
 
-    /// Full 3D sequential optimization: n → N_phi → N_orient
-    void TraceAutoFull(double eps, double betaSym, double gammaSym, int maxOrientOverride,
-                       Particle *particle, double wave, ScatteringRange &conus,
-                       class HandlerPOTotal *handler);
+    /// Unified automatic controller used by --auto, --autofull and
+    /// --diffraction-autofull.
+    void TraceAutoConverged(double eps, double betaSym, double gammaSym,
+                            int maxOrientOverride, bool tuneReflections,
+                            bool regularEulerFinal, ScatteringRange &conus,
+                            bool tunePhi, bool tuneTheta);
+    void ResetConvergenceReport(const std::string &mode, double eps);
 
 private:
     struct WeightedOrientation
@@ -115,9 +137,17 @@ private:
               weight(weight_), useQuaternion(true) {}
     };
 
-    void TraceWeightedOrientations(const std::vector<WeightedOrientation> &orientations,
-                                   const std::string &label,
-                                   double betaSym, double gammaSym);
+    void TraceWeightedOrientations(
+        const std::vector<WeightedOrientation> &orientations,
+        const std::string &label, double betaSym, double gammaSym);
+    std::vector<WeightedOrientation> BuildSobolOrientations(
+        int nOrient, double betaSym, double gammaSym, unsigned int seed) const;
+    std::vector<WeightedOrientation> BuildEulerOrientations(
+        int nBeta, int nGamma, double betaSym, double gammaSym) const;
+    void PrepareOrientationProbe(
+        const std::vector<WeightedOrientation> &orientations,
+        std::vector<PreparedOrientation> &prepared,
+        double &incomingEnergy, double &outputEnergy);
     void EvaluateOwenControlSample(int nOrient, unsigned int seed,
                                    double betaSym, double gammaSym,
                                    const ScatteringRange &ctrlSphere,
@@ -134,6 +164,11 @@ private:
                                   int nAz,
                                   std::vector<double> &ctrlSum,
                                   double &energySum);
+    void RecordConvergenceStep(const std::string &parameter, int sweep,
+                               int primary, int secondary, double error,
+                               double thetaDeg, int element,
+                               const std::string &status);
+    double m_convergenceTarget = 0.0;
 
 public:
     /// Coherent across orientations (legacy mode, physically incorrect for random)
@@ -159,12 +194,12 @@ public:
     /// Points per diffraction ring used by physics-based orientation estimates.
     int m_ringPoints = 3;
 
+    /// Hard safety limits for all adaptive searches. CLI max-* options
+    /// override these defaults without changing the requested tolerance.
+    AdaptiveConvergenceLimits m_adaptiveLimits;
+
     /// Optional final averaging seeds for --autofull nested Owen Sobol.
     std::vector<unsigned int> m_owenAverageSeeds;
-
-    /// Use --autofull search steps, but finish with regular oldauto-style
-    /// beta/gamma quadrature instead of Sobol/Owen orientations.
-    bool m_oldAutoFullFinal = false;
 
     /// Last adaptive run's per-theta orientation requirements. 0 means unknown.
     std::vector<int> m_lastAdaptiveRowOrient;

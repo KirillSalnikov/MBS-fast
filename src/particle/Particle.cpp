@@ -1,12 +1,113 @@
 #include "Particle.h"
 #include <cfloat>
+#include <cerrno>
+#include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <cstring>
+#include <sstream>
+#include <stdexcept>
+#include <vector>
 #include "global.h"
 
 using namespace std;
 using ::complex;
+
+namespace
+{
+
+struct ParticleFileLine
+{
+    int number;
+    std::string text;
+};
+
+[[noreturn]] void ParticleFileError(const std::string &path, int line,
+                                    const std::string &problem,
+                                    const std::string &fix)
+{
+    std::ostringstream message;
+    message << "invalid particle file '" << path << "'";
+    if (line > 0)
+        message << " at line " << line;
+    message << ": " << problem << "\n  Fix: " << fix;
+    throw std::runtime_error(message.str());
+}
+
+std::string Trim(const std::string &value)
+{
+    const std::string whitespace = " \t\r\n";
+    const size_t first = value.find_first_not_of(whitespace);
+    if (first == std::string::npos)
+        return std::string();
+    const size_t last = value.find_last_not_of(whitespace);
+    return value.substr(first, last - first + 1);
+}
+
+std::vector<std::string> DataTokens(const std::string &text)
+{
+    std::vector<std::string> tokens;
+    std::istringstream input(text);
+    std::string token;
+    while (input >> token)
+    {
+        if (!token.empty() && token[0] == '#')
+            break;
+        tokens.push_back(token);
+    }
+    return tokens;
+}
+
+long ParseIntegerToken(const std::string &token, const std::string &path,
+                       int line, const std::string &name)
+{
+    char *end = nullptr;
+    errno = 0;
+    const long value = std::strtol(token.c_str(), &end, 10);
+    if (errno == ERANGE || end == token.c_str() || *end != '\0')
+    {
+        ParticleFileError(path, line,
+                          name + " must be an integer; got '" + token + "'.",
+                          "replace it with an integer in the documented particle-file header.");
+    }
+    return value;
+}
+
+double ParseDoubleToken(const std::string &token, const std::string &path,
+                        int line, const std::string &name)
+{
+    char *end = nullptr;
+    errno = 0;
+    const double value = std::strtod(token.c_str(), &end);
+    if (errno == ERANGE || end == token.c_str() || *end != '\0'
+        || !std::isfinite(value))
+    {
+        ParticleFileError(path, line,
+                          name + " must be a finite number; got '" + token + "'.",
+                          "replace it with a finite decimal value.");
+    }
+    return value;
+}
+
+ParticleFileLine NextHeaderLine(std::ifstream &input, const std::string &path,
+                                int &lineNumber, const std::string &name)
+{
+    std::string text;
+    while (std::getline(input, text))
+    {
+        ++lineNumber;
+        const std::string trimmed = Trim(text);
+        if (trimmed.empty() || trimmed[0] == '#')
+            continue;
+        return ParticleFileLine{lineNumber, trimmed};
+    }
+    ParticleFileError(path, lineNumber,
+                      "missing " + name + " header.",
+                      "provide the three required header records before the facet vertices.");
+}
+
+} // namespace
 
 Particle::Particle()
 {
@@ -19,77 +120,175 @@ void Particle::SetFromFile(const std::string &filename)
 
     if (!pfile.is_open())
     {
-        std::cerr << "File \"" << filename << "\" is not found" << std::endl;
-        throw std::exception();
+        ParticleFileError(filename, 0, "the file cannot be opened.",
+                          "check that the path exists and is readable.");
     }
 
-    const int bufSize = 1024;
-    char *buff = (char*)malloc(sizeof(char) * bufSize);
+    int lineNumber = 0;
+    const ParticleFileLine concavityLine = NextHeaderLine(
+        pfile, filename, lineNumber, "concavity");
+    const std::vector<std::string> concavity = DataTokens(concavityLine.text);
+    if (concavity.size() != 1)
+        ParticleFileError(filename, concavityLine.number,
+                          "the concavity header expects one value (0 or 1).",
+                          "write '0' for convex geometry or '1' for nonconvex geometry.");
+    const long concavityValue = ParseIntegerToken(
+        concavity[0], filename, concavityLine.number, "concavity flag");
+    if (concavityValue != 0 && concavityValue != 1)
+        ParticleFileError(filename, concavityLine.number,
+                          "the concavity flag must be 0 or 1.",
+                          "write '0' for convex geometry or '1' for nonconvex geometry.");
 
-    nFacets = 0;
-    Facet *facet = &(defaultFacets[nFacets++]);
+    const ParticleFileLine aggregateLine = NextHeaderLine(
+        pfile, filename, lineNumber, "aggregate");
+    const std::vector<std::string> aggregate = DataTokens(aggregateLine.text);
+    if (aggregate.empty() || aggregate.size() > 2)
+        ParticleFileError(filename, aggregateLine.number,
+                          "the aggregate header expects '0' or '1 FACETS_PER_PART'.",
+                          "write '0' for one particle, or for example '1 8' for an aggregate.");
+    const long aggregateValue = ParseIntegerToken(
+        aggregate[0], filename, aggregateLine.number, "aggregate flag");
+    if (aggregateValue != 0 && aggregateValue != 1)
+        ParticleFileError(filename, aggregateLine.number,
+                          "the aggregate flag must be 0 or 1.",
+                          "write '0' for one particle or '1 FACETS_PER_PART' for an aggregate.");
+    if (aggregateValue == 0 && aggregate.size() != 1)
+        ParticleFileError(filename, aggregateLine.number,
+                          "FACETS_PER_PART is present while the aggregate flag is 0.",
+                          "remove the second value or change the header to '1 FACETS_PER_PART'.");
+    if (aggregateValue == 1 && aggregate.size() != 2)
+        ParticleFileError(filename, aggregateLine.number,
+                          "an aggregate requires FACETS_PER_PART.",
+                          "write the number of facets in each component, for example '1 8'.");
 
-    char *ptr, *trash;
-
-    pfile.getline(buff, bufSize);
-    isConcave = strtol(buff, &trash, 10);
-
-    pfile.getline(buff, bufSize);
-    ptr = strtok(buff, " ");
-    isAggregated = strtol(ptr, &trash, 10);
-
-    if (isAggregated)
+    int parsedFacetsPerPart = 0;
+    if (aggregateValue == 1)
     {
-        ptr = strtok(NULL, " ");
+        const long value = ParseIntegerToken(
+            aggregate[1], filename, aggregateLine.number, "FACETS_PER_PART");
+        if (value < 1 || value > MAX_FACET_NUM)
+            ParticleFileError(filename, aggregateLine.number,
+                              "FACETS_PER_PART is outside the supported range.",
+                              "use an integer from 1 to " + std::to_string(MAX_FACET_NUM) + ".");
+        parsedFacetsPerPart = static_cast<int>(value);
+    }
 
-        if (ptr != nullptr)
+    const ParticleFileLine symmetryLine = NextHeaderLine(
+        pfile, filename, lineNumber, "symmetry");
+    const std::vector<std::string> symmetry = DataTokens(symmetryLine.text);
+    if (symmetry.size() != 2)
+        ParticleFileError(filename, symmetryLine.number,
+                          "the symmetry header expects BETA_DEG GAMMA_DEG.",
+                          "provide two positive angular-domain widths, for example '90 60'.");
+    const double betaDeg = ParseDoubleToken(
+        symmetry[0], filename, symmetryLine.number, "beta symmetry");
+    const double gammaDeg = ParseDoubleToken(
+        symmetry[1], filename, symmetryLine.number, "gamma symmetry");
+    if (!(betaDeg > 0.0 && betaDeg <= 180.0))
+        ParticleFileError(filename, symmetryLine.number,
+                          "beta symmetry must be in (0, 180] degrees.",
+                          "use the particle's positive beta fundamental-domain width.");
+    if (!(gammaDeg > 0.0 && gammaDeg <= 360.0))
+        ParticleFileError(filename, symmetryLine.number,
+                          "gamma symmetry must be in (0, 360] degrees.",
+                          "use the particle's positive gamma fundamental-domain width.");
+
+    std::vector<std::vector<Point3f> > parsedFacets;
+    std::vector<Point3f> vertices;
+    int facetStartLine = 0;
+    const auto finishFacet = [&](int separatorLine) {
+        if (vertices.empty())
+            return;
+        if (vertices.size() < 3)
+            ParticleFileError(filename, facetStartLine,
+                              "a facet has fewer than three vertices.",
+                              "add vertices or remove the incomplete facet before line "
+                                  + std::to_string(separatorLine) + ".");
+        if (parsedFacets.size() >= MAX_FACET_NUM)
+            ParticleFileError(filename, facetStartLine,
+                              "the particle exceeds the facet limit.",
+                              "reduce the geometry to at most "
+                                  + std::to_string(MAX_FACET_NUM) + " facets.");
+
+        Facet candidate;
+        for (const Point3f &point : vertices)
+            candidate.AddVertex(point);
+        const double area = candidate.Area();
+        if (!(area > 0.0) || !std::isfinite(area))
+            ParticleFileError(filename, facetStartLine,
+                              "a facet has zero or non-finite area.",
+                              "remove duplicate/collinear vertices and keep a nondegenerate polygon.");
+        parsedFacets.push_back(vertices);
+        vertices.clear();
+        facetStartLine = 0;
+    };
+
+    std::string text;
+    while (std::getline(pfile, text))
+    {
+        ++lineNumber;
+        const std::string trimmed = Trim(text);
+        if (trimmed.empty())
         {
-            nFacetsInPart = strtod(ptr, &trash);
-        }
-    }
-
-    // read symmetry params
-    {
-        pfile.getline(buff, bufSize);
-
-        ptr = strtok(buff, " ");
-        m_symmetry.beta = DegToRad(strtod(ptr, &trash));
-
-        ptr = strtok(NULL, " ");
-        m_symmetry.gamma = DegToRad(strtod(ptr, &trash));
-    }
-
-    pfile.getline(buff, bufSize); // skip empty line
-
-    while (!pfile.eof()) // read vertices of facets
-    {
-        pfile.getline(buff, bufSize);
-        ptr = strtok(buff, " ");
-
-        if (strlen(buff) == 0 || !strcmp(ptr, "\r"))
-        {
-            facet = &(defaultFacets[nFacets++]);
+            finishFacet(lineNumber);
             continue;
         }
+        if (trimmed[0] == '#')
+            continue;
 
-        int c_i = 0;
+        const std::vector<std::string> coordinates = DataTokens(trimmed);
+        if (coordinates.size() != 3)
+            ParticleFileError(filename, lineNumber,
+                              "a vertex expects exactly three coordinates X Y Z.",
+                              "write one finite three-dimensional vertex per line.");
+        if (vertices.size() >= MAX_VERTEX_NUM - 1)
+            ParticleFileError(filename, lineNumber,
+                              "a facet exceeds the vertex limit.",
+                              "split or simplify it to at most "
+                                  + std::to_string(MAX_VERTEX_NUM - 1) + " vertices.");
+        if (vertices.empty())
+            facetStartLine = lineNumber;
+        vertices.push_back(Point3f(
+            ParseDoubleToken(coordinates[0], filename, lineNumber, "X coordinate"),
+            ParseDoubleToken(coordinates[1], filename, lineNumber, "Y coordinate"),
+            ParseDoubleToken(coordinates[2], filename, lineNumber, "Z coordinate")));
+    }
+    if (pfile.bad())
+        ParticleFileError(filename, lineNumber,
+                          "an I/O error interrupted the particle body.",
+                          "verify the file storage and permissions, then read the complete file again.");
+    finishFacet(lineNumber + 1);
 
-        while (ptr != NULL)
-        {
-            facet->arr[facet->nVertices].coordinates[c_i++] = strtod(ptr, &trash);
-            ptr = strtok(NULL, " ");
-        }
-
-        ++(facet->nVertices);
+    if (parsedFacets.empty())
+        ParticleFileError(filename, lineNumber,
+                          "the file contains no facets.",
+                          "add facet polygons after the three header records; separate facets with blank lines.");
+    if (aggregateValue == 1
+        && parsedFacets.size() % static_cast<size_t>(parsedFacetsPerPart) != 0)
+    {
+        ParticleFileError(filename, aggregateLine.number,
+                          "the total facet count is not divisible by FACETS_PER_PART.",
+                          "correct FACETS_PER_PART or complete every aggregate component.");
     }
 
-    pfile.close();
-    free(buff);
+    nFacets = static_cast<int>(parsedFacets.size());
+    isConcave = concavityValue != 0;
+    isAggregated = aggregateValue != 0;
+    nFacetsInPart = parsedFacetsPerPart;
+    m_symmetry.beta = DegToRad(betaDeg);
+    m_symmetry.gamma = DegToRad(gammaDeg);
+    m_symmetry.alpha = 0.0;
 
-    // correction of number of facet
-    while (defaultFacets[nFacets-1].nVertices == 0)
+    for (int i = 0; i < nFacets; ++i)
     {
-        --nFacets;
+        defaultFacets[i].Clear();
+        defaultFacets[i].isVisibleIn = true;
+        defaultFacets[i].isVisibleOut = true;
+        facets[i].Clear();
+        facets[i].isVisibleIn = true;
+        facets[i].isVisibleOut = true;
+        for (const Point3f &point : parsedFacets[i])
+            defaultFacets[i].AddVertex(point);
     }
 
     if (isConcave)

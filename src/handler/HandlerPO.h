@@ -56,6 +56,7 @@ class HandlerPO : public Handler
 public:
     HandlerPO(Particle *particle, Light *incidentLight, int nTheta,
               double wavelength);
+    ~HandlerPO() override;
 
     void HandleBeams(std::vector<Beam> &beams, double sinZenith) override;
 

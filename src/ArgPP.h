@@ -8,6 +8,11 @@
 #include <cstring>
 #include <cstdlib>
 #include <stdexcept>
+#include <cerrno>
+#include <climits>
+#include <cmath>
+#include <algorithm>
+#include <set>
 
 class ArgPP
 {
@@ -20,7 +25,7 @@ public: // methods
 	void AddRule(const std::string &key, char valueNum = 0,
 				 bool isOptional = false, const std::string &dependsOn = "")
 	{
-		Rule rule(valueNum, isOptional, dependsOn);
+		Rule rule(valueNum, isOptional, dependsOn, key);
 		AddArgRule(key, rule);
 	}
 
@@ -29,11 +34,8 @@ public: // methods
 	{
 		if (longKey.size() > 1)
 		{
-			Rule rule1(nValues, isOptional, dependsOn, longKey);
-			AddArgRule(key, rule1);
-
-			Rule rule2(nValues, isOptional, dependsOn, key);
-			AddArgRule(longKey, rule2);
+			AddRule(key, nValues, isOptional, dependsOn);
+			AddAlias(longKey, key);
 		}
 		else
 		{
@@ -42,13 +44,27 @@ public: // methods
 		}
 	}
 
+	void AddAlias(const std::string &alias, const std::string &key)
+	{
+		if (alias == key)
+			return;
+		auto target = m_rules.find(key);
+		if (target == m_rules.end())
+			Error("cannot add alias '" + alias + "': target argument '" + key + "' is not registered");
+		Rule aliasRule = target->second;
+		aliasRule.storageKey = key;
+		AddArgRule(alias, aliasRule);
+	}
+
 	void Parse(int argc, const char *argv[])
 	{
 		m_args.clear();
+		m_sourceKeys.clear();
 		m_programName = argv[0];
 		std::vector<std::string> rawArgs(argv+1, argv+argc);
 		FillArgs(rawArgs);
 		CheckRequiredArgs();
+		CheckDependencies();
 	}
 
 	int GetIntValue(const std::string &key, size_t valueIndex = 0) const
@@ -75,7 +91,7 @@ public: // methods
 
 	bool IsCatched(const std::string &key) const
 	{
-		auto it = m_args.find(key);
+		auto it = m_args.find(NormalizeKey(key));
 		return it != m_args.end();
 	}
 
@@ -83,7 +99,7 @@ public: // methods
 	{
 		unsigned num = 0;
 
-		auto it = m_args.find(key);
+		auto it = m_args.find(NormalizeKey(key));
 
 		if (it != m_args.end())
 		{
@@ -97,6 +113,7 @@ public: // methods
 	{
 		m_rules.clear();
 		m_args.clear();
+		m_sourceKeys.clear();
 		m_programName.clear();
 	}
 
@@ -105,18 +122,18 @@ private: // types
 	struct Rule
 	{
 		Rule(char valueNum, bool isOptional, const std::string &dependsOn,
-			 const std::string &secondaryBeam = "")
+			 const std::string &storageKey)
 			: valueNum(valueNum),
 			  isOptional(isOptional),
 			  dependsOn(dependsOn),
-			  secondaryKey(secondaryBeam)
+			  storageKey(storageKey)
 		{
 		}
 
 		char valueNum;
 		bool isOptional;
 		std::string dependsOn;
-		std::string secondaryKey;
+		std::string storageKey;
 	};
 
 	typedef std::pair<std::string, Rule> NamedRule;
@@ -127,6 +144,7 @@ private: // fields
 
 	std::map<std::string, Rule> m_rules;
 	std::map<std::string, Arg> m_args;
+	std::map<std::string, std::string> m_sourceKeys;
 	std::string m_programName;
 
 private: // methods
@@ -156,22 +174,24 @@ private: // methods
 
 			if (valueNum == 0) // read key
 			{
-				key = RetrieveKey(rawArg);
-				if (key.empty())
+				std::string sourceKey = RetrieveKey(rawArg);
+				if (sourceKey.empty())
 				{
 					Error("unrecognized argument '" + rawArg + "'.\n"
-						  "  Hint: flags use -X (single char) or --name (multi-char).\n"
-						  "  Run with --help for usage.");
+						  "  Fix: use -X for a one-character flag or --name for a long flag; "
+						  "run with --help to see valid names.");
 				}
-				Rule rule = FindRule(key);
-				CheckDependency(key, rule);
+				Rule rule = FindRule(sourceKey);
+				key = rule.storageKey;
 				if (m_args.find(key) != m_args.end())
 				{
-					std::string dash = (key.size() == 1) ? "-" : "--";
-					Error("duplicate flag '" + dash + key + "'.\n"
-						  "  Specify each flag once; if you need a list, use a list-valued flag such as --owen_seeds.");
+					Error("duplicate option '" + FormatFlag(sourceKey) + "'.\n"
+						  + "  " + FormatFlag(m_sourceKeys[key])
+						  + " already sets the same option.\n"
+						  + "  Fix: remove one spelling; list-valued options accept all values after one flag.");
 				}
 				m_args.insert(NamedArg(key, Arg()));
+				m_sourceKeys[key] = sourceKey;
 				valueNum = rule.valueNum;
 			}
 			else // read key value (one of these)
@@ -182,17 +202,17 @@ private: // methods
 
 		if (valueNum != 0 && valueNum != '+' && valueNum != '*')
 		{
-			std::string msg = "not enough values for --" + key
+			std::string msg = "not enough values for " + FormatFlag(m_sourceKeys[key])
 					+ ": expected " + std::to_string(GetExpectedArgs(key))
 					+ " value(s), got " + std::to_string(m_args[key].size())
-					+ "\n  Run with --help for usage.";
+					+ "\n  Fix: provide the missing value(s); run with --help for the expected syntax.";
 			Error(msg);
 		}
 		// '+' requires at least 1 value
 		if (valueNum == '+' && m_args.count(key) && m_args[key].empty())
 		{
-			Error("--" + key + " requires at least one value.\n"
-				  "  Run with --help for usage.");
+			Error(FormatFlag(m_sourceKeys[key]) + " requires at least one value.\n"
+				  "  Fix: add a value after the flag; run with --help for the expected syntax.");
 		}
 	}
 
@@ -241,23 +261,26 @@ private: // methods
 		{
 			std::string dash = (key.size() == 1) ? "-" : "--";
 			std::string msg = "unknown flag '" + dash + key + "'";
-			// Suggest similar flags (min 3 chars match, skip single-char keys)
-			std::string suggestions;
-			size_t minLen = std::min(key.size(), (size_t)3);
-			if (minLen >= 3)
+			std::vector<std::pair<size_t, std::string> > candidates;
+			std::set<std::string> seen;
+			for (const auto &registered : m_rules)
 			{
-				std::string prefix = key.substr(0, minLen);
-				for (auto &r : m_rules)
-				{
-					if (r.first.size() < 2) continue;
-					if (r.first.find(prefix) != std::string::npos
-						|| prefix.find(r.first.substr(0, minLen)) != std::string::npos)
-						suggestions += "    --" + r.first + "\n";
-				}
+				if (registered.first.size() < 2 || !seen.insert(registered.first).second)
+					continue;
+				size_t distance = EditDistance(key, registered.first);
+				size_t limit = std::max((size_t)2, key.size() / 3);
+				if (distance <= limit)
+					candidates.push_back(std::make_pair(distance, registered.first));
 			}
-			if (!suggestions.empty())
-				msg += "\n  Did you mean:\n" + suggestions;
-			msg += "\n  Run with --help for the full list of flags.";
+			std::sort(candidates.begin(), candidates.end());
+			if (!candidates.empty())
+			{
+				msg += "\n  Did you mean:";
+				for (size_t i = 0; i < std::min((size_t)3, candidates.size()); ++i)
+					msg += "\n    " + FormatFlag(candidates[i].second);
+			}
+			msg += "\n  Fix: replace the flag with a valid name shown above, or run with --help "
+				   "for the full list.";
 			Error(msg);
 		}
 
@@ -266,11 +289,12 @@ private: // methods
 
 	const Arg &FindArg(const std::string &key) const
 	{
-		auto it = m_args.find(key);
+		std::string normalized = NormalizeKey(key);
+		auto it = m_args.find(normalized);
 
 		if (it == m_args.end())
 		{
-			std::string msg = "argument with key '" + key + "' not found";
+			std::string msg = "argument with key '" + normalized + "' not found";
 			Error(msg);
 		}
 
@@ -284,34 +308,30 @@ private: // methods
 			m_args[key].push_back(value);
 
 			// TODO: kostyl'
-			const Rule &rule = FindRule(key);
-
-			if (!rule.secondaryKey.empty())
-			{
-				m_args[rule.secondaryKey].push_back(value);
-			}
-			//
+			(void)FindRule(key);
 		}
 		else
 		{
-			Error("unexpected '" + value + "' while reading values for --" + key + "\n"
-				  "  Check the argument order or the number of values for this flag.\n"
-				  "  Got so far: --" + key + " " + JoinArg(key));
+			Error("unexpected '" + value + "' while reading values for "
+				  + FormatFlag(m_sourceKeys[key]) + "\n"
+				  "  Got so far: --" + key + " " + JoinArg(key) + "\n"
+				  "  Fix: check the argument order and provide exactly the number of values "
+				  "shown by --help.");
 		}
 	}
 
-	void CheckDependency(const std::string &key, const Rule &rule)
+	void CheckDependencies()
 	{
-		std::string dependsOn = rule.dependsOn;
-
-		if (!dependsOn.empty())
+		for (auto &arg : m_args)
 		{
-			auto it = m_args.find(dependsOn);
-
-			if (it == m_args.end())
+			const Rule &rule = FindRule(arg.first);
+			if (!rule.dependsOn.empty()
+				&& m_args.find(NormalizeKey(rule.dependsOn)) == m_args.end())
 			{
-				Error("--" + key + " requires --" + dependsOn
-					  + " to be specified before it.");
+				Error(FormatFlag(m_sourceKeys[arg.first]) + " requires "
+					  + FormatFlag(rule.dependsOn) + ".\n"
+					  + "  Fix: add " + FormatFlag(rule.dependsOn)
+					  + " anywhere in the command line.");
 			}
 		}
 	}
@@ -331,7 +351,7 @@ private: // methods
 
 	size_t GetExpectedArgs(const std::string &key) const
 	{
-		auto it = m_rules.find(key);
+		auto it = m_rules.find(NormalizeKey(key));
 		if (it != m_rules.end())
 		{
 			char v = it->second.valueNum;
@@ -390,19 +410,49 @@ private: // methods
 
 	void CheckRequiredArgs()
 	{
-		for (const NamedRule &nrule : m_rules)
+		for (const auto &nrule : m_rules)
 		{
 			Rule rule = nrule.second;
+			if (nrule.first != rule.storageKey)
+				continue;
 
 			if (!rule.isOptional
-					&& m_args.find(nrule.first) == m_args.end()
-					&& m_args.find(rule.secondaryKey) == m_args.end())
+					&& m_args.find(nrule.first) == m_args.end())
 			{
-				std::string dash = (nrule.first.size() == 1) ? "-" : "--";
-				Error("required argument " + dash + nrule.first + " is missing.\n"
-					  "  Run with --help for usage.");
+				Error("required argument " + FormatFlag(nrule.first) + " is missing.\n"
+					  "  Fix: add the argument using the syntax shown by --help.");
 			}
 		}
+	}
+
+	std::string NormalizeKey(const std::string &key) const
+	{
+		auto it = m_rules.find(key);
+		return (it == m_rules.end()) ? key : it->second.storageKey;
+	}
+
+	std::string FormatFlag(const std::string &key) const
+	{
+		return (key.size() == 1 ? "-" : "--") + key;
+	}
+
+	size_t EditDistance(const std::string &a, const std::string &b) const
+	{
+		std::vector<size_t> previous(b.size() + 1), current(b.size() + 1);
+		for (size_t j = 0; j <= b.size(); ++j)
+			previous[j] = j;
+		for (size_t i = 1; i <= a.size(); ++i)
+		{
+			current[0] = i;
+			for (size_t j = 1; j <= b.size(); ++j)
+			{
+				size_t replace = previous[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1);
+				current[j] = std::min(replace,
+					std::min(previous[j] + 1, current[j - 1] + 1));
+			}
+			previous.swap(current);
+		}
+		return previous[b.size()];
 	}
 
 	bool NonKey(const std::string &arg)
@@ -435,27 +485,35 @@ private: // methods
 	T ConvertTo(const std::string &rawValue) const
 	{
 		bool ok = true;
-		char *end;
-		T val;
+		char *end = nullptr;
+		T val = T();
+		errno = 0;
 
 		if (typeid(T) == typeid(int))
 		{
-			val = (T)strtol(rawValue.c_str(), &end, 10);
+			long parsed = strtol(rawValue.c_str(), &end, 10);
+			if (errno == ERANGE || parsed < INT_MIN || parsed > INT_MAX)
+				ok = false;
+			val = (T)parsed;
 		}
 		else if (typeid(T) == typeid(double))
 		{
-			val = (T)strtod(rawValue.c_str(), &end);
+			double parsed = strtod(rawValue.c_str(), &end);
+			if (errno == ERANGE || !std::isfinite(parsed))
+				ok = false;
+			val = (T)parsed;
 		}
 		else
 		{
 			ok = false;
 		}
 
-		if (strlen(end) != 0 || !ok)
+		if (end == rawValue.c_str() || (end && strlen(end) != 0) || !ok)
 		{
 			std::string typeName = (typeid(T) == typeid(int)) ? "integer" : "floating-point number";
 			std::string msg = "cannot convert value '" + rawValue
-					+ "' to " + typeName;
+					+ "' to " + typeName
+					+ ".\n  Fix: replace it with a finite " + typeName + ".";
 			Error(msg);
 		}
 
