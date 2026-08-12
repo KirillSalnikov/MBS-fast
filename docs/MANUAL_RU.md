@@ -351,6 +351,8 @@ scale = (k_eq_target * lambda / (2*pi)) / r_eq_original
 | `--auto_tgrid` | `EPS` | Adaptive theta grid через bisection. |
 | `--auto_phi` | none | Автоматический выбор `Nphi`. |
 | `--nphi` | `N` | Override phi count, максимальный приоритет. |
+| `--diffraction-limit-grid` | `FACTOR` | Вычислить равномерные шаги theta и экваториальный phi из дифракционной оценки. |
+| `--latitude-phi-grid` | none | Уменьшать число phi-точек пропорционально `sin(theta)` вдали от экватора. |
 | `--filter` | `DEG` | Ограничить output backscatter cone. |
 | `--point` | none | Legacy backscatter point mode. |
 
@@ -360,6 +362,53 @@ scale = (k_eq_target * lambda / (2*pi)) / r_eq_original
 |---|---|
 | Theta | `--tgrid` > `--grid` > `--auto_tgrid` > `--auto` > default |
 | Phi | `--nphi` > `--grid` > `--auto_phi` > `--auto` > default |
+
+### Сетка по дифракционному пределу
+
+Для PO-расчета с `--diffraction-grid DIV` флаг
+`--diffraction-limit-grid FACTOR` строит сетку рассеяния из максимального
+размера текущей частицы `lmax` и длины волны `lambda`:
+
+```text
+xi = FACTOR * 0.69 * lambda / lmax
+Ntheta = ceil(pi / xi)
+Nphi,eq = round_up_6(max(12, ceil(2*pi / xi)))
+```
+
+Здесь `xi` измеряется в радианах, а результат содержит `Ntheta + 1` строк
+theta от 0 до pi. `FACTOR=1` буквально использует оценку дифракционной
+полосы; `FACTOR=0.5` уменьшает оба шага примерно вдвое, а значение больше
+единицы делает сетку грубее. Это априорная оценка разрешения, а не
+апостериорная гарантия точности: для контрольного расчета следует сравнить
+как минимум `FACTOR=1` и `FACTOR=0.5` по всем нужным элементам Mueller.
+
+С `--latitude-phi-grid` число азимутальных узлов зависит от строки:
+
+```text
+Nphi(theta) = min(Nphi,eq,
+                  round_up_6(max(12, ceil(2*pi*sin(theta) / xi))))
+```
+
+Экваториальный шаг остается тем же, но около полюсов не вычисляются
+избыточные азимуты, соответствующие почти одним и тем же направлениям.
+Число узлов округляется до кратного шести; полюсная строка связывается с
+соседней рабочей группой для устойчивой обработки базиса. Результат хранится
+на полной прямоугольной выходной сетке `Nphi,eq`, поэтому формат файлов не
+меняется.
+
+Оба флага предназначены для `--method po --diffraction-grid DIV` и одного
+размера частицы на процесс. `--diffraction-limit-grid` конфликтует с явным
+`--nphi`; `--latitude-phi-grid` пока не используется в общем serial
+multi-size trace. Для каждого размера запускайте отдельный процесс, чтобы
+`lmax` и сетка были пересчитаны корректно.
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+MBS_GPU_GROUPS=1 MBS_GPU_MULTI_MAX=4 \
+gpu/bin/mbs_po_gpu_double --po -p 1 100 70 --ri 1.3116 0 -w 0.532 \
+    -n 8 --diffraction-grid 2 --diffraction-limit-grid 0.5 \
+    --latitude-phi-grid --threads 32 --close -o results/column
+```
 
 ## GPU и multi-GPU
 
@@ -416,6 +465,21 @@ J10.re, J10.im, J11.re, J11.im
 | `MBS_GPU_BLOCK=N` | Override CUDA block size. |
 
 ### Multi-size и multi-GPU
+
+Переменная `MBS_GPU_GROUPS=1` включает отдельный точный планировщик для
+переменной latitude-phi сетки. Независимые группы строк theta распределяются
+динамически по видимым GPU. Трассировка ориентаций и подготовленные пучки
+остаются общими в host RAM; на каждой карте создается один CUDA workspace.
+Для каждого orientation chunk упакованные пучки, веса и смещения копируются
+на данную карту один раз и повторно используются следующими theta-группами.
+
+Число карт задается `CUDA_VISIBLE_DEVICES`; `MBS_GPU_MULTI=N` или
+`MBS_GPU_MULTI_MAX=N` ограничивает число workers. Значение
+`MBS_GPU_MULTI=0` оставляет одну карту. Этот путь требует прямой CUDA-
+дифракции: при FFT-интерполяции или theta-zone beam filtering программа
+сохраняет прежний путь. Ускорение не обязано быть линейным, поскольку
+CPU-трассировка, упаковка, PCIe-копирование, редукция и неодинаковая стоимость
+theta-групп остаются в полном времени.
 
 | Флаг | Аргументы | Описание |
 |---|---:|---|
@@ -568,6 +632,8 @@ budget или делить задачу на меньшие независимы
 | `--auto_tgrid` | `EPS` | Adaptive theta grid. |
 | `--auto_phi` | none | Auto phi count. |
 | `--nphi` | `N` | Override phi count. |
+| `--diffraction-limit-grid` | `FACTOR` | Шаги theta и экваториального phi: `FACTOR*0.69*lambda/lmax`. |
+| `--latitude-phi-grid` | none | Число phi-точек по строкам пропорционально `sin(theta)`. |
 | `--threads` | `N` | OpenMP worker threads. |
 | `--gpu` | none | CUDA backend. |
 | `--cpu` | none | Force CPU backend in GPU build. |
@@ -659,6 +725,7 @@ budget или делить задачу на меньшие независимы
 | `MBS_FFT_ADAPTIVE_PHI=1` | Adaptive reduced-phi behavior в FFT backend. |
 | `MBS_GPU_MULTI=0` | Отключить automatic multi-orientation GPU batching. |
 | `MBS_GPU_MULTI_MAX=N` | Ограничить GPU multi batching. |
+| `MBS_GPU_GROUPS=1` | Распределить группы theta переменной latitude-phi сетки по видимым GPU. |
 | `MBS_GPU_MULTI_K_FULL=1` | Experimental fused multi-`k_eq` diffraction. |
 | `MBS_GPU_BEAM_STATS=1` | Печатать GPU beam packing/count diagnostics. |
 | `MBS_SHARED_BETA_GROUP=N` | Override beta grouping для shared batch. |

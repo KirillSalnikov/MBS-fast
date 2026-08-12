@@ -72,7 +72,7 @@
 \title{\textbf{MBS-fast}\\
 Подробное руководство по физике, математике, численным методам и запуску}
 \author{Актуальная PDF-версия для ветки \code{main}}
-\date{15 июля 2026}
+\date{12 августа 2026}
 
 \begin{document}
 \maketitle
@@ -1116,6 +1116,57 @@ Uniform theta grid с \code{--grid T0 T1 NPHI NTH} печатает $N_{\theta}+
   N_b\,N_\theta\,N_\phi\,N_{\mathrm{ori}}.
 \]
 
+\subsection{Сетка по дифракционному пределу и широтный шаг по phi}
+
+Для PO-режима с \code{--diffraction-grid DIV} флаг
+\code{--diffraction-limit-grid FACTOR} вычисляет разрешение из максимального
+размера текущей частицы $l_{\max}$ и длины волны $\lambda$:
+\[
+  \xi=\mathrm{FACTOR}\,0.69\frac{\lambda}{l_{\max}},\qquad
+  N_\theta=\left\lceil\frac{\pi}{\xi}\right\rceil,
+\]
+\[
+  N_{\phi,\mathrm{eq}}=
+  \operatorname{round\_up}_6\!\left[
+    \max\!\left(12,\left\lceil\frac{2\pi}{\xi}\right\rceil\right)
+  \right].
+\]
+Величина $\xi$ задается в радианах, а output содержит $N_\theta+1$ строк от
+$0$ до $\pi$. Значение \code{FACTOR=1} буквально использует оценку ширины
+дифракционной полосы; \code{FACTOR=0.5} уменьшает оба угловых шага примерно
+вдвое, а значение больше единицы делает сетку грубее. Это априорная оценка
+разрешения, а не гарантия точности. Для production-расчета следует сравнить
+выбранный factor с меньшим factor по всем требуемым элементам Mueller.
+
+Флаг \code{--latitude-phi-grid} сохраняет экваториальное разрешение, но
+задает отдельное число азимутальных точек для каждой строки:
+\[
+  N_\phi(\theta)=\min\!\left\{N_{\phi,\mathrm{eq}},
+  \operatorname{round\_up}_6\!\left[
+    \max\!\left(12,
+      \left\lceil\frac{2\pi\sin\theta}{\xi}\right\rceil\right)
+  \right]\right\}.
+\]
+Так удаляются почти совпадающие азимутальные направления около полюсов без
+огрубления экватора. Число узлов округляется до кратного шести, а полюсная
+строка связывается с соседней рабочей группой для устойчивой обработки
+базиса. Накопление выполняется на полной прямоугольной output-сетке
+$N_{\phi,\mathrm{eq}}$, поэтому формат результата не меняется.
+
+Оба флага требуют \code{--method po --diffraction-grid DIV} и одного размера
+частицы на процесс. \code{--diffraction-limit-grid} конфликтует с явным
+\code{--phi-points}; широтная phi-сетка пока не поддерживается общим serial
+multi-size trace. Каждый размер следует запускать отдельным процессом, чтобы
+$l_{\max}$ и сетка пересчитывались заново.
+
+\begin{lstlisting}[language=bash]
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+MBS_GPU_GROUPS=1 MBS_GPU_MULTI_MAX=4 \
+gpu/bin/mbs_po_gpu_double --po -p 1 100 70 --ri 1.3116 0 -w 0.532 \
+  -n 8 --diffraction-grid 2 --diffraction-limit-grid 0.5 \
+  --latitude-phi-grid --threads 32 --close -o results/column
+\end{lstlisting}
+
 \subsection{Auto theta grid}
 
 Forward peak требует более мелкого шага, чем боковые и задние углы. Автоматическая theta-сетка использует оценку ширины пика:
@@ -1265,6 +1316,20 @@ Multi-GPU делит работу по независимым блокам: orie
 \]
 На практике ограничивают PCIe/NVLink transfers, разная скорость GPU, размер batches и необходимость финальной редукции Mueller.
 
+Для переменной широтной phi-сетки \code{MBS_GPU_GROUPS=1} включает отдельный
+точный планировщик. Независимые группы theta-строк назначаются видимым GPU
+динамически. Трассировка ориентаций и подготовленные пучки остаются общими в
+host RAM; на каждой карте создается один CUDA workspace. В пределах каждого
+orientation chunk упакованные пучки, веса и смещения загружаются на карту один
+раз и повторно используются следующими theta-группами этого worker.
+
+Набор карт выбирается через \code{CUDA_VISIBLE_DEVICES}. Переменные
+\code{MBS_GPU_MULTI=N} и \code{MBS_GPU_MULTI_MAX=N} ограничивают число
+workers; \code{MBS_GPU_MULTI=0} оставляет одну карту. Планировщик применяется
+только к прямой CUDA-дифракции без FFT-интерполяции и theta-zone beam
+filtering. Ускорение не обязано быть линейным: CPU-трассировка, packing,
+PCIe-копирование, редукция и дисбаланс theta-групп остаются в полном времени.
+
 \begin{longtable}{L{0.30\linewidth} L{0.60\linewidth}}
 \caption{GPU environment variables.}\\
 \toprule
@@ -1279,6 +1344,8 @@ Multi-GPU делит работу по независимым блокам: orie
 \code{MBS_GPU_FUSED_MUELLER=1} & Предпочитать fused diffraction-to-Mueller kernels. \\
 \code{MBS_GPU_STAGE_MUELLER=1} & Включить staged per-orientation Mueller reduction. \\
 \code{MBS_GPU_MULTI=0} & Отключить automatic multi-orientation GPU batching. \\
+\code{MBS_GPU_MULTI_MAX=N} & Ограничить число GPU workers. \\
+\code{MBS_GPU_GROUPS=1} & Распределить группы theta широтной phi-сетки по видимым GPU. \\
 \code{MBS_GPU_MULTI_K_FULL=1} & Experimental fused multi-\code{k_eq} diffraction. \\
 \code{MBS_FFT_PHI_FACTOR=N} & Legacy FFT factor, только если не задан
 \code{--fft-factor}; CLI имеет приоритет. \\
@@ -1437,6 +1504,10 @@ gpu/bin/mbs_po_gpu_double_fast --po -p 1 125.9 78.09 \
 \code{--auto_phi} & нет & Измеряемая сходимость $N_\phi$ с допуском 0.02. \\
 \code{--adaptive_phi} & \code{EPS} & Подбор только $N_\phi$. \\
 \code{--adaptive_reflections} & \code{EPS} & Подбор только глубины $n$. \\
+\code{--diffraction-limit-grid} & \code{FACTOR} & Шаги theta и
+экваториального phi: $\mathrm{FACTOR}\,0.69\lambda/l_{\max}$. \\
+\code{--latitude-phi-grid} & нет & Число phi-точек по строкам
+пропорционально $\sin\theta$. \\
 \code{--max_theta_points} & \code{N} & Верхняя граница числа theta-точек. \\
 \code{--max_phi_points} & \code{N} & Верхняя граница $N_\phi$. \\
 \code{--convergence_passes} & \code{N} & Streak для orientation/phi/reflection/Euler; не для theta. \\

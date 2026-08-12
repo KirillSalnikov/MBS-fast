@@ -369,6 +369,8 @@ Orientation modifiers:
 | `--auto_tgrid` | `EPS` | Adaptive theta grid by bisection. |
 | `--auto_phi` | none | Choose `Nphi` automatically from size parameter. |
 | `--nphi` | `N` | Override phi count. Highest priority for phi. |
+| `--diffraction-limit-grid` | `FACTOR` | Derive uniform theta and equatorial-phi steps from the diffraction estimate. |
+| `--latitude-phi-grid` | none | Reduce the phi count in proportion to `sin(theta)` away from the equator. |
 | `--filter` | `DEG` | Restrict output to a backscattering cone. Legacy/debug use. |
 | `--point` | none | Backscatter point mode. Legacy; avoid for optimized regular-grid production. |
 
@@ -380,6 +382,51 @@ Priority:
 | Phi grid | `--nphi` > `--grid` > `--auto_phi` > `--auto` > default |
 
 For full angular integrals use `--grid 0 180 Nphi Nth`. Endpoint rows are physical half-cells; they must not have zero weight.
+
+### Diffraction-limit and latitude-phi grids
+
+For a PO `--diffraction-grid DIV` run, `--diffraction-limit-grid FACTOR`
+derives the scattering grid from the current particle maximum dimension
+`lmax` and wavelength `lambda`:
+
+```text
+xi = FACTOR * 0.69 * lambda / lmax
+Ntheta = ceil(pi / xi)
+Nphi,eq = round_up_6(max(12, ceil(2*pi / xi)))
+```
+
+`xi` is in radians and the output contains `Ntheta + 1` theta rows from zero
+to pi. `FACTOR=1` uses the diffraction-width estimate literally;
+`FACTOR=0.5` approximately halves both angular steps, while a factor above
+one makes the grid coarser. This is an a-priori resolution estimate, not an
+a-posteriori accuracy guarantee. Validate a production factor against a finer
+one for every required Mueller element.
+
+With `--latitude-phi-grid`, each theta row uses
+
+```text
+Nphi(theta) = min(Nphi,eq,
+                  round_up_6(max(12, ceil(2*pi*sin(theta) / xi))))
+```
+
+The equatorial spacing is unchanged, while redundant azimuth samples are
+removed near the poles. Counts are rounded to a multiple of six, and a pole
+shares its neighboring work group for stable basis handling. Results are
+still accumulated into the full rectangular `Nphi,eq` output layout, so the
+file format does not change.
+
+Both options currently require `--method po --diffraction-grid DIV` and one
+particle size per process. `--diffraction-limit-grid` conflicts with explicit
+`--nphi`; the latitude grid is not supported by a shared serial multi-size
+trace. Run each size in its own process so `lmax` and the grid are recomputed.
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+MBS_GPU_GROUPS=1 MBS_GPU_MULTI_MAX=4 \
+gpu/bin/mbs_po_gpu_double --po -p 1 100 70 --ri 1.3116 0 -w 0.532 \
+    -n 8 --diffraction-grid 2 --diffraction-limit-grid 0.5 \
+    --latitude-phi-grid --threads 32 --close -o results/column
+```
 
 ## GPU and multi-GPU
 
@@ -458,6 +505,20 @@ Useful controls:
 Do not confuse this with full GPU ray tracing. The production GPU backend is primarily a diffraction and Mueller-accumulation accelerator. `--gpu_trace` only prefilters nonconvex tracing candidates; exact intersections remain CPU-side.
 
 ### Multi-size and multi-GPU scans
+
+`MBS_GPU_GROUPS=1` enables the dedicated exact scheduler for a variable
+latitude-phi grid. Independent theta-row work groups are assigned dynamically
+to visible GPUs. Orientation tracing and prepared beams remain shared in host
+memory, while each GPU owns one CUDA workspace. Packed beams, weights, and
+offsets are uploaded once per orientation chunk per device and reused for the
+subsequent theta groups handled by that worker.
+
+Select devices with `CUDA_VISIBLE_DEVICES`. Limit workers with
+`MBS_GPU_MULTI=N` or `MBS_GPU_MULTI_MAX=N`; `MBS_GPU_MULTI=0` leaves one GPU.
+This scheduler requires direct CUDA diffraction. FFT interpolation and
+theta-zone beam filtering retain the existing path. Speedup is not necessarily
+linear because CPU tracing, packing, PCIe transfers, final reduction, and
+theta-group load imbalance remain in the wall time.
 
 | Flag | Arguments | Description |
 |---|---:|---|
@@ -610,6 +671,8 @@ Common scheduler controls:
 | `--auto_tgrid` | `EPS` | Adaptive theta grid. |
 | `--auto_phi` | none | Automatic phi count. |
 | `--nphi` | `N` | Override phi count. |
+| `--diffraction-limit-grid` | `FACTOR` | Set theta and equatorial-phi steps to `FACTOR*0.69*lambda/lmax`. |
+| `--latitude-phi-grid` | none | Use a row-dependent phi count proportional to `sin(theta)`. |
 | `--threads` | `N` | OpenMP worker threads. |
 | `--gpu` | none | CUDA backend. |
 | `--cpu` | none | Force CPU backend in GPU build. |
@@ -703,6 +766,7 @@ Production-use variables:
 | `MBS_FFT_ADAPTIVE_PHI=1` | Enable adaptive reduced-phi behavior in FFT backend. |
 | `MBS_GPU_MULTI=0` | Disable automatic multi-orientation GPU batching. |
 | `MBS_GPU_MULTI_MAX=N` | Cap automatic GPU multi batching. |
+| `MBS_GPU_GROUPS=1` | Distribute variable latitude-phi theta groups across visible GPUs. |
 | `MBS_GPU_MULTI_K_FULL=1` | Experimental fused multi-`k_eq` diffraction. |
 | `MBS_GPU_BEAM_STATS=1` | Print GPU beam packing/count diagnostics. |
 | `MBS_SHARED_BETA_GROUP=N` | Override shared-batch beta grouping. |

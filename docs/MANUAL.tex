@@ -114,7 +114,7 @@
 
 \title{MBS-fast Manual}
 \author{}
-\date{July 15, 2026}
+\date{August 12, 2026}
 
 \begin{document}
 \maketitle
@@ -759,6 +759,10 @@ convergence with tolerance \(0.02\). \\
 reflection depth \(n\) only. \\
 \texttt{-\/-nphi} & \texttt{N} & Override phi count. Highest priority
 for phi. \\
+\texttt{-\/-diffraction-limit-grid} & \texttt{FACTOR} & Derive uniform
+theta and equatorial-phi steps from the diffraction estimate. \\
+\texttt{-\/-latitude-phi-grid} & none & Reduce the phi count in
+proportion to $\sin\theta$ away from the equator. \\
 \texttt{-\/-max\_theta\_points} & \texttt{N} & Hard theta-point limit;
 default 4097. \\
 \texttt{-\/-max\_phi\_points} & \texttt{N} & Hard \(N_\phi\) limit;
@@ -770,6 +774,56 @@ cone. Legacy/debug use. \\
 \texttt{-\/-point} & none & Backscatter point mode. Legacy; avoid for
 optimized regular-grid production. \\
 \end{longtable}
+
+\subsection{Diffraction-limit and latitude-phi grids}
+
+For a PO \texttt{-\/-diffraction-grid DIV} run,
+\texttt{-\/-diffraction-limit-grid FACTOR} derives the scattering grid from
+the current particle maximum dimension $l_{\max}$ and wavelength $\lambda$:
+\[
+ \xi=\mathrm{FACTOR}\,0.69\frac{\lambda}{l_{\max}},\qquad
+ N_\theta=\left\lceil\frac{\pi}{\xi}\right\rceil,
+\]
+\[
+ N_{\phi,\mathrm{eq}}=
+ \operatorname{round\_up}_6\!\left[
+  \max\!\left(12,\left\lceil\frac{2\pi}{\xi}\right\rceil\right)
+ \right].
+\]
+The output contains $N_\theta+1$ rows from zero to $\pi$.
+\texttt{FACTOR=1} uses the estimate literally; \texttt{FACTOR=0.5}
+approximately halves both angular steps, while a factor above one makes the
+grid coarser. This is an a-priori resolution estimate, not an a-posteriori
+accuracy guarantee. Validate a production factor against a finer value for
+every required Mueller element.
+
+With \texttt{-\/-latitude-phi-grid}, each theta row uses
+\[
+ N_\phi(\theta)=\min\!\left\{N_{\phi,\mathrm{eq}},
+ \operatorname{round\_up}_6\!\left[
+  \max\!\left(12,
+   \left\lceil\frac{2\pi\sin\theta}{\xi}\right\rceil\right)
+ \right]\right\}.
+\]
+Equatorial spacing is unchanged while redundant azimuth samples are removed
+near the poles. Counts are rounded to a multiple of six, and a pole shares
+its neighboring work group for stable basis handling. Accumulation still uses
+the full rectangular $N_{\phi,\mathrm{eq}}$ output layout, so the file format
+does not change.
+
+Both options require \texttt{-\/-method po -\/-diffraction-grid DIV} and one
+particle size per process. The diffraction-limit option conflicts with
+explicit \texttt{-\/-nphi}; the latitude grid is not supported by a shared
+serial multi-size trace. Run each size in its own process so $l_{\max}$ and
+the grid are recomputed.
+
+\begin{Shaded}
+\begin{Highlighting}[]
+\VariableTok{CUDA_VISIBLE_DEVICES}\OperatorTok{=}\NormalTok{0,1,2,3 }\DataTypeTok{\textbackslash{}}
+\VariableTok{MBS_GPU_GROUPS}\OperatorTok{=}\NormalTok{1 }\VariableTok{MBS_GPU_MULTI_MAX}\OperatorTok{=}\NormalTok{4 }\DataTypeTok{\textbackslash{}}
+\ExtensionTok{gpu/bin/mbs_po_gpu_double}\NormalTok{ ... }\AttributeTok{{-}{-}diffraction-limit-grid}\NormalTok{ 0.5 }\AttributeTok{{-}{-}latitude-phi-grid}
+\end{Highlighting}
+\end{Shaded}
 
 Selection rules:
 
@@ -1203,6 +1257,21 @@ backend is primarily a diffraction and Mueller-accumulation accelerator.
 \texttt{-\/-gpu\_trace} only prefilters nonconvex tracing candidates;
 exact intersections remain CPU-side.
 
+For a variable latitude-phi grid, \texttt{MBS\_GPU\_GROUPS=1} enables a
+dedicated exact scheduler. Independent theta-row work groups are assigned
+dynamically to visible GPUs. Orientation tracing and prepared beams remain
+shared in host memory, while each device owns one CUDA workspace. Packed
+beams, weights, and offsets are uploaded once per orientation chunk per
+device and reused for subsequent theta groups handled by that worker.
+
+Use \nolinkurl{CUDA_VISIBLE_DEVICES} to select devices. Use
+\nolinkurl{MBS_GPU_MULTI=N} or \nolinkurl{MBS_GPU_MULTI_MAX=N} to limit the
+number of workers; \nolinkurl{MBS_GPU_MULTI=0} leaves one GPU. The scheduler
+requires direct CUDA diffraction; FFT interpolation and theta-zone beam
+filtering retain the existing path. Speedup need not be linear because CPU
+tracing, packing, PCIe transfers, final reduction, and theta-group imbalance
+remain in wall time.
+
 \subsection{Multi-size scans}\label{multi-size-scans}
 
 \begin{longtable}[]{@{}L{0.24\linewidth}L{0.22\linewidth}L{0.46\linewidth}@{}}
@@ -1383,6 +1452,10 @@ Flag & Arguments & Description \\
 \texttt{-\/-adaptive\_phi} & \texttt{EPS} & Converge \(N_\phi\) only. \\
 \texttt{-\/-adaptive\_reflections} & \texttt{EPS} & Converge \(n\) only. \\
 \texttt{-\/-nphi} & \texttt{N} & Override phi count. \\
+\texttt{-\/-diffraction-limit-grid} & \texttt{FACTOR} & Set theta and
+equatorial-phi steps to $\mathrm{FACTOR}\,0.69\lambda/l_{\max}$. \\
+\texttt{-\/-latitude-phi-grid} & none & Use a row-dependent phi count
+proportional to $\sin\theta$. \\
 \texttt{-\/-max\_theta\_points} & \texttt{N} & Adaptive theta limit. \\
 \texttt{-\/-max\_phi\_points} & \texttt{N} & Adaptive phi limit. \\
 \texttt{-\/-convergence\_passes} & \texttt{N} & Required passing streak. \\
@@ -1514,6 +1587,8 @@ when \texttt{-\/-fft-factor} is absent; the explicit CLI value has priority. \\
 \texttt{MBS\_GPU\_MULTI=0} & Disable automatic multi-orientation GPU
 batching. \\
 \texttt{MBS\_GPU\_MULTI\_MAX=N} & Cap automatic GPU multi batching. \\
+\texttt{MBS\_GPU\_GROUPS=1} & Distribute variable latitude-phi theta
+groups across visible GPUs. \\
 \texttt{MBS\_GPU\_MULTI\_K\_FULL=1} & Experimental fused
 multi-\texttt{k\_eq} diffraction. \\
 \texttt{MBS\_BEAM\_LOG=PATH} & Write the first handled PO beam set to the
