@@ -170,8 +170,27 @@ def main() -> None:
     plt.close(fig)
 
     selected_q = [q for q in (0.1, 0.3, 0.5, 1.0, 1.5, 2.0) if q in results_by_q]
-    fig, axes = plt.subplots(4, 4, figsize=(14.4, 11.0), sharex=True, constrained_layout=True)
     colors = plt.cm.viridis(np.linspace(0.05, 0.95, len(selected_q)))
+
+    fig, axes = plt.subplots(2, 1, figsize=(9.2, 7.2), sharex=True, constrained_layout=True)
+    for q, color in zip(selected_q, colors):
+        mueller = results_by_q[q]
+        axes[0].plot(theta_ref, mueller[:, 0], color=color, linewidth=1.25, label=f"Q={q:g}")
+        axes[1].plot(theta_ref, mueller[:, 1] / mueller[:, 0], color=color, linewidth=1.25)
+    axes[0].set_yscale("log")
+    axes[0].set_ylabel("M11")
+    axes[0].legend(ncol=3)
+    axes[1].set_ylabel("M12/M11")
+    axes[1].set_xlabel("Угол рассеяния θ, град.")
+    for ax in axes:
+        ax.grid(True, alpha=0.25)
+        ax.set_xlim(float(theta_ref[0]), float(theta_ref[-1]))
+    fig.suptitle("Сходимость по ориентациям: полый столбик L=20 мкм, μ=0.6622", fontsize=13)
+    for suffix in ("png", "pdf"):
+        fig.savefig(root / f"orientation_convergence_m11_m12.{suffix}", dpi=220)
+    plt.close(fig)
+
+    fig, axes = plt.subplots(4, 4, figsize=(14.4, 11.0), sharex=True, constrained_layout=True)
     for index, (ax, name) in enumerate(zip(axes.flat, MUELLER_NAMES)):
         for q, color in zip(selected_q, colors):
             mueller = results_by_q[q]
