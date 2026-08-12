@@ -367,7 +367,9 @@ scale = (k_eq_target * lambda / (2*pi)) / r_eq_original
 
 Для PO-расчета с `--diffraction-grid DIV` флаг
 `--diffraction-limit-grid FACTOR` строит сетку рассеяния из максимального
-размера текущей частицы `lmax` и длины волны `lambda`:
+максимальной длины ребра граней текущей частицы `lmax` и длины волны
+`lambda`. Это не диаметр частицы и не максимальное расстояние между
+произвольными вершинами:
 
 ```text
 xi = FACTOR * 0.69 * lambda / lmax

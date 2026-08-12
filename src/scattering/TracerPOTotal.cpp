@@ -510,13 +510,13 @@ static int CeilDivInt(int value, int div)
 }
 
 static AutoFullOldautoOrientEstimate AutoFullOldautoEstimate(
-    double betaSym, double gammaSym, double wave, double Dmax,
+    double betaSym, double gammaSym, double wave, double maxEdge,
     int ringPoints, int div)
 {
     AutoFullOldautoOrientEstimate est;
     est.div = std::max(1, div);
-    const double deltaDeg = (Dmax > 0.0)
-        ? 0.69 * wave / Dmax * (180.0 / M_PI)
+    const double deltaDeg = (maxEdge > 0.0)
+        ? 0.69 * wave / maxEdge * (180.0 / M_PI)
         : 180.0;
     const double orientStep = deltaDeg / std::max(1, ringPoints);
     const double betaDeg = RadToDeg(betaSym);
@@ -530,7 +530,7 @@ static AutoFullOldautoOrientEstimate AutoFullOldautoEstimate(
 }
 
 static AutoFullOldautoOrientEstimate AutoFullOldautoEstimateForTarget(
-    double betaSym, double gammaSym, double wave, double Dmax,
+    double betaSym, double gammaSym, double wave, double maxEdge,
     int ringPoints, int targetOrient, bool evenGamma)
 {
     AutoFullOldautoOrientEstimate best;
@@ -540,7 +540,7 @@ static AutoFullOldautoOrientEstimate AutoFullOldautoEstimateForTarget(
     for (int div = 1; div <= 4096; ++div)
     {
         AutoFullOldautoOrientEstimate est = AutoFullOldautoEstimate(
-            betaSym, gammaSym, wave, Dmax, ringPoints, div);
+            betaSym, gammaSym, wave, maxEdge, ringPoints, div);
         if (evenGamma && (est.nGamma % 2 != 0))
             ++est.nGamma;
         est.total = ClampOrientCount((long long)est.nBeta * est.nGamma);
@@ -559,7 +559,7 @@ static AutoFullOldautoOrientEstimate AutoFullOldautoEstimateForTarget(
 
     if (!haveBest)
     {
-        best = AutoFullOldautoEstimate(betaSym, gammaSym, wave, Dmax,
+        best = AutoFullOldautoEstimate(betaSym, gammaSym, wave, maxEdge,
                                        ringPoints, 1);
         if (evenGamma && (best.nGamma % 2 != 0))
             ++best.nGamma;
@@ -7426,10 +7426,10 @@ void TracerPOTotal::TraceAdaptiveEuler(double eps, double betaSym,
 
     AutoFullOldautoOrientEstimate startEstimate = AutoFullOldautoEstimate(
         betaSym, gammaSym, m_scattering->m_wave,
-        m_particle->MaximalDimention(), m_ringPoints, 16);
+        m_particle->MaximumEdgeLength(), m_ringPoints, 16);
     AutoFullOldautoOrientEstimate capEstimate = AutoFullOldautoEstimate(
         betaSym, gammaSym, m_scattering->m_wave,
-        m_particle->MaximalDimention(), m_ringPoints, 1);
+        m_particle->MaximumEdgeLength(), m_ringPoints, 1);
 
     const int betaMin = std::max(2, m_adaptiveLimits.minBetaPoints);
     const int gammaMin = std::max(6,
@@ -7962,9 +7962,9 @@ int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
     // Physics-based orientation estimates use the same ceil/full-grid formula
     // as --oldauto.  This matters for large particles: the oldauto div2 grid is
     // the practical upper reference used by the production column baselines.
-    double Dmax = m_particle->MaximalDimention();
+    double maxEdge = m_particle->MaximumEdgeLength();
     AutoFullOldautoOrientEstimate oldauto16 = AutoFullOldautoEstimate(
-        betaSym, gammaSym, m_scattering->m_wave, Dmax, m_ringPoints, 16);
+        betaSym, gammaSym, m_scattering->m_wave, maxEdge, m_ringPoints, 16);
     const int minOrientations = std::max(
         16, m_adaptiveLimits.minOrientations);
     int nStartRaw = oldauto16.total;
@@ -7999,7 +7999,7 @@ int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
     }
 #endif
     AutoFullOldautoOrientEstimate oldauto1 = AutoFullOldautoEstimate(
-        betaSym, gammaSym, m_scattering->m_wave, Dmax, m_ringPoints, 1);
+        betaSym, gammaSym, m_scattering->m_wave, maxEdge, m_ringPoints, 1);
     int maxFromPhysics = oldauto1.total;
     int maxP2 = 1;
     while (maxP2 <= std::numeric_limits<int>::max() / 2
@@ -8014,7 +8014,7 @@ int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
     AutoFullOldautoOrientEstimate oldautoCapEstimate =
         oldautoMaxDiv > 0
             ? AutoFullOldautoEstimate(betaSym, gammaSym,
-                                      m_scattering->m_wave, Dmax,
+                                      m_scattering->m_wave, maxEdge,
                                       m_ringPoints, oldautoMaxDiv)
             : AutoFullOldautoOrientEstimate();
     int oldautoCap = oldautoMaxDiv > 0

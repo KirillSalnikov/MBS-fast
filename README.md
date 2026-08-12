@@ -45,9 +45,10 @@ and cuFFT. The build script selects a CUDA-compatible host compiler when one is
 installed. CUDA and host-compiler compatibility is determined by the installed
 toolkit, not by MBS-fast.
 
-Building the manuals requires XeLaTeX, `fontspec`, `unicode-math`, the
-Latin Modern/OpenType fonts used by the documents, and the standard LaTeX
-packages imported by `docs/MANUAL*.tex`.
+Building the manuals requires XeLaTeX, `fontspec`, `unicode-math`, Latin Modern
+Math, Computer Modern Unicode, and the standard LaTeX packages imported by
+`docs/MANUAL*.tex`. On Ubuntu, install the Russian manual font with
+`sudo apt install fonts-cmu`; run `fc-match 'CMU Serif'` to verify discovery.
 
 ## Build
 
@@ -131,7 +132,8 @@ CUDA PO calculation:
 ```bash
 gpu/bin/mbs_po_gpu_double_fast --method po --backend cuda \
     --particle 1 125.9 78.09 --refractive-index 1.3116 0 \
-    --wavelength-um 0.532 --max-reflections 12 --diffraction-grid 2 \
+    --wavelength-um 0.532 --max-reflections 12 \
+    --orientation-diffraction-sampling 2 \
     --scattering-grid 0 180 600 180 --threads 16 \
     --output results/po_gpu --close
 ```
@@ -222,13 +224,21 @@ Uniform scattering grids have two forms:
 quadrature is also the equivalent laboratory Euler-alpha average. Particle
 axial symmetry reduces body gamma, not generally laboratory alpha.
 
-For diffraction-limited PO grids, `--diffraction-limit-grid FACTOR` sets both
-angular steps from `xi = FACTOR * 0.69 * wavelength / lmax`; `FACTOR=1` uses
-the estimate directly and larger factors reduce the grid density. Add
-`--latitude-phi-grid` to use `N_phi(theta) proportional to sin(theta)`. It
-keeps the equatorial spacing while avoiding redundant azimuth samples near
-the poles. These two options are supported together with `--diffraction-grid`
-for one size per process.
+`--diffraction-sampling Q` uses one convention for both orientation and
+scattering grids. Here `lmax` is the longest edge of any particle facet, not
+the particle diameter. With `xi = 0.69 * wavelength / lmax`, their target
+angular step is `xi/Q`: `Q=1` uses the diffraction scale and `Q=2` halves it. The
+specialized `--orientation-diffraction-sampling Q` and
+`--scattering-diffraction-sampling Q` override their respective parts. The
+orientation-only form can be combined with an explicit `--scattering-grid`.
+
+Add `--latitude-phi-grid` to use `N_phi(theta) proportional to sin(theta)`.
+It keeps the equatorial spacing while avoiding redundant azimuth samples near
+the poles. Automatic scattering sampling is supported for one size per
+process. Legacy `--diffraction-grid`, `--diffraction-limit-grid`, and
+`--ring-points` remain available through `--help-debug` for command-line
+compatibility. Runs made before the `lmax` edge-length correction can have a
+different automatically selected grid.
 
 ## Adaptive Convergence
 

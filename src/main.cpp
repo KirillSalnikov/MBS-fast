@@ -276,7 +276,7 @@ static void PrintCommandLineError(const std::string &msg)
               << "Minimal example:\n"
               << "  mbs_po --method po --particle 1 100 70 \\\n"
               << "      --refractive-index 1.31 0 --wavelength-um 0.532 \\\n"
-              << "      --max-reflections 8 --diffraction-grid 2 \\\n"
+              << "      --max-reflections 8 --orientation-diffraction-sampling 2 \\\n"
               << "      --scattering-grid 0 180 600 180 --close --output out\n";
 }
 
@@ -607,34 +607,86 @@ static int RoundUpGridMultiple(int value, int multiple)
     return ((std::max(value, 1) + multiple - 1) / multiple) * multiple;
 }
 
-static double DiffractionGridStep(double D, double wave, double factor)
+static bool HasCanonicalDiffractionOrientation(const ArgPP &args)
 {
-    if (!(D > 0.0) || !(wave > 0.0) || !(factor > 0.0))
-        throw std::invalid_argument("diffraction-limit grid requires positive lmax, wavelength, and factor");
-    return factor * 0.69 * wave / D;
+    return args.IsCatched("diffraction_sampling")
+        || args.IsCatched("orientation_diffraction_sampling");
 }
 
-static ScatteringRange MakeDiffractionLimitGrid(double D, double wave,
-                                                double factor)
+static bool HasDiffractionOrientation(const ArgPP &args)
 {
-    const double xi = DiffractionGridStep(D, wave, factor);
-    const int nTheta = std::max(1, (int)std::ceil(M_PI / xi));
+    return HasCanonicalDiffractionOrientation(args) || args.IsCatched("oldauto");
+}
+
+static bool HasCanonicalDiffractionScattering(const ArgPP &args)
+{
+    return args.IsCatched("diffraction_sampling")
+        || args.IsCatched("scattering_diffraction_sampling");
+}
+
+static double OrientationDiffractionSampling(const ArgPP &args)
+{
+    return args.IsCatched("orientation_diffraction_sampling")
+        ? args.GetDoubleValue("orientation_diffraction_sampling", 0)
+        : args.GetDoubleValue("diffraction_sampling", 0);
+}
+
+static double ScatteringDiffractionSampling(const ArgPP &args)
+{
+    return args.IsCatched("scattering_diffraction_sampling")
+        ? args.GetDoubleValue("scattering_diffraction_sampling", 0)
+        : args.GetDoubleValue("diffraction_sampling", 0);
+}
+
+static double DiffractionAngularScale(double maxEdge, double wave)
+{
+    if (!(maxEdge > 0.0) || !(wave > 0.0))
+        throw std::invalid_argument(
+            "diffraction sampling requires positive maximum edge length and wavelength");
+    return 0.69 * wave / maxEdge;
+}
+
+static int DiffractionIntervalCount(double extent, double step,
+                                    const char *axis)
+{
+    if (!(extent >= 0.0) || !(step > 0.0))
+        throw std::invalid_argument("invalid diffraction-grid extent or step");
+    const double count = std::ceil(extent / step);
+    if (count > (double)std::numeric_limits<int>::max())
+        throw std::overflow_error(std::string("diffraction sampling produces too many ")
+                                  + axis + " intervals");
+    return std::max(1, (int)count);
+}
+
+static ScatteringRange MakeDiffractionStepGrid(double step)
+{
+    if (!(step > 0.0))
+        throw std::invalid_argument("diffraction scattering step must be positive");
+    const int nTheta = DiffractionIntervalCount(M_PI, step, "theta");
+    const int rawPhi = DiffractionIntervalCount(M_2PI, step, "phi");
+    if (rawPhi > std::numeric_limits<int>::max() - 5)
+        throw std::overflow_error("diffraction sampling leaves no room to round the phi grid");
     const int nPhi = RoundUpGridMultiple(
-        std::max(12, (int)std::ceil(M_2PI / xi)), 6);
+        std::max(12, rawPhi), 6);
+    if ((long long)nPhi * ((long long)nTheta + 1)
+        > std::numeric_limits<int>::max())
+        throw std::overflow_error("diffraction scattering grid exceeds the supported 32-bit cell count");
     return ScatteringRange(0.0, M_PI, nPhi, nTheta);
 }
 
 static std::vector<int> MakeLatitudePhiGrid(const ScatteringRange &range,
-                                            double D, double wave,
-                                            double factor)
+                                            double step)
 {
-    const double xi = DiffractionGridStep(D, wave, factor);
+    if (!(step > 0.0))
+        throw std::invalid_argument("latitude phi step must be positive");
     std::vector<int> rowNphi(range.nZenith + 1, 12);
     for (int t = 0; t <= range.nZenith; ++t)
     {
         const double circumference = M_2PI * std::fabs(std::sin(range.GetZenith(t)));
-        int nPhi = RoundUpGridMultiple(
-            std::max(12, (int)std::ceil(circumference / xi)), 6);
+        const int rawPhi = DiffractionIntervalCount(circumference, step, "latitude phi");
+        if (rawPhi > std::numeric_limits<int>::max() - 5)
+            throw std::overflow_error("latitude phi sampling cannot be rounded safely");
+        int nPhi = RoundUpGridMultiple(std::max(12, rawPhi), 6);
         rowNphi[t] = std::min(range.nAzimuth, nPhi);
     }
     return rowNphi;
@@ -1945,7 +1997,7 @@ int main(int argc, const char* argv[])
             tracer.SetHandler(handler);
             tracer.TraceFixed(beta, gamma);
         }
-        else if (args.IsCatched("oldauto"))
+        else if (HasDiffractionOrientation(args))
         {
             if (args.IsCatched("multikeq") || args.IsCatched("multikeq_list"))
             {
@@ -1995,23 +2047,17 @@ int main(int argc, const char* argv[])
                     + "\n";
             }
 
-            // Physics-based orientation grid from diffraction angular step
-            // --oldauto DIV: DIV = 2,4,8 (divisor for full diffraction-limited grid)
-            int div = args.GetIntValue("oldauto", 0);
-            if (div < 1) div = 8;
-
-            double L = particle->MaximalDimention();
-            // D = 6.96 * sqrt(L) from Excel formula
-            // But actual D is from -p argument, use particle geometry
-            // L is the height (first -p arg), D is the diameter (second -p arg)
-            // particle->MaximalDimention() returns max(L,D)
-
-            // Diffraction angular step: Δθ = 0.69 * λ / L * (180/π)
-            double delta_theta_deg = 0.69 * wave / L * (180.0 / M_PI);
-            int points_per_ring = ringPoints;
-
-            // Angular step for orientation grid
-            double orient_step = delta_theta_deg / points_per_ring;
+            const double particleDmax = particle->MaximalDimention();
+            const double maxEdge = particle->MaximumEdgeLength();
+            const double diffractionScale = DiffractionAngularScale(maxEdge, wave);
+            const double delta_theta_deg = RadToDeg(diffractionScale);
+            const bool canonicalSampling = HasCanonicalDiffractionOrientation(args);
+            const double orientationSampling = canonicalSampling
+                ? OrientationDiffractionSampling(args) : 0.0;
+            const int legacyDiv = canonicalSampling ? 1 : args.GetIntValue("oldauto", 0);
+            const double orient_step = canonicalSampling
+                ? delta_theta_deg / orientationSampling
+                : delta_theta_deg / ringPoints;
 
             // Get symmetry from particle
             double betaSym_deg = RadToDeg(particle->GetSymmetry().beta);
@@ -2020,19 +2066,25 @@ int main(int argc, const char* argv[])
             double gammaRange_deg = mirrorGamma ? 0.5 * gammaSym_deg : gammaSym_deg;
 
             // Full grid: N = sym_range / step
-            int N_beta_full = (int)ceil(betaSym_deg / orient_step);
-            int N_gamma_full = (int)ceil(gammaRange_deg / orient_step);
-
-            // Divide by div factor, round UP
-            int N_beta = (N_beta_full + div - 1) / div;
-            int N_gamma = (N_gamma_full + div - 1) / div;
+            const int N_beta_full = DiffractionIntervalCount(
+                betaSym_deg, orient_step, "beta");
+            const int N_gamma_full = DiffractionIntervalCount(
+                gammaRange_deg, orient_step, "gamma");
+            int N_beta = canonicalSampling
+                ? N_beta_full
+                : (int)(((long long)N_beta_full + legacyDiv - 1) / legacyDiv);
+            int N_gamma = canonicalSampling
+                ? N_gamma_full
+                : (int)(((long long)N_gamma_full + legacyDiv - 1) / legacyDiv);
             if (N_beta < 3) N_beta = 3;
             if (N_gamma < 3) N_gamma = 3;
+            if ((long long)N_beta * N_gamma > std::numeric_limits<int>::max())
+                throw std::overflow_error("diffraction orientation grid exceeds the supported 32-bit count");
             if (mirrorGamma && (N_gamma % 2 != 0))
             {
                 int old = N_gamma;
                 ++N_gamma;
-                std::cerr << "WARNING: --mirror_gamma rounded oldauto gamma "
+                std::cerr << "WARNING: --mirror-gamma rounded diffraction gamma "
                           << "points to an even half-domain count: "
                           << old << " -> " << N_gamma << std::endl;
             }
@@ -2053,44 +2105,78 @@ int main(int argc, const char* argv[])
             }
             N_phi = MirrorSafePhiCount(args, N_phi);
 
-            cout << "=== oldauto (physics-based) ===" << endl;
-            cout << "  Dmax=" << L << " um, lambda=" << wave << " um" << endl;
-            cout << "  Diffraction step: " << delta_theta_deg << " deg" << endl;
-            cout << "  Orient step: " << orient_step << " deg (" << points_per_ring
-                 << " pts/ring)" << endl;
-            cout << "  Full grid: " << N_beta_full << " x " << N_gamma_full
-                 << " = " << (long long)N_beta_full * N_gamma_full << endl;
-            cout << "  div" << div << ": " << N_beta << " x " << N_gamma
-                 << " = " << N_beta * N_gamma << " orientations" << endl;
+            cout << (canonicalSampling
+                ? "=== diffraction sampling ===" : "=== legacy diffraction grid ===") << endl;
+            cout << "  Dmax_particle=" << particleDmax
+                 << " um, lmax_edge=" << maxEdge
+                 << " um, lambda=" << wave << " um" << endl;
+            cout << "  Diffraction scale xi: " << delta_theta_deg << " deg" << endl;
+            if (canonicalSampling)
+                cout << "  Orientation sampling q=" << orientationSampling
+                     << ", target step xi/q=" << orient_step << " deg" << endl;
+            else
+                cout << "  Legacy orientation base step: " << orient_step
+                     << " deg (ring-points=" << ringPoints << ")" << endl;
+            cout << "  Orientation grid: " << N_beta << " x " << N_gamma
+                 << " = " << (long long)N_beta * N_gamma << " orientations" << endl;
+            if (!canonicalSampling)
+                cout << "  Legacy grid-count divisor: " << legacyDiv << endl;
             if (mirrorGamma)
                 cout << "  Gamma mirror symmetry: using 0.." << gammaRange_deg
                      << " deg instead of 0.." << gammaSym_deg << " deg" << endl;
-            cout << "  N_phi=" << N_phi << endl;
             cout << "  n=" << reflNum << endl;
 
-            additionalSummary += ", oldauto div" + to_string(div) + "\n\n";
+            additionalSummary += canonicalSampling
+                ? ", diffraction sampling q=" + to_string(orientationSampling) + "\n\n"
+                : ", legacy diffraction grid divisor=" + to_string(legacyDiv) + "\n\n";
             if (mirrorGamma)
                 additionalSummary += "\tGamma mirror symmetry: 0.."
                     + to_string(gammaRange_deg) + " deg\n";
 
             // Build conus
-            const double diffractionGridFactor = args.IsCatched("diffraction_limit_grid")
-                ? args.GetDoubleValue("diffraction_limit_grid", 0) : 1.0;
-            ScatteringRange conus = args.IsCatched("diffraction_limit_grid")
-                ? MakeDiffractionLimitGrid(L, wave, diffractionGridFactor)
+            const bool canonicalScattering = HasCanonicalDiffractionScattering(args);
+            const bool legacyScattering = args.IsCatched("diffraction_limit_grid");
+            const bool automaticScattering = canonicalScattering || legacyScattering;
+            const double scatteringSampling = canonicalScattering
+                ? ScatteringDiffractionSampling(args) : 0.0;
+            const double scatteringStep = canonicalScattering
+                ? diffractionScale / scatteringSampling
+                : (legacyScattering
+                    ? diffractionScale * args.GetDoubleValue("diffraction_limit_grid", 0)
+                    : diffractionScale);
+            ScatteringRange conus = automaticScattering
+                ? MakeDiffractionStepGrid(scatteringStep)
                 : ((args.IsCatched("grid") || args.IsCatched("tgrid"))
                     ? SetConus(args) : ScatteringRange(0, M_PI, N_phi, 1));
 
+            if (canonicalScattering)
+            {
+                cout << "  Scattering sampling q=" << scatteringSampling
+                     << ", target step xi/q=" << RadToDeg(scatteringStep)
+                     << " deg, N_theta=" << conus.nZenith
+                     << ", N_phi(eq)=" << conus.nAzimuth << endl;
+                additionalSummary += "\tScattering diffraction sampling q="
+                    + to_string(scatteringSampling)
+                    + ", target step=" + to_string(RadToDeg(scatteringStep))
+                    + " deg, N_theta=" + to_string(conus.nZenith)
+                    + ", N_phi(eq)=" + to_string(conus.nAzimuth) + "\n";
+            }
+            else if (legacyScattering)
+                cout << "  Legacy scattering grid: N_theta=" << conus.nZenith
+                     << ", N_phi(eq)=" << conus.nAzimuth << endl;
+            else
+                cout << "  N_phi=" << N_phi << endl;
+
             // Apply theta grid (only if no explicit --grid or --tgrid)
             if (args.IsCatched("tgrid") || args.IsCatched("grid")
-                || args.IsCatched("diffraction_limit_grid")) {
+                || automaticScattering) {
                 // tgrid or grid already loaded in SetConus above
             } else {
-                ApplyAutoThetaGrid(conus, L, wave);
+                ApplyAutoThetaGrid(conus, particleDmax, wave);
             }
 
             // Set N_phi (only if --grid didn't set it explicitly)
-            if (!args.IsCatched("grid") && !args.IsCatched("diffraction_limit_grid")) {
+            if (!args.IsCatched("grid") && !automaticScattering) {
                 SetRangeNphi(args, conus, N_phi);
             }
 
@@ -2216,8 +2302,7 @@ int main(int argc, const char* argv[])
             {
                 if (args.IsCatched("latitude_phi_grid"))
                 {
-                    std::vector<int> rowNphi = MakeLatitudePhiGrid(
-                        conus, L, wave, diffractionGridFactor);
+                    std::vector<int> rowNphi = MakeLatitudePhiGrid(conus, scatteringStep);
                     tracer->TraceGridVariablePhi(betaRange, gammaRange,
                                                  rowNphi, conus.nAzimuth);
                 }
@@ -2369,8 +2454,9 @@ int main(int argc, const char* argv[])
                         double betaSym2 = particle->GetSymmetry().beta;
                         double gammaSym2 = particle->GetSymmetry().gamma;
                         // Probe count from div16 physics estimate
-                        double Dmax2 = particle->MaximalDimention();
-                        double dd2 = 0.69 * wave / Dmax2 * (180.0 / M_PI) / ringPoints;
+                        double maxEdge2 = particle->MaximumEdgeLength();
+                        double dd2 = 0.69 * wave / maxEdge2
+                            * (180.0 / M_PI) / ringPoints;
                         int nb2 = std::max(1, (int)(RadToDeg(betaSym2) / dd2 / 16));
                         int ng2 = std::max(1, (int)(RadToDeg(gammaSym2) / dd2 / 16));
                         int nProbe = nb2 * ng2;
@@ -3255,58 +3341,79 @@ int main(int argc, const char* argv[])
             tracer.m_summary = additionalSummary;
             tracer.TraceFixed(beta, gamma);
         }
-        else if (args.IsCatched("oldauto"))
+        else if (HasDiffractionOrientation(args))
         {
-            int div = args.GetIntValue("oldauto", 0);
-            if (div < 1) div = 8;
-
-            double L = particle->MaximalDimention();
-            if (L <= 0.0 || wave <= 0.0)
+            const double particleDmax = particle->MaximalDimention();
+            const double maxEdge = particle->MaximumEdgeLength();
+            if (maxEdge <= 0.0 || wave <= 0.0)
             {
-                std::cerr << "ERROR: --go --oldauto requires positive particle Dmax and wavelength." << std::endl;
+                std::cerr << "ERROR: GO diffraction sampling requires positive maximum edge length and wavelength." << std::endl;
                 return 1;
             }
 
-            double delta_theta_deg = 0.69 * wave / L * (180.0 / M_PI);
-            int points_per_ring = ringPoints;
-            double orient_step = delta_theta_deg / points_per_ring;
+            const double diffractionScale = DiffractionAngularScale(maxEdge, wave);
+            const double delta_theta_deg = RadToDeg(diffractionScale);
+            const bool canonicalSampling = HasCanonicalDiffractionOrientation(args);
+            const double orientationSampling = canonicalSampling
+                ? OrientationDiffractionSampling(args) : 0.0;
+            const int legacyDiv = canonicalSampling ? 1 : args.GetIntValue("oldauto", 0);
+            const double orient_step = canonicalSampling
+                ? delta_theta_deg / orientationSampling
+                : delta_theta_deg / ringPoints;
 
             double betaSym_deg = RadToDeg(particle->GetSymmetry().beta);
             double gammaSym_deg = RadToDeg(particle->GetSymmetry().gamma);
             bool mirrorGamma = args.IsCatched("mirror_gamma");
             double gammaRange_deg = mirrorGamma ? 0.5 * gammaSym_deg : gammaSym_deg;
 
-            int N_beta_full = (int)ceil(betaSym_deg / orient_step);
-            int N_gamma_full = (int)ceil(gammaRange_deg / orient_step);
+            const int N_beta_full = DiffractionIntervalCount(
+                betaSym_deg, orient_step, "beta");
+            const int N_gamma_full = DiffractionIntervalCount(
+                gammaRange_deg, orient_step, "gamma");
 
-            int N_beta = (N_beta_full + div - 1) / div;
-            int N_gamma = (N_gamma_full + div - 1) / div;
+            int N_beta = canonicalSampling
+                ? N_beta_full
+                : (int)(((long long)N_beta_full + legacyDiv - 1) / legacyDiv);
+            int N_gamma = canonicalSampling
+                ? N_gamma_full
+                : (int)(((long long)N_gamma_full + legacyDiv - 1) / legacyDiv);
             if (N_beta < 3) N_beta = 3;
             if (N_gamma < 3) N_gamma = 3;
+            if ((long long)N_beta * N_gamma > std::numeric_limits<int>::max())
+                throw std::overflow_error("GO diffraction orientation grid exceeds the supported 32-bit count");
             if (mirrorGamma && (N_gamma % 2 != 0))
             {
                 int old = N_gamma;
                 ++N_gamma;
-                std::cerr << "WARNING: --mirror_gamma rounded GO oldauto gamma "
+                std::cerr << "WARNING: --mirror-gamma rounded GO diffraction gamma "
                           << "points to an even half-domain count: "
                           << old << " -> " << N_gamma << std::endl;
             }
 
-            cout << "=== GO oldauto (physics-based grid) ===" << endl;
-            cout << "  Dmax=" << L << " um, lambda=" << wave << " um" << endl;
-            cout << "  Diffraction step: " << delta_theta_deg << " deg" << endl;
-            cout << "  Orient step: " << orient_step << " deg (" << points_per_ring
-                 << " pts/ring)" << endl;
-            cout << "  Full grid: " << N_beta_full << " x " << N_gamma_full
-                 << " = " << (long long)N_beta_full * N_gamma_full << endl;
-            cout << "  div" << div << ": " << N_beta << " x " << N_gamma
+            cout << (canonicalSampling
+                ? "=== GO diffraction sampling ===" : "=== GO legacy diffraction grid ===") << endl;
+            cout << "  Dmax_particle=" << particleDmax
+                 << " um, lmax_edge=" << maxEdge
+                 << " um, lambda=" << wave << " um" << endl;
+            cout << "  Diffraction scale xi: " << delta_theta_deg << " deg" << endl;
+            if (canonicalSampling)
+                cout << "  Orientation sampling q=" << orientationSampling
+                     << ", target step xi/q=" << orient_step << " deg" << endl;
+            else
+                cout << "  Legacy orientation base step: " << orient_step
+                     << " deg (ring-points=" << ringPoints << ")" << endl;
+            cout << "  Orientation grid: " << N_beta << " x " << N_gamma
                  << " = " << (long long)N_beta * N_gamma << " orientations" << endl;
+            if (!canonicalSampling)
+                cout << "  Legacy grid-count divisor: " << legacyDiv << endl;
             if (mirrorGamma)
                 cout << "  Gamma mirror symmetry: using 0.." << gammaRange_deg
                      << " deg instead of 0.." << gammaSym_deg << " deg" << endl;
             cout << "  n=" << reflNum << endl;
 
-            additionalSummary += ", oldauto div" + to_string(div) + "\n\n";
+            additionalSummary += canonicalSampling
+                ? ", diffraction sampling q=" + to_string(orientationSampling) + "\n\n"
+                : ", legacy diffraction grid divisor=" + to_string(legacyDiv) + "\n\n";
             if (mirrorGamma)
                 additionalSummary += "\tGamma mirror symmetry: 0.."
                     + to_string(gammaRange_deg) + " deg\n";
@@ -3386,7 +3493,7 @@ int main(int argc, const char* argv[])
     {
         if (!args.IsCatched("po") && !args.IsCatched("fixed")
             && !args.IsCatched("random") && !args.IsCatched("montecarlo")
-            && !args.IsCatched("oldauto") && !args.IsCatched("sobol")
+            && !HasDiffractionOrientation(args) && !args.IsCatched("sobol")
             && !args.IsCatched("so3_quat")
             && !args.IsCatched("sobol_seed")
             && !args.IsCatched("sobol_ring")
@@ -3411,9 +3518,10 @@ int main(int argc, const char* argv[])
                  << "    --lattice_z N Z       Rank-1 lattice with generator Z\n"
                  << "    --euler_quad B G      High-order Euler quadrature\n"
                  << "    --euler_adapt B Gmax  Gauss beta with adaptive gamma count\n"
-                 << "    --oldauto DIV         Physics-based auto grid\n"
+                 << "    --diffraction-sampling Q  Diffraction-based orientation and scattering grids\n"
                  << "    --auto EPS            Full auto mode\n"
-                 << "  Example: mbs_po --po -p 1 10 5 --ri 1.3 0 -w 1 -n 4 --oldauto 8\n";
+                 << "  Example: mbs_po --method po --particle 1 10 5 --refractive-index 1.3 0 "
+                 << "--wavelength-um 1 --max-reflections 4 --diffraction-sampling 2\n";
         }
         cout << endl << "done";
     }

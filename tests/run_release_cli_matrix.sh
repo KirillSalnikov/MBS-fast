@@ -473,7 +473,15 @@ expect_success 'PO adaptive grid: adaptive-phi' \
 expect_success 'PO adaptive grid: adaptive-reflections' \
     "${PO_CORE[@]}" --sobol 16 "${GRID[@]}" --adaptive-reflections 0.9 \
     --adaptive-config "$ADAPTIVE_CONFIG"
-expect_success 'PO diffraction-limit latitude grid' \
+expect_success 'PO unified diffraction sampling with latitude grid' \
+    "${PO_CORE[@]}" --diffraction-sampling 1 --latitude-phi-grid
+expect_success 'PO orientation diffraction sampling with explicit scattering grid' \
+    "${PO_CORE[@]}" --orientation-diffraction-sampling 1 "${GRID[@]}"
+expect_success 'PO individual diffraction sampling overrides' \
+    "${PO_CORE[@]}" --diffraction-sampling 1 \
+    --orientation-diffraction-sampling 2 \
+    --scattering-diffraction-sampling 2 --latitude-phi-grid
+expect_success 'PO legacy diffraction-limit compatibility' \
     "${PO_CORE[@]}" --diffraction-grid 8 \
     --diffraction-limit-grid 1 --latitude-phi-grid
 

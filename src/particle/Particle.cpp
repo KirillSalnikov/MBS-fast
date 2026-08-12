@@ -1,4 +1,5 @@
 #include "Particle.h"
+#include <algorithm>
 #include <cfloat>
 #include <cerrno>
 #include <cmath>
@@ -687,6 +688,27 @@ double Particle::MaximalDimentionPart() const
     }
 
     return Dmax;
+}
+
+double Particle::MaximumEdgeLength() const
+{
+    double maxLength = 0.0;
+
+    for (int i = 0; i < nFacets; ++i)
+    {
+        const Facet &facet = defaultFacets[i];
+        if (facet.nVertices < 2)
+            continue;
+
+        for (int j = 0; j < facet.nVertices; ++j)
+        {
+            const int next = (j + 1) % facet.nVertices;
+            maxLength = std::max(
+                maxLength, Length(facet.arr[next] - facet.arr[j]));
+        }
+    }
+
+    return maxLength;
 }
 
 double Particle::Area()

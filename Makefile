@@ -117,6 +117,14 @@ docs:
 		echo "Install XeLaTeX and the packages/fonts imported by docs/MANUAL*.tex." >&2; \
 		exit 1; \
 	}
+	@command -v fc-match >/dev/null 2>&1 || { \
+		echo "fontconfig not found: fc-match is required to verify manual fonts." >&2; \
+		exit 1; \
+	}
+	@fc-match 'CMU Serif' | grep -qi 'CMU Serif' || { \
+		echo "CMU Serif not found. On Ubuntu: sudo apt install fonts-cmu" >&2; \
+		exit 1; \
+	}
 	cd docs && $(XELATEX) -interaction=nonstopmode -halt-on-error MANUAL.tex
 	cd docs && $(XELATEX) -interaction=nonstopmode -halt-on-error MANUAL.tex
 	cd docs && $(XELATEX) -interaction=nonstopmode -halt-on-error MANUAL_RU.tex

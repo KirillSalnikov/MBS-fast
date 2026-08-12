@@ -61,6 +61,9 @@ public:
     double MaximalDimention() const;
     double MaximalDimentionPart() const;
 
+    /// Longest edge between consecutive vertices of any particle facet.
+    double MaximumEdgeLength() const;
+
     const complex &GetRefractiveIndex() const;
     void SetRefractiveIndex(const complex &value);
 

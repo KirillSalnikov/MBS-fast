@@ -34,6 +34,24 @@ bool IsFftRequested(const ArgPP &args)
         || args.IsCatched("fft_tolerance");
 }
 
+bool HasCanonicalDiffractionOrientation(const ArgPP &args)
+{
+    return args.IsCatched("diffraction_sampling")
+        || args.IsCatched("orientation_diffraction_sampling");
+}
+
+bool HasCanonicalDiffractionScattering(const ArgPP &args)
+{
+    return args.IsCatched("diffraction_sampling")
+        || args.IsCatched("scattering_diffraction_sampling");
+}
+
+bool HasAnyDiffractionScattering(const ArgPP &args)
+{
+    return HasCanonicalDiffractionScattering(args)
+        || args.IsCatched("diffraction_limit_grid");
+}
+
 std::string JoinFlags(const std::vector<std::string> &keys)
 {
     std::ostringstream out;
@@ -64,6 +82,16 @@ double DoubleValue(const ArgPP &args, const std::string &key, size_t index = 0)
              + std::to_string(index + 1) + "; got '" + raw + "'.",
              "replace '" + raw + "' with a finite numeric value.");
     }
+}
+
+void RequirePositiveFinite(const ArgPP &args, const std::string &key)
+{
+    if (!args.IsCatched(key))
+        return;
+    const double value = DoubleValue(args, key, 0);
+    if (!(value > 0.0) || !std::isfinite(value))
+        Fail(CliCanonicalFlag(key) + " Q must be finite and positive.",
+             "use Q=1 for one interval per diffraction scale or Q=2 for step xi/2.");
 }
 
 int IntValue(const ArgPP &args, const std::string &key, size_t index = 0)
@@ -529,7 +557,6 @@ OrientationMode ResolveOrientation(const ArgPP &args)
         {"random", OrientationMode::EulerGrid},
         {"montecarlo", OrientationMode::MonteCarlo},
         {"orientfile", OrientationMode::File},
-        {"oldauto", OrientationMode::DiffractionGrid},
         {"sobol", OrientationMode::Sobol},
         {"so3_quat", OrientationMode::SO3Quaternion},
         {"sobol_seed", OrientationMode::SobolSeed},
@@ -548,6 +575,16 @@ OrientationMode ResolveOrientation(const ArgPP &args)
 
     std::vector<std::string> selected;
     OrientationMode resolved = OrientationMode::Fixed;
+    if (HasCanonicalDiffractionOrientation(args))
+    {
+        selected.push_back("diffraction_sampling");
+        resolved = OrientationMode::DiffractionGrid;
+    }
+    if (args.IsCatched("oldauto"))
+    {
+        selected.push_back("oldauto");
+        resolved = OrientationMode::DiffractionGrid;
+    }
     for (const SelectedMode &mode : modes)
     {
         if (args.IsCatched(mode.key))
@@ -559,7 +596,7 @@ OrientationMode ResolveOrientation(const ArgPP &args)
     if (selected.empty())
     {
         Fail("orientation mode is missing.",
-             "add exactly one mode, for example --fixed-orientation 0 0, --diffraction-grid 2, or --sobol 1024.");
+             "add exactly one mode, for example --fixed-orientation 0 0, --diffraction-sampling 2, or --sobol 1024.");
     }
     if (selected.size() > 1)
     {
@@ -598,7 +635,10 @@ void ValidateOrientationValues(const ArgPP &args, OrientationMode mode)
         ValidateOrientationFile(args);
         break;
     case OrientationMode::DiffractionGrid:
-        RequirePositiveInt(args, "oldauto");
+        RequirePositiveFinite(args, "diffraction_sampling");
+        RequirePositiveFinite(args, "orientation_diffraction_sampling");
+        if (args.IsCatched("oldauto"))
+            RequirePositiveInt(args, "oldauto");
         break;
     case OrientationMode::Sobol:
         RequirePositiveInt(args, "sobol");
@@ -797,22 +837,22 @@ bool SupportsAutoPhi(OrientationMode mode)
 void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
 {
     const OrientationMode mode = config.orientation;
-    if (args.IsCatched("diffraction_limit_grid"))
+    if (HasAnyDiffractionScattering(args))
     {
         if (config.method != RunMethod::PhysicalOptics
             || mode != OrientationMode::DiffractionGrid)
-            Fail("--diffraction-limit-grid is currently implemented for the PO diffraction-grid orientation path.",
-                 "use --method po --diffraction-grid DIV, or select the scattering grid explicitly.");
+            Fail("diffraction-based scattering sampling is currently implemented for the PO diffraction-orientation path.",
+                 "use --method po --diffraction-sampling Q, or select the scattering grid explicitly.");
         if (args.IsCatched("nphi"))
-            Fail("--phi-points conflicts with the phi count computed by --diffraction-limit-grid.",
-                 "remove --phi-points, or replace --diffraction-limit-grid with an explicit --scattering-grid.");
+            Fail("--phi-points conflicts with the phi count computed by diffraction sampling.",
+                 "remove --phi-points, or replace diffraction sampling with an explicit --scattering-grid.");
     }
     if (args.IsCatched("latitude_phi_grid"))
     {
         if (config.method != RunMethod::PhysicalOptics
             || mode != OrientationMode::DiffractionGrid)
             Fail("--latitude-phi-grid is currently implemented for the PO diffraction-grid orientation path.",
-                 "use --method po --diffraction-grid DIV, or remove --latitude-phi-grid.");
+                 "use --method po --diffraction-sampling Q, or remove --latitude-phi-grid.");
         if (args.IsCatched("multigrid") || args.IsCatched("multikeq")
             || args.IsCatched("multikeq_list"))
             Fail("--latitude-phi-grid is not yet implemented for a shared multi-size trace.",
@@ -864,6 +904,9 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
              "keep the generated seed count or the explicit seed list, not both.");
     if (args.IsCatched("ring_points"))
     {
+        if (HasCanonicalDiffractionOrientation(args))
+            Fail("--ring-points is a legacy setting and does not affect the new diffraction-sampling grid.",
+                 "remove --ring-points; set the required density directly with --diffraction-sampling Q or --orientation-diffraction-sampling Q.");
         const bool used = mode == OrientationMode::DiffractionGrid
             || UsesAdaptiveOrientationSearch(mode)
             || (mode == OrientationMode::EulerGrid && args.IsCatched("auto_tgrid"));
@@ -969,17 +1012,26 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
 
 ThetaGridMode ValidateThetaGrid(const ArgPP &args, std::vector<std::string> &warnings)
 {
+    const bool canonicalDiffractionGrid = HasCanonicalDiffractionScattering(args);
+    if (canonicalDiffractionGrid && args.IsCatched("diffraction_limit_grid"))
+        Fail("new and legacy diffraction scattering-grid controls were provided together.",
+             "keep --diffraction-sampling/--scattering-diffraction-sampling, or keep the legacy --diffraction-limit-grid, not both.");
+
     std::vector<std::string> selected;
     if (args.IsCatched("grid")) selected.push_back("grid");
     if (args.IsCatched("tgrid")) selected.push_back("tgrid");
     if (args.IsCatched("auto_tgrid")) selected.push_back("auto_tgrid");
-    if (args.IsCatched("diffraction_limit_grid")) selected.push_back("diffraction_limit_grid");
+    if (canonicalDiffractionGrid) selected.push_back("scattering_diffraction_sampling");
+    else if (args.IsCatched("diffraction_limit_grid")) selected.push_back("diffraction_limit_grid");
     if (selected.size() > 1)
     {
         Fail("theta grid is ambiguous: " + JoinFlags(selected)
              + " were provided together.",
-             "keep one theta source: --scattering-grid, --theta-grid-file, --auto-theta-grid, or --diffraction-limit-grid.");
+             "keep one theta source: --scattering-grid, --theta-grid-file, --auto-theta-grid, or diffraction sampling.");
     }
+
+    RequirePositiveFinite(args, "diffraction_sampling");
+    RequirePositiveFinite(args, "scattering_diffraction_sampling");
 
     if (args.IsCatched("diffraction_limit_grid"))
     {
@@ -1053,7 +1105,7 @@ ThetaGridMode ValidateThetaGrid(const ArgPP &args, std::vector<std::string> &war
         RequireRelativeTolerance(args, "auto_tgrid");
         return ThetaGridMode::Adaptive;
     }
-    if (args.IsCatched("diffraction_limit_grid"))
+    if (canonicalDiffractionGrid || args.IsCatched("diffraction_limit_grid"))
         return ThetaGridMode::Uniform;
     return ThetaGridMode::Default;
 }

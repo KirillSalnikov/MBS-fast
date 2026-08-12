@@ -386,8 +386,9 @@ For full angular integrals use `--grid 0 180 Nphi Nth`. Endpoint rows are physic
 ### Diffraction-limit and latitude-phi grids
 
 For a PO `--diffraction-grid DIV` run, `--diffraction-limit-grid FACTOR`
-derives the scattering grid from the current particle maximum dimension
-`lmax` and wavelength `lambda`:
+derives the scattering grid from the longest edge of any current particle
+facet, `lmax`, and wavelength `lambda`. This is not the particle diameter or
+the maximum distance between arbitrary vertices:
 
 ```text
 xi = FACTOR * 0.69 * lambda / lmax

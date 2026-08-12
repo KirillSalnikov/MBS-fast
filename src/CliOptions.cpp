@@ -150,8 +150,12 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
          "Monte Carlo orientation average with N samples."},
         {"orientfile", "orientation-file", 1, "FILE", "Orientation",
          "Read beta and gamma orientations from FILE."},
+        {"diffraction_sampling", "diffraction-sampling", 1, "Q", "Orientation",
+         "Use Q angular intervals per diffraction scale xi=0.69*lambda/lmax for both grids; lmax is the longest particle-facet edge. Individual flags may override either grid."},
+        {"orientation_diffraction_sampling", "orientation-diffraction-sampling", 1, "Q", "Orientation",
+         "Use Q orientation intervals per diffraction scale: delta_beta and delta_gamma are approximately xi/Q."},
         {"oldauto", "diffraction-grid", 1, "DIVISOR", "Orientation",
-         "Physics-based regular orientation grid divided from the diffraction-limit estimate."},
+         "Legacy physics-based orientation grid. Prefer --diffraction-sampling or --orientation-diffraction-sampling.", true},
         {"sobol", "sobol", 1, "N", "Orientation",
          "Sobol quasi-random orientation set with N samples."},
         {"so3_quat", "so3-quaternion", 1, "N", "Orientation",
@@ -201,7 +205,7 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
         {"chunk", "orientation-chunk", 1, "N", "Orientation",
          "Maximum orientations or gamma values held in one memory chunk for supported averaged PO modes."},
         {"ring_points", "ring-points", 1, "N", "Orientation",
-         "Samples per diffraction ring used by physics-based orientation estimates; default 3."},
+         "Legacy density used by --diffraction-grid and adaptive orientation estimates; default 3. It does not affect the new diffraction-sampling flags.", true},
         {"mirror_gamma", "mirror-gamma", 0, "", "Orientation",
          "Use mirror symmetry in supported averages: halve default gamma domains and treat an explicit gamma range as already reduced."},
         {"coh_orient", "coherent-orientations", 0, "", "Orientation",
@@ -218,7 +222,9 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
          "Converge theta interpolation using all Mueller elements and no particle-specific halo angles.",
          false, {"autotgrid"}},
         {"diffraction_limit_grid", "diffraction-limit-grid", 1, "FACTOR", "Scattering grid",
-         "Set uniform theta and phi steps from xi = FACTOR * 0.69 * lambda / lmax. FACTOR=1 uses the diffraction estimate."},
+         "Legacy scattering-grid factor: step=FACTOR*0.69*lambda/lmax, where lmax is the longest particle-facet edge. Prefer --diffraction-sampling or --scattering-diffraction-sampling.", true},
+        {"scattering_diffraction_sampling", "scattering-diffraction-sampling", 1, "Q", "Scattering grid",
+         "Use Q scattering-direction intervals per diffraction scale: delta_theta and equatorial delta_phi are approximately xi/Q."},
         {"latitude_phi_grid", "latitude-phi-grid", 0, "", "Scattering grid",
          "Use N_phi(theta) proportional to sin(theta), preserving the equatorial diffraction-limit spacing and avoiding pole oversampling."},
         {"auto_phi", "auto-phi", 0, "", "Scattering grid",
@@ -441,8 +447,8 @@ void PrintGeneratedHelp(bool includeDebugOptions)
 
     cout << "\nExamples:\n"
          << "  mbs_po --method po --particle 1 100 70 --refractive-index 1.3116 0 \\\n"
-         << "      --wavelength-um 0.532 --max-reflections 12 --diffraction-grid 2 \\\n"
-         << "      --scattering-grid 0 180 600 180 --backend auto --threads 16 \\\n"
+         << "      --wavelength-um 0.532 --max-reflections 12 --diffraction-sampling 2 \\\n"
+         << "      --latitude-phi-grid --backend auto --threads 16 \\\n"
          << "      --output out --close\n\n"
          << "  mbs_po --method go --particle-file examples/cube.particle --k-eq 20 \\\n"
          << "      --refractive-index 1.3116 0 --wavelength-um 0.532 \\\n"

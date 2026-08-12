@@ -627,6 +627,38 @@ int main()
         "--diffraction-limit-grid", "1", "--latitude-phi-grid",
         "--backend", "cpu"
     });
+    ExpectSuccess("unified diffraction sampling accepts individual overrides", {
+        "--method", "po", "--particle", "10", "1", "0.7", "43.4",
+        "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",
+        "--max-reflections", "1", "--diffraction-sampling", "2",
+        "--orientation-diffraction-sampling", "4",
+        "--scattering-diffraction-sampling", "1",
+        "--latitude-phi-grid", "--backend", "cpu"
+    });
+    ExpectFailure("unified diffraction sampling must be positive", {
+        "--method", "po", "--particle", "10", "1", "0.7", "43.4",
+        "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",
+        "--max-reflections", "1", "--diffraction-sampling", "0",
+        "--backend", "cpu"
+    }, "must be finite and positive");
+    ExpectFailure("new orientation sampling rejects legacy diffraction grid", {
+        "--method", "po", "--particle", "10", "1", "0.7", "43.4",
+        "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",
+        "--max-reflections", "1", "--diffraction-sampling", "2",
+        "--diffraction-grid", "2", "--backend", "cpu"
+    }, "orientation mode is ambiguous");
+    ExpectFailure("new scattering sampling rejects legacy factor", {
+        "--method", "po", "--particle", "10", "1", "0.7", "43.4",
+        "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",
+        "--max-reflections", "1", "--diffraction-sampling", "2",
+        "--diffraction-limit-grid", "0.5", "--backend", "cpu"
+    }, "new and legacy diffraction scattering-grid controls");
+    ExpectFailure("ring points do not alter unified diffraction sampling", {
+        "--method", "po", "--particle", "10", "1", "0.7", "43.4",
+        "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",
+        "--max-reflections", "1", "--diffraction-sampling", "2",
+        "--ring-points", "3", "--backend", "cpu"
+    }, "legacy setting and does not affect");
     ExpectFailure("diffraction-limit factor must be positive", {
         "--method", "po", "--particle", "10", "1", "0.7", "43.4",
         "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",

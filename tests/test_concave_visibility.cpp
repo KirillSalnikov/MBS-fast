@@ -1,12 +1,22 @@
 #include "particle/Bullet.h"
 #include "particle/ConcaveHexagonal.h"
+#include "particle/Hexagonal.h"
 #include "particle/HexagonalAggregate.h"
 
 #include <cassert>
+#include <cmath>
 
 int main()
 {
     const complex refractiveIndex(1.3116, 0.0);
+
+    Hexagonal column(refractiveIndex, 10.0, 7.0);
+    assert(std::fabs(column.MaximumEdgeLength() - 7.0) < 1e-12);
+    assert(column.MaximalDimention() > column.MaximumEdgeLength());
+    column.Resize(24.0);
+    const double expectedEdge = 7.0 * 24.0 / std::sqrt(149.0);
+    assert(std::fabs(column.MaximumEdgeLength() - expectedEdge) < 1e-5);
+
     ConcaveHexagonal concave(refractiveIndex, 35.0, 50.0, 55.0079798014);
 
     for (int i = 0; i < 6; ++i)
