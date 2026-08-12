@@ -15,6 +15,11 @@ bool QueryActiveGpuMemory(long long &freeBytes, long long &totalBytes,
     return false;
 }
 
+int VisibleGpuDeviceCount()
+{
+    return 0;
+}
+
 std::string FormatGpuInfo(const GpuDeviceInfo &/*info*/)
 {
     return "CUDA unavailable in CPU MPI/OpenMP binary";

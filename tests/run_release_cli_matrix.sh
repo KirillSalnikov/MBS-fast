@@ -473,6 +473,9 @@ expect_success 'PO adaptive grid: adaptive-phi' \
 expect_success 'PO adaptive grid: adaptive-reflections' \
     "${PO_CORE[@]}" --sobol 16 "${GRID[@]}" --adaptive-reflections 0.9 \
     --adaptive-config "$ADAPTIVE_CONFIG"
+expect_success 'PO diffraction-limit latitude grid' \
+    "${PO_CORE[@]}" --diffraction-grid 8 \
+    --diffraction-limit-grid 1 --latitude-phi-grid
 
 GO_SUPPORTED=(0 1 2 4 5 7)
 for i in "${GO_SUPPORTED[@]}"; do
@@ -519,6 +522,12 @@ expect_success 'output: Jones matrices in fixed PO' \
     "${PO_CORE[@]}" --fixed-orientation 0 0 "${GRID[@]}" --jones-output
 expect_success 'output: full and no-shadow PO results' \
     "${PO_CORE[@]}" --fixed-orientation 0 0 "${GRID[@]}" --no-shadow-output
+expect_success 'output: save effective particle geometry' \
+    "${PO_CORE[@]}" --fixed-orientation 0 0 "${GRID[@]}" \
+    --save-geometry "$WORK_DIR/saved-particle.dat"
+expect_success 'cutoffs: safe profile' \
+    "${PO_CORE[@]}" --fixed-orientation 0 0 "${GRID[@]}" \
+    --cutoff-profile safe
 expect_success 'particle file: strict valid cube' \
     "$MBS" --method po --particle-file "$PARTICLE_FILE" \
     --refractive-index 1.31 0 --wavelength-um 10 --max-reflections 2 \
@@ -992,6 +1001,9 @@ expect_error 'multi-size: excessive dmax scan count' \
 expect_error 'backend: excessive OpenMP thread count' \
     "$MBS" --method po "${PHYSICS[@]}" --backend cpu --threads 65537 --close \
     --fixed-orientation 0 0 "${GRID[@]}"
+expect_error 'backend: FFT controls require CUDA' \
+    "${PO_CORE[@]}" --fixed-orientation 0 0 "${GRID[@]}" \
+    --fft-factor 3 --fft-tolerance 0.02
 expect_error 'tracing: reflection depth exceeds location history' \
     "$MBS" --method po --particle 1 1 1 --refractive-index 1.31 0 \
     --wavelength-um 10 --max-reflections 31 --backend cpu --threads 1 --close \

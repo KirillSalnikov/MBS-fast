@@ -4,6 +4,7 @@
 #include "BeamCache.h"
 #include "IntegralCharacteristics.h"
 #include "Sobol.h"
+#include "cuda/GpuSupport.h"
 
 #include <iostream>
 #include <fstream>
@@ -5846,7 +5847,9 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
                                                 int outputNphi,
                                                 double fftEps,
                                                 const std::vector<unsigned int> &owenSeeds,
-                                                const std::vector<double> &rowBeamCutoff)
+                                                const std::vector<double> &rowBeamCutoff,
+                                                const std::vector<std::pair<double, double>> *fixedOrientations,
+                                                const std::vector<double> *fixedWeights)
 {
     HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
     if (!handlerPO)
@@ -5860,6 +5863,14 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
     outputSphere.azinuthStep = M_2PI / outputNphi;
     outputSphere.ComputeSphereDirections(m_incidentLight);
     handlerPO->SetScatteringSphere(outputSphere);
+
+    if ((fixedOrientations == nullptr) != (fixedWeights == nullptr))
+        throw std::invalid_argument("fixed orientations and weights must be supplied together");
+    if (fixedOrientations && (int)fixedOrientations->size() != nOrient)
+        throw std::invalid_argument("fixed orientation count does not match nOrient");
+    if (fixedWeights && fixedWeights->size() != fixedOrientations->size())
+        throw std::invalid_argument("fixed orientation weights have the wrong size");
+    const bool fixedGrid = fixedOrientations != nullptr;
 
     const int nZen = outputSphere.nZenith;
     std::map<AutoFullThetaWorkKey, std::vector<int>> rowsByWork;
@@ -5886,6 +5897,11 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
     std::vector<double> rowExtraImportanceCutoff(nZen + 1, 0.0);
     std::vector<int> rowDirectFullPhi(nZen + 1, 0);
     auto lookupRowOrient = [&](int row, int fallbackZone, int *source) {
+        if (fixedGrid)
+        {
+            if (source) *source = 3;
+            return nOrient;
+        }
         if (!rowOrientEnabled)
         {
             if (source) *source = 0;
@@ -5944,17 +5960,20 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
         const int fallbackZone = thetaZonesEnabled ? physicalZone : 2;
         int orientSource = 0;
         int orientLimit = lookupRowOrient(t, fallbackZone, &orientSource);
-        orientLimit = std::max(64, std::min(orientLimit, nOrient));
-        orientLimit = RoundDownToMultiple(orientLimit, 16);
-        orientLimit = std::max(64, std::min(orientLimit, nOrient));
+        orientLimit = std::max(1, std::min(orientLimit, nOrient));
+        if (!fixedGrid && orientLimit >= 64)
+        {
+            orientLimit = RoundDownToMultiple(orientLimit, 16);
+            orientLimit = std::max(64, std::min(orientLimit, nOrient));
+        }
 
         double extraImportanceCutoff = 0.0;
-        if (t < (int)rowBeamCutoff.size()
+        if (!fixedGrid && t < (int)rowBeamCutoff.size()
             && rowBeamCutoff[t] > baseImportanceCutoff * (1.0 + 1e-12))
         {
             extraImportanceCutoff = rowBeamCutoff[t];
         }
-        else if (thetaZonesEnabled && baseImportanceCutoff > 0.0)
+        else if (!fixedGrid && thetaZonesEnabled && baseImportanceCutoff > 0.0)
         {
             const double zoneCutoff =
                 baseImportanceCutoff
@@ -6105,7 +6124,8 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
         for (int t = 0; t <= nZen; ++t)
         {
             const char *source = rowOrientSource[t] == 1 ? "adaptive"
-                : (rowOrientSource[t] == 2 ? "neighbor" : "fallback");
+                : (rowOrientSource[t] == 2 ? "neighbor"
+                    : (rowOrientSource[t] == 3 ? "fixed" : "fallback"));
             thetaWork << RadToDeg(outputSphere.GetZenith(t)) << ' '
                       << AutoFullThetaZoneName(rowZone[t]) << ' '
                       << rowPhiUsed[t] << ' '
@@ -6122,11 +6142,15 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
     std::vector<unsigned int> seeds = owenSeeds;
     if (seeds.empty())
         seeds.push_back(42u);
+    if (fixedOrientations && seeds.size() != 1)
+        throw std::invalid_argument("fixed orientation grid supports one deterministic pass");
     const int seedCount = (int)seeds.size();
     const long long totalOrientationWork = (long long)nOrient * seedCount;
     if (m_mpiRank == 0)
     {
-        std::cout << "Autofull final Owen averaging: " << seedCount
+        std::cout << (fixedOrientations
+            ? "Regular beta/gamma variable-phi averaging: "
+            : "Autofull final Owen averaging: ") << seedCount
                   << " seed" << (seedCount == 1 ? "" : "s")
                   << " x " << nOrient << " orientations";
         if (seedCount > 1)
@@ -6183,8 +6207,6 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
     handlerPO->m_extinctionCrossSectionOt = 0.0;
     handlerPO->m_hasExtinctionOt = false;
     const bool computeNoShadow = handlerPO->ComputeNoShadow();
-    const double weight = 1.0 / ((double)nOrient * (double)seedCount);
-
     long long availMB = EffectiveMemAvailableMb();
     long long beamBudget = std::max(100LL, availMB / 2);
     int chunkSize = std::max(32, std::min(4096, std::min(myCount, (int)(beamBudget * 1024 / 350))));
@@ -6218,15 +6240,24 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
     double cosBetaSym = cos(betaSym);
     for (size_t seedIndex = 0; seedIndex < seeds.size(); ++seedIndex)
     {
-        Sobol2D sobol(seeds[seedIndex]);
-        std::vector<double> su, sv;
-        sobol.generate(nOrient, su, sv);
         std::vector<std::pair<double,double>> orientations(nOrient);
-        for (int i = 0; i < nOrient; ++i)
+        std::vector<double> orientationWeights(nOrient, 1.0 / nOrient);
+        if (fixedOrientations)
         {
-            double beta = acos(1.0 - (1.0 - cosBetaSym) * su[i]);
-            double gamma = gammaSym * sv[i];
-            orientations[i] = {beta, gamma};
+            orientations = *fixedOrientations;
+            orientationWeights = *fixedWeights;
+        }
+        else
+        {
+            Sobol2D sobol(seeds[seedIndex]);
+            std::vector<double> su, sv;
+            sobol.generate(nOrient, su, sv);
+            for (int i = 0; i < nOrient; ++i)
+            {
+                double beta = acos(1.0 - (1.0 - cosBetaSym) * su[i]);
+                double gamma = gammaSym * sv[i];
+                orientations[i] = {beta, gamma};
+            }
         }
 
         if (m_mpiRank == 0 && seedCount > 1)
@@ -6263,6 +6294,8 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
                     try
                     {
                     int idx = iStart + i;
+                    const double weight = orientationWeights[idx]
+                        / (double)seedCount;
                     localParticle.Rotate(orientations[idx].first, orientations[idx].second, 0);
                     if (!shadowOff)
                         localScatter->FormShadowBeam(localBeams);
@@ -6303,6 +6336,177 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
                 std::chrono::high_resolution_clock::now() - tp1).count();
 
             auto tp2 = std::chrono::high_resolution_clock::now();
+            static std::atomic<unsigned long long> nextGpuPackCacheToken(1);
+            const unsigned long long gpuPackCacheToken =
+                nextGpuPackCacheToken.fetch_add(1, std::memory_order_relaxed);
+            int groupGpuCount = 1;
+            if (handlerPO->IsGpuEnabled() && !handlerPO->IsFftEnabled())
+            {
+                const char *groupEnv = std::getenv("MBS_GPU_GROUPS");
+                const bool groupMode = groupEnv && std::atoi(groupEnv) != 0;
+                if (groupMode)
+                {
+                    groupGpuCount = VisibleGpuDeviceCount();
+                    if (const char *multiEnv = std::getenv("MBS_GPU_MULTI"))
+                    {
+                        const int requested = std::atoi(multiEnv);
+                        if (requested > 0)
+                            groupGpuCount = std::min(groupGpuCount, requested);
+                        else
+                            groupGpuCount = 1;
+                    }
+                    if (const char *maxEnv = std::getenv("MBS_GPU_MULTI_MAX"))
+                    {
+                        const int maximum = std::atoi(maxEnv);
+                        if (maximum > 0)
+                            groupGpuCount = std::min(groupGpuCount, maximum);
+                    }
+                }
+            }
+            if (groupGpuCount > 1)
+            {
+                for (const auto &entry : rowsByWork)
+                {
+                    const std::vector<int> &ids = entry.second;
+                    if (!ids.empty()
+                        && rowExtraImportanceCutoff[ids.front()] > 0.0)
+                    {
+                        groupGpuCount = 1;
+                        break;
+                    }
+                }
+            }
+            if (groupGpuCount > 1)
+            {
+                typedef decltype(rowsByWork.cbegin()) WorkIterator;
+                std::vector<WorkIterator> activeGroups;
+                for (WorkIterator it = rowsByWork.cbegin(); it != rowsByWork.cend(); ++it)
+                {
+                    const int limit = it->first.nOrient;
+                    if (iStart < limit && std::min(thisChunk, limit - iStart) > 0)
+                    {
+                        const std::vector<int> &ids = it->second;
+                        const double cutoff = ids.empty()
+                            ? 0.0 : rowExtraImportanceCutoff[ids.front()];
+                        if (cutoff <= 0.0)
+                            activeGroups.push_back(it);
+                    }
+                }
+                static bool printedGroupGpu = false;
+                if (!printedGroupGpu && m_mpiRank == 0)
+                {
+                    std::cerr << "Variable-phi GPU group scheduler: "
+                              << groupGpuCount
+                              << " devices, shared prepared orientations, "
+                              << activeGroups.size() << " active theta groups"
+                              << std::endl;
+                    printedGroupGpu = true;
+                }
+                ParallelExceptionState groupError;
+                #pragma omp parallel for num_threads(groupGpuCount) schedule(dynamic, 1)
+                for (int groupIndex = 0; groupIndex < (int)activeGroups.size(); ++groupIndex)
+                {
+                    if (groupError.Failed())
+                        continue;
+                    try
+                    {
+                        const auto &entry = *activeGroups[groupIndex];
+                        const int groupOrientLimit = entry.first.nOrient;
+                        const int activeCount =
+                            std::min(thisChunk, groupOrientLimit - iStart);
+                        const int calcNphi = AutoFullVariableCalcPhi(
+                            entry.first.nPhi, fftEps, minDirectPhi,
+                            canUseFftAverage, entry.first.directFullPhi);
+                        const std::vector<int> &rowIds = entry.second;
+                        const int rowCount = (int)rowIds.size();
+                        ScatteringRange rowSphere = outputSphere;
+                        rowSphere.nAzimuth = calcNphi;
+                        rowSphere.azinuthStep = M_2PI / calcNphi;
+                        rowSphere.isNonUniform = true;
+                        rowSphere.thetaValues.clear();
+                        rowSphere.thetaValues.reserve(rowCount);
+                        for (int row : rowIds)
+                            rowSphere.thetaValues.push_back(outputSphere.GetZenith(row));
+                        rowSphere.nZenith = rowCount - 1;
+                        rowSphere.zenithStart = rowSphere.thetaValues.front();
+                        rowSphere.zenithEnd = rowSphere.thetaValues.back();
+                        rowSphere.zenithStep = rowSphere.nZenith > 0
+                            ? (rowSphere.zenithEnd - rowSphere.zenithStart)
+                                / rowSphere.nZenith
+                            : 0.0;
+                        rowSphere.ComputeSphereDirections(m_incidentLight);
+
+                        Arr2D localM(calcNphi + 1, rowCount, 4, 4);
+                        localM.ClearArr();
+                        Arr2D localMns(calcNphi + 1, rowCount, 4, 4);
+                        localMns.ClearArr();
+                        HandlerPO groupHandler(m_particle, &m_incidentLight,
+                                               handlerPO->nTheta,
+                                               m_scattering->m_wave);
+                        groupHandler.ConfigureForThreadLocalPrepare(
+                            *handlerPO, m_scattering);
+                        groupHandler.isCoh = handlerPO->isCoh;
+                        groupHandler.SetFullOnly(handlerPO->IsFullOnly());
+                        groupHandler.SetScatteringSphere(rowSphere);
+                        const int device = omp_get_thread_num() % groupGpuCount;
+                        for (int gpuStart = 0; gpuStart < activeCount; )
+                        {
+                            const int gpuBatchSize =
+                                groupHandler.SelectGpuOrientationBatchSize(
+                                    chunkPrepared, gpuStart,
+                                    activeCount - gpuStart);
+                            const int gpuEnd = std::min(
+                                gpuStart + gpuBatchSize, activeCount);
+                            if (!groupHandler.HandleOrientationsToLocalGpuOnDevice(
+                                    chunkPrepared, gpuStart,
+                                    gpuEnd - gpuStart, device,
+                                    localM, localMns, 1.0, 0.0,
+                                    gpuPackCacheToken))
+                                throw std::runtime_error(
+                                    "variable-phi theta-group GPU diffraction failed");
+                            gpuStart = gpuEnd;
+                        }
+
+                        if (m_mirrorGamma)
+                        {
+                            ApplyMirrorGammaMueller(
+                                localM, calcNphi, rowCount - 1);
+                            if (computeNoShadow)
+                                ApplyMirrorGammaMueller(
+                                    localMns, calcNphi, rowCount - 1);
+                        }
+                        const double weightScale = (double)nOrient
+                            / (double)std::max(1, groupOrientLimit);
+                        for (int localRow = 0; localRow < rowCount; ++localRow)
+                        {
+                            const int globalRow = rowIds[localRow];
+                            matrix averaged = AzimuthAverageOutputMatrix(
+                                localM, rowSphere, calcNphi, localRow);
+                            if (std::fabs(weightScale - 1.0) > 1e-15)
+                                averaged *= weightScale;
+                            rows[globalRow] += averaged;
+                            if (!seedRows.empty())
+                                seedRows[seedIndex][globalRow] += averaged;
+                            if (computeNoShadow)
+                            {
+                                matrix averagedNoShadow =
+                                    AzimuthAverageOutputMatrix(
+                                        localMns, rowSphere,
+                                        calcNphi, localRow);
+                                if (std::fabs(weightScale - 1.0) > 1e-15)
+                                    averagedNoShadow *= weightScale;
+                                rowsNoShadow[globalRow] += averagedNoShadow;
+                            }
+                        }
+                    }
+                    catch (...)
+                    {
+                        groupError.Capture();
+                    }
+                }
+                groupError.Rethrow();
+            }
+            else
             for (const auto &entry : rowsByWork)
             {
             const int groupOrientLimit = entry.first.nOrient;
@@ -6656,6 +6860,55 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
         return finalMeanError;
     }
     return 0.0;
+}
+
+double TracerPOTotal::TraceGridVariablePhi(const AngleRange &betaRange,
+                                           const AngleRange &gammaRange,
+                                           const std::vector<int> &rowNphi,
+                                           int outputNphi)
+{
+    const int nGamma = gammaRange.number;
+    const bool betaMidpoint = OldautoBetaMidpointEnabled() && !m_fastPoleGamma;
+    const int nBeta = OldautoBetaCount(betaRange, betaMidpoint);
+    const int betaNorm = (m_symmetry.beta < M_PI_2 + FLT_EPSILON
+                       && m_symmetry.beta > M_PI_2 - FLT_EPSILON) ? 1 : 2;
+    const double normGamma = gammaRange.number * betaNorm;
+    const bool gammaStagger = OldautoGammaStaggerEnabled();
+
+    std::vector<std::pair<double, double>> orientations;
+    std::vector<double> weights;
+    orientations.reserve((size_t)nBeta * nGamma);
+    weights.reserve((size_t)nBeta * nGamma);
+    for (int i = 0; i < nBeta; ++i)
+    {
+        const double beta = OldautoBetaAngle(betaRange, i, betaMidpoint);
+        double dcos = 0.0;
+        CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
+        const bool pole = std::fabs(beta) <= FLT_EPSILON
+                       || std::fabs(beta - M_PI) <= FLT_EPSILON;
+        const bool fastPole = pole && m_fastPoleGamma;
+        const int gammaCount = fastPole ? 1 : nGamma;
+        const double weight = fastPole ? dcos * nGamma : dcos;
+        double traceBeta = beta;
+        if (pole && !fastPole && betaRange.step > 0.0)
+            traceBeta += beta <= FLT_EPSILON
+                ? 0.5 * betaRange.step : -0.5 * betaRange.step;
+        for (int j = 0; j < gammaCount; ++j)
+        {
+            const double gamma = OldautoGammaAngle(
+                gammaRange, nGamma, j, i, gammaStagger && !fastPole);
+            orientations.push_back(std::make_pair(traceBeta, gamma));
+            weights.push_back(weight);
+        }
+    }
+
+    m_handler->SetNormIndex(normGamma);
+    const int nOrient = (int)orientations.size();
+    std::vector<int> rowNorient(rowNphi.size(), nOrient);
+    return TraceFromSobolVariablePhi(
+        nOrient, betaRange.max, gammaRange.max, rowNphi, rowNorient,
+        outputNphi, -1.0, std::vector<unsigned int>(1, 42u),
+        std::vector<double>(), &orientations, &weights);
 }
 
 int TracerPOTotal::TraceAdaptivePhi(double eps, int nOrient,

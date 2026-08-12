@@ -72,7 +72,13 @@ public:
                                      const std::vector<unsigned int> &owenSeeds =
                                          std::vector<unsigned int>(),
                                      const std::vector<double> &rowBeamCutoff =
-                                         std::vector<double>());
+                                         std::vector<double>(),
+                                     const std::vector<std::pair<double, double>> *fixedOrientations = nullptr,
+                                     const std::vector<double> *fixedWeights = nullptr);
+    double TraceGridVariablePhi(const AngleRange &betaRange,
+                                const AngleRange &gammaRange,
+                                const std::vector<int> &rowNphi,
+                                int outputNphi);
 
     /// Adaptive theta grid: trace once, build theta grid by recursive bisection,
     /// then full diffraction on the found grid.

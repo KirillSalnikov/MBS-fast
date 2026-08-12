@@ -602,6 +602,44 @@ void ApplyAutoThetaGrid(ScatteringRange &range, double D, double wave)
               << " deg, " << range.thetaValues.size() << " points" << std::endl;
 }
 
+static int RoundUpGridMultiple(int value, int multiple)
+{
+    return ((std::max(value, 1) + multiple - 1) / multiple) * multiple;
+}
+
+static double DiffractionGridStep(double D, double wave, double factor)
+{
+    if (!(D > 0.0) || !(wave > 0.0) || !(factor > 0.0))
+        throw std::invalid_argument("diffraction-limit grid requires positive lmax, wavelength, and factor");
+    return factor * 0.69 * wave / D;
+}
+
+static ScatteringRange MakeDiffractionLimitGrid(double D, double wave,
+                                                double factor)
+{
+    const double xi = DiffractionGridStep(D, wave, factor);
+    const int nTheta = std::max(1, (int)std::ceil(M_PI / xi));
+    const int nPhi = RoundUpGridMultiple(
+        std::max(12, (int)std::ceil(M_2PI / xi)), 6);
+    return ScatteringRange(0.0, M_PI, nPhi, nTheta);
+}
+
+static std::vector<int> MakeLatitudePhiGrid(const ScatteringRange &range,
+                                            double D, double wave,
+                                            double factor)
+{
+    const double xi = DiffractionGridStep(D, wave, factor);
+    std::vector<int> rowNphi(range.nZenith + 1, 12);
+    for (int t = 0; t <= range.nZenith; ++t)
+    {
+        const double circumference = M_2PI * std::fabs(std::sin(range.GetZenith(t)));
+        int nPhi = RoundUpGridMultiple(
+            std::max(12, (int)std::ceil(circumference / xi)), 6);
+        rowNphi[t] = std::min(range.nAzimuth, nPhi);
+    }
+    return rowNphi;
+}
+
 std::vector<double> GenerateLogSizes(double minValue, double maxValue, int count)
 {
     if (count < 1)
@@ -2036,19 +2074,23 @@ int main(int argc, const char* argv[])
                     + to_string(gammaRange_deg) + " deg\n";
 
             // Build conus
-            ScatteringRange conus = (args.IsCatched("grid") || args.IsCatched("tgrid"))
-                ? SetConus(args)
-                : ScatteringRange(0, M_PI, N_phi, 1);
+            const double diffractionGridFactor = args.IsCatched("diffraction_limit_grid")
+                ? args.GetDoubleValue("diffraction_limit_grid", 0) : 1.0;
+            ScatteringRange conus = args.IsCatched("diffraction_limit_grid")
+                ? MakeDiffractionLimitGrid(L, wave, diffractionGridFactor)
+                : ((args.IsCatched("grid") || args.IsCatched("tgrid"))
+                    ? SetConus(args) : ScatteringRange(0, M_PI, N_phi, 1));
 
             // Apply theta grid (only if no explicit --grid or --tgrid)
-            if (args.IsCatched("tgrid") || args.IsCatched("grid")) {
+            if (args.IsCatched("tgrid") || args.IsCatched("grid")
+                || args.IsCatched("diffraction_limit_grid")) {
                 // tgrid or grid already loaded in SetConus above
             } else {
                 ApplyAutoThetaGrid(conus, L, wave);
             }
 
             // Set N_phi (only if --grid didn't set it explicitly)
-            if (!args.IsCatched("grid")) {
+            if (!args.IsCatched("grid") && !args.IsCatched("diffraction_limit_grid")) {
                 SetRangeNphi(args, conus, N_phi);
             }
 
@@ -2172,7 +2214,15 @@ int main(int argc, const char* argv[])
             }
             else
             {
-                tracer->TraceRandom(betaRange, gammaRange);
+                if (args.IsCatched("latitude_phi_grid"))
+                {
+                    std::vector<int> rowNphi = MakeLatitudePhiGrid(
+                        conus, L, wave, diffractionGridFactor);
+                    tracer->TraceGridVariablePhi(betaRange, gammaRange,
+                                                 rowNphi, conus.nAzimuth);
+                }
+                else
+                    tracer->TraceRandom(betaRange, gammaRange);
             }
         }
         else if (args.IsCatched("random"))

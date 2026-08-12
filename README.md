@@ -222,6 +222,14 @@ Uniform scattering grids have two forms:
 quadrature is also the equivalent laboratory Euler-alpha average. Particle
 axial symmetry reduces body gamma, not generally laboratory alpha.
 
+For diffraction-limited PO grids, `--diffraction-limit-grid FACTOR` sets both
+angular steps from `xi = FACTOR * 0.69 * wavelength / lmax`; `FACTOR=1` uses
+the estimate directly and larger factors reduce the grid density. Add
+`--latitude-phi-grid` to use `N_phi(theta) proportional to sin(theta)`. It
+keeps the equatorial spacing while avoiding redundant azimuth samples near
+the poles. These two options are supported together with `--diffraction-grid`
+for one size per process.
+
 ## Adaptive Convergence
 
 Adaptive modes are PO-only:
@@ -327,6 +335,17 @@ with `MBS_GPU_MULTI=0`, or cap it with `MBS_GPU_MULTI_MAX=N`. Automatic
 multi-device batching is disabled under a multi-rank MPI launch unless
 `MBS_GPU_MULTI` is set explicitly. `--shared-k-eq-batches` can reuse tracing
 for nearby k-eq values; control the batch span with `--k-eq-batch-ratio`.
+
+For `--diffraction-autofull`/`--oldauto` runs with a variable azimuth grid,
+set `MBS_GPU_GROUPS=1` to distribute independent theta work groups across the
+visible GPUs. This keeps tracing and prepared orientations in one process and
+creates only one diffraction workspace per GPU, instead of duplicating the
+whole calculation. Select devices with `CUDA_VISIBLE_DEVICES`; set
+`MBS_GPU_MULTI=N` or `MBS_GPU_MULTI_MAX=N` to cap the group workers. The group
+scheduler is used only by direct CUDA diffraction without FFT interpolation or
+theta-zone beam filtering; unsupported combinations retain the existing path.
+Within each orientation chunk, every GPU packs and uploads the shared beam data
+once and reuses it for subsequent theta groups assigned to that worker.
 
 Do not launch `--scan-jobs` under an MPI job with more than one rank: both are
 process-level schedulers, and the program rejects that combination. Use

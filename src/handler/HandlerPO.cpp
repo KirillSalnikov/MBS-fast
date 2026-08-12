@@ -2520,6 +2520,20 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     return false;
 }
 
+bool HandlerPO::HandleOrientationsToLocalGpuOnDevice(
+                                             const std::vector<PreparedOrientation> &/*prepared*/,
+                                             int /*start*/,
+                                             int /*count*/,
+                                             int /*device*/,
+                                             Arr2D &/*localM*/,
+                                             Arr2D &/*localM_noshadow*/,
+                                             double /*scale*/,
+                                             double /*waveIndex*/,
+                                             unsigned long long /*cacheToken*/)
+{
+    return false;
+}
+
 bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientation> &/*prepared*/,
                                              int /*start*/,
                                              int /*count*/,

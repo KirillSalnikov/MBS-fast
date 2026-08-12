@@ -112,6 +112,16 @@ public:
                                       Arr2D &localM_noshadow,
                                       double scale = 1.0,
                                       double waveIndex = 0.0);
+    bool HandleOrientationsToLocalGpuOnDevice(
+                                      const std::vector<PreparedOrientation> &prepared,
+                                      int start,
+                                      int count,
+                                      int device,
+                                      Arr2D &localM,
+                                      Arr2D &localM_noshadow,
+                                      double scale = 1.0,
+                                      double waveIndex = 0.0,
+                                      unsigned long long cacheToken = 0);
     bool HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOrientation> &prepared,
                                             int start,
                                             int count,

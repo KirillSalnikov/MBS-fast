@@ -136,6 +136,16 @@ bool QueryActiveGpuMemory(long long &freeBytes, long long &totalBytes,
 #endif
 }
 
+int VisibleGpuDeviceCount()
+{
+#ifndef USE_CUDA
+    return 0;
+#else
+    int count = 0;
+    return cudaGetDeviceCount(&count) == cudaSuccess ? count : 0;
+#endif
+}
+
 std::string FormatGpuInfo(const GpuDeviceInfo &info)
 {
     std::ostringstream out;

@@ -620,6 +620,41 @@ int main()
         "--auto-theta-grid", "0.1", "--backend", "cpu"
     });
 
+    ExpectSuccess("diffraction-limit latitude grid flags work together", {
+        "--method", "po", "--particle", "10", "1", "0.7", "43.4",
+        "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",
+        "--max-reflections", "1", "--diffraction-grid", "8",
+        "--diffraction-limit-grid", "1", "--latitude-phi-grid",
+        "--backend", "cpu"
+    });
+    ExpectFailure("diffraction-limit factor must be positive", {
+        "--method", "po", "--particle", "10", "1", "0.7", "43.4",
+        "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",
+        "--max-reflections", "1", "--diffraction-grid", "8",
+        "--diffraction-limit-grid", "0", "--backend", "cpu"
+    }, "must be finite and positive");
+    ExpectFailure("diffraction-limit grid conflicts with explicit grid", {
+        "--method", "po", "--particle", "10", "1", "0.7", "43.4",
+        "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",
+        "--max-reflections", "1", "--diffraction-grid", "8",
+        "--scattering-grid", "0", "180", "120", "60",
+        "--diffraction-limit-grid", "1", "--backend", "cpu"
+    }, "theta grid is ambiguous");
+    ExpectFailure("diffraction-limit grid rejects explicit phi override", {
+        "--method", "po", "--particle", "10", "1", "0.7", "43.4",
+        "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",
+        "--max-reflections", "1", "--diffraction-grid", "8",
+        "--diffraction-limit-grid", "1", "--phi-points", "120",
+        "--backend", "cpu"
+    }, "conflicts with the phi count");
+    ExpectFailure("latitude grid rejects shared multi-size trace", {
+        "--method", "po", "--particle", "10", "1", "0.7", "43.4",
+        "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",
+        "--max-reflections", "1", "--diffraction-grid", "8",
+        "--diffraction-limit-grid", "1", "--latitude-phi-grid",
+        "--multikeq", "1", "2", "2", "--backend", "cpu"
+    }, "not yet implemented for a shared multi-size trace");
+
     std::vector<std::string> cudaOnCpu = CanonicalBase();
     for (size_t i = 0; i + 1 < cudaOnCpu.size(); ++i)
         if (cudaOnCpu[i] == "--backend")

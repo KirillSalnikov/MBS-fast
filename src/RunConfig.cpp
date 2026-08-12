@@ -797,6 +797,27 @@ bool SupportsAutoPhi(OrientationMode mode)
 void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
 {
     const OrientationMode mode = config.orientation;
+    if (args.IsCatched("diffraction_limit_grid"))
+    {
+        if (config.method != RunMethod::PhysicalOptics
+            || mode != OrientationMode::DiffractionGrid)
+            Fail("--diffraction-limit-grid is currently implemented for the PO diffraction-grid orientation path.",
+                 "use --method po --diffraction-grid DIV, or select the scattering grid explicitly.");
+        if (args.IsCatched("nphi"))
+            Fail("--phi-points conflicts with the phi count computed by --diffraction-limit-grid.",
+                 "remove --phi-points, or replace --diffraction-limit-grid with an explicit --scattering-grid.");
+    }
+    if (args.IsCatched("latitude_phi_grid"))
+    {
+        if (config.method != RunMethod::PhysicalOptics
+            || mode != OrientationMode::DiffractionGrid)
+            Fail("--latitude-phi-grid is currently implemented for the PO diffraction-grid orientation path.",
+                 "use --method po --diffraction-grid DIV, or remove --latitude-phi-grid.");
+        if (args.IsCatched("multigrid") || args.IsCatched("multikeq")
+            || args.IsCatched("multikeq_list"))
+            Fail("--latitude-phi-grid is not yet implemented for a shared multi-size trace.",
+                 "run each size separately so every size gets its own diffraction-limit grid.");
+    }
     const bool usesAdaptiveSettings = UsesAdaptiveOrientationSearch(mode)
         || args.IsCatched("auto_tgrid")
         || args.IsCatched("auto_phi")
@@ -952,11 +973,20 @@ ThetaGridMode ValidateThetaGrid(const ArgPP &args, std::vector<std::string> &war
     if (args.IsCatched("grid")) selected.push_back("grid");
     if (args.IsCatched("tgrid")) selected.push_back("tgrid");
     if (args.IsCatched("auto_tgrid")) selected.push_back("auto_tgrid");
+    if (args.IsCatched("diffraction_limit_grid")) selected.push_back("diffraction_limit_grid");
     if (selected.size() > 1)
     {
         Fail("theta grid is ambiguous: " + JoinFlags(selected)
              + " were provided together.",
-             "keep one theta source: --scattering-grid, --theta-grid-file, or --auto-theta-grid.");
+             "keep one theta source: --scattering-grid, --theta-grid-file, --auto-theta-grid, or --diffraction-limit-grid.");
+    }
+
+    if (args.IsCatched("diffraction_limit_grid"))
+    {
+        const double factor = DoubleValue(args, "diffraction_limit_grid", 0);
+        if (!(factor > 0.0) || !std::isfinite(factor))
+            Fail("--diffraction-limit-grid FACTOR must be finite and positive.",
+                 "use --diffraction-limit-grid 1 for the estimate xi=0.69*lambda/lmax.");
     }
 
     if (args.IsCatched("grid"))
@@ -1023,6 +1053,8 @@ ThetaGridMode ValidateThetaGrid(const ArgPP &args, std::vector<std::string> &war
         RequireRelativeTolerance(args, "auto_tgrid");
         return ThetaGridMode::Adaptive;
     }
+    if (args.IsCatched("diffraction_limit_grid"))
+        return ThetaGridMode::Uniform;
     return ThetaGridMode::Default;
 }
 

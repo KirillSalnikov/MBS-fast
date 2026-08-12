@@ -159,6 +159,17 @@ struct GpuWorkspace
     std::vector<int> hBeamOffsets8;
     std::vector<GpuReal> hM;
     std::vector<GpuReal> hMNoShadow;
+    unsigned long long packedCacheToken = 0;
+    int packedStart = 0;
+    int packedOrientCount = 0;
+    size_t packedBeamCount = 0;
+    size_t packedBeam8Count = 0;
+    size_t packedLargeBeamCount = 0;
+    int packedMaxBeamVertices = 0;
+    bool packedAllBeam8 = false;
+    double packedScale = 1.0;
+    double packedWaveIndex = 0.0;
+    bool packedCacheValid = false;
     GpuComplex *fftLow = nullptr;
     GpuComplex *fftFull = nullptr;
     size_t fftLowCap = 0;
@@ -202,6 +213,7 @@ struct GpuWorkspace
 static thread_local GpuWorkspace g_gpuWorkspace;
 static thread_local bool g_gpuMultiWorker = false;
 static thread_local bool g_gpuFftLowDirect = false;
+static thread_local unsigned long long g_gpuPackCacheToken = 0;
 
 static inline double prepared_absorption_factor(const PreparedBeam &pb,
                                                 double scale,
@@ -3309,6 +3321,46 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                                         localM, localM_noshadow);
 }
 
+bool HandlerPO::HandleOrientationsToLocalGpuOnDevice(
+                                             const std::vector<PreparedOrientation> &prepared,
+                                             int start,
+                                             int count,
+                                             int device,
+                                             Arr2D &localM,
+                                             Arr2D &localM_noshadow,
+                                             double scale,
+                                             double waveIndex,
+                                             unsigned long long cacheToken)
+{
+    int savedDevice = 0;
+    if (cudaGetDevice(&savedDevice) != cudaSuccess
+        || cudaSetDevice(device) != cudaSuccess)
+        return false;
+    struct DeviceGuard
+    {
+        int saved;
+        bool previousWorker;
+        unsigned long long previousCacheToken;
+        DeviceGuard(int value, unsigned long long token)
+            : saved(value),
+              previousWorker(g_gpuMultiWorker),
+              previousCacheToken(g_gpuPackCacheToken)
+        {
+            g_gpuMultiWorker = true;
+            g_gpuPackCacheToken = token;
+        }
+        ~DeviceGuard()
+        {
+            g_gpuMultiWorker = previousWorker;
+            g_gpuPackCacheToken = previousCacheToken;
+            cudaSetDevice(saved);
+        }
+    } guard(savedDevice, cacheToken);
+    return HandleOrientationsToLocalGpu(prepared, start, count,
+                                        localM, localM_noshadow,
+                                        scale, waveIndex);
+}
+
 bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOrientation> &prepared,
                                                    int start,
                                                    int count,
@@ -4080,59 +4132,57 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         }
     }
 
+    GpuWorkspace &ws = g_gpuWorkspace;
+    const bool reusePacked = g_gpuPackCacheToken != 0
+        && ws.packedCacheValid
+        && ws.packedCacheToken == g_gpuPackCacheToken
+        && ws.packedStart == start
+        && ws.packedOrientCount == nOrient
+        && ws.packedScale == scale
+        && ws.packedWaveIndex == waveIndex;
+
     const bool timing = gpu_timing_enabled();
     const double tStart = timing ? gpu_now_ms() : 0.0;
     double tCount = 0.0, tPack = 0.0, tEnsure = 0.0, tGrid = 0.0;
     double tCopy = 0.0, tKernel = 0.0, tD2h = 0.0, tAdd = 0.0;
 
-    size_t nBeams = 0;
-    size_t nBeams8 = 0;
-    size_t nBeamsLarge = 0;
-    bool allBeam8 = true;
-    int maxBeamVertices = 0;
-    for (int oi = 0; oi < nOrient; ++oi)
+    size_t nBeams = reusePacked ? ws.packedBeamCount : 0;
+    size_t nBeams8 = reusePacked ? ws.packedBeam8Count : 0;
+    size_t nBeamsLarge = reusePacked ? ws.packedLargeBeamCount : 0;
+    bool allBeam8 = reusePacked ? ws.packedAllBeam8 : true;
+    int maxBeamVertices = reusePacked ? ws.packedMaxBeamVertices : 0;
+    if (!reusePacked)
     {
-        const PreparedOrientation &po = prepared[start + oi];
-        for (const PreparedBeam &pb : po.beams)
+        for (int oi = 0; oi < nOrient; ++oi)
         {
-            if (!pb.edgeData.valid || pb.edgeData.nVertices <= 0 || pb.edgeData.nVertices > 32)
-                return failDirect("bad-edge-data");
-            maxBeamVertices = std::max(maxBeamVertices, pb.edgeData.nVertices);
-            if (pb.edgeData.nVertices > 8)
+            const PreparedOrientation &po = prepared[start + oi];
+            for (const PreparedBeam &pb : po.beams)
             {
-                allBeam8 = false;
-                ++nBeamsLarge;
+                if (!pb.edgeData.valid || pb.edgeData.nVertices <= 0
+                    || pb.edgeData.nVertices > 32)
+                    return failDirect("bad-edge-data");
+                maxBeamVertices = std::max(
+                    maxBeamVertices, pb.edgeData.nVertices);
+                if (pb.edgeData.nVertices > 8)
+                {
+                    allBeam8 = false;
+                    ++nBeamsLarge;
+                }
+                else
+                {
+                    ++nBeams8;
+                }
+                ++nBeams;
             }
-            else
-            {
-                ++nBeams8;
-            }
-            ++nBeams;
         }
     }
     if (nBeams == 0)
         return true;
     if (timing) tCount = gpu_now_ms() - tStart;
 
-    GpuWorkspace &ws = g_gpuWorkspace;
     double t0 = timing ? gpu_now_ms() : 0.0;
     const bool scaleOnPack = (fabs(scale - 1.0) > 1e-15);
     const double scale2 = scale * scale;
-    const int packNoAtomicsMode = gpu_no_atomics_mode();
-    const bool packNoAtomics = (packNoAtomicsMode >= 0)
-        ? (packNoAtomicsMode != 0)
-        : !computeNoShadow;
-    const int packFusedMuellerMode = gpu_fused_mueller_mode();
-    const bool packFusedMueller = packNoAtomics && ((packFusedMuellerMode >= 0)
-        ? (packFusedMuellerMode != 0)
-        : true);
-    const int packStageMuellerMode = gpu_stage_mueller_mode();
-    const bool packStageMueller = packFusedMueller && !computeNoShadow
-        && ((packStageMuellerMode >= 0) ? (packStageMuellerMode != 0) : false);
-    const int packNoVertexCacheMode = gpu_no_vertex_cache_mode();
-    const bool packNoVertexCache = (packNoVertexCacheMode >= 0)
-        ? (packNoVertexCacheMode != 0)
-        : false;
     // The compact 8-vertex packing path is a speed optimization only.  It has
     // proven fragile for non-convex clipped beams in the threaded pack stage,
     // while the general 32-vertex path is stable and handles the same beams.
@@ -4140,113 +4190,117 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     const bool packBeam8 = allBeam8 && canUseBeam8;
     const bool packMixedBeam8 = !allBeam8 && canUseBeam8
                              && nBeams8 > 0 && nBeamsLarge > 0;
-    if (packBeam8)
-        ws.hBeams8.resize(nBeams);
-    else if (packMixedBeam8)
-    {
-        ws.hBeams8.resize(nBeams8);
-        ws.hBeams.resize(nBeamsLarge);
-    }
-    else
-        ws.hBeams.resize(nBeams);
-    ws.hWeights.assign(nOrient, 0.0);
-    ws.hBeamOffsets.assign(nOrient + 1, 0);
-    if (packMixedBeam8)
-        ws.hBeamOffsets8.assign(nOrient + 1, 0);
     std::vector<GpuBeam> &hBeams = ws.hBeams;
     std::vector<GpuBeam8> &hBeams8 = ws.hBeams8;
     std::vector<GpuReal> &hWeights = ws.hWeights;
     std::vector<int> &hBeamOffsets = ws.hBeamOffsets;
     std::vector<int> &hBeamOffsets8 = ws.hBeamOffsets8;
-    const bool beamStats = gpu_beam_stats_enabled();
-    size_t statVertexHist[33] = {};
-    size_t statExternal = 0, statInternal = 0;
-    size_t statEdgesX = 0, statEdgesY = 0;
-    size_t statMinBeams = (size_t)-1, statMaxBeams = 0;
-    size_t bi = 0;
-    size_t bi8 = 0;
-    size_t biLarge = 0;
-    for (int oi = 0; oi < nOrient; ++oi)
+    if (!reusePacked)
     {
-        hBeamOffsets[oi] = (int)(packMixedBeam8 ? biLarge : bi);
-        if (packMixedBeam8)
-            hBeamOffsets8[oi] = (int)bi8;
-        const PreparedOrientation &po = prepared[start + oi];
-        hWeights[oi] = po.sinZenith;
-        if (beamStats)
+        if (packBeam8)
+            hBeams8.resize(nBeams);
+        else if (packMixedBeam8)
         {
-            const size_t beamsInOrient = po.beams.size();
-            statMinBeams = std::min(statMinBeams, beamsInOrient);
-            statMaxBeams = std::max(statMaxBeams, beamsInOrient);
+            hBeams8.resize(nBeams8);
+            hBeams.resize(nBeamsLarge);
         }
-        for (const PreparedBeam &pb : po.beams)
+        else
+            hBeams.resize(nBeams);
+        hWeights.assign(nOrient, 0.0);
+        hBeamOffsets.assign(nOrient + 1, 0);
+        if (packMixedBeam8)
+            hBeamOffsets8.assign(nOrient + 1, 0);
+
+        const bool beamStats = gpu_beam_stats_enabled();
+        size_t statVertexHist[33] = {};
+        size_t statExternal = 0, statInternal = 0;
+        size_t statEdgesX = 0, statEdgesY = 0;
+        size_t statMinBeams = (size_t)-1, statMaxBeams = 0;
+        size_t bi = 0;
+        size_t bi8 = 0;
+        size_t biLarge = 0;
+        for (int oi = 0; oi < nOrient; ++oi)
         {
+            hBeamOffsets[oi] = (int)(packMixedBeam8 ? biLarge : bi);
+            if (packMixedBeam8)
+                hBeamOffsets8[oi] = (int)bi8;
+            const PreparedOrientation &po = prepared[start + oi];
+            hWeights[oi] = po.sinZenith;
             if (beamStats)
             {
-                ++statVertexHist[pb.edgeData.nVertices];
-                if (pb.isExternal)
-                    ++statExternal;
-                else
-                    ++statInternal;
-                for (int e = 0; e < pb.edgeData.nVertices; ++e)
-                {
-                    statEdgesX += pb.edgeData.edge_valid_x[e] ? 1 : 0;
-                    statEdgesY += pb.edgeData.edge_valid_y[e] ? 1 : 0;
-                }
+                const size_t beamsInOrient = po.beams.size();
+                statMinBeams = std::min(statMinBeams, beamsInOrient);
+                statMaxBeams = std::max(statMaxBeams, beamsInOrient);
             }
-        }
-        if (packMixedBeam8)
-        {
             for (const PreparedBeam &pb : po.beams)
             {
-                if (pb.edgeData.nVertices <= 8)
-                    ++bi8;
-                else
-                    ++biLarge;
+                if (beamStats)
+                {
+                    ++statVertexHist[pb.edgeData.nVertices];
+                    if (pb.isExternal)
+                        ++statExternal;
+                    else
+                        ++statInternal;
+                    for (int e = 0; e < pb.edgeData.nVertices; ++e)
+                    {
+                        statEdgesX += pb.edgeData.edge_valid_x[e] ? 1 : 0;
+                        statEdgesY += pb.edgeData.edge_valid_y[e] ? 1 : 0;
+                    }
+                }
             }
+            if (packMixedBeam8)
+            {
+                for (const PreparedBeam &pb : po.beams)
+                {
+                    if (pb.edgeData.nVertices <= 8)
+                        ++bi8;
+                    else
+                        ++biLarge;
+                }
+            }
+            bi += po.beams.size();
         }
-        bi += po.beams.size();
-    }
-    hBeamOffsets[nOrient] = (int)(packMixedBeam8 ? biLarge : bi);
-    if (packMixedBeam8)
-        hBeamOffsets8[nOrient] = (int)bi8;
+        hBeamOffsets[nOrient] = (int)(packMixedBeam8 ? biLarge : bi);
+        if (packMixedBeam8)
+            hBeamOffsets8[nOrient] = (int)bi8;
 
 #pragma omp parallel for schedule(static) if(nOrient > 1 && nBeams >= 4096 && !g_gpuMultiWorker)
-    for (int oi = 0; oi < nOrient; ++oi)
-    {
-        size_t out = (size_t)hBeamOffsets[oi];
-        size_t out8 = packMixedBeam8 ? (size_t)hBeamOffsets8[oi] : 0;
-        const PreparedOrientation &po = prepared[start + oi];
-        for (const PreparedBeam &pb : po.beams)
+        for (int oi = 0; oi < nOrient; ++oi)
         {
-            if (packBeam8)
-                pack_prepared_gpu_beam8(
-                    pb, oi, scale, scale2, scaleOnPack, waveIndex,
-                    AbsorptionCoefficient(), hBeams8[out++]);
-            else if (packMixedBeam8 && pb.edgeData.nVertices <= 8)
-                pack_prepared_gpu_beam8(
-                    pb, oi, scale, scale2, scaleOnPack, waveIndex,
-                    AbsorptionCoefficient(), hBeams8[out8++]);
-            else
-                pack_prepared_gpu_beam<GpuBeam, 32>(
-                    pb, oi, scale, scale2, scaleOnPack, waveIndex,
-                    AbsorptionCoefficient(), hBeams[out++]);
+            size_t out = (size_t)hBeamOffsets[oi];
+            size_t out8 = packMixedBeam8 ? (size_t)hBeamOffsets8[oi] : 0;
+            const PreparedOrientation &po = prepared[start + oi];
+            for (const PreparedBeam &pb : po.beams)
+            {
+                if (packBeam8)
+                    pack_prepared_gpu_beam8(
+                        pb, oi, scale, scale2, scaleOnPack, waveIndex,
+                        AbsorptionCoefficient(), hBeams8[out++]);
+                else if (packMixedBeam8 && pb.edgeData.nVertices <= 8)
+                    pack_prepared_gpu_beam8(
+                        pb, oi, scale, scale2, scaleOnPack, waveIndex,
+                        AbsorptionCoefficient(), hBeams8[out8++]);
+                else
+                    pack_prepared_gpu_beam<GpuBeam, 32>(
+                        pb, oi, scale, scale2, scaleOnPack, waveIndex,
+                        AbsorptionCoefficient(), hBeams[out++]);
+            }
         }
-    }
-    if (beamStats)
-    {
-        std::fprintf(stderr,
-                     "GPU beam stats orient=%d beams=%zu beams/orient min=%zu mean=%.3f max=%zu external=%zu internal=%zu valid_edges_x/beams=%.3f valid_edges_y/beams=%.3f vertices:",
-                     nOrient, nBeams,
-                     statMinBeams == (size_t)-1 ? 0 : statMinBeams,
-                     nBeams == 0 ? 0.0 : (double)nBeams / (double)nOrient,
-                     statMaxBeams, statExternal, statInternal,
-                     nBeams == 0 ? 0.0 : (double)statEdgesX / (double)nBeams,
-                     nBeams == 0 ? 0.0 : (double)statEdgesY / (double)nBeams);
-        for (int nv = 1; nv <= 32; ++nv)
-            if (statVertexHist[nv] != 0)
-                std::fprintf(stderr, " %d:%zu", nv, statVertexHist[nv]);
-        std::fprintf(stderr, "\n");
+        if (beamStats)
+        {
+            std::fprintf(stderr,
+                         "GPU beam stats orient=%d beams=%zu beams/orient min=%zu mean=%.3f max=%zu external=%zu internal=%zu valid_edges_x/beams=%.3f valid_edges_y/beams=%.3f vertices:",
+                         nOrient, nBeams,
+                         statMinBeams == (size_t)-1 ? 0 : statMinBeams,
+                         nBeams == 0 ? 0.0 : (double)nBeams / (double)nOrient,
+                         statMaxBeams, statExternal, statInternal,
+                         nBeams == 0 ? 0.0 : (double)statEdgesX / (double)nBeams,
+                         nBeams == 0 ? 0.0 : (double)statEdgesY / (double)nBeams);
+            for (int nv = 1; nv <= 32; ++nv)
+                if (statVertexHist[nv] != 0)
+                    std::fprintf(stderr, " %d:%zu", nv, statVertexHist[nv]);
+            std::fprintf(stderr, "\n");
+        }
     }
     if (timing) tPack = gpu_now_ms() - t0;
 
@@ -4375,19 +4429,37 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     if (timing) tGrid = gpu_now_ms() - t0;
 
     t0 = timing ? gpu_now_ms() : 0.0;
-    if (useBeam8)
+    if (!reusePacked)
     {
-        if (cudaMemcpy(ws.beams8, ws.hBeams8.data(), ws.hBeams8.size() * sizeof(GpuBeam8), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+        ws.packedCacheValid = false;
+        if (useBeam8)
+        {
+            if (cudaMemcpy(ws.beams8, hBeams8.data(), hBeams8.size() * sizeof(GpuBeam8), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+        }
+        else if (useMixedBeam8)
+        {
+            if (cudaMemcpy(ws.beams8, hBeams8.data(), hBeams8.size() * sizeof(GpuBeam8), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+            if (cudaMemcpy(ws.beams, hBeams.data(), hBeams.size() * sizeof(GpuBeam), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+        }
+        else if (cudaMemcpy(ws.beams, hBeams.data(), hBeams.size() * sizeof(GpuBeam), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+        if (cudaMemcpy(ws.weights, hWeights.data(), hWeights.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return failDirect("copy-weights");
+        if (cudaMemcpy(ws.beamOffsets, hBeamOffsets.data(), hBeamOffsets.size() * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) return failDirect("copy-offsets");
+        if (useMixedBeam8 && cudaMemcpy(ws.beamOffsets8, hBeamOffsets8.data(), hBeamOffsets8.size() * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) return failDirect("copy-offsets8");
+        if (g_gpuPackCacheToken != 0)
+        {
+            ws.packedCacheToken = g_gpuPackCacheToken;
+            ws.packedStart = start;
+            ws.packedOrientCount = nOrient;
+            ws.packedBeamCount = nBeams;
+            ws.packedBeam8Count = nBeams8;
+            ws.packedLargeBeamCount = nBeamsLarge;
+            ws.packedMaxBeamVertices = maxBeamVertices;
+            ws.packedAllBeam8 = allBeam8;
+            ws.packedScale = scale;
+            ws.packedWaveIndex = waveIndex;
+            ws.packedCacheValid = true;
+        }
     }
-    else if (useMixedBeam8)
-    {
-        if (cudaMemcpy(ws.beams8, ws.hBeams8.data(), ws.hBeams8.size() * sizeof(GpuBeam8), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-        if (cudaMemcpy(ws.beams, hBeams.data(), hBeams.size() * sizeof(GpuBeam), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    }
-    else if (cudaMemcpy(ws.beams, hBeams.data(), hBeams.size() * sizeof(GpuBeam), cudaMemcpyHostToDevice) != cudaSuccess) return false;
-    if (cudaMemcpy(ws.weights, hWeights.data(), hWeights.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return failDirect("copy-weights");
-    if (cudaMemcpy(ws.beamOffsets, hBeamOffsets.data(), hBeamOffsets.size() * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) return failDirect("copy-offsets");
-    if (useMixedBeam8 && cudaMemcpy(ws.beamOffsets8, hBeamOffsets8.data(), hBeamOffsets8.size() * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) return failDirect("copy-offsets8");
     if (!fusedMueller && cudaMemset(ws.j, 0, jCount * sizeof(GpuReal)) != cudaSuccess) return failDirect("memset-j");
     if (!fusedMueller && computeNoShadow && cudaMemset(ws.jNoShadow, 0, jCount * sizeof(GpuReal)) != cudaSuccess) return failDirect("memset-j-ns");
     if (cudaMemset(ws.m, 0, mCount * sizeof(GpuReal)) != cudaSuccess) return failDirect("memset-m");

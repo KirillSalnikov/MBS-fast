@@ -51,6 +51,21 @@ an orientation batch across visible GPUs. Use `CUDA_VISIBLE_DEVICES=0,1`, set
 the device count. Process-parallel size scans are a separate mechanism driven
 by `--scan-jobs` and `--gpu-devices`.
 
+Variable-azimuth `--diffraction-autofull`/`--oldauto` calculations can instead
+schedule independent theta work groups on the visible GPUs in one process:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+MBS_GPU_GROUPS=1 MBS_GPU_MULTI_MAX=4 \
+gpu/bin/mbs_po_gpu_double [other options]
+```
+
+This mode shares prepared orientations in host memory and allocates one CUDA
+diffraction workspace per device. It currently requires direct diffraction
+(no FFT interpolation) and no theta-zone beam filtering. Packed beams, weights,
+and orientation offsets are uploaded once per orientation chunk and cached in
+each worker's device workspace while its theta groups are processed.
+
 The default target uses float and CUDA fast math. Treat CPU double and CUDA
 double results as the numerical reference, and calibrate float-fast on the
 same particle, orientation mode, angular grid, and convergence limits before
