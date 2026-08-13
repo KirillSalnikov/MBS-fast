@@ -1066,7 +1066,12 @@ Jones and area OR thresholds. This avoids removing a large but weak branch or
 a small but intense branch solely because one factor is small. The legacy
 area-ratio simplification remains at 100 for reproducibility; use
 \texttt{-\/-cutoff-profile off} when a genuinely uncut reference is required.
-The profiles do not set \texttt{-\/-trace-max-beams}.
+The profiles do not set \texttt{-\/-trace-max-beams}.  For unattended runs
+on deeply concave particles, use a finite beam limit as a diagnostic guard:
+strict profiles can still produce a very large tree for an isolated
+orientation.  A nonzero ``Configured beam-limit hits'' counter means that the
+result is incomplete; increase the limit or calibrate stronger cutoffs before
+using that run as physical data.
 
 \subsection{Individual controls}
 
