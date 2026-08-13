@@ -502,6 +502,19 @@ Useful controls:
 | `MBS_GPU_NO_VERTEX_CACHE=1` | Disable cached/packed vertex path for debugging. |
 | `MBS_GPU_TIMING=1` | Print GPU timing breakdown for count/pack/copy/kernels/d2h/add. |
 | `MBS_GPU_BLOCK=N` | Override CUDA block size for kernel tuning. |
+| `MBS_ORIENTATION_TIMING=1` | Print summed CPU time for rotation, tracing, and prepared-beam construction. |
+
+The diagnostic target below compares FP64 direct quaternion-vector rotation
+with a precomputed 3x3 matrix on the GPU:
+
+```bash
+make USE_CUDA=1 gpu_quaternion_probe
+CUDA_VISIBLE_DEVICES=0 ./bin/gpu_quaternion_rotation_probe 65536 64 50
+```
+
+This probe does not calculate scattering and does not replace profiling of a
+complete run. Quaternions provide uniform SO(3) orientation samples; by
+themselves they do not accelerate CPU tracing or CUDA diffraction.
 
 Do not confuse this with full GPU ray tracing. The production GPU backend is primarily a diffraction and Mueller-accumulation accelerator. `--gpu_trace` only prefilters nonconvex tracing candidates; exact intersections remain CPU-side.
 
@@ -753,6 +766,7 @@ Production-use variables:
 | `MBS_GPU_NO_VERTEX_CACHE` | Disable cached/packed vertex path for debugging. |
 | `MBS_GPU_TIMING` | Print CUDA timing breakdowns. |
 | `MBS_GPU_BLOCK` | Override CUDA kernel block size. |
+| `MBS_ORIENTATION_TIMING` | Print CPU-time breakdown for rotation, tracing, and prepared-beam construction. |
 | `MBS_HOST_MEM_FRACTION` | Host-memory fraction for oldauto/random chunking. |
 | `MBS_HOST_MEM_RESERVE_MB` | Host memory reserve in MB. |
 | `MBS_HOST_MEM_BUDGET_MB` | Hard host memory budget, also set for parallel children. |

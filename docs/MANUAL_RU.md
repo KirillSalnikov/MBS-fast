@@ -465,6 +465,19 @@ J10.re, J10.im, J11.re, J11.im
 | `MBS_GPU_STAGE_MUELLER=1` | Включить staged per-orientation Mueller reduction. |
 | `MBS_GPU_TIMING=1` | Печатать breakdown count/pack/copy/kernels/d2h/add. |
 | `MBS_GPU_BLOCK=N` | Override CUDA block size. |
+| `MBS_ORIENTATION_TIMING=1` | Печатать суммарное CPU-время поворота, трассировки и подготовки пучков. |
+
+Для отдельного сравнения FP64-поворота вектора кватернионом и готовой
+матрицей на GPU служит диагностическая цель:
+
+```bash
+make USE_CUDA=1 gpu_quaternion_probe
+CUDA_VISIBLE_DEVICES=0 ./bin/gpu_quaternion_rotation_probe 65536 64 50
+```
+
+Пробник не выполняет расчет рассеяния и не заменяет профиль полной задачи.
+Кватернионы задают равномерные ориентации на SO(3), но сами по себе не
+ускоряют CPU-трассировку или CUDA-дифракцию.
 
 ### Multi-size и multi-GPU
 
@@ -713,6 +726,7 @@ budget или делить задачу на меньшие независимы
 | `MBS_GPU_NO_VERTEX_CACHE` | Отключить cached/packed vertex path. |
 | `MBS_GPU_TIMING` | Печатать CUDA timing breakdown. |
 | `MBS_GPU_BLOCK` | Override CUDA block size. |
+| `MBS_ORIENTATION_TIMING` | Печатать разбиение CPU-времени поворота, трассировки и подготовки пучков. |
 | `MBS_HOST_MEM_FRACTION` | Доля host RAM для oldauto/random chunking. |
 | `MBS_HOST_MEM_RESERVE_MB` | Резерв host RAM в MB. |
 | `MBS_HOST_MEM_BUDGET_MB` | Жесткий host RAM budget. |

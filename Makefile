@@ -71,6 +71,7 @@ TARGET_FLOAT_FAST = bin/mbs_po_float_fast
 TARGET_DOUBLE_FAST = bin/mbs_po_double_fast
 FFT_PROBE = bin/fft_aperture_probe
 GPU_TRACE_PROBE = bin/gpu_trace_projection_probe
+GPU_QUATERNION_PROBE = bin/gpu_quaternion_rotation_probe
 
 all: $(TARGET)
 
@@ -218,12 +219,17 @@ cuda_variants:
 ifeq ($(USE_CUDA),1)
 fft_probe: $(FFT_PROBE)
 gpu_trace_probe: $(GPU_TRACE_PROBE)
+gpu_quaternion_probe: $(GPU_QUATERNION_PROBE)
 
 $(FFT_PROBE): tools/fft_aperture_probe.cu
 	@mkdir -p bin
 	$(NVCC) $(NVCCFLAGS) -I$(CUDA_PATH)/include $< -o $@ -L$(CUDA_PATH)/lib64 -lcufft -lcudart
 
 $(GPU_TRACE_PROBE): tools/gpu_trace_projection_probe.cu
+	@mkdir -p bin
+	$(NVCC) $(NVCCFLAGS) -I$(CUDA_PATH)/include $< -o $@ -L$(CUDA_PATH)/lib64 -lcudart
+
+$(GPU_QUATERNION_PROBE): tools/gpu_quaternion_rotation_probe.cu
 	@mkdir -p bin
 	$(NVCC) $(NVCCFLAGS) -I$(CUDA_PATH)/include $< -o $@ -L$(CUDA_PATH)/lib64 -lcudart
 else
@@ -233,11 +239,14 @@ fft_probe:
 gpu_trace_probe:
 	@echo "gpu_trace_probe requires USE_CUDA=1"
 	@false
+gpu_quaternion_probe:
+	@echo "gpu_quaternion_probe requires USE_CUDA=1"
+	@false
 endif
 
 .PHONY: all cuda_check cpu gpu gpu_float gpu_float_fast gpu_double_fast split docs \
 	test test_cli test_release test_adaptive test_regression test_sanitize clean \
 	clean_cuda_objects cuda_float cuda_float_fast cuda_double_fast cuda_variants \
-	fft_probe gpu_trace_probe
+	fft_probe gpu_trace_probe gpu_quaternion_probe
 
 -include $(DEPS)

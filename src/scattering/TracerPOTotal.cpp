@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <stdexcept>
 #include <future>
@@ -86,6 +87,12 @@ static int EnvInt(const char *name, int fallback)
     char *end = nullptr;
     long parsed = std::strtol(value, &end, 10);
     return (end && *end == '\0' && parsed > 0) ? (int)parsed : fallback;
+}
+
+static bool EnvEnabled(const char *name)
+{
+    const char *value = std::getenv(name);
+    return value && *value && std::strcmp(value, "0") != 0;
 }
 
 static std::string SizeFileLabel(double value)
@@ -5585,6 +5592,10 @@ void TracerPOTotal::TraceWeightedOrientations(
     }
 
     double phase1_total = 0, phase2_total = 0;
+    const bool profileOrientation = EnvEnabled("MBS_ORIENTATION_TIMING");
+    double rotationCpuSeconds = 0.0;
+    double traceCpuSeconds = 0.0;
+    double prepareCpuSeconds = 0.0;
     std::vector<Beam> outBeams;
     long long count = 0;
     m_scattering->PrepareForParallelTrace();
@@ -5614,6 +5625,9 @@ void TracerPOTotal::TraceWeightedOrientations(
             localHandler.ConfigureForThreadLocalPrepare(*handlerPO, localScatter);
 
             std::vector<Beam> localBeams;
+            double localRotationSeconds = 0.0;
+            double localTraceSeconds = 0.0;
+            double localPrepareSeconds = 0.0;
 
             #pragma omp for schedule(dynamic, 4)
             for (int i = 0; i < thisChunk; ++i)
@@ -5625,14 +5639,31 @@ void TracerPOTotal::TraceWeightedOrientations(
                 int idx = iStart + i;
                 const WeightedOrientation &orientation = orientations[idx];
                 double weight = orientation.weight;
+                std::chrono::high_resolution_clock::time_point profileStart;
+                if (profileOrientation)
+                    profileStart = std::chrono::high_resolution_clock::now();
                 if (orientation.useQuaternion)
                     localParticle.RotateQuaternion(orientation.qx, orientation.qy,
                                                    orientation.qz, orientation.qw);
                 else
                     localParticle.Rotate(orientation.beta, orientation.gamma,
                                          orientation.alpha);
+                if (profileOrientation)
+                {
+                    const auto now = std::chrono::high_resolution_clock::now();
+                    localRotationSeconds += std::chrono::duration<double>(
+                        now - profileStart).count();
+                    profileStart = now;
+                }
                 if (!shadowOff) localScatter->FormShadowBeam(localBeams);
                 bool ok = localScatter->ScatterLight(0, 0, localBeams);
+                if (profileOrientation)
+                {
+                    const auto now = std::chrono::high_resolution_clock::now();
+                    localTraceSeconds += std::chrono::duration<double>(
+                        now - profileStart).count();
+                    profileStart = now;
+                }
                 if (ok)
                 {
                     double beforeOutput = localHandler.m_outputEnergy;
@@ -5645,11 +5676,24 @@ void TracerPOTotal::TraceWeightedOrientations(
                 }
                 chunkEnergies[i] = localScatter->GetIncedentEnergy() * weight;
                 localBeams.clear();
+                if (profileOrientation)
+                    localPrepareSeconds += std::chrono::duration<double>(
+                        std::chrono::high_resolution_clock::now() - profileStart).count();
                 }
                 catch (...)
                 {
                     parallelError.Capture();
                 }
+            }
+
+            if (profileOrientation)
+            {
+                #pragma omp atomic update
+                rotationCpuSeconds += localRotationSeconds;
+                #pragma omp atomic update
+                traceCpuSeconds += localTraceSeconds;
+                #pragma omp atomic update
+                prepareCpuSeconds += localPrepareSeconds;
             }
 
             delete localScatter;
@@ -5778,6 +5822,20 @@ void TracerPOTotal::TraceWeightedOrientations(
                   << (handlerPO->IsGpuEnabled() ? "CUDA" : "OpenMP")
                   << "): " << phase2_total << " s" << std::endl;
         std::cout << "Total: " << phase1_total + phase2_total << " s" << std::endl;
+        if (profileOrientation)
+        {
+            const double accounted = rotationCpuSeconds + traceCpuSeconds
+                + prepareCpuSeconds;
+            const double rotationPercent = accounted > 0.0
+                ? 100.0 * rotationCpuSeconds / accounted : 0.0;
+            std::ostringstream profile;
+            profile << std::fixed << std::setprecision(6)
+                    << "Orientation hot path (summed CPU time): rotation="
+                    << rotationCpuSeconds << " s (" << rotationPercent
+                    << "%), tracing=" << traceCpuSeconds
+                    << " s, beam preparation=" << prepareCpuSeconds << " s";
+            std::cout << profile.str() << std::endl;
+        }
 
         m_handler->WriteTotalMatricesToFile(m_resultDirName);
         m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
