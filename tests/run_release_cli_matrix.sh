@@ -412,6 +412,7 @@ ORIENTATION_NAMES=(
     auto
     autofull
     diffraction-autofull
+    so3-full-quaternion
 )
 
 append_orientation()
@@ -439,6 +440,7 @@ append_orientation()
         16) target+=(--auto 0.9) ;;
         17) target+=(--autofull 0.9) ;;
         18) target+=(--diffraction-autofull 0.9) ;;
+        19) target+=(--so3-full-quaternion 4) ;;
         *) return 2 ;;
     esac
 }
@@ -481,6 +483,11 @@ expect_success 'PO individual diffraction sampling overrides' \
     "${PO_CORE[@]}" --diffraction-sampling 1 \
     --orientation-diffraction-sampling 2 \
     --scattering-diffraction-sampling 2 --latitude-phi-grid
+expect_success 'PO symmetry-reduced SO3 with diffraction latitude grid' \
+    "${PO_CORE[@]}" --so3-quaternion 8 \
+    --scattering-diffraction-sampling 1 --latitude-phi-grid --symmetry 2 6
+expect_success 'PO symmetry-reduced SO3 with asserted mirror gamma' \
+    "${PO_CORE[@]}" --so3-quaternion 8 "${GRID[@]}" --mirror-gamma
 expect_success 'PO legacy diffraction-limit compatibility' \
     "${PO_CORE[@]}" --diffraction-grid 8 \
     --diffraction-limit-grid 1 --latitude-phi-grid

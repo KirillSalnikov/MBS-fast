@@ -224,6 +224,24 @@ Uniform scattering grids have two forms:
 quadrature is also the equivalent laboratory Euler-alpha average. Particle
 axial symmetry reduces body gamma, not generally laboratory alpha.
 
+`--so3-quaternion N` uses that identity explicitly: it traces `N` Hammersley
+points only in the particle's symmetry-reduced beta/gamma domain, with uniform
+Haar weights in `cos(beta)`, and evaluates the laboratory-alpha integral on the
+scattering-azimuth grid. Use at least two phi points; for production pair it
+with `--scattering-diffraction-sampling Q` and `--latitude-phi-grid`. The slower
+`--so3-full-quaternion N` samples all three Euler degrees of freedom directly
+and is retained as an independent audit mode.
+
+For a particle with an actual reflection plane, `--mirror-gamma` also works
+with `--so3-quaternion`: it samples `0 <= gamma < gamma_sym/2` and restores the
+omitted half as `M(phi) -> P M(-phi) P`, `P=diag(1,1,-1,-1)`. `N` is always the
+number of orientations that are really traced. Thus a mirror run with roughly
+half the non-mirror `N` keeps the same gamma-point density. Do not use this
+modifier for a chiral, asymmetric, or unverified file-loaded particle. The PO
+tracer and its facet-visibility data must also be numerically mirror-invariant;
+compare one production-resolution case with a full-gamma run before relying on
+the reduction for a new particle class.
+
 `--diffraction-sampling Q` uses one convention for both orientation and
 scattering grids. Here `lmax` is the longest edge of any particle facet, not
 the particle diameter. With `xi = 0.69 * wavelength / lmax`, their target

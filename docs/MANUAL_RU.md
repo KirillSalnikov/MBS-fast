@@ -313,7 +313,8 @@ scale = (k_eq_target * lambda / (2*pi)) / r_eq_original
 | `--sobol` | `N` | Quasi-random average | Хорош для сходимости сканов. |
 | `--sobol_seed` | `N S` | Sobol/Owen с seed | Повторяемые проверки сходимости. |
 | `--sobol_ring` | `Nb Ng` | Sobol beta + uniform gamma rings | Гибридная сетка. |
-| `--so3_quat` | `N` | Full SO(3) quaternions | Не опирается на beta/gamma symmetry domain. |
+| `--so3_quat` | `N` | Изотропное усреднение SO(3) | Hammersley в области симметрии; лабораторный alpha интегрируется по phi рассеяния. |
+| `--so3_full_quat` | `N` | Независимая проверка SO(3) | Прямые кватернионы Shoemake по полной группе без сокращения по симметрии. |
 | `--hammersley` | `N` | Hammersley orientations | Experimental/debug. |
 | `--lattice` | `N` | Rank-1 lattice | Experimental/debug. |
 | `--lattice_z` | `N Z` | Rank-1 lattice с явным generator | Experimental/debug. |
@@ -330,7 +331,7 @@ scale = (k_eq_target * lambda / (2*pi)) / r_eq_original
 | Флаг | Аргументы | Описание |
 |---|---:|---|
 | `--ring_points` | `N` | Точек на diffraction ring для oldauto estimates. |
-| `--mirror_gamma` | none | Половина gamma domain + зеркалирование Mueller. |
+| `--mirror_gamma` | none | Для проверенной зеркально-симметричной частицы: половина диапазона gamma и восстановление второго вклада с учетом четности Стокса. Поддерживается `--so3_quat`. |
 | `--sym` | `Sb Sg` | Override symmetry: beta range `pi/Sb`, gamma range `2*pi/Sg`. |
 | `--b` | `B1 B2` | Диапазон beta для `--random`, градусы. |
 | `--g` | `G1 G2` | Диапазон gamma для `--random`, градусы. |
@@ -340,6 +341,73 @@ scale = (k_eq_target * lambda / (2*pi)) / r_eq_original
 | `--pole` | none | Одна gamma на точных beta poles. |
 | `--owen_avg` | `K` | Усреднение `K` Owen seeds в `--autofull`. |
 | `--owen_seeds` | `S...` | Явный список Owen seeds. |
+
+### SO(3) с учетом симметрии
+
+Для изотропного ансамбля мера Хаара в принятом соглашении углов имеет вид
+
+```text
+dR = sin(beta) d(beta) d(gamma) d(alpha).
+```
+
+Режим `--so3-quaternion N` использует фундаментальную область частицы
+`0 <= beta <= beta_sym`, `0 <= gamma < gamma_sym`. Узлы строятся как
+
+```text
+u_i = (i + 1/2) / N
+v_i = radical_inverse_base_2(i)
+beta_i  = acos(1 - (1 - cos(beta_sym)) u_i)
+gamma_i = gamma_sym v_i
+w_i = 1/N,  sum_i w_i = 1.
+```
+
+Следовательно, равномерно распределен `cos(beta)`, а не сам beta. Флаг
+`--sym Sb Sg` задает `beta_sym=pi/Sb`, `gamma_sym=2*pi/Sg`; его допустимо
+использовать только при реальной симметрии геометрии.
+
+С флагом `--mirror-gamma` вычисляется только диапазон
+`0 <= gamma < gamma_sym/2`. Вторая половина восстанавливается до квадратуры по
+alpha:
+
+```text
+M_full(theta,phi) = [M_half(theta,phi)
+                    + P M_half(theta,-phi) P] / 2,
+P = diag(1,1,-1,-1).
+```
+
+Это преобразование допустимо только при наличии у всей оптической частицы
+соответствующей плоскости отражения, включая видимость граней и назначенные
+материалы, а также при численной инвариантности выбранного трассировщика ФО
+относительно такого отражения. По одному файлу частицы программа не может
+доказать это свойство. Для каждого нового класса частиц нужен контрольный
+расчет с полным диапазоном gamma. `N` остается числом реально трассируемых
+ориентаций beta/gamma. Для сохранения плотности узлов можно примерно вдвое
+уменьшить `N`: например, сравнивать `--so3-quaternion 4096` без сокращения и
+`--so3-quaternion 2048 --mirror-gamma`.
+
+Угол alpha отдельно не трассируется. Поворот вокруг падающего луча эквивалентен
+изменению азимута рассеяния phi, поэтому для каждой строки theta вычисляется
+
+```text
+M_avg(theta) = (1/Nphi) sum_phi M(theta,phi) L(-phi),
+```
+
+где `L` поворачивает базис Стокса и содержит `cos(2 phi)`, `sin(2 phi)` в блоке
+Q/U. Матрица умножается справа, поскольку меняется базис падающей поляризации.
+В направлениях theta=0 и theta=pi азимутальный базис вырожден: там усреднение
+выполняется без `L`, после чего накладывается точная полюсная форма матрицы.
+Это тот же проверенный код, который использует обычный variable-phi режим.
+
+Необходимо `Nphi >= 2`. Рекомендуемый запуск:
+
+```bash
+mbs_po --method po ... --so3-quaternion 4096 \
+    --scattering-diffraction-sampling 2 --latitude-phi-grid
+```
+
+`--so3-full-quaternion N` оставлен для независимой проверки. В нем `N` - число
+полных трехмерных поворотов; в быстром режиме `N` - число реально трассируемых
+ориентаций beta/gamma, а alpha считается квадратурой по phi.
 
 ## Сетка рассеяния
 
@@ -398,8 +466,11 @@ Nphi(theta) = min(Nphi,eq,
 на полной прямоугольной выходной сетке `Nphi,eq`, поэтому формат файлов не
 меняется.
 
-Оба флага предназначены для `--method po --diffraction-grid DIV` и одного
-размера частицы на процесс. `--diffraction-limit-grid` конфликтует с явным
+Переменная сетка phi поддерживается для `--method po --diffraction-grid DIV` и
+для `--so3-quaternion N`, по одному размеру частицы на процесс. Для SO(3)
+предпочтителен `--scattering-diffraction-sampling Q`: общий
+`--diffraction-sampling Q` сам задает регулярный ориентационный режим.
+`--diffraction-limit-grid` конфликтует с явным
 `--nphi`; `--latitude-phi-grid` пока не используется в общем serial
 multi-size trace. Для каждого размера запускайте отдельный процесс, чтобы
 `lmax` и сетка были пересчитаны корректно.
@@ -610,7 +681,8 @@ budget или делить задачу на меньшие независимы
 | `--fixed` | `BETA GAMMA` | Одна ориентация в градусах. |
 | `--random` | `Nb Ng` | Regular beta/gamma grid. |
 | `--sobol` | `N` | Sobol orientations. |
-| `--so3_quat` | `N` | Full SO(3) quaternions. |
+| `--so3_quat` | `N` | SO(3) с сокращением по симметрии; alpha интегрируется по phi. |
+| `--so3_full_quat` | `N` | Прямая кватернионная проверка полной SO(3). |
 | `--sobol_seed` | `N S` | Sobol with Owen seed. |
 | `--sobol_ring` | `Nb Ng` | Sobol beta x gamma rings. |
 | `--hammersley` | `N` | Hammersley set. |

@@ -5236,10 +5236,74 @@ void TracerPOTotal::TraceFromSobol(int nOrient, double betaSym, double gammaSym)
     TraceFromSobolSeed(nOrient, 42u, betaSym, gammaSym);
 }
 
-void TracerPOTotal::TraceFromSO3Quaternion(int nOrient)
+void TracerPOTotal::TraceFromSO3Quaternion(
+    int nOrient, double betaSym, double gammaSym,
+    const std::vector<int> &rowNphi, int outputNphi)
 {
     if (nOrient <= 0)
-        throw std::invalid_argument("SO(3) quaternion orientation count must be positive");
+        throw std::invalid_argument("SO(3) orientation count must be positive");
+    if (!(betaSym > 0.0 && betaSym <= M_PI)
+        || !(gammaSym > 0.0 && gammaSym <= 2.0 * M_PI))
+    {
+        throw std::invalid_argument(
+            "SO(3) symmetry domain must satisfy 0 < beta <= pi and 0 < gamma <= 2*pi");
+    }
+    if (outputNphi < 2)
+    {
+        throw std::invalid_argument(
+            "symmetry-reduced SO(3) needs at least two scattering-azimuth points for the alpha integral");
+    }
+
+    const double sampledGammaSym = m_mirrorGamma
+        ? 0.5 * gammaSym : gammaSym;
+    const double cosBetaSym = std::cos(betaSym);
+    const double weight = 1.0 / (double)nOrient;
+    std::vector<std::pair<double, double>> orientations;
+    std::vector<double> weights(nOrient, weight);
+    orientations.reserve(nOrient);
+    for (int i = 0; i < nOrient; ++i)
+    {
+        const double u = (i + 0.5) / (double)nOrient;
+        const double v = RadicalInverseBase2((uint32_t)i);
+        const double beta = std::acos(
+            1.0 - (1.0 - cosBetaSym) * u);
+        const double gamma = sampledGammaSym * v;
+        orientations.push_back(std::make_pair(beta, gamma));
+    }
+
+    if (m_mpiRank == 0)
+    {
+        std::cout << "SO(3) symmetry quotient Hammersley: " << nOrient
+                  << " unique particle orientations, beta=0.."
+                  << RadToDeg(betaSym) << " deg, gamma=0.."
+                  << RadToDeg(sampledGammaSym) << " deg" << std::endl;
+        if (m_mirrorGamma)
+        {
+            std::cout << "  mirror gamma: sampled half of the particle gamma "
+                      << "domain; omitted orientations restored as "
+                      << "M(phi) -> P M(-phi) P, P=diag(1,1,-1,-1)"
+                      << std::endl;
+            std::cerr << "WARNING: --mirror-gamma asserts numerical reflection "
+                      << "symmetry of the complete PO model. Validate each particle "
+                      << "class against a full-gamma --so3-quaternion run before "
+                      << "production use." << std::endl;
+        }
+        std::cout << "  Haar weights: uniform in cos(beta), sum=1; "
+                  << "laboratory alpha is integrated by scattering azimuth with "
+                  << outputNphi << " equatorial points" << std::endl;
+    }
+
+    const std::vector<int> rowNorient;
+    TraceFromSobolVariablePhi(
+        nOrient, betaSym, sampledGammaSym, rowNphi, rowNorient, outputNphi,
+        -1.0, std::vector<unsigned int>(), std::vector<double>(),
+        &orientations, &weights, "SO(3) symmetry quotient");
+}
+
+void TracerPOTotal::TraceFromSO3FullQuaternion(int nOrient)
+{
+    if (nOrient <= 0)
+        throw std::invalid_argument("full SO(3) quaternion orientation count must be positive");
 
     const double weight = 1.0 / nOrient;
     std::vector<WeightedOrientation> orientations;
@@ -5265,11 +5329,12 @@ void TracerPOTotal::TraceFromSO3Quaternion(int nOrient)
     }
 
     if (m_mpiRank == 0)
-        std::cout << "SO(3) quaternion Hammersley: " << nOrient
+        std::cout << "Full SO(3) quaternion Hammersley audit: " << nOrient
                   << " orientations, full rotation group, no beta/gamma symmetry"
                   << std::endl;
 
-    TraceWeightedOrientations(orientations, "SO(3) quaternion", M_PI, 2.0*M_PI);
+    TraceWeightedOrientations(orientations, "full SO(3) quaternion audit",
+                              M_PI, 2.0*M_PI);
 }
 
 void TracerPOTotal::TraceFromSobolSeed(int nOrient, unsigned int seed,
@@ -5861,7 +5926,8 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
                                                 const std::vector<unsigned int> &owenSeeds,
                                                 const std::vector<double> &rowBeamCutoff,
                                                 const std::vector<std::pair<double, double>> *fixedOrientations,
-                                                const std::vector<double> *fixedWeights)
+                                                const std::vector<double> *fixedWeights,
+                                                const char *fixedOrientationLabel)
 {
     HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
     if (!handlerPO)
@@ -6161,7 +6227,9 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
     if (m_mpiRank == 0)
     {
         std::cout << (fixedOrientations
-            ? "Regular beta/gamma variable-phi averaging: "
+            ? (fixedOrientationLabel
+                ? std::string(fixedOrientationLabel) + " variable-phi averaging: "
+                : "Regular beta/gamma variable-phi averaging: ")
             : "Autofull final Owen averaging: ") << seedCount
                   << " seed" << (seedCount == 1 ? "" : "s")
                   << " x " << nOrient << " orientations";

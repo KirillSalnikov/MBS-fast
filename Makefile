@@ -152,6 +152,9 @@ test_regression: cpu
 test_extinction: cpu
 	MBS=cpu/bin/mbs_po_mpi tests/run_extinction_reference.sh
 
+test_so3: cpu
+	MBS=cpu/bin/mbs_po_mpi tests/run_so3_symmetry_test.sh
+
 test_sanitize:
 	$(MAKE) -C cpu TARGET=bin/mbs_po_mpi_sanitize \
 		OBJDIR=build/sanitize/obj \
@@ -162,7 +165,7 @@ test_sanitize:
 		MBS=$(CURDIR)/cpu/bin/mbs_po_mpi_sanitize \
 		MBS_RELEASE_TIMEOUT_SECONDS=90 tests/run_release_cli_matrix.sh
 
-test: test_release test_adaptive test_regression test_extinction
+test: test_release test_adaptive test_regression test_extinction test_so3
 
 $(TARGET): $(OBJECTS)
 	@mkdir -p bin
@@ -245,7 +248,7 @@ gpu_quaternion_probe:
 endif
 
 .PHONY: all cuda_check cpu gpu gpu_float gpu_float_fast gpu_double_fast split docs \
-	test test_cli test_release test_adaptive test_regression test_sanitize clean \
+	test test_cli test_release test_adaptive test_regression test_so3 test_sanitize clean \
 	clean_cuda_objects cuda_float cuda_float_fast cuda_double_fast cuda_variants \
 	fft_probe gpu_trace_probe gpu_quaternion_probe
 

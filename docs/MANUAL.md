@@ -332,7 +332,8 @@ scale = (k_eq_target * lambda / (2*pi)) / r_eq_original
 | `--sobol` | `N` | Quasi-random orientation average | Good convergence for broad scans. |
 | `--sobol_seed` | `N S` | Seeded Sobol/Owen sequence | Useful for repeatable convergence checks. |
 | `--sobol_ring` | `Nb Ng` | Sobol beta with uniform gamma rings | Hybrid orientation grid. |
-| `--so3_quat` | `N` | Full SO(3) Hammersley quaternions | Does not rely on beta/gamma symmetry domain. |
+| `--so3_quat` | `N` | Isotropic SO(3) average | Hammersley on the symmetry quotient; laboratory alpha is integrated by scattering phi. |
+| `--so3_full_quat` | `N` | Independent SO(3) audit | Direct full-group Shoemake quaternions; deliberately ignores particle symmetry. |
 | `--hammersley` | `N` | Low-discrepancy orientations | Debug/experimental. |
 | `--lattice` | `N` | Rank-1 lattice orientations | Debug/experimental. |
 | `--lattice_z` | `N Z` | Rank-1 lattice with explicit generator | Debug/experimental. |
@@ -348,7 +349,7 @@ Orientation modifiers:
 | Flag | Arguments | Description |
 |---|---:|---|
 | `--ring_points` | `N` | Points per diffraction ring for oldauto estimates; default `3`. |
-| `--mirror_gamma` | none | Halve the gamma symmetry range and mirror the Mueller result. |
+| `--mirror_gamma` | none | For a verified reflection-symmetric particle, sample half the gamma range and restore the omitted Mueller contribution with Stokes parity. Supported by `--so3_quat`. |
 | `--sym` | `Sb Sg` | Override symmetry domain: beta range is `pi/Sb`, gamma range is `2*pi/Sg`. |
 | `--b` | `B1 B2` | Manual beta range in degrees for `--random`. |
 | `--g` | `G1 G2` | Manual gamma range in degrees for `--random`. |
@@ -358,6 +359,75 @@ Orientation modifiers:
 | `--pole` | none | Use one gamma value at beta poles. Best with endpoint grids such as `--oldauto`. |
 | `--owen_avg` | `K` | Average `K` nested Owen final seeds in `--autofull`; default can be controlled by environment. |
 | `--owen_seeds` | `S...` | Explicit Owen seeds for `--autofull` final averaging. |
+
+### Symmetry-reduced SO(3) quadrature
+
+For an isotropic ensemble, the Haar measure in the program's Euler convention
+is proportional to
+
+```text
+dR = sin(beta) d(beta) d(gamma) d(alpha).
+```
+
+`--so3-quaternion N` uses the particle's fundamental domain
+`0 <= beta <= beta_sym`, `0 <= gamma < gamma_sym`. Point `i` is
+
+```text
+u_i = (i + 1/2) / N
+v_i = radical_inverse_base_2(i)
+beta_i  = acos(1 - (1 - cos(beta_sym)) u_i)
+gamma_i = gamma_sym v_i
+w_i = 1/N,  sum_i w_i = 1.
+```
+
+Thus beta is uniform in `cos(beta)`, not in beta itself. `--sym Sb Sg`
+overrides the fundamental domain with `beta_sym=pi/Sb` and
+`gamma_sym=2*pi/Sg`; use this only for an actual symmetry of the particle.
+
+With `--mirror-gamma`, the sampled range becomes
+`0 <= gamma < gamma_sym/2`. The second half is restored before the alpha
+quadrature as
+
+```text
+M_full(theta,phi) = [M_half(theta,phi)
+                    + P M_half(theta,-phi) P] / 2,
+P = diag(1,1,-1,-1).
+```
+
+This is valid only when the optical particle, including facet visibility and
+material assignment, has the asserted reflection plane and the selected PO
+tracer is numerically invariant under that reflection. The program cannot
+prove this property from a particle file. Validate every new particle class
+against one full-gamma run. `N` remains the number of actually traced
+beta/gamma orientations. To preserve approximately the same point density,
+use half the non-mirror `N`; for example, compare `--so3-quaternion 4096` with
+`--so3-quaternion 2048 --mirror-gamma`.
+
+The remaining laboratory angle alpha is not retraced. A rotation around the
+incident beam is equivalent to changing scattering azimuth phi, so each theta
+row is accumulated as
+
+```text
+M_avg(theta) = (1/Nphi) sum_phi M(theta,phi) L(-phi).
+```
+
+Here `L` is the Stokes reference-plane rotation; its Q/U block contains
+`cos(2 phi)` and `sin(2 phi)`. Multiplication is on the right because this
+rotation changes the incident polarization basis. At theta=0 and theta=pi the
+azimuthal basis is singular: the code averages without `L` and then applies the
+exact forward/backward pole form. This is the same implementation used by the
+regular variable-phi path.
+
+The mode requires `Nphi >= 2`. Recommended production form:
+
+```bash
+mbs_po --method po ... --so3-quaternion 4096 \
+    --scattering-diffraction-sampling 2 --latitude-phi-grid
+```
+
+Use `--so3-full-quaternion N` only to audit the reduced result. Its `N` counts
+full three-dimensional rotations, whereas the reduced mode's `N` counts traced
+beta/gamma particle orientations; its phi grid performs the alpha quadrature.
 
 ## Scattering grids
 
@@ -416,8 +486,11 @@ shares its neighboring work group for stable basis handling. Results are
 still accumulated into the full rectangular `Nphi,eq` output layout, so the
 file format does not change.
 
-Both options currently require `--method po --diffraction-grid DIV` and one
-particle size per process. `--diffraction-limit-grid` conflicts with explicit
+The variable latitude grid supports `--method po --diffraction-grid DIV` and
+the symmetry-reduced `--so3-quaternion N` path, one particle size per process.
+For SO(3), prefer `--scattering-diffraction-sampling Q`; the unified
+`--diffraction-sampling Q` is itself a primary regular orientation rule.
+`--diffraction-limit-grid` conflicts with explicit
 `--nphi`; the latitude grid is not supported by a shared serial multi-size
 trace. Run each size in its own process so `lmax` and the grid are recomputed.
 
@@ -513,8 +586,10 @@ CUDA_VISIBLE_DEVICES=0 ./bin/gpu_quaternion_rotation_probe 65536 64 50
 ```
 
 This probe does not calculate scattering and does not replace profiling of a
-complete run. Quaternions provide uniform SO(3) orientation samples; by
-themselves they do not accelerate CPU tracing or CUDA diffraction.
+complete run. Direct quaternions provide uniform full-SO(3) samples in the
+audit mode; by themselves they do not accelerate CPU tracing or CUDA
+diffraction. The production `--so3-quaternion` speedup comes from symmetry and
+from replacing alpha retracing by the scattering-phi integral.
 
 Do not confuse this with full GPU ray tracing. The production GPU backend is primarily a diffraction and Mueller-accumulation accelerator. `--gpu_trace` only prefilters nonconvex tracing candidates; exact intersections remain CPU-side.
 
@@ -648,7 +723,8 @@ Common scheduler controls:
 | `--fixed` | `BETA GAMMA` | Single orientation in degrees. |
 | `--random` | `Nb Ng` | Regular beta/gamma grid. |
 | `--sobol` | `N` | Sobol orientations. |
-| `--so3_quat` | `N` | Full SO(3) quaternion orientations. |
+| `--so3_quat` | `N` | Symmetry-reduced SO(3); alpha is integrated by scattering phi. |
+| `--so3_full_quat` | `N` | Direct full-SO(3) quaternion audit. |
 | `--sobol_seed` | `N S` | Sobol with explicit Owen seed. |
 | `--sobol_ring` | `Nb Ng` | Sobol beta with gamma rings. |
 | `--hammersley` | `N` | Hammersley orientation set. |

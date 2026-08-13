@@ -2600,6 +2600,7 @@ int main(int argc, const char* argv[])
 
         }
         else if (args.IsCatched("sobol") || args.IsCatched("so3_quat")
+              || args.IsCatched("so3_full_quat")
               || args.IsCatched("sobol_seed")
               || args.IsCatched("sobol_ring")
               || args.IsCatched("hammersley") || args.IsCatched("lattice")
@@ -2616,6 +2617,7 @@ int main(int argc, const char* argv[])
             bool isAdaptive = args.IsCatched("adaptive");
             bool isSobolSeed = args.IsCatched("sobol_seed");
             bool isSO3Quat = args.IsCatched("so3_quat");
+            bool isSO3FullQuat = args.IsCatched("so3_full_quat");
             bool isSobolRing = args.IsCatched("sobol_ring");
             bool isHammersley = args.IsCatched("hammersley");
             bool isLattice = args.IsCatched("lattice") || args.IsCatched("lattice_z");
@@ -2689,7 +2691,9 @@ int main(int argc, const char* argv[])
             else if (isAdaptive)
                 additionalSummary += ", adaptive Sobol\n\n";
             else if (isSO3Quat)
-                additionalSummary += ", SO(3) quaternion orientations\n\n";
+                additionalSummary += ", symmetry-reduced SO(3); alpha integrated by scattering azimuth\n\n";
+            else if (isSO3FullQuat)
+                additionalSummary += ", full SO(3) quaternion audit\n\n";
             else if (isSobolSeed)
                 additionalSummary += ", Sobol nested Owen seed\n\n";
             else if (isSobolRing)
@@ -2715,11 +2719,42 @@ int main(int argc, const char* argv[])
                 || args.IsCatched("adaptive_phi")
                 || args.IsCatched("adaptive_reflections")
                 || isEulerConvergence;
-            ScatteringRange conus = (args.IsCatched("grid") || args.IsCatched("tgrid"))
-                ? SetConus(args)
-                : (needsAdaptiveGrid
-                    ? ScatteringRange(0, M_PI, 24, 32)
-                    : ScatteringRange(0, M_PI, 1, 1));
+            double so3ScatteringStep = 0.0;
+            const bool so3CanonicalScattering = isSO3Quat
+                && HasCanonicalDiffractionScattering(args);
+            const bool so3LegacyScattering = isSO3Quat
+                && args.IsCatched("diffraction_limit_grid");
+            if (so3CanonicalScattering || so3LegacyScattering
+                || (isSO3Quat && args.IsCatched("latitude_phi_grid")))
+            {
+                const double diffractionScale = DiffractionAngularScale(
+                    particle->MaximumEdgeLength(), wave);
+                so3ScatteringStep = so3CanonicalScattering
+                    ? diffractionScale / ScatteringDiffractionSampling(args)
+                    : (so3LegacyScattering
+                        ? diffractionScale
+                            * args.GetDoubleValue("diffraction_limit_grid", 0)
+                        : diffractionScale);
+            }
+            ScatteringRange conus = (so3CanonicalScattering
+                                      || so3LegacyScattering)
+                ? MakeDiffractionStepGrid(so3ScatteringStep)
+                : ((args.IsCatched("grid") || args.IsCatched("tgrid"))
+                    ? SetConus(args)
+                    : (needsAdaptiveGrid
+                        ? ScatteringRange(0, M_PI, 24, 32)
+                        : (isSO3Quat
+                            ? ScatteringRange(0, M_PI, 360, 1)
+                            : ScatteringRange(0, M_PI, 1, 1))));
+            if (so3CanonicalScattering)
+            {
+                cout << "SO(3) scattering diffraction sampling q="
+                     << ScatteringDiffractionSampling(args)
+                     << ", target step xi/q="
+                     << RadToDeg(so3ScatteringStep)
+                     << " deg, N_theta=" << conus.nZenith
+                     << ", N_phi(eq)=" << conus.nAzimuth << endl;
+            }
 
             tracer = new TracerPOTotal(particle, reflNum, dirName);
             std::unique_ptr<TracerPOTotal> tracerOwner(tracer);
@@ -3001,6 +3036,7 @@ int main(int argc, const char* argv[])
             {
                 bool useSobolSeed = args.IsCatched("sobol_seed");
                 bool useSO3Quat = args.IsCatched("so3_quat");
+                bool useSO3FullQuat = args.IsCatched("so3_full_quat");
                 bool useSobolRing = args.IsCatched("sobol_ring");
                 bool useHammersley = args.IsCatched("hammersley");
                 bool useLattice = args.IsCatched("lattice") || args.IsCatched("lattice_z");
@@ -3052,25 +3088,40 @@ int main(int argc, const char* argv[])
                 }
                 else if (useSO3Quat)
                 {
-                    if (args.IsCatched("sobol") || args.IsCatched("sobol_seed")
-                        || args.IsCatched("sobol_ring") || args.IsCatched("euler_quad")
-                        || args.IsCatched("euler_adapt")
-                        || args.IsCatched("hammersley") || args.IsCatched("lattice")
-                        || args.IsCatched("lattice_z"))
-                        std::cerr << "WARNING: other explicit orientation rules ignored because --so3_quat is selected." << std::endl;
-                    if (args.IsCatched("mirror_gamma") || args.IsCatched("sym"))
-                        std::cerr << "WARNING: --so3_quat samples the full SO(3); --mirror_gamma/--sym do not reduce it." << std::endl;
                     if (args.IsCatched("multigrid"))
-                        std::cerr << "WARNING: --so3_quat currently runs single-size; --multigrid ignored." << std::endl;
+                        std::cerr << "WARNING: --so3-quaternion currently runs single-size; --multigrid ignored." << std::endl;
                     int nOrient = args.GetIntValue("so3_quat", 0);
                     if (args.IsCatched("auto_tgrid") && !args.IsCatched("grid") && !args.IsCatched("tgrid"))
                     {
                         double tgridEps = args.GetDoubleValue("auto_tgrid", 0);
                         if (tgridEps <= 0) tgridEps = 0.05;
-                        tracer->TraceAdaptiveTheta(std::max(64, nOrient), M_PI, 2.0*M_PI,
+                        tracer->TraceAdaptiveTheta(std::max(64, nOrient), betaSym, gammaSym,
                                                    tgridEps, 8, true);
                     }
-                    tracer->TraceFromSO3Quaternion(nOrient);
+                    const ScatteringRange finalSphere = handler->m_sphere;
+                    std::vector<int> rowNphi(
+                        finalSphere.nZenith + 1, finalSphere.nAzimuth);
+                    if (args.IsCatched("latitude_phi_grid"))
+                        rowNphi = MakeLatitudePhiGrid(
+                            finalSphere, so3ScatteringStep);
+                    tracer->TraceFromSO3Quaternion(
+                        nOrient, betaSym, gammaSym, rowNphi,
+                        finalSphere.nAzimuth);
+                }
+                else if (useSO3FullQuat)
+                {
+                    if (args.IsCatched("multigrid"))
+                        std::cerr << "WARNING: --so3-full-quaternion currently runs single-size; --multigrid ignored." << std::endl;
+                    int nOrient = args.GetIntValue("so3_full_quat", 0);
+                    if (args.IsCatched("auto_tgrid") && !args.IsCatched("grid") && !args.IsCatched("tgrid"))
+                    {
+                        double tgridEps = args.GetDoubleValue("auto_tgrid", 0);
+                        if (tgridEps <= 0) tgridEps = 0.05;
+                        tracer->TraceAdaptiveTheta(std::max(64, nOrient),
+                                                   M_PI, 2.0 * M_PI,
+                                                   tgridEps, 8, true);
+                    }
+                    tracer->TraceFromSO3FullQuaternion(nOrient);
                 }
                 else if (useSobolSeed)
                 {
@@ -3495,6 +3546,7 @@ int main(int argc, const char* argv[])
             && !args.IsCatched("random") && !args.IsCatched("montecarlo")
             && !HasDiffractionOrientation(args) && !args.IsCatched("sobol")
             && !args.IsCatched("so3_quat")
+            && !args.IsCatched("so3_full_quat")
             && !args.IsCatched("sobol_seed")
             && !args.IsCatched("sobol_ring")
             && !args.IsCatched("hammersley") && !args.IsCatched("lattice")
@@ -3510,7 +3562,8 @@ int main(int argc, const char* argv[])
                  << "    --fixed BETA GAMMA    Fixed orientation\n"
                  << "    --random B G          Random orientation grid\n"
                  << "    --sobol N             Quasi-random orientations\n"
-                 << "    --so3_quat N          Full SO(3) quaternion orientations\n"
+                 << "    --so3_quat N          Symmetry-reduced SO(3), alpha via scattering phi\n"
+                 << "    --so3_full_quat N     Full SO(3) quaternion audit\n"
                  << "    --sobol_seed N S      Sobol with nested Owen scramble seed\n"
                  << "    --sobol_ring B G      Sobol beta x uniform gamma ring\n"
                  << "    --hammersley N        Hammersley orientations\n"

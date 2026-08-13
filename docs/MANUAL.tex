@@ -670,8 +670,12 @@ Good convergence for broad scans. \\
 Useful for repeatable convergence checks. \\
 \texttt{-\/-sobol\_ring} & \texttt{Nb\ Ng} & Sobol beta with uniform
 gamma rings & Hybrid orientation grid. \\
-\texttt{-\/-so3\_quat} & \texttt{N} & Full SO(3) Hammersley quaternions
-& Does not rely on beta/gamma symmetry domain. \\
+\texttt{-\/-so3\_quat} & \texttt{N} & Isotropic SO(3) average &
+Hammersley on the symmetry quotient; laboratory alpha is integrated by
+scattering phi. \\
+\texttt{-\/-so3\_full\_quat} & \texttt{N} & Independent SO(3) audit &
+Direct full-group Shoemake quaternions; particle symmetry is deliberately
+ignored. \\
 \texttt{-\/-hammersley} & \texttt{N} & Low-discrepancy orientations &
 Debug/experimental. \\
 \texttt{-\/-lattice} & \texttt{N} & Rank-1 lattice orientations &
@@ -707,8 +711,9 @@ Flag & Arguments & Description \\
 \endlastfoot
 \texttt{-\/-ring\_points} & \texttt{N} & Points per diffraction ring for
 oldauto estimates; default \texttt{3}. \\
-\texttt{-\/-mirror\_gamma} & none & Halve the gamma symmetry range and
-mirror the Mueller result. \\
+\texttt{-\/-mirror\_gamma} & none & For a verified reflection-symmetric
+particle, sample half the gamma range and restore the omitted Mueller
+contribution with Stokes parity. Supported by \texttt{-\/-so3\_quat}. \\
 \texttt{-\/-sym} & \texttt{Sb\ Sg} & Override symmetry domain: beta
 range is \texttt{pi/Sb}, gamma range is \texttt{2*pi/Sg}. \\
 \texttt{-\/-b} & \texttt{B1\ B2} & Manual beta range in degrees for
@@ -732,6 +737,69 @@ environment. \\
 \texttt{-\/-owen\_seeds} & \texttt{S...} & Explicit Owen seeds for
 \texttt{-\/-autofull} final averaging. \\
 \end{longtable}
+
+\subsection{Symmetry-reduced SO(3) quadrature}
+
+For an isotropic ensemble, the Haar measure in the Euler convention used by
+the program is
+\[
+ dR \mathrel{\propto} \sin\beta\,d\beta\,d\gamma\,d\alpha.
+\]
+The production mode \texttt{-\/-so3-quaternion N} traces only the particle's
+fundamental domain
+$0\leq\beta\leq\beta_{\rm sym}$,
+$0\leq\gamma<\gamma_{\rm sym}$.  For point $i=0,\ldots,N-1$,
+\[
+ u_i=\frac{i+1/2}{N},\qquad
+ v_i=\operatorname{radical\_inverse}_2(i),
+\]
+\[
+ \beta_i=\arccos\!\left[1-(1-\cos\beta_{\rm sym})u_i\right],\qquad
+ \gamma_i=\gamma_{\rm sym}v_i,\qquad w_i=\frac1N.
+\]
+Thus the nodes are uniform in $\cos\beta$, not in $\beta$, and the normalized
+weights satisfy $\sum_i w_i=1$.  The option \texttt{-\/-sym Sb Sg} overrides
+the domain with $\beta_{\rm sym}=\pi/S_b$ and
+$\gamma_{\rm sym}=2\pi/S_g$; use it only for an actual particle symmetry.
+
+With \texttt{-\/-mirror-gamma}, the sampled range becomes
+$0\leq\gamma<\gamma_{\rm sym}/2$. The omitted half is restored before the
+$\alpha$ quadrature as
+\[
+ M_{\rm full}(\theta,\phi)=\frac12\left[
+ M_{\rm half}(\theta,\phi)+P M_{\rm half}(\theta,-\phi)P\right],\qquad
+ P=\operatorname{diag}(1,1,-1,-1).
+\]
+This is valid only when the complete optical particle, including facet
+visibility and material assignment, has the asserted reflection plane and the
+selected PO tracer is numerically invariant under that reflection. The program
+cannot prove this property from a particle file; validate every new particle
+class against one full-gamma run. The value $N$ remains the number of actually
+traced $\beta,\gamma$ orientations. To retain approximately the same point
+density, use half the non-mirror $N$, for example
+\texttt{-\/-so3-quaternion 2048 -\/-mirror-gamma} instead of
+\texttt{-\/-so3-quaternion 4096}.
+
+The remaining laboratory angle $\alpha$ is not retraced.  Rotation about the
+incident beam is equivalent to changing scattering azimuth $\phi$, hence each
+theta row is accumulated as
+\[
+ \overline{M}(\theta)=\frac{1}{N_\phi}
+ \sum_{\phi} M(\theta,\phi)L(-\phi).
+\]
+Here $L$ is the Stokes reference-plane rotation whose $Q/U$ block contains
+$\cos(2\phi)$ and $\sin(2\phi)$.  Multiplication is on the right because the
+incident polarization basis changes.  At $\theta=0$ and $\theta=\pi$ the
+azimuthal basis is singular; the implementation averages without $L$ and then
+applies the exact forward/backward pole form.
+
+This mode requires $N_\phi\geq2$.  A production command should combine it with
+\texttt{-\/-scattering-diffraction-sampling Q} and
+\texttt{-\/-latitude-phi-grid}.  The slower
+\texttt{-\/-so3-full-quaternion N} retains direct full-group sampling as an
+independent audit.  Its $N$ counts complete three-dimensional rotations,
+whereas the production mode's $N$ counts traced beta/gamma orientations and
+uses the phi grid for the alpha quadrature.
 
 \section{Scattering grids}\label{scattering-grids}
 
@@ -811,11 +879,15 @@ its neighboring work group for stable basis handling. Accumulation still uses
 the full rectangular $N_{\phi,\mathrm{eq}}$ output layout, so the file format
 does not change.
 
-Both options require \texttt{-\/-method po -\/-diffraction-grid DIV} and one
-particle size per process. The diffraction-limit option conflicts with
-explicit \texttt{-\/-nphi}; the latitude grid is not supported by a shared
-serial multi-size trace. Run each size in its own process so $l_{\max}$ and
-the grid are recomputed.
+The variable latitude grid supports both
+\texttt{-\/-method po -\/-diffraction-grid DIV} and the symmetry-reduced
+\texttt{-\/-so3-quaternion N} path, with one particle size per process.  For
+SO(3), prefer \texttt{-\/-scattering-diffraction-sampling Q}; the unified
+\texttt{-\/-diffraction-sampling Q} is itself a primary regular orientation
+rule.  The diffraction-limit option conflicts with explicit
+\texttt{-\/-nphi}; the latitude grid is not supported by a shared serial
+multi-size trace. Run each size in its own process so $l_{\max}$ and the grid
+are recomputed.
 
 \begin{Shaded}
 \begin{Highlighting}[]
@@ -1380,8 +1452,10 @@ Flag & Arguments & Description \\
 degrees. \\
 \texttt{-\/-random} & \texttt{Nb\ Ng} & Regular beta/gamma grid. \\
 \texttt{-\/-sobol} & \texttt{N} & Sobol orientations. \\
-\texttt{-\/-so3\_quat} & \texttt{N} & Full SO(3) quaternion
-orientations. \\
+\texttt{-\/-so3\_quat} & \texttt{N} & Symmetry-reduced SO(3); alpha is
+integrated by scattering phi. \\
+\texttt{-\/-so3\_full\_quat} & \texttt{N} & Direct full-SO(3) quaternion
+audit. \\
 \texttt{-\/-sobol\_seed} & \texttt{N\ S} & Sobol with explicit Owen
 seed. \\
 \texttt{-\/-sobol\_ring} & \texttt{Nb\ Ng} & Sobol beta with gamma

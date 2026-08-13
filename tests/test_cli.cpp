@@ -677,6 +677,39 @@ int main()
         "--scattering-diffraction-sampling", "1",
         "--latitude-phi-grid", "--backend", "cpu"
     });
+    ExpectSuccess("symmetry-reduced SO3 accepts diffraction latitude grid", {
+        "--method", "po", "--particle", "10", "1", "0.7", "43.4",
+        "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",
+        "--max-reflections", "1", "--so3-quaternion", "64",
+        "--scattering-diffraction-sampling", "1", "--latitude-phi-grid",
+        "--symmetry", "2", "6", "--backend", "cpu"
+    });
+    ExpectSuccess("symmetry-reduced SO3 accepts mirror gamma", {
+        "--method", "po", "--particle", "10", "1", "0.7", "43.4",
+        "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",
+        "--max-reflections", "1", "--so3-quaternion", "64",
+        "--scattering-grid", "0", "180", "12", "4",
+        "--mirror-gamma", "--backend", "cpu"
+    });
+    ExpectSuccess("full SO3 quaternion audit remains available", {
+        "--method", "po", "--particle", "10", "1", "0.7", "43.4",
+        "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",
+        "--max-reflections", "1", "--so3-full-quaternion", "64",
+        "--scattering-grid", "0", "180", "12", "4",
+        "--backend", "cpu"
+    });
+    ExpectFailure("symmetry-reduced SO3 rejects one explicit phi point", {
+        "--method", "po", "--particle", "10", "1", "0.7", "43.4",
+        "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",
+        "--max-reflections", "1", "--so3-quaternion", "64",
+        "--phi-points", "1", "--backend", "cpu"
+    }, "requires NPHI >= 2");
+    ExpectFailure("symmetry-reduced SO3 rejects a one-phi scattering grid", {
+        "--method", "po", "--particle", "10", "1", "0.7", "43.4",
+        "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",
+        "--max-reflections", "1", "--so3-quaternion", "64",
+        "--scattering-grid", "0", "180", "1", "4", "--backend", "cpu"
+    }, "requires NPHI >= 2");
     ExpectFailure("unified diffraction sampling must be positive", {
         "--method", "po", "--particle", "10", "1", "0.7", "43.4",
         "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",

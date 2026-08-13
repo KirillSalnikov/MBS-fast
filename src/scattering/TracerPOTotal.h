@@ -52,7 +52,10 @@ public:
 
     /// Sobol quasi-random orientation averaging with particle symmetry
     void TraceFromSobol(int nOrient, double betaSym, double gammaSym);
-    void TraceFromSO3Quaternion(int nOrient);
+    void TraceFromSO3Quaternion(int nOrient, double betaSym, double gammaSym,
+                                const std::vector<int> &rowNphi,
+                                int outputNphi);
+    void TraceFromSO3FullQuaternion(int nOrient);
     void TraceFromSobolSeed(int nOrient, unsigned int seed,
                             double betaSym, double gammaSym);
     void TraceFromSobolRing(int nBeta, int nGamma,
@@ -74,7 +77,8 @@ public:
                                      const std::vector<double> &rowBeamCutoff =
                                          std::vector<double>(),
                                      const std::vector<std::pair<double, double>> *fixedOrientations = nullptr,
-                                     const std::vector<double> *fixedWeights = nullptr);
+                                     const std::vector<double> *fixedWeights = nullptr,
+                                     const char *fixedOrientationLabel = nullptr);
     double TraceGridVariablePhi(const AngleRange &betaRange,
                                 const AngleRange &gammaRange,
                                 const std::vector<int> &rowNphi,

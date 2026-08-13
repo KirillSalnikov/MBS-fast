@@ -42,6 +42,7 @@ enum class OrientationMode
     DiffractionGrid,
     Sobol,
     SO3Quaternion,
+    SO3FullQuaternion,
     SobolSeed,
     SobolRing,
     Hammersley,

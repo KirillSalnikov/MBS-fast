@@ -545,6 +545,7 @@ OrientationMode ResolveOrientation(const ArgPP &args)
         {"orientfile", OrientationMode::File},
         {"sobol", OrientationMode::Sobol},
         {"so3_quat", OrientationMode::SO3Quaternion},
+        {"so3_full_quat", OrientationMode::SO3FullQuaternion},
         {"sobol_seed", OrientationMode::SobolSeed},
         {"sobol_ring", OrientationMode::SobolRing},
         {"hammersley", OrientationMode::Hammersley},
@@ -637,6 +638,9 @@ void ValidateOrientationValues(const ArgPP &args, OrientationMode mode)
         break;
     case OrientationMode::SO3Quaternion:
         RequirePositiveInt(args, "so3_quat");
+        break;
+    case OrientationMode::SO3FullQuaternion:
+        RequirePositiveInt(args, "so3_full_quat");
         break;
     case OrientationMode::SobolSeed:
         RequirePositiveInt(args, "sobol_seed", 0);
@@ -755,6 +759,7 @@ bool UsesAdaptiveEulerSearch(OrientationMode mode)
 bool SupportsSymmetryOverride(OrientationMode mode)
 {
     return mode == OrientationMode::Sobol
+        || mode == OrientationMode::SO3Quaternion
         || mode == OrientationMode::SobolSeed
         || mode == OrientationMode::SobolRing
         || mode == OrientationMode::Hammersley
@@ -799,6 +804,7 @@ bool SupportsAdaptiveTheta(OrientationMode mode)
     return mode == OrientationMode::EulerGrid
         || mode == OrientationMode::Sobol
         || mode == OrientationMode::SO3Quaternion
+        || mode == OrientationMode::SO3FullQuaternion
         || mode == OrientationMode::SobolSeed
         || mode == OrientationMode::SobolRing
         || mode == OrientationMode::Hammersley
@@ -831,9 +837,10 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
     if (HasAnyDiffractionScattering(args))
     {
         if (config.method != RunMethod::PhysicalOptics
-            || mode != OrientationMode::DiffractionGrid)
-            Fail("diffraction-based scattering sampling is currently implemented for the PO diffraction-orientation path.",
-                 "use --method po --diffraction-sampling Q, or select the scattering grid explicitly.");
+            || (mode != OrientationMode::DiffractionGrid
+                && mode != OrientationMode::SO3Quaternion))
+            Fail("diffraction-based scattering sampling is currently implemented for PO diffraction-grid and symmetry-reduced SO(3) paths.",
+                 "use PO with --diffraction-sampling Q, or use --so3-quaternion N with --scattering-diffraction-sampling Q.");
         if (args.IsCatched("nphi"))
             Fail("--phi-points conflicts with the phi count computed by diffraction sampling.",
                  "remove --phi-points, or replace diffraction sampling with an explicit --scattering-grid.");
@@ -841,9 +848,10 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
     if (args.IsCatched("latitude_phi_grid"))
     {
         if (config.method != RunMethod::PhysicalOptics
-            || mode != OrientationMode::DiffractionGrid)
-            Fail("--latitude-phi-grid is currently implemented for the PO diffraction-grid orientation path.",
-                 "use --method po --diffraction-sampling Q, or remove --latitude-phi-grid.");
+            || (mode != OrientationMode::DiffractionGrid
+                && mode != OrientationMode::SO3Quaternion))
+            Fail("--latitude-phi-grid is currently implemented for PO diffraction-grid and symmetry-reduced SO(3) paths.",
+                 "use PO with --diffraction-sampling Q, or use --so3-quaternion N with a scattering grid.");
         if (args.IsCatched("multigrid") || args.IsCatched("multikeq")
             || args.IsCatched("multikeq_list"))
             Fail("--latitude-phi-grid is not yet implemented for a shared multi-size trace.",
@@ -917,7 +925,7 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
     if (args.IsCatched("mirror_gamma")
         && (mode == OrientationMode::Fixed
             || mode == OrientationMode::File
-            || mode == OrientationMode::SO3Quaternion))
+            || mode == OrientationMode::SO3FullQuaternion))
         Fail("--mirror-gamma does not reduce the selected orientation mode.",
              "remove it or select a beta/gamma orientation-average mode.");
     if (args.IsCatched("sym")
@@ -1099,6 +1107,30 @@ ThetaGridMode ValidateThetaGrid(const ArgPP &args, std::vector<std::string> &war
     if (canonicalDiffractionGrid || args.IsCatched("diffraction_limit_grid"))
         return ThetaGridMode::Uniform;
     return ThetaGridMode::Default;
+}
+
+void ValidateSO3AzimuthIntegration(const ArgPP &args, OrientationMode mode)
+{
+    if (mode != OrientationMode::SO3Quaternion)
+        return;
+
+    int nPhi = 0;
+    bool explicitlySet = false;
+    if (args.IsCatched("nphi"))
+    {
+        nPhi = IntValue(args, "nphi", 0);
+        explicitlySet = true;
+    }
+    else if (args.IsCatched("grid"))
+    {
+        const unsigned count = args.GetArgNumber("grid");
+        nPhi = IntValue(args, "grid", count == 3 ? 1 : 2);
+        explicitlySet = true;
+    }
+
+    if (explicitlySet && nPhi < 2)
+        Fail("symmetry-reduced --so3-quaternion integrates Euler alpha through scattering azimuth and requires NPHI >= 2.",
+             "set --phi-points 2 or larger, use an explicit scattering grid with NPHI >= 2, or use --so3-full-quaternion for direct full-SO(3) sampling.");
 }
 
 void ValidateGpuDeviceList(const ArgPP &args)
@@ -1393,6 +1425,7 @@ RunConfig RunConfig::FromCommandLine(const ArgPP &args,
     config.orientation = ResolveOrientation(args);
     ValidateOrientationValues(args, config.orientation);
     config.thetaGrid = ValidateThetaGrid(args, config.warnings);
+    ValidateSO3AzimuthIntegration(args, config.orientation);
     ValidateOrientationModifiers(args, config);
 
     if (config.useGpu
@@ -1735,7 +1768,8 @@ const char *OrientationModeName(OrientationMode orientation)
     case OrientationMode::File: return "orientation file";
     case OrientationMode::DiffractionGrid: return "diffraction grid";
     case OrientationMode::Sobol: return "Sobol";
-    case OrientationMode::SO3Quaternion: return "SO(3) quaternion";
+    case OrientationMode::SO3Quaternion: return "symmetry-reduced SO(3)";
+    case OrientationMode::SO3FullQuaternion: return "full SO(3) quaternion audit";
     case OrientationMode::SobolSeed: return "seeded Sobol";
     case OrientationMode::SobolRing: return "Sobol ring";
     case OrientationMode::Hammersley: return "Hammersley";
