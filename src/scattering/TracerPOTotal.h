@@ -198,6 +198,11 @@ public:
     /// M(phi) -> P M(-phi) P, P=diag(1,1,-1,-1), for full Mueller output.
     bool m_mirrorGamma = false;
 
+    /// Full-gamma SO(3) validation layout: explicitly trace each sampled
+    /// half-domain orientation and its reflected partner. This is deliberately
+    /// opt-in so the production Hammersley sequence remains unchanged.
+    bool m_so3MirrorAudit = false;
+
     /// Optional manual cap for Sobol streaming chunks. 0 means auto.
     int m_sobolChunkSize = 0;
 

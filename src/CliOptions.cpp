@@ -160,6 +160,8 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
          "Sobol quasi-random orientation set with N samples."},
         {"so3_quat", "so3-quaternion", 1, "N", "Orientation",
          "Symmetry-reduced Hammersley sampling of isotropic SO(3): N beta/gamma particle orientations, with the laboratory alpha integral evaluated by scattering azimuth."},
+        {"so3_mirror_audit", "so3-mirror-audit", 0, "", "Orientation",
+         "For an even full-gamma --so3-quaternion N validation run, trace N/2 half-domain Hammersley points and their explicit reflected partners; compare with N/2 --mirror-gamma."},
         {"so3_full_quat", "so3-full-quaternion", 1, "N", "Orientation",
          "Audit mode: Hammersley samples directly on the full SO(3) with Shoemake unit quaternions; particle symmetry is intentionally not used."},
         {"sobol_seed", "sobol-seed", 2, "N SEED", "Orientation",

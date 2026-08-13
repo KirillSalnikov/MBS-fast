@@ -3091,6 +3091,10 @@ int main(int argc, const char* argv[])
                     if (args.IsCatched("multigrid"))
                         std::cerr << "WARNING: --so3-quaternion currently runs single-size; --multigrid ignored." << std::endl;
                     int nOrient = args.GetIntValue("so3_quat", 0);
+                    TracerPOTotal *so3Tracer = dynamic_cast<TracerPOTotal*>(tracer);
+                    if (so3Tracer)
+                        so3Tracer->m_so3MirrorAudit =
+                            args.IsCatched("so3_mirror_audit");
                     if (args.IsCatched("auto_tgrid") && !args.IsCatched("grid") && !args.IsCatched("tgrid"))
                     {
                         double tgridEps = args.GetDoubleValue("auto_tgrid", 0);

@@ -714,6 +714,9 @@ oldauto estimates; default \texttt{3}. \\
 \texttt{-\/-mirror\_gamma} & none & For a verified reflection-symmetric
 particle, sample half the gamma range and restore the omitted Mueller
 contribution with Stokes parity. Supported by \texttt{-\/-so3\_quat}. \\
+\texttt{-\/-so3\_mirror\_audit} & none & With an even
+\texttt{-\/-so3\_quat N}, explicitly trace nested reflected pairs for a
+direct validation of \texttt{-\/-mirror\_gamma}. \\
 \texttt{-\/-sym} & \texttt{Sb\ Sg} & Override symmetry domain: beta
 range is \texttt{pi/Sb}, gamma range is \texttt{2*pi/Sg}. \\
 \texttt{-\/-b} & \texttt{B1\ B2} & Manual beta range in degrees for
@@ -762,6 +765,15 @@ weights satisfy $\sum_i w_i=1$.  The option \texttt{-\/-sym Sb Sg} overrides
 the domain with $\beta_{\rm sym}=\pi/S_b$ and
 $\gamma_{\rm sym}=2\pi/S_g$; use it only for an actual particle symmetry.
 
+For a paired mirror validation, add \texttt{-\/-so3-mirror-audit} to an even
+full count and put $K=N/2$. The audit evaluates the same formulas for
+$i=0,\ldots,K-1$ with $u_i=(i+1/2)/K$ and
+$\gamma_i=(\gamma_{\rm sym}/2)v_i$, then explicitly traces both
+$(\beta_i,\gamma_i)$ and $(\beta_i,\gamma_{\rm sym}-\gamma_i)$ with weight
+$1/N$. This layout nests exactly with a $K$-point
+\texttt{-\/-mirror-gamma} run. Without the audit modifier the production
+full-domain Hammersley sequence is unchanged.
+
 With \texttt{-\/-mirror-gamma}, the sampled range becomes
 $0\leq\gamma<\gamma_{\rm sym}/2$. The omitted half is restored before the
 $\alpha$ quadrature as
@@ -774,11 +786,13 @@ This is valid only when the complete optical particle, including facet
 visibility and material assignment, has the asserted reflection plane and the
 selected PO tracer is numerically invariant under that reflection. The program
 cannot prove this property from a particle file; validate every new particle
-class against one full-gamma run. The value $N$ remains the number of actually
-traced $\beta,\gamma$ orientations. To retain approximately the same point
-density, use half the non-mirror $N$, for example
-\texttt{-\/-so3-quaternion 2048 -\/-mirror-gamma} instead of
-\texttt{-\/-so3-quaternion 4096}.
+class and parameter regime against one full-gamma run. The value $N$ remains
+the number of actually traced $\beta,\gamma$ orientations. For a strict paired
+check, compare \texttt{-\/-so3-quaternion 4096 -\/-so3-mirror-audit} with
+\texttt{-\/-so3-quaternion 2048 -\/-mirror-gamma}. Their base nodes are
+identical, so the difference measures numerical mirror consistency rather than
+two-sample Hammersley noise. Also check the ordinary full-domain sequence
+against an independent dense result and inspect backscatter separately.
 
 The remaining laboratory angle $\alpha$ is not retraced.  Rotation about the
 incident beam is equivalent to changing scattering azimuth $\phi$, hence each

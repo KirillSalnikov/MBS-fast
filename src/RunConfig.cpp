@@ -638,6 +638,10 @@ void ValidateOrientationValues(const ArgPP &args, OrientationMode mode)
         break;
     case OrientationMode::SO3Quaternion:
         RequirePositiveInt(args, "so3_quat");
+        if (args.IsCatched("so3_mirror_audit")
+            && IntValue(args, "so3_quat", 0) % 2 != 0)
+            Fail("--so3-mirror-audit requires an even --so3-quaternion count.",
+                 "use an even full count N and compare it with N/2 --mirror-gamma.");
         break;
     case OrientationMode::SO3FullQuaternion:
         RequirePositiveInt(args, "so3_full_quat");
@@ -928,6 +932,14 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
             || mode == OrientationMode::SO3FullQuaternion))
         Fail("--mirror-gamma does not reduce the selected orientation mode.",
              "remove it or select a beta/gamma orientation-average mode.");
+    if (args.IsCatched("so3_mirror_audit")
+        && mode != OrientationMode::SO3Quaternion)
+        Fail("--so3-mirror-audit applies only to --so3-quaternion.",
+             "select --so3-quaternion N or remove the audit modifier.");
+    if (args.IsCatched("so3_mirror_audit")
+        && args.IsCatched("mirror_gamma"))
+        Fail("--so3-mirror-audit explicitly traces the reflected half and cannot be combined with --mirror-gamma.",
+             "compare two separate runs: full N with --so3-mirror-audit and mirror N/2 with --mirror-gamma.");
     if (args.IsCatched("sym")
         && (config.method != RunMethod::PhysicalOptics
             || !SupportsSymmetryOverride(mode)))

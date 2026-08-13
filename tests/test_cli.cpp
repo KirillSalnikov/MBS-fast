@@ -691,6 +691,27 @@ int main()
         "--scattering-grid", "0", "180", "12", "4",
         "--mirror-gamma", "--backend", "cpu"
     });
+    ExpectSuccess("symmetry-reduced SO3 accepts paired mirror audit", {
+        "--method", "po", "--particle", "10", "1", "0.7", "43.4",
+        "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",
+        "--max-reflections", "1", "--so3-quaternion", "64",
+        "--scattering-grid", "0", "180", "12", "4",
+        "--so3-mirror-audit", "--backend", "cpu"
+    });
+    ExpectFailure("paired mirror audit rejects an odd count", {
+        "--method", "po", "--particle", "10", "1", "0.7", "43.4",
+        "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",
+        "--max-reflections", "1", "--so3-quaternion", "63",
+        "--scattering-grid", "0", "180", "12", "4",
+        "--so3-mirror-audit", "--backend", "cpu"
+    }, "requires an even");
+    ExpectFailure("paired mirror audit rejects mirror reconstruction", {
+        "--method", "po", "--particle", "10", "1", "0.7", "43.4",
+        "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",
+        "--max-reflections", "1", "--so3-quaternion", "64",
+        "--scattering-grid", "0", "180", "12", "4",
+        "--so3-mirror-audit", "--mirror-gamma", "--backend", "cpu"
+    }, "cannot be combined");
     ExpectSuccess("full SO3 quaternion audit remains available", {
         "--method", "po", "--particle", "10", "1", "0.7", "43.4",
         "--refractive-index", "1.3116", "0", "--wavelength-um", "0.532",

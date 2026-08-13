@@ -5254,21 +5254,30 @@ void TracerPOTotal::TraceFromSO3Quaternion(
             "symmetry-reduced SO(3) needs at least two scattering-azimuth points for the alpha integral");
     }
 
-    const double sampledGammaSym = m_mirrorGamma
+    const bool pairedFullGamma = m_so3MirrorAudit;
+    const int baseCount = pairedFullGamma ? nOrient / 2 : nOrient;
+    const double sampledGammaSym = (m_mirrorGamma || pairedFullGamma)
         ? 0.5 * gammaSym : gammaSym;
     const double cosBetaSym = std::cos(betaSym);
     const double weight = 1.0 / (double)nOrient;
     std::vector<std::pair<double, double>> orientations;
     std::vector<double> weights(nOrient, weight);
     orientations.reserve(nOrient);
-    for (int i = 0; i < nOrient; ++i)
+    for (int i = 0; i < baseCount; ++i)
     {
-        const double u = (i + 0.5) / (double)nOrient;
+        // Use the same half-domain Hammersley points for a 2*N full-gamma
+        // audit and an N-point --mirror-gamma run.  The former traces every
+        // reflected partner explicitly; the latter reconstructs it in the
+        // Mueller matrix.  This makes mirror validation a paired comparison
+        // instead of comparing two unrelated low-discrepancy point sets.
+        const double u = (i + 0.5) / (double)baseCount;
         const double v = RadicalInverseBase2((uint32_t)i);
         const double beta = std::acos(
             1.0 - (1.0 - cosBetaSym) * u);
         const double gamma = sampledGammaSym * v;
         orientations.push_back(std::make_pair(beta, gamma));
+        if (pairedFullGamma)
+            orientations.push_back(std::make_pair(beta, gammaSym - gamma));
     }
 
     if (m_mpiRank == 0)
@@ -5276,7 +5285,15 @@ void TracerPOTotal::TraceFromSO3Quaternion(
         std::cout << "SO(3) symmetry quotient Hammersley: " << nOrient
                   << " unique particle orientations, beta=0.."
                   << RadToDeg(betaSym) << " deg, gamma=0.."
-                  << RadToDeg(sampledGammaSym) << " deg" << std::endl;
+                  << RadToDeg(m_mirrorGamma ? sampledGammaSym : gammaSym)
+                  << " deg" << std::endl;
+        if (pairedFullGamma)
+        {
+            std::cout << "  paired gamma audit: " << baseCount
+                      << " half-domain Hammersley points plus " << baseCount
+                      << " explicit reflected partners; matches a "
+                      << baseCount << "-point --mirror-gamma run" << std::endl;
+        }
         if (m_mirrorGamma)
         {
             std::cout << "  mirror gamma: sampled half of the particle gamma "

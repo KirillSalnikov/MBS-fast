@@ -21,6 +21,9 @@ COMMON=(
 OMP_NUM_THREADS=2 "$MBS" "${COMMON[@]}" \
     --so3-quaternion 512 --output "$WORK_DIR/reduced" >/dev/null 2>&1
 OMP_NUM_THREADS=2 "$MBS" "${COMMON[@]}" \
+    --so3-quaternion 512 --so3-mirror-audit \
+    --output "$WORK_DIR/paired" >"$WORK_DIR/paired.console.log" 2>&1
+OMP_NUM_THREADS=2 "$MBS" "${COMMON[@]}" \
     --so3-quaternion 256 --mirror-gamma \
     --output "$WORK_DIR/mirror" >"$WORK_DIR/mirror.console.log" 2>&1
 OMP_NUM_THREADS=2 "$MBS" "${COMMON[@]}" \
@@ -62,6 +65,8 @@ read -r reduced_m11 reduced_all < <(
     metrics "$WORK_DIR/full/full.dat" "$WORK_DIR/reduced/reduced.dat")
 read -r mirror_m11 mirror_all < <(
     metrics "$WORK_DIR/full/full.dat" "$WORK_DIR/mirror/mirror.dat")
+read -r paired_mirror_m11 paired_mirror_all < <(
+    metrics "$WORK_DIR/paired/paired.dat" "$WORK_DIR/mirror/mirror.dat")
 
 awk -v m="$full_domain_m11" -v a="$full_domain_all" 'BEGIN {
     if (m > 0.01 || a > 0.03) exit 1
@@ -85,18 +90,33 @@ awk -v m="$mirror_m11" -v a="$mirror_all" 'BEGIN {
     exit 1
 }
 
+# The full-gamma 512-point set and the mirror 256-point set now share the
+# exact same beta/gamma base points.  This threshold therefore measures only
+# numerical reflection consistency, not low-discrepancy sampling noise.
+awk -v m="$paired_mirror_m11" -v a="$paired_mirror_all" 'BEGIN {
+    if (m > 0.08 || a > 0.16) exit 1
+}' || {
+    printf 'FAIL: nested full/mirror SO(3) pair differs: M11=%g all=%g\n' \
+        "$paired_mirror_m11" "$paired_mirror_all" >&2
+    exit 1
+}
+
 grep -Eq '^90 59[.]9' "$WORK_DIR/reduced/particle_for_check.dat"
 grep -q 'alpha integrated by scattering azimuth' \
     "$WORK_DIR/reduced/reduced_out.txt"
+grep -q 'paired gamma audit: 256 half-domain Hammersley points' \
+    "$WORK_DIR/paired.console.log"
 grep -q 'gamma=0..30 deg' "$WORK_DIR/mirror.console.log"
 grep -q 'omitted orientations restored as' "$WORK_DIR/mirror.console.log"
 grep -q 'Validate each particle class against a full-gamma' \
     "$WORK_DIR/mirror.console.log"
 
-printf 'SO(3) symmetry regression passed: full-domain M11 L2=%.4f%%, all/M11=%.4f%%; reduced M11 L2=%.4f%%, all/M11=%.4f%%; mirror-half M11 L2=%.4f%%, all/M11=%.4f%%\n' \
+printf 'SO(3) symmetry regression passed: full-domain M11 L2=%.4f%%, all/M11=%.4f%%; reduced M11 L2=%.4f%%, all/M11=%.4f%%; mirror-half M11 L2=%.4f%%, all/M11=%.4f%%; paired mirror M11 L2=%.4f%%, all/M11=%.4f%%\n' \
     "$(awk -v x="$full_domain_m11" 'BEGIN {print 100*x}')" \
     "$(awk -v x="$full_domain_all" 'BEGIN {print 100*x}')" \
     "$(awk -v x="$reduced_m11" 'BEGIN {print 100*x}')" \
     "$(awk -v x="$reduced_all" 'BEGIN {print 100*x}')" \
     "$(awk -v x="$mirror_m11" 'BEGIN {print 100*x}')" \
-    "$(awk -v x="$mirror_all" 'BEGIN {print 100*x}')"
+    "$(awk -v x="$mirror_all" 'BEGIN {print 100*x}')" \
+    "$(awk -v x="$paired_mirror_m11" 'BEGIN {print 100*x}')" \
+    "$(awk -v x="$paired_mirror_all" 'BEGIN {print 100*x}')"

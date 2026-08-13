@@ -488,6 +488,8 @@ expect_success 'PO symmetry-reduced SO3 with diffraction latitude grid' \
     --scattering-diffraction-sampling 1 --latitude-phi-grid --symmetry 2 6
 expect_success 'PO symmetry-reduced SO3 with asserted mirror gamma' \
     "${PO_CORE[@]}" --so3-quaternion 8 "${GRID[@]}" --mirror-gamma
+expect_success 'PO symmetry-reduced SO3 paired mirror audit' \
+    "${PO_CORE[@]}" --so3-quaternion 8 "${GRID[@]}" --so3-mirror-audit
 expect_success 'PO legacy diffraction-limit compatibility' \
     "${PO_CORE[@]}" --diffraction-grid 8 \
     --diffraction-limit-grid 1 --latitude-phi-grid

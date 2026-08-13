@@ -350,6 +350,7 @@ Orientation modifiers:
 |---|---:|---|
 | `--ring_points` | `N` | Points per diffraction ring for oldauto estimates; default `3`. |
 | `--mirror_gamma` | none | For a verified reflection-symmetric particle, sample half the gamma range and restore the omitted Mueller contribution with Stokes parity. Supported by `--so3_quat`. |
+| `--so3_mirror_audit` | none | With an even `--so3_quat N`, explicitly trace nested reflected pairs for a direct comparison with `N/2 --mirror_gamma`. Validation only. |
 | `--sym` | `Sb Sg` | Override symmetry domain: beta range is `pi/Sb`, gamma range is `2*pi/Sg`. |
 | `--b` | `B1 B2` | Manual beta range in degrees for `--random`. |
 | `--g` | `G1 G2` | Manual gamma range in degrees for `--random`. |
@@ -370,7 +371,7 @@ dR = sin(beta) d(beta) d(gamma) d(alpha).
 ```
 
 `--so3-quaternion N` uses the particle's fundamental domain
-`0 <= beta <= beta_sym`, `0 <= gamma < gamma_sym`. Point `i` is
+`0 <= beta <= beta_sym`, `0 <= gamma < gamma_sym`. Point `i=0,...,N-1` is
 
 ```text
 u_i = (i + 1/2) / N
@@ -379,6 +380,14 @@ beta_i  = acos(1 - (1 - cos(beta_sym)) u_i)
 gamma_i = gamma_sym v_i
 w_i = 1/N,  sum_i w_i = 1.
 ```
+
+For a paired mirror validation, add `--so3-mirror-audit` to an even full count
+and let `K=N/2`. The audit uses the same formulas with `i=0,...,K-1`, `u_i=(i+
+1/2)/K`, and `gamma_i=(gamma_sym/2)v_i`, then explicitly traces both
+`(beta_i,gamma_i)` and `(beta_i,gamma_sym-gamma_i)` with weight `1/N`. This
+layout nests exactly with `--so3-quaternion K --mirror-gamma`. The modifier is
+not a production quadrature rule and deliberately leaves the normal
+full-domain Hammersley sequence unchanged.
 
 Thus beta is uniform in `cos(beta)`, not in beta itself. `--sym Sb Sg`
 overrides the fundamental domain with `beta_sym=pi/Sb` and
@@ -398,10 +407,15 @@ This is valid only when the optical particle, including facet visibility and
 material assignment, has the asserted reflection plane and the selected PO
 tracer is numerically invariant under that reflection. The program cannot
 prove this property from a particle file. Validate every new particle class
-against one full-gamma run. `N` remains the number of actually traced
-beta/gamma orientations. To preserve approximately the same point density,
-use half the non-mirror `N`; for example, compare `--so3-quaternion 4096` with
-`--so3-quaternion 2048 --mirror-gamma`.
+and parameter regime against one full-gamma run. `N` remains the number of
+actually traced beta/gamma orientations. Use an even full count with the audit
+modifier and exactly half that count with mirror; for example, compare
+`--so3-quaternion 4096 --so3-mirror-audit` with `--so3-quaternion 2048
+--mirror-gamma`. These runs share the same base points, so their difference
+measures numerical mirror consistency instead of two-sample Hammersley noise.
+Also validate the normal full-domain sequence against an independent dense
+result. Check backscatter separately because a small global L2 error can hide
+a local pole discrepancy.
 
 The remaining laboratory angle alpha is not retraced. A rotation around the
 incident beam is equivalent to changing scattering azimuth phi, so each theta
@@ -724,6 +738,7 @@ Common scheduler controls:
 | `--random` | `Nb Ng` | Regular beta/gamma grid. |
 | `--sobol` | `N` | Sobol orientations. |
 | `--so3_quat` | `N` | Symmetry-reduced SO(3); alpha is integrated by scattering phi. |
+| `--so3_mirror_audit` | none | Explicit nested reflected pairs for validating `--mirror_gamma`; even `N` only. |
 | `--so3_full_quat` | `N` | Direct full-SO(3) quaternion audit. |
 | `--sobol_seed` | `N S` | Sobol with explicit Owen seed. |
 | `--sobol_ring` | `Nb Ng` | Sobol beta with gamma rings. |

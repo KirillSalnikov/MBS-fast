@@ -232,6 +232,14 @@ with `--scattering-diffraction-sampling Q` and `--latitude-phi-grid`. The slower
 `--so3-full-quaternion N` samples all three Euler degrees of freedom directly
 and is retained as an independent audit mode.
 
+`--so3-mirror-audit` provides an opt-in antithetic validation layout for an
+even full-gamma `--so3-quaternion N` run: `N/2` Hammersley points cover the
+first half of the gamma domain and their `N/2` reflected partners are traced
+explicitly. It is directly comparable with `--so3-quaternion N/2
+--mirror-gamma`, which traces the same base points and reconstructs the
+partners. Without this audit modifier, the production full-domain Hammersley
+sequence is unchanged.
+
 For a particle with an actual reflection plane, `--mirror-gamma` also works
 with `--so3-quaternion`: it samples `0 <= gamma < gamma_sym/2` and restores the
 omitted half as `M(phi) -> P M(-phi) P`, `P=diag(1,1,-1,-1)`. `N` is always the
@@ -241,6 +249,11 @@ modifier for a chiral, asymmetric, or unverified file-loaded particle. The PO
 tracer and its facet-visibility data must also be numerically mirror-invariant;
 compare one production-resolution case with a full-gamma run before relying on
 the reduction for a new particle class.
+Use an even full-run count with `--so3-mirror-audit` and compare it with exactly
+half that count under `--mirror-gamma`; this separates mirror-model error from
+orientation-sampling error. Also compare the normal full-domain sequence with
+an independent high-resolution result before production use. Inspect the
+requested backscatter angle separately from a global L2 norm.
 
 `--diffraction-sampling Q` uses one convention for both orientation and
 scattering grids. Here `lmax` is the longest edge of any particle facet, not
