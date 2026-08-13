@@ -12,6 +12,7 @@
 #include "ArgPP.h"
 #include "CliOptions.h"
 #include "IntegralCharacteristics.h"
+#include "OrientationFile.h"
 #include "RunConfig.h"
 
 namespace
@@ -148,6 +149,34 @@ std::vector<std::string> AdaptiveBase(const std::string &configPath)
         "--adaptive-config", configPath,
         "--backend", "cpu"
     };
+}
+
+void CheckOrientationFileUnits()
+{
+    const std::string path = WriteAdaptiveTestFile(
+        "orientation_degrees.txt",
+        "# beta_deg gamma_deg\n0 0\n90 180 # inline comment\n180 -30\n");
+    try
+    {
+        const std::vector<EulerOrientationRadians> values =
+            ReadOrientationFileDegrees(path);
+        if (values.size() != 3
+            || std::fabs(values[0].beta) > 1e-14
+            || std::fabs(values[1].beta - 0.5 * M_PI) > 1e-14
+            || std::fabs(values[1].gamma - M_PI) > 1e-14
+            || std::fabs(values[2].beta - M_PI) > 1e-14
+            || std::fabs(values[2].gamma + M_PI / 6.0) > 1e-14)
+        {
+            FailTest("orientation file degree conversion",
+                     "0/90/180-degree values were not converted to radians");
+        }
+        else
+            Pass("orientation file degree conversion");
+    }
+    catch (const std::exception &error)
+    {
+        FailTest("orientation file degree conversion", error.what());
+    }
 }
 
 std::vector<std::string> CanonicalBase();
@@ -328,7 +357,20 @@ int main()
 {
     CheckOptionSchema();
     CheckAdaptiveConfig();
+    CheckOrientationFileUnits();
     ExpectSuccess("canonical command", CanonicalBase());
+    ExpectFailure("fixed beta degree range", {
+        "--method", "po", "--particle", "1", "1", "1",
+        "--refractive-index", "1.31", "0", "--wavelength-um", "1",
+        "--fixed-orientation", "181", "0", "--backend", "cpu"
+    }, "beta must be in [0, 180] degrees");
+    const std::string invalidOrientationFile = WriteAdaptiveTestFile(
+        "orientation_bad_beta.txt", "181 0\n");
+    ExpectFailure("orientation file beta degree range", {
+        "--method", "po", "--particle", "1", "1", "1",
+        "--refractive-index", "1.31", "0", "--wavelength-um", "1",
+        "--orientation-file", invalidOrientationFile, "--backend", "cpu"
+    }, "beta is outside [0, 180] degrees");
     ExpectSuccess("legacy aliases", LegacyBase());
     ExpectSuccess("adaptive Euler limits", {
         "--method", "po",

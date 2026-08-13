@@ -328,7 +328,7 @@ scale = (k_eq_target * lambda / (2*pi)) / r_eq_original
 | `--oldauto` | `DIV` | Production regular grid | Grid step follows diffraction-limited angular scale; common values are `2`, `4`, `8`. |
 | `--random` | `Nb Ng` | Manual beta/gamma regular grid | Uses symmetry-reduced beta/gamma domain unless overridden. |
 | `--fixed` | `BETA GAMMA` | Single-orientation debugging | Angles are degrees. |
-| `--orientfile` | `FILE` | Reproducible custom orientations | One beta/gamma pair per line. |
+| `--orientfile` | `FILE` | Reproducible custom orientations | One `beta_deg gamma_deg` pair in degrees per line. |
 | `--sobol` | `N` | Quasi-random orientation average | Good convergence for broad scans. |
 | `--sobol_seed` | `N S` | Seeded Sobol/Owen sequence | Useful for repeatable convergence checks. |
 | `--sobol_ring` | `Nb Ng` | Sobol beta with uniform gamma rings | Hybrid orientation grid. |
@@ -653,7 +653,7 @@ Common scheduler controls:
 | `--oldauto` | `DIV` | Physics-based regular grid. |
 | `--ring_points` | `N` | Points per diffraction ring estimate. |
 | `--mirror_gamma` | none | Use mirrored half gamma domain. |
-| `--orientfile` | `FILE` | Load beta/gamma orientations from file. |
+| `--orientfile` | `FILE` | Load beta/gamma orientations in degrees from file. |
 | `--b` | `B1 B2` | Beta range for `--random`. |
 | `--g` | `G1 G2` | Gamma range for `--random`. |
 | `--maxorient` | `N` | Maximum adaptive orientation count. |

@@ -13,6 +13,7 @@
 
 #include "ArgPP.h"
 #include "CliOptions.h"
+#include "OrientationFile.h"
 
 namespace
 {
@@ -204,30 +205,15 @@ void ValidateOrientationFile(const ArgPP &args)
     if (!args.IsCatched("orientfile"))
         return;
     const std::string path = args.GetStringValue("orientfile", 0);
-    std::ifstream input(path.c_str());
-    std::string text;
-    int lineNumber = 0;
-    int orientations = 0;
-    while (std::getline(input, text))
+    try
     {
-        ++lineNumber;
-        std::istringstream line(text);
-        std::string betaToken;
-        if (!ReadDataToken(line, betaToken))
-            continue;
-        std::string gammaToken;
-        if (!(line >> gammaToken) || (!gammaToken.empty() && gammaToken[0] == '#'))
-            Fail("orientation file '" + path + "' line "
-                 + std::to_string(lineNumber) + " is missing gamma.",
-                 "write two finite values per data line: BETA GAMMA.");
-        (void)ParseFileDouble(betaToken, path, lineNumber, "beta angle");
-        (void)ParseFileDouble(gammaToken, path, lineNumber, "gamma angle");
-        RejectUnexpectedFileToken(line, path, lineNumber);
-        ++orientations;
+        (void)ReadOrientationFileDegrees(path);
     }
-    if (orientations == 0)
-        Fail("orientation file '" + path + "' contains no orientations.",
-             "add at least one BETA GAMMA data line.");
+    catch (const std::exception &error)
+    {
+        Fail(error.what(),
+             "write one BETA_DEG GAMMA_DEG pair per data line; beta must be in [0, 180].");
+    }
 }
 
 void ValidatePositiveListFile(const ArgPP &args)
@@ -612,9 +598,14 @@ void ValidateOrientationValues(const ArgPP &args, OrientationMode mode)
     switch (mode)
     {
     case OrientationMode::Fixed:
-        (void)DoubleValue(args, "fixed", 0);
+    {
+        const double betaDeg = DoubleValue(args, "fixed", 0);
         (void)DoubleValue(args, "fixed", 1);
+        if (betaDeg < 0.0 || betaDeg > 180.0)
+            Fail("--fixed-orientation beta must be in [0, 180] degrees.",
+                 "use a physical Euler beta angle between 0 and 180 degrees.");
         break;
+    }
     case OrientationMode::EulerGrid:
         RequirePositiveInt(args, "random", 0);
         RequirePositiveInt(args, "random", 1);

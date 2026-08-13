@@ -3,6 +3,7 @@
 #include "HandlerPO.h"
 #include "BeamCache.h"
 #include "IntegralCharacteristics.h"
+#include "OrientationFile.h"
 #include "Sobol.h"
 #include "cuda/GpuSupport.h"
 
@@ -3520,33 +3521,9 @@ void TracerPOTotal::TraceMonteCarlo(const AngleRange &betaRange,
 
 void TracerPOTotal::TraceFromFile(const std::string &orientFile)
 {
-    // Read orientations from file
-    std::ifstream inFile(orientFile);
-    if (!inFile.is_open())
-    {
-        std::cerr << "Error! Cannot open orientation file: " << orientFile << std::endl;
-        throw std::exception();
-    }
-
-    std::vector<std::pair<double,double>> orientations;
-    std::string line;
-    while (std::getline(inFile, line))
-    {
-        if (line.empty() || line[0] == '#')
-            continue;
-        std::istringstream iss(line);
-        double b, g;
-        if (iss >> b >> g)
-            orientations.push_back({b, g});
-    }
-    inFile.close();
-
-    int nOrientations = orientations.size();
-    if (nOrientations == 0)
-    {
-        std::cerr << "Error! No orientations in file: " << orientFile << std::endl;
-        throw std::exception();
-    }
+    const std::vector<EulerOrientationRadians> orientations =
+        ReadOrientationFileDegrees(orientFile);
+    const int nOrientations = (int)orientations.size();
 
     CalcTimer timer;
     timer.Start();
@@ -3635,9 +3612,9 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
     MixHashInt(paramHash, computeNoShadow ? 1 : 0);
     for (const auto &bg : orientations)
     {
-        paramHash ^= std::hash<double>{}(bg.first)
+        paramHash ^= std::hash<double>{}(bg.beta)
             + 0x9e3779b9 + (paramHash << 6) + (paramHash >> 2);
-        paramHash ^= std::hash<double>{}(bg.second)
+        paramHash ^= std::hash<double>{}(bg.gamma)
             + 0x9e3779b9 + (paramHash << 6) + (paramHash >> 2);
     }
     int resumeChunk = 0;
@@ -3672,7 +3649,7 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
         for (int i = 0; i < thisChunkSize; ++i)
         {
             int idx = iStart + i;
-            m_particle->Rotate(orientations[idx].first, orientations[idx].second, 0);
+            m_particle->Rotate(orientations[idx].beta, orientations[idx].gamma, 0);
 
             if (!shadowOff)
                 m_scattering->FormShadowBeam(outBeams);
@@ -3811,33 +3788,9 @@ void TracerPOTotal::TraceFromFileMultiSize(const std::string &orientFile,
                                             const std::vector<double> &x_sizes,
                                             double x_ref)
 {
-    // Phase 1: Read orientations
-    std::ifstream inFile(orientFile);
-    if (!inFile.is_open())
-    {
-        std::cerr << "Error! Cannot open orientation file: " << orientFile << std::endl;
-        throw std::exception();
-    }
-
-    std::vector<std::pair<double,double>> orientations;
-    std::string line;
-    while (std::getline(inFile, line))
-    {
-        if (line.empty() || line[0] == '#')
-            continue;
-        std::istringstream iss(line);
-        double b, g;
-        if (iss >> b >> g)
-            orientations.push_back({b, g});
-    }
-    inFile.close();
-
-    int nOrientations = orientations.size();
-    if (nOrientations == 0)
-    {
-        std::cerr << "Error! No orientations in file: " << orientFile << std::endl;
-        throw std::exception();
-    }
+    const std::vector<EulerOrientationRadians> orientations =
+        ReadOrientationFileDegrees(orientFile);
+    const int nOrientations = (int)orientations.size();
 
     HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
     if (!handlerPO)
@@ -3866,8 +3819,8 @@ void TracerPOTotal::TraceFromFileMultiSize(const std::string &orientFile,
 
     for (int i = 0; i < nOrientations; ++i)
     {
-        double beta  = orientations[i].first;
-        double gamma = orientations[i].second;
+        double beta  = orientations[i].beta;
+        double gamma = orientations[i].gamma;
 
         m_particle->Rotate(beta, gamma, 0);
 
@@ -3890,8 +3843,9 @@ void TracerPOTotal::TraceFromFileMultiSize(const std::string &orientFile,
             cache.orientations[i].weight = weight;
             cache.orientations[i].incomingEnergy = incomingE;
             if (m_mpiRank == 0) std::cout << std::endl << "Orientation " << i
-                      << " (beta=" << beta << ", gamma=" << gamma
-                      << ") has been skipped!!!" << std::endl;
+                      << " (beta=" << RadToDeg(beta) << " deg, gamma="
+                      << RadToDeg(gamma) << " deg) has been skipped!!!"
+                      << std::endl;
         }
 
         OutputProgress(nOrientations, count + 1, i, 0, timer, outBeams.size());

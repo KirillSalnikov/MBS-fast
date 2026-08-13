@@ -309,7 +309,7 @@ scale = (k_eq_target * lambda / (2*pi)) / r_eq_original
 | `--oldauto` | `DIV` | Основной production режим | Шаг сетки связан с diffraction-limited angular scale; типично `2`, `4`, `8`. |
 | `--random` | `Nb Ng` | Ручная beta/gamma сетка | Использует symmetry-reduced domain. |
 | `--fixed` | `BETA GAMMA` | Отладка одной ориентации | Углы в градусах. |
-| `--orientfile` | `FILE` | Пользовательские ориентации | Одна пара beta/gamma на строку. |
+| `--orientfile` | `FILE` | Пользовательские ориентации | Одна пара `beta_deg gamma_deg` в градусах на строку. |
 | `--sobol` | `N` | Quasi-random average | Хорош для сходимости сканов. |
 | `--sobol_seed` | `N S` | Sobol/Owen с seed | Повторяемые проверки сходимости. |
 | `--sobol_ring` | `Nb Ng` | Sobol beta + uniform gamma rings | Гибридная сетка. |
@@ -615,7 +615,7 @@ budget или делить задачу на меньшие независимы
 | `--oldauto` | `DIV` | Physics-based regular grid. |
 | `--ring_points` | `N` | Points per diffraction ring estimate. |
 | `--mirror_gamma` | none | Mirror half gamma domain. |
-| `--orientfile` | `FILE` | Load beta/gamma from file. |
+| `--orientfile` | `FILE` | Прочитать `beta gamma` в градусах из файла. |
 | `--b` | `B1 B2` | Beta range for `--random`. |
 | `--g` | `G1 G2` | Gamma range for `--random`. |
 | `--maxorient` | `N` | Max adaptive orientations. |

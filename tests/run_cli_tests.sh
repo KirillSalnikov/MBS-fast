@@ -12,7 +12,9 @@ mkdir -p "$BUILD_DIR"
     "$ROOT_DIR/src/AdaptiveConfig.cpp" \
     "$ROOT_DIR/src/CliOptions.cpp" \
     "$ROOT_DIR/src/IntegralCharacteristics.cpp" \
+    "$ROOT_DIR/src/OrientationFile.cpp" \
     "$ROOT_DIR/src/RunConfig.cpp" \
+    "$ROOT_DIR/src/common/common.cpp" \
     -o "$BUILD_DIR/test_cli"
 
 MBS_TEST_ROOT="$ROOT_DIR" "$BUILD_DIR/test_cli"

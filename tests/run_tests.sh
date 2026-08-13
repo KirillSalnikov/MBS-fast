@@ -445,8 +445,8 @@ TEST10_DIR="$WORK_DIR/test10"
 mkdir -p "$TEST10_DIR/no_ckpt" "$TEST10_DIR/ckpt"
 cat > "$TEST10_DIR/orient.txt" <<EOF
 0 0
-0.5 0
-1.0 0
+90 0
+180 0
 EOF
 
 cd "$TEST10_DIR/no_ckpt"

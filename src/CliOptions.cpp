@@ -149,7 +149,7 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
         {"montecarlo", "monte-carlo", 1, "N", "Orientation",
          "Monte Carlo orientation average with N samples."},
         {"orientfile", "orientation-file", 1, "FILE", "Orientation",
-         "Read beta and gamma orientations from FILE."},
+         "Read one beta/gamma pair in degrees per data line from FILE."},
         {"diffraction_sampling", "diffraction-sampling", 1, "Q", "Orientation",
          "Use Q angular intervals per diffraction scale xi=0.69*lambda/lmax for both grids; lmax is the longest particle-facet edge. Individual flags may override either grid."},
         {"orientation_diffraction_sampling", "orientation-diffraction-sampling", 1, "Q", "Orientation",

@@ -1268,8 +1268,8 @@ $Q=4$ --- шагу $\xi/4$. Чем больше $Q$, тем мельче сет�
 Флаг & Метод \\
 \midrule
 \endhead
-\code{--fixed-orientation B G} & Одна ориентация $\beta,\gamma$; удобна для отладки CPU/GPU. \\
-\code{--orientation-file FILE} & Ориентации из файла. \\
+\code{--fixed-orientation B G} & Одна ориентация $\beta,\gamma$ в градусах; удобна для отладки CPU/GPU. \\
+\code{--orientation-file FILE} & Пары $\beta,\gamma$ в градусах, по одной паре на строку. \\
 \code{--euler-grid NB NG} & Явная регулярная сетка $\beta\times\gamma$. \\
 \flag{--diffraction-sampling} \code{Q} & Регулярная сетка ориентаций и автоматическая сетка рассеяния с шагом $\xi/Q$. \\
 \flag{--orientation-diffraction-sampling} \code{Q} & Только регулярная сетка ориентаций с шагом $\xi/Q$. \\
@@ -1872,7 +1872,7 @@ gpu/bin/mbs_po_gpu_double_fast \
 \midrule
 \endhead
 \code{--fixed-orientation} & \code{BETA GAMMA} & Одна ориентация в градусах. \\
-\code{--orientation-file} & \code{FILE} & Прочитать ориентации из файла. \\
+\code{--orientation-file} & \code{FILE} & Прочитать пары $\beta,\gamma$ в градусах из файла. \\
 \code{--euler-grid} & \code{NBETA NGAMMA} & Регулярная сетка $\beta\times\gamma$. \\
 \code{--euler-quadrature} & \code{NBETA NGAMMA} & Квадратура Гаусса по $\cos\beta$ и периодическая сетка по $\gamma$. \\
 \code{--diffraction-sampling} & \code{Q} & Задать шаг $\xi/Q$ одновременно для ориентаций и рассеяния. \\
