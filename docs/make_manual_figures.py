@@ -339,16 +339,6 @@ def particle_gallery(russian=False):
         ax.set_title(f"{title}\n{params}\n{kind}",
                      fontsize=14 if russian else 9, pad=0)
 
-        # Also provide an inspectable raster for each native example.
-        if not russian:
-            single = plt.figure(figsize=(4.0, 4.0))
-            single_ax = single.add_subplot(111, projection="3d")
-            draw_particle(single_ax, particle, color)
-            single_ax.set_title(f"{title}\n{params}", fontsize=11)
-            single.savefig(OUT / f"particle_{stem}.png", dpi=220,
-                           bbox_inches="tight", facecolor="white")
-            plt.close(single)
-
     note = fig.add_subplot(2, 4, 8)
     note.axis("off")
     note_text = (
@@ -376,14 +366,14 @@ def particle_gallery(russian=False):
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
-    for russian in (False, True):
-        pipeline(russian)
-        aperture_edge(russian)
-        nonconvex_clip(russian)
-        aggregate_clip(russian)
-        avx512_pack(russian)
-        gpu_atomics(russian)
-        particle_gallery(russian)
+    pipeline(russian=True)
+    aperture_edge(russian=True)
+    nonconvex_clip(russian=True)
+    aggregate_clip(russian=True)
+    avx512_pack(russian=True)
+    gpu_atomics(russian=True)
+    particle_gallery(russian=False)
+    particle_gallery(russian=True)
 
 
 if __name__ == "__main__":

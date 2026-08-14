@@ -6,6 +6,10 @@ tracing with either Physical Optics (PO) diffraction or Geometrical Optics
 quasi-random orientation averages, adaptive convergence, CPU MPI/OpenMP, CUDA
 diffraction, and process-parallel size scans across multiple GPUs.
 
+MBS-fast is an optimized and numerically hardened development of the original
+[`MBS-raw`](https://github.com/Heart-Under-Blade/MBS-raw) codebase. Consult that
+repository for the upstream implementation and project history.
+
 ## Documentation
 
 The generated command help is the authoritative list of accepted options,
@@ -26,8 +30,9 @@ orientation averaging, CPU vectorization, and CUDA implementation:
 | English | [`docs/MANUAL.tex`](docs/MANUAL.tex) | [`docs/MANUAL.pdf`](docs/MANUAL.pdf) |
 | Russian | [`docs/MANUAL_RU.tex`](docs/MANUAL_RU.tex) | [`docs/MANUAL_RU.pdf`](docs/MANUAL_RU.pdf) |
 
-The older Markdown manuals under `docs/` are retained as historical material;
-they are not the release source for CLI behavior.
+The Markdown manuals under `docs/` are searchable companion documents. The
+typeset TeX/PDF manuals are the release documentation, while generated
+`--help` remains authoritative for the current CLI.
 
 ## Requirements
 
@@ -41,9 +46,9 @@ CPU build:
   `/usr/bin/mpirun` when they are available.
 
 CUDA build additionally requires an NVIDIA driver, CUDA toolkit with `nvcc`,
-and cuFFT. The build script selects a CUDA-compatible host compiler when one is
-installed. CUDA and host-compiler compatibility is determined by the installed
-toolkit, not by MBS-fast.
+and cuFFT. `gpu/Makefile` calls `scripts/select_cuda_host_compiler.sh` to select
+a CUDA-compatible host compiler when one is installed. CUDA and host-compiler
+compatibility is determined by the installed toolkit, not by MBS-fast.
 
 Building the manuals requires XeLaTeX, `fontspec`, `unicode-math`, Latin Modern
 Math, Computer Modern Unicode, and the standard LaTeX packages imported by
@@ -68,6 +73,13 @@ make -C gpu fp64_fast -j       # FP64 storage + --use_fast_math
 # Rebuild both typeset manuals (two XeLaTeX passes per language)
 make docs
 ```
+
+The supported build entry points are `cpu/Makefile`, `gpu/Makefile`, and their
+delegating targets in the root `Makefile`. Architecture-specific root wrappers
+are intentionally not provided. Both split builds call
+`scripts/detect_arch_flags.sh`; the CUDA build also calls
+`scripts/select_cuda_host_compiler.sh`. Override `ARCH_FLAGS`, `GPU_ARCH`, or
+`CUDA_HOST_CXX` directly when automatic detection is not suitable.
 
 The resulting binaries are independent:
 
@@ -134,7 +146,7 @@ cpu/bin/mbs_po_mpi --method po --backend cpu \
 CUDA PO calculation:
 
 ```bash
-gpu/bin/mbs_po_gpu_double_fast --method po --backend cuda \
+gpu/bin/mbs_po_gpu_double --method po --backend cuda \
     --particle 1 125.9 78.09 --refractive-index 1.3116 0 \
     --wavelength-um 0.532 --max-reflections 12 \
     --orientation-diffraction-sampling 2 \
@@ -503,51 +515,35 @@ cross-domain combinations; it is not an exhaustive enumeration of every
 numeric value or arbitrary combination of all flags. New constraints must be
 added both to preflight validation and to a success or expected-error case.
 
-## Release Checklist
+## Release Process
 
-A release is ready only after all of the following are true:
-
-1. Start from a clean clone of the intended tag and verify that `git archive`
-   contains the generated CLI sources, adaptive example, tests, manuals, and
-   example particle. Do not release from a dirty worktree.
-2. Run `make test`, `make test_sanitize`, a warning build with no project-source
-   warnings, `make docs`, and the two-rank MPI cases with `mpicxx` and `mpirun`
-   from the same MPI installation. Filter third-party MPI-header diagnostics
-   separately instead of hiding project warnings.
-3. Verify the CPU and CUDA GitHub Actions workflows. Run the hardware FP64
-   CPU/CUDA agreement gate on a compatible self-hosted GPU runner.
-4. Review the English and Russian TeX manuals for matching production CLI and
-   physics coverage, rebuild both PDFs, and require zero `Overfull` or LaTeX
-   errors. Page count alone is not a substitute for content parity.
-5. On each supported CUDA architecture, build every advertised precision mode
-   and run the CLI matrix plus numerical comparisons for a convex particle, a
-   non-convex fixed orientation, and a non-convex orientation average. Check
-   CPU double, CUDA double, and float-fast separately.
-6. Record the tested compiler, MPI, CUDA, driver, GPU model/compute capability,
-   CPU architecture, precision, fast-math state, commands, tolerances, and
-   `--version` output in the release notes.
-7. Resolve and document third-party source provenance, including the notices in
-   `src/math/compl.cpp`, and choose the exact GPL
-   form (`GPL-3.0-only` or `GPL-3.0-or-later`), copyright holders, and notices.
-   Add project-specific citation metadata before claiming a citable release.
-8. Add a changelog, citation metadata, security/contact policy, and third-party
-   notices to the tagged source tree.
-9. Publish an annotated semantic-version tag, source archive,
-   binary artifacts where applicable, and SHA-256 checksums. Verify the
-   archives by rebuilding and rerunning the release gate from extraction.
+1. Run `make test`, `make test_sanitize`, `make docs`, and the hardware FP64
+   CPU/CUDA agreement gate on a compatible NVIDIA system.
+2. Confirm that the CPU workflow passes. The CUDA workflow compiles the precise
+   FP64 target for every CUDA-related change; its runtime job is available by
+   manual dispatch on a self-hosted GPU runner.
+3. Build every advertised CUDA precision profile on each supported
+   architecture and compare representative convex, non-convex,
+   fixed-orientation, and orientation-averaged results.
+4. Record the exact commit, `--version` output, compiler, MPI/CUDA versions,
+   hardware, precision profile, commands, and tolerances in
+   `docs/releases/vX.Y.Z.md`.
+5. Create and push an annotated `vX.Y.Z` tag. The `Publish release` workflow
+   creates the GitHub release from the matching notes file. GitHub supplies the
+   source archives; this repository does not currently publish prebuilt binary
+   assets.
 
 ## Versioning, Citation, And License
 
 Record `--version` output with every numerical data set. Development builds
-should be identified by the full Git commit. A published
-release should use an annotated semantic-version tag and include source and
-binary checksums plus compiler, CUDA, GPU architecture, and precision metadata.
-Until project-specific citation metadata or a DOI is published, cite the
-repository URL and exact tag/commit used for the calculation.
+should be identified by the full Git commit. Published releases use annotated
+semantic-version tags. Until project-specific citation metadata or a DOI is
+published, cite the repository URL and exact tag/commit used for the
+calculation.
 
-The repository currently includes the GNU General Public License version 3;
-see [`LICENSE`](LICENSE). The exact project licensing declaration and
-third-party notices must be finalized as part of the release checklist above.
+The repository includes the GNU General Public License version 3 text; see
+[`LICENSE`](LICENSE). Preserve source-level third-party notices when
+redistributing modified versions.
 Report reproducible defects through the
 [GitHub issue tracker](https://github.com/KirillSalnikov/MBS-fast/issues) with
 the full command, binary precision, compiler/CUDA versions, hardware, and the
