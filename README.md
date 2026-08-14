@@ -10,6 +10,15 @@ MBS-fast is an optimized and numerically hardened development of the original
 [`MBS-raw`](https://github.com/Heart-Under-Blade/MBS-raw) codebase. Consult that
 repository for the upstream implementation and project history.
 
+## Method Reference
+
+When using the MBS-1 method, cite D. N. Timofeev, A. V. Konoshonkin, and
+N. V. Kustova, "Modified Beam-Splitting 1 (MBS-1) Algorithm for Solving the
+Problem of Light Scattering by Nonconvex Atmospheric Ice Particles,"
+*Atmospheric and Oceanic Optics* **31**(6), 642-649 (2018):
+[publisher page](https://link.springer.com/article/10.1134/S1024856018060179),
+[DOI: 10.1134/S1024856018060179](https://doi.org/10.1134/S1024856018060179).
+
 ## Documentation
 
 The generated command help is the authoritative list of accepted options,
@@ -537,9 +546,8 @@ added both to preflight validation and to a success or expected-error case.
 
 Record `--version` output with every numerical data set. Development builds
 should be identified by the full Git commit. Published releases use annotated
-semantic-version tags. Until project-specific citation metadata or a DOI is
-published, cite the repository URL and exact tag/commit used for the
-calculation.
+semantic-version tags. Cite the MBS-1 method article above and include the
+repository URL plus exact tag/commit used for the calculation.
 
 The repository includes the GNU General Public License version 3 text; see
 [`LICENSE`](LICENSE). Preserve source-level third-party notices when
