@@ -4,7 +4,7 @@
 # Tests basic functionality: builds binary, runs test cases, checks Q_sca
 # and M11 at key angles against reference values.
 #
-# Usage: cd MBS-raw && bash tests/run_tests.sh
+# Usage: cd MBS-fast && bash tests/run_tests.sh
 # Exit code: 0 if all tests pass, 1 if any fail
 # =============================================================================
 
@@ -12,7 +12,7 @@ set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-MBS="${MBS:-$PROJECT_DIR/bin/mbs_po}"
+MBS="${MBS:-$PROJECT_DIR/cpu/bin/mbs_po_mpi}"
 if [[ "$MBS" != /* ]]; then
     MBS="$(cd "$(dirname "$MBS")" && pwd)/$(basename "$MBS")"
 fi
@@ -100,19 +100,18 @@ check_relative() {
 
 # =============================================================================
 echo "=============================================="
-echo "MBS-raw Regression Test Suite"
+echo "MBS-fast Regression Test Suite"
 echo "=============================================="
 echo ""
 
 # --- Build ---
-echo "=== Building MBS-raw ==="
+echo "=== Building MBS-fast CPU target ==="
 cd "$PROJECT_DIR"
 if [ "${SKIP_BUILD:-0}" = "1" ]; then
     echo "  Build: skipped (MBS=$MBS)"
 else
-    # Clean .o files
-    find src -name '*.o' -delete 2>/dev/null
-    if bash build.sh > "$WORK_DIR/build.log" 2>&1; then
+    if make -C cpu -j"${JOBS:-$(nproc 2>/dev/null || printf '1')}" \
+        > "$WORK_DIR/build.log" 2>&1; then
         echo "  Build: OK"
     else
         echo "  Build: FAILED"
