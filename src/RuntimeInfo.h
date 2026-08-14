@@ -1,6 +1,8 @@
 #pragma once
 
 #include <string>
+#include <utility>
+#include <vector>
 
 struct RuntimeResourceSnapshot
 {
@@ -15,6 +17,15 @@ struct RuntimeResourceSnapshot
     long long processPeakRssKb = 0;
 };
 
+struct RuntimeEnvironmentSnapshot
+{
+    std::vector<std::pair<std::string, std::string>> active;
+    std::vector<std::string> experimental;
+};
+
 RuntimeResourceSnapshot QueryRuntimeResourceSnapshot();
+RuntimeEnvironmentSnapshot QueryRuntimeEnvironmentSnapshot();
 std::string FormatRuntimeResourceReport(const std::string &stage,
                                         bool includeActiveGpu);
+std::string FormatRuntimeEnvironmentReport(
+    const RuntimeEnvironmentSnapshot &snapshot);

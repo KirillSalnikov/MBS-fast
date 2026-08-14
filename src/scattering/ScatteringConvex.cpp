@@ -6,7 +6,7 @@ ScatteringConvex::ScatteringConvex(Particle *particle, Light *incidentLight,
 {
 }
 
-bool ScatteringConvex::ScatterLight(double beta, double gamma,
+bool ScatteringConvex::ScatterLight(double /*beta*/, double /*gamma*/,
                                     std::vector<Beam> &outBeams)
 {
     // m_particle->Rotate(beta, gamma, 0);
@@ -40,13 +40,13 @@ bool ScatteringConvex::ScatterLight(double beta, double gamma,
         outBeams.push_back(outBeam);
 
         inBeam.id = newId;
-        PushBeamToTree(inBeam, facetID, 0, Location::In);
+        if (!PushBeamToTree(inBeam, facetID, 0, Location::In))
+            return false;
 
         AddProjectedIncidentEnergy(facetID, outBeam);
     }
 
-    TraceInternalBeams(outBeams);
-    return true;
+    return TraceInternalBeams(outBeams);
 }
 
 bool ScatteringConvex::ScatterLight(double, double, const std::vector<std::vector<int>> &/*tracks*/, std::vector<Beam> &)
@@ -54,7 +54,7 @@ bool ScatteringConvex::ScatterLight(double, double, const std::vector<std::vecto
     return true;
 }
 
-void ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
+bool ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
 {
     while (m_treeSize != 0)
     {
@@ -84,10 +84,13 @@ void ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
 
             inBeam.id = RecomputeTrackId(beam.id, id);
             inBeam.locations = beam.locations;
-            if (!IsTracePruned(inBeam))
-                PushBeamToTree(inBeam, id, beam.nActs+1, Location::In);
+            if (!IsTracePruned(inBeam)
+                && !PushBeamToTree(inBeam, id, beam.nActs+1, Location::In))
+                return false;
         }
     }
+
+    return true;
 }
 
 bool ScatteringConvex::SplitSecondaryBeams(Beam &incidentBeam, int facetID,

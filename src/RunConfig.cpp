@@ -987,15 +987,9 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
                 && mode != OrientationMode::DiffractionGrid)))
         Fail("--save-betas is not available for the selected method/orientation mode.",
              "remove it or use PO with --diffraction-grid or --euler-grid.");
-    if (args.IsCatched("coh_orient")
-        && (config.method != RunMethod::PhysicalOptics
-            || (mode != OrientationMode::EulerGrid
-                && mode != OrientationMode::DiffractionGrid)))
-        Fail("--coherent-orientations is implemented only by regular PO beta/gamma grids.",
-             "use PO with --diffraction-grid or --euler-grid, or remove this legacy option.");
-    if (args.IsCatched("coh_orient") && args.IsCatched("incoh"))
-        Fail("--coherent-orientations conflicts with --incoherent.",
-             "choose coherent cross-orientation Jones accumulation or incoherent per-beam Mueller accumulation.");
+    if (args.IsCatched("coh_orient"))
+        Fail("--coherent-orientations is disabled because its legacy implementation was a no-op.",
+             "remove it for random-orientation ensembles; coherent accumulation across distinct particles requires their positions and relative incident phases.");
     if (args.IsCatched("chunk")
         && (config.method != RunMethod::PhysicalOptics
             || !SupportsOrientationChunk(mode)))
@@ -1690,6 +1684,13 @@ RunConfig RunConfig::FromCommandLine(const ArgPP &args,
     else if (hasExplicitCutoff)
     {
         config.cutoffProfile = "custom";
+    }
+
+    if (config.method == RunMethod::PhysicalOptics
+        && !args.IsCatched("incoh") && hasExplicitCutoff)
+    {
+        config.warnings.push_back(
+            "custom beam/trace cutoffs can bias coherent cross terms, especially at exact backscatter; validate the result against --cutoff-profile safe or off.");
     }
 
     if (args.IsCatched("beam_cutoff")

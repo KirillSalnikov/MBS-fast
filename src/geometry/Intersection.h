@@ -1,140 +1,201 @@
 #pragma once
 
-#include "intrinsic/intrinsics.h"
 #include "geometry_lib.h"
 
-#define _div _mm_div_ps
-#define _mul _mm_mul_ps
-#define _add _mm_add_ps
-#define _sub _mm_sub_ps
-#define _dp _mm_dp_ps /// dot product
-#define _abs(p) _mm_andnot_ps(_mm_set1_ps(-0.f), p)
+#include <algorithm>
+#include <cfloat>
+#include <cmath>
 
-/// set __m128 vector as SSE::Vector structure
-#define _set(v) _mm_setr_ps(v.coordinates[0], v.coordinates[1], v.coordinates[2], 0.0)
+// All topology predicates and generated vertices use the same double storage.
+// Tolerances are relative to the physical scale of the corresponding length,
+// area, or scalar product instead of being absolute model-space constants.
+// Keep roughly 40 significant binary bits for topology decisions.  This is
+// well below physical/model resolution, but above accumulated roundoff from
+// repeated projection and clipping in double precision.
+constexpr double GEOMETRY_RELATIVE_EPSILON = 0x1p-40;
+constexpr double EPS_PROJECTION = GEOMETRY_RELATIVE_EPSILON;
 
-/// cross product
-#define _xp(a, b) _sub(_mul(_mm_shuffle_ps(a, a, _MM_SHUFFLE(3,0,2,1)),\
-    _mm_shuffle_ps(b, b, _MM_SHUFFLE(3,1,0,2))),\
-    _mul(_mm_shuffle_ps(a, a, _MM_SHUFFLE(3,1,0,2)),\
-    _mm_shuffle_ps(b, b, _MM_SHUFFLE(3,0,2,1))))
-
-/// length of the __m128 vector
-#define _len(v) _mm_cvtss_f32(_mm_sqrt_ss(_dp(v, v, 0x71)));
-
-
-#define EPS_PROJECTION		0.0000174532836589830883577820272085
-//#define EPS_PROJECTION		0.00174532836589830883577820272085
-#define EPS_LAYONLINE		0.05
-
-const float EPS_INTERSECT = 0.08;
-//const float EPS_INTERSECT = 0.0008;
-//const float EPS_MERGE = 0.08;
-const float EPS_MERGE = 0.001;
-const float EPS_INSIDE = -0.06;
-
-inline bool is_inside_i(__m128 x, __m128 p1, __m128 p2, __m128 normal)
+inline double geometry_length_tolerance(double scale)
 {
-	__m128 m_eps = _mm_set_ss(EPS_INSIDE);
-
-	__m128 p1_p2 = _mm_sub_ps(p2, p1);
-	__m128 p1_x = _mm_sub_ps(x, p1);
-	__m128 dir = _mm_dp_ps(_cross_product(p1_p2, p1_x), normal, MASK_1LOW);
-
-	return _mm_ucomigt_ss(dir, m_eps);
+    return GEOMETRY_RELATIVE_EPSILON
+        * std::max(std::fabs(scale), DBL_MIN);
 }
 
-inline bool is_layOnLine_i(__m128 _x, __m128 _a, __m128 _b)
+inline double geometry_area_tolerance(double scale)
 {
-	__m128 ab = _mm_sub_ps(_a, _b);
-	__m128 ax = _mm_sub_ps(_a, _x);
-	__m128 bx = _mm_sub_ps(_b, _x);
-
-	__m128 sqr_len_ab = _mm_dp_ps(ab, ab, MASK_1LOW);
-	__m128 sqr_len_ax = _mm_dp_ps(ax, ax, MASK_1LOW);
-	__m128 sqr_len_bx = _mm_dp_ps(bx, bx, MASK_1LOW);
-
-	return (sqr_len_ax[0] + sqr_len_bx[0] < sqr_len_ab[0] + sqr_len_ab[0]*EPS_LAYONLINE);
+    const double length = std::max(std::fabs(scale), DBL_MIN);
+    return GEOMETRY_RELATIVE_EPSILON * length * length;
 }
 
-// OPT: try to return 'ok' insted 'x'
-inline __m128 intersect_i(__m128 _a1, __m128 _a2, __m128 _b1, __m128 _b2,
-						  __m128 _normal_to_facet, bool &ok)
+inline double geometry_depth_tolerance(double scale)
 {
-	__m128 _v_a = _mm_sub_ps(_a2, _a1);
-	__m128 _v_b = _mm_sub_ps(_b2, _b1);
-
-	// normal of new plane
-	__m128 _normal_to_line = _cross_product(_v_b, _normal_to_facet);
-
-	// normalize normal
-	__m128 _normal_n = _normalize(_normal_to_line);
-
-	// intersection vector and new plane
-	__m128 _dp0 = _mm_dp_ps(_v_a, _normal_n, MASK_FULL);
-
-	__m128 _sign_mask = _mm_set1_ps(-0.f);
-	__m128 _abs_dp = _mm_andnot_ps(_sign_mask, _dp0);
-
-	if (_abs_dp[0] < EPS_INTERSECT)
-	{
-		ok = false;
-		return _dp0;
-	}
-
-	__m128 _dp1 = _mm_dp_ps(_a1, _normal_n, MASK_FULL);
-	__m128 m_d_param = _mm_dp_ps(_b1, _normal_n, MASK_FULL);
-
-    __m128 _a = _mm_sub_ps(_dp1, m_d_param);
-    __m128 _t = _mm_div_ps(_a, _dp0);
-
-    __m128 _m = _mm_mul_ps(_t, _v_a);
-
-	ok = true;
-    return _mm_sub_ps(_a1, _m);
+    // A depth classification combines a rotated plane parameter, a dot
+    // product and a projection.  Allow their accumulated rounding while still
+    // retaining about 37 significant binary bits of geometric separation.
+    return 8.0 * geometry_length_tolerance(scale);
 }
 
-/**
- * @brief Intersects two vectors laid on the same plane
- * @param _a1 point in first vector
- * @param _b1 point in second vector
- * @param _v_a first vector
- * @param _v_b second vector
- * @param _normal_to_facet normal to plane
- * @param ok true if vectors are not parallel
- * @return intersection point
- */
-inline __m128 intersect_iv(__m128 _a1, __m128 _b1, __m128 _v_a, __m128 _v_b,
-						   __m128 _normal_to_facet, bool &ok)
+inline double geometry_parallel_tolerance(double productScale)
 {
-	// normal of new plane // OPT: try to do buffer for other variables from this
-	__m128 _normal_to_line = _cross_product(_v_b, _normal_to_facet);
-	__m128 _normal_n = _normalize(_normal_to_line);
+    return GEOMETRY_RELATIVE_EPSILON
+        * std::max(std::fabs(productScale), DBL_MIN);
+}
 
-	// intersection vector and new plane
-	__m128 _dp0 = _mm_dp_ps(_v_a, _normal_n, MASK_FULL);
+inline double geometry_length3(double x, double y, double z)
+{
+    return std::sqrt(x*x + y*y + z*z);
+}
 
-	__m128 _sign_mask = _mm_set1_ps(-0.f);
-	__m128 _abs_dp = _mm_andnot_ps(_sign_mask, _dp0);
+inline bool geometry_points_distinct(const Point3f &a, const Point3f &b,
+                                     double geometryScale)
+{
+    const double dx = a.cx - b.cx;
+    const double dy = a.cy - b.cy;
+    const double dz = a.cz - b.cz;
+    return geometry_length3(dx, dy, dz)
+        > geometry_length_tolerance(geometryScale);
+}
 
-	if (_abs_dp[0] < EPS_INTERSECT)
-	{
-		ok = false;
-		return _dp0;
-	}
+// Clip a convex polygon by an affine scalar field sampled at its vertices.
+// The scalar is interpolated along every edge, so the generated crossing lies
+// on the exact zero level set.  Values within tolerance are snapped to zero;
+// this keeps topology decisions scale invariant without displacing the plane.
+inline int clip_polygon_by_nonnegative_scalar(const Point3f *input,
+                                               const double *scalar,
+                                               int inputSize,
+                                               double tolerance,
+                                               Point3f *output)
+{
+    if (inputSize <= 0)
+        return 0;
+    if (inputSize > MAX_VERTEX_NUM)
+        throw std::runtime_error("invalid polygon size in half-space clipping");
 
-	__m128 _dp1 = _mm_dp_ps(_a1, _normal_n, MASK_FULL);
-	__m128 m_d_param = _mm_dp_ps(_b1, _normal_n, MASK_FULL);
+    const auto snapped = [tolerance](double value) {
+        return std::fabs(value) <= tolerance ? 0.0 : value;
+    };
+    const auto append = [](Point3f *vertices, int &size,
+                           const Point3f &point) {
+        if (size >= MAX_VERTEX_NUM)
+            throw std::runtime_error(
+                "half-space clipping exceeds the 64-vertex geometry limit");
+        vertices[size++] = point;
+    };
 
-    __m128 _a = _mm_sub_ps(_dp1, m_d_param);
-    __m128 _t = _mm_div_ps(_a, _dp0);
+    int outputSize = 0;
+    Point3f start = input[inputSize - 1];
+    double startValue = snapped(scalar[inputSize - 1]);
+    bool startInside = startValue >= 0.0;
 
-    __m128 _m = _mm_mul_ps(_t, _v_a);
+    for (int index = 0; index < inputSize; ++index)
+    {
+        const Point3f end = input[index];
+        const double endValue = snapped(scalar[index]);
+        const bool endInside = endValue >= 0.0;
 
-	ok = true;
-    return _mm_sub_ps(_a1, _m);
+        if (startInside != endInside)
+        {
+            const double denominator = startValue - endValue;
+            if (std::fabs(denominator) > DBL_MIN)
+            {
+                const double fraction = std::max(0.0, std::min(1.0,
+                    startValue / denominator));
+                append(output, outputSize,
+                       start + (end - start)*fraction);
+            }
+        }
+        if (endInside)
+            append(output, outputSize, end);
+
+        start = end;
+        startValue = endValue;
+        startInside = endInside;
+    }
+    return outputSize;
+}
+
+inline bool is_inside_i(const Point3f &x, const Point3f &p1,
+                        const Point3f &p2, const Point3f &normal)
+{
+    const double ex = p2.cx - p1.cx;
+    const double ey = p2.cy - p1.cy;
+    const double ez = p2.cz - p1.cz;
+    const double qx = x.cx - p1.cx;
+    const double qy = x.cy - p1.cy;
+    const double qz = x.cz - p1.cz;
+
+    const double crossX = ey*qz - ez*qy;
+    const double crossY = ez*qx - ex*qz;
+    const double crossZ = ex*qy - ey*qx;
+    const double side = crossX*normal.cx
+        + crossY*normal.cy + crossZ*normal.cz;
+    const double edgeLength = geometry_length3(ex, ey, ez);
+    const double offsetLength = geometry_length3(qx, qy, qz);
+    const double normalLength = Length(normal);
+    const double areaScale = edgeLength
+        * std::max(edgeLength, offsetLength) * normalLength;
+    const double tolerance = GEOMETRY_RELATIVE_EPSILON * areaScale;
+    return side >= -tolerance;
+}
+
+inline bool is_layOnLine_i(const Point3f &x, const Point3f &a,
+                           const Point3f &b)
+{
+    const Point3f ab = b - a;
+    const Point3f ax = x - a;
+    const double length2 = Norm(ab);
+    if (length2 <= DBL_MIN)
+        return false;
+
+    const double t = DotProduct(ax, ab) / length2;
+    return t >= -EPS_PROJECTION && t <= 1.0 + EPS_PROJECTION;
+}
+
+inline Point3f intersect_geometry_lines(const Point3f &a1,
+                                        const Point3f &b1,
+                                        const Point3f &va,
+                                        const Point3f &vb,
+                                        const Point3f &normal,
+                                        bool &ok)
+{
+    const Point3f transverse = CrossProduct(vb, normal);
+    const double denominator = DotProduct(va, transverse);
+    const double denominatorScale = Length(va)*Length(transverse);
+    if (denominatorScale <= DBL_MIN
+        || std::fabs(denominator)
+            <= geometry_parallel_tolerance(denominatorScale))
+    {
+        ok = false;
+        return Point3f();
+    }
+
+    const double t = DotProduct(a1 - b1, transverse) / denominator;
+    const Point3f result = a1 - va*t;
+    if (!std::isfinite(result.cx) || !std::isfinite(result.cy)
+        || !std::isfinite(result.cz))
+    {
+        ok = false;
+        return Point3f();
+    }
+
+    ok = true;
+    return result;
+}
+
+inline Point3f intersect_i(const Point3f &a1, const Point3f &a2,
+                           const Point3f &b1, const Point3f &b2,
+                           const Point3f &normal, bool &ok)
+{
+    return intersect_geometry_lines(a1, b1, a2 - a1, b2 - b1, normal, ok);
+}
+
+inline Point3f intersect_iv(const Point3f &a1, const Point3f &b1,
+                            const Point3f &va, const Point3f &vb,
+                            const Point3f &normal, bool &ok)
+{
+    return intersect_geometry_lines(a1, b1, va, vb, normal, ok);
 }
 
 void computeIntersection(const Point3f &s, const Point3f &e,
-						 const Point3f &p1, const Point3f &p2, const Point3f &normal,
-						 Point3f &x);
+                         const Point3f &p1, const Point3f &p2,
+                         const Point3f &normal, Point3f &x);

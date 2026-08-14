@@ -12,14 +12,35 @@ ifeq ($(CXX_ORIGIN),default)
 CXX := $(CUDA_HOST_CXX)
 endif
 USE_MPI ?= 0
-GPU_PRECISION ?= float
-GPU_FAST_MATH ?= 1
-TARGET ?= bin/mbs_po_gpu_float_fast
+GPU_PRECISION ?= double
+GPU_FAST_MATH ?= 0
+
+ifeq ($(filter float fp32 double fp64,$(GPU_PRECISION)),)
+$(error GPU_PRECISION must be one of: fp32, float, fp64, double)
+endif
+ifneq ($(filter 0 1,$(GPU_FAST_MATH)),$(GPU_FAST_MATH))
+$(error GPU_FAST_MATH must be 0 or 1)
+endif
+ifneq ($(filter 0 1,$(USE_MPI)),$(USE_MPI))
+$(error USE_MPI must be 0 or 1)
+endif
+
+ifneq ($(filter float fp32,$(GPU_PRECISION)),)
+GPU_PRECISION_CANON := float
+GPU_PRECISION_LABEL := fp32
+GPU_PRECISION_DEFINES := -DMBS_GPU_FP32 -DMBS_GPU_FLOAT
+else
+GPU_PRECISION_CANON := double
+GPU_PRECISION_LABEL := fp64
+GPU_PRECISION_DEFINES := -DMBS_GPU_FP64
+endif
+
 FAST_SUFFIX := $(if $(filter 1,$(GPU_FAST_MATH)),_fast,)
 MPI_SUFFIX := $(if $(filter 1,$(USE_MPI)),_mpi,)
+TARGET ?= bin/mbs_po_gpu$(MPI_SUFFIX)_$(GPU_PRECISION_CANON)$(FAST_SUFFIX)
 GPU_ARCH ?= $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.' | sed 's/[^0-9].*//')
 GPU_ARCH := $(if $(GPU_ARCH),$(GPU_ARCH),86)
-OBJDIR ?= build/$(GPU_PRECISION)$(FAST_SUFFIX)$(MPI_SUFFIX)_sm$(GPU_ARCH)/obj
+OBJDIR ?= build/$(GPU_PRECISION_LABEL)$(FAST_SUFFIX)$(MPI_SUFFIX)_sm$(GPU_ARCH)/obj
 
 ifeq ($(USE_MPI),1)
 CXX := mpicxx
@@ -32,6 +53,8 @@ OPT_FLAGS ?= -O3 -funroll-loops
 CXXFLAGS ?= $(OPT_FLAGS) $(ARCH_FLAGS) -std=gnu++11 -fopenmp
 CXXFLAGS += -DUSE_CUDA -DMBS_GPU_DEFAULT_ON -DMBS_GPU_BUILD_ARCH=$(GPU_ARCH) \
             -DMBS_GIT_DESCRIBE=\"$(GIT_DESCRIBE)\" -I$(CUDA_PATH)/include
+EXTRA_CXXFLAGS ?=
+CXXFLAGS += $(EXTRA_CXXFLAGS)
 ifeq ($(USE_MPI),1)
 CXXFLAGS += -DUSE_MPI
 endif
@@ -41,10 +64,8 @@ DEPFLAGS := -MMD -MP
 NVCCFLAGS ?= -O3 -std=c++11 -arch=sm_$(GPU_ARCH) -U_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700
 override NVCCFLAGS += -ccbin $(CUDA_HOST_CXX) -include $(CUDA_HOST_COMPAT)
 override NVCCFLAGS += -Xcompiler -fopenmp
-ifeq ($(GPU_PRECISION),float)
-override NVCCFLAGS += -DMBS_GPU_FLOAT
-CXXFLAGS += -DMBS_GPU_FLOAT
-endif
+override NVCCFLAGS += $(GPU_PRECISION_DEFINES)
+CXXFLAGS += $(GPU_PRECISION_DEFINES)
 ifeq ($(GPU_FAST_MATH),1)
 override NVCCFLAGS += --use_fast_math
 CXXFLAGS += -DMBS_GPU_FAST_MATH
@@ -89,7 +110,8 @@ $(TARGET): $(OBJECTS)
 	@echo "CPU: $(CPU_MODEL)"
 	@echo "CXX: $(CXX)"
 	@echo "CUDA_HOST_CXX: $(CUDA_HOST_CXX)"
-	@echo "GPU_PRECISION: $(GPU_PRECISION)"
+	@echo "GPU_PRECISION: $(GPU_PRECISION_LABEL) ($(GPU_PRECISION_CANON) storage)"
+	@echo "GPU_CRITICAL_PHASE: fp64"
 	@echo "GPU_FAST_MATH: $(GPU_FAST_MATH)"
 	@echo "USE_MPI: $(USE_MPI)"
 	@echo "GPU_ARCH: sm_$(GPU_ARCH)"
@@ -112,11 +134,24 @@ $(OBJDIR)/%.o: $(ROOT)/%.cu
 float:
 	$(MAKE) GPU_PRECISION=float GPU_FAST_MATH=0 TARGET=bin/mbs_po_gpu_float all
 
+double:
+	$(MAKE) GPU_PRECISION=double GPU_FAST_MATH=0 TARGET=bin/mbs_po_gpu_double all
+
 float_fast:
 	$(MAKE) GPU_PRECISION=float GPU_FAST_MATH=1 TARGET=bin/mbs_po_gpu_float_fast all
 
 double_fast:
 	$(MAKE) GPU_PRECISION=double GPU_FAST_MATH=1 TARGET=bin/mbs_po_gpu_double_fast all
+
+fp32: float
+
+fp64: double
+
+fp32_fast: float_fast
+
+fp64_fast: double_fast
+
+precision_matrix: float double float_fast double_fast
 
 double_fast_mpi:
 	$(MAKE) USE_MPI=1 GPU_PRECISION=double GPU_FAST_MATH=1 TARGET=bin/mbs_po_gpu_mpi_double_fast all
@@ -125,17 +160,18 @@ float_debug:
 	$(MAKE) GPU_PRECISION=float GPU_FAST_MATH=1 \
 		TARGET=bin/mbs_po_gpu_float_debug \
 		OBJDIR=build/float_debug/obj \
-		CXXFLAGS="$(CXXFLAGS) -DMBS_DEBUG_HELP" all
+		EXTRA_CXXFLAGS=-DMBS_DEBUG_HELP all
 
 double_debug:
 	$(MAKE) GPU_PRECISION=double GPU_FAST_MATH=1 \
 		TARGET=bin/mbs_po_gpu_double_debug \
 		OBJDIR=build/double_debug/obj \
-		CXXFLAGS="$(CXXFLAGS) -DMBS_DEBUG_HELP" all
+		EXTRA_CXXFLAGS=-DMBS_DEBUG_HELP all
 
 clean:
 	rm -rf build bin
 
-.PHONY: all cuda_check float float_fast double_fast double_fast_mpi float_debug double_debug clean
+.PHONY: all cuda_check float double float_fast double_fast fp32 fp64 fp32_fast fp64_fast \
+	precision_matrix double_fast_mpi float_debug double_debug clean
 
 -include $(DEPS)

@@ -2,16 +2,17 @@
 
 #include "IntegralCharacteristics.h"
 
+#include <algorithm>
 #include <iostream>
 #include <limits>
 
 HandlerTracksGO::HandlerTracksGO(Particle *particle, Light *incidentLight,
-                                 int nTheta, float wavelength)
+                                 int nTheta, double wavelength)
     : HandlerGO(particle, incidentLight, nTheta, wavelength)
 {
 }
 
-void HandlerTracksGO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
+void HandlerTracksGO::HandleBeams(std::vector<Beam> &beams, double /*sinZenith*/)
 {
     m_sinZenith = sin(m_particle->rotAngle.beta);
 
@@ -33,11 +34,14 @@ void HandlerTracksGO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                 ApplyAbsorption(beam);
             }
 
-            const float zenith = round(acos(beam.direction.cz)/m_totalContrib.thetaStep);
+            const double cosZenith = std::max(-1.0, std::min(
+                1.0, static_cast<double>(beam.direction.cz)));
+            const double zenith = acos(cosZenith);
             matrix m = ComputeMueller(zenith, beam);
 
             m_totalContrib.AddMueller(zenith, m);
-            m_tracksContrib[groupId].AddMueller(zenith, m);
+            if (groupId >= 0)
+                m_tracksContrib[groupId].AddMueller(zenith, m);
         }
     }
 }
@@ -70,5 +74,3 @@ void HandlerTracksGO::WriteMatricesToFile(std::string &destName, double nrg)
     std::cerr << log;
     m_integralSummary = log;
 }
-
-

@@ -1,6 +1,7 @@
 #include "TracerPOTotal.h"
 #include "HandlerPOTotal.h"
 #include "HandlerPO.h"
+#include "PoleMueller.h"
 #include "BeamCache.h"
 #include "IntegralCharacteristics.h"
 #include "OrientationFile.h"
@@ -26,8 +27,15 @@
 #include <limits>
 #include <atomic>
 #include <exception>
+#include <new>
 #include <mutex>
 #include <sys/stat.h>
+
+#if defined(__GNUC__)
+#define MBS_MAYBE_UNUSED __attribute__((unused))
+#else
+#define MBS_MAYBE_UNUSED
+#endif
 
 static matrix MirrorGammaMuellerMatrix(const matrix &src, const matrix &mirror)
 {
@@ -537,7 +545,7 @@ static AutoFullOldautoOrientEstimate AutoFullOldautoEstimate(
     return est;
 }
 
-static AutoFullOldautoOrientEstimate AutoFullOldautoEstimateForTarget(
+static MBS_MAYBE_UNUSED AutoFullOldautoOrientEstimate AutoFullOldautoEstimateForTarget(
     double betaSym, double gammaSym, double wave, double maxEdge,
     int ringPoints, int targetOrient, bool evenGamma)
 {
@@ -576,7 +584,7 @@ static AutoFullOldautoOrientEstimate AutoFullOldautoEstimateForTarget(
     return best;
 }
 
-static int OldAutoFullFinalTargetOrient(int adaptiveTarget)
+static MBS_MAYBE_UNUSED int OldAutoFullFinalTargetOrient(int adaptiveTarget)
 {
     const double factor = ReadEnvDouble("MBS_OLDAUTOFULL_ORIENT_FACTOR",
                                         8.0, 1.0, 64.0);
@@ -585,7 +593,7 @@ static int OldAutoFullFinalTargetOrient(int adaptiveTarget)
     return ClampOrientCount(target);
 }
 
-static int OldAutoFullMinFinalNphi()
+static MBS_MAYBE_UNUSED int OldAutoFullMinFinalNphi()
 {
     return ReadEnvInt("MBS_OLDAUTOFULL_MIN_NPHI", 600, 36, 2400);
 }
@@ -652,14 +660,150 @@ static std::vector<PreparedOrientation> BuildPreparedSliceForThetaZone(
     return out;
 }
 
-static long long CountPreparedBeams(
-    const std::vector<PreparedOrientation> &prepared)
+static long long PreparedBeamStorageBytes(const PreparedBeam &beam)
 {
-    long long count = 0;
-    for (const PreparedOrientation &orientation : prepared)
-        count += (long long)orientation.beams.size();
-    return count;
+    long long bytes = (long long)sizeof(PreparedBeam);
+    bytes += (long long)beam.absorptionPaths.capacity()
+        * (long long)sizeof(double);
+#ifndef _DEBUG
+    bytes += (long long)beam.origBeam.id.getCapacity()
+        * (long long)sizeof(BigInteger::Blk);
+#endif
+    return bytes;
 }
+
+static long long PreparedOrientationStorageBytes(
+    const PreparedOrientation &orientation)
+{
+    long long bytes = (long long)sizeof(PreparedOrientation);
+    bytes += (long long)orientation.beams.capacity()
+        * (long long)sizeof(PreparedBeam);
+    for (const PreparedBeam &beam : orientation.beams)
+    {
+        bytes += PreparedBeamStorageBytes(beam)
+            - (long long)sizeof(PreparedBeam);
+    }
+    return bytes;
+}
+
+static long long PreparedStorageBytes(
+    const std::vector<PreparedOrientation> &prepared,
+    long long *maximumOrientationBytes)
+{
+    long long bytes = (long long)prepared.capacity()
+        * (long long)sizeof(PreparedOrientation);
+    long long maximum = 0;
+    for (const PreparedOrientation &orientation : prepared)
+    {
+        const long long orientationBytes =
+            PreparedOrientationStorageBytes(orientation);
+        bytes += orientationBytes - (long long)sizeof(PreparedOrientation);
+        maximum = std::max(maximum, orientationBytes);
+    }
+    if (maximumOrientationBytes)
+        *maximumOrientationBytes = maximum;
+    return bytes;
+}
+
+static long long PreparedStorageBudgetBytes()
+{
+    long long availableKb = ReadMeminfoKb("MemAvailable:");
+    if (availableKb <= 0)
+        availableKb = 2LL * 1024LL * 1024LL;
+
+    const long long requestedReserveKb =
+        (long long)EnvInt("MBS_HOST_MEM_RESERVE_MB", 4096) * 1024LL;
+    const long long reserveKb = std::min(
+        requestedReserveKb,
+        std::max(256LL * 1024LL, availableKb / 4));
+    const double fraction = std::max(
+        0.05, std::min(0.90, EnvDouble("MBS_HOST_MEM_FRACTION", 0.45)));
+    long long budgetKb = (long long)(fraction
+        * (double)std::max(0LL, availableKb - reserveKb));
+
+    const long long overrideKb = HostMemoryBudgetOverrideKb();
+    if (overrideKb > 0)
+    {
+        const long long rssKb = ReadProcessRssKb();
+        const long long remainingKb = overrideKb - rssKb;
+        if (remainingKb <= 16LL * 1024LL)
+        {
+            std::ostringstream error;
+            error << "MBS_HOST_MEM_BUDGET_MB leaves only "
+                  << std::max(0LL, remainingKb / 1024LL)
+                  << " MiB after the current process RSS"
+                  << "\n  Fix: increase MBS_HOST_MEM_BUDGET_MB, reduce the "
+                     "scattering grid, or run fewer concurrent jobs.";
+            throw std::runtime_error(error.str());
+        }
+        budgetKb = std::min(budgetKb, remainingKb);
+    }
+
+    return std::max(16LL * 1024LL * 1024LL, budgetKb * 1024LL);
+}
+
+class PreparedChunkController
+{
+public:
+    explicit PreparedChunkController(int maximumChunk)
+        : m_maximum(std::max(1, maximumChunk)),
+          m_next(std::min(16, m_maximum)),
+          m_safeBytesPerOrientation(0)
+    {
+    }
+
+    int Next(int remaining) const
+    {
+        return std::max(1, std::min(remaining, m_next));
+    }
+
+    void Update(const std::vector<PreparedOrientation> &prepared,
+                const char *label, int mpiRank)
+    {
+        if (prepared.empty())
+            return;
+
+        long long maximumBytes = 0;
+        const long long totalBytes = PreparedStorageBytes(
+            prepared, &maximumBytes);
+        const long long averageBytes = std::max(
+            1LL, totalBytes / (long long)prepared.size());
+        const long long observedSafe = std::max(
+            (maximumBytes * 5LL + 3LL) / 4LL,
+            (averageBytes * 3LL + 1LL) / 2LL);
+        m_safeBytesPerOrientation = std::max(
+            m_safeBytesPerOrientation, observedSafe);
+
+        const long long budgetBytes = PreparedStorageBudgetBytes();
+        const long long byMemory = budgetBytes
+            / std::max(1LL, m_safeBytesPerOrientation);
+        int target = (int)std::max(
+            1LL, std::min((long long)m_maximum, byMemory));
+        target = std::min(target, std::max(1, m_next * 2));
+
+        if (mpiRank == 0 && (target != m_next || !m_reported))
+        {
+            std::ostringstream log;
+            log << label << " adaptive memory: measured "
+                << std::fixed << std::setprecision(2)
+                << (double)totalBytes / (1024.0 * 1024.0) << " MiB / "
+                << prepared.size() << " orientations, conservative "
+                << (double)m_safeBytesPerOrientation / 1024.0
+                << " KiB/orientation, budget "
+                << (double)budgetBytes / (1024.0 * 1024.0)
+                << " MiB, next chunk " << target;
+            std::cerr << log.str() << std::endl;
+        }
+        m_reported = true;
+        m_next = target;
+    }
+
+private:
+    int m_maximum;
+    int m_next;
+    long long m_safeBytesPerOrientation;
+    bool m_reported = false;
+};
 
 struct AutoFullThetaWorkKey
 {
@@ -688,7 +832,7 @@ struct MuellerRowAverage
     double v[16];
 };
 
-static std::vector<MuellerRowAverage> AverageMuellerRows(const Arr2D &arr,
+static MBS_MAYBE_UNUSED std::vector<MuellerRowAverage> AverageMuellerRows(const Arr2D &arr,
                                                          int nAz,
                                                          int nZen)
 {
@@ -711,7 +855,7 @@ static std::vector<MuellerRowAverage> AverageMuellerRows(const Arr2D &arr,
     return rows;
 }
 
-static double MuellerRowRelativeError(const MuellerRowAverage &current,
+static MBS_MAYBE_UNUSED double MuellerRowRelativeError(const MuellerRowAverage &current,
                                       const MuellerRowAverage &previous)
 {
     double maxErr = 0.0;
@@ -792,7 +936,7 @@ static double OwenMeanScalarRelativeError(const std::vector<double> &samples)
     return std::sqrt(sq / n) / std::sqrt((double)n);
 }
 
-static double OwenMeanMuellerControlError(
+static MBS_MAYBE_UNUSED double OwenMeanMuellerControlError(
     const std::vector<std::vector<double>> &seedCtrl,
     int ctrlRows,
     std::vector<double> *rowErrors,
@@ -982,7 +1126,7 @@ static double OwenMeanMuellerSelectedRowsError(
     return maxEstimate;
 }
 
-static double OwenMeanMuellerControlError(
+static MBS_MAYBE_UNUSED double OwenMeanMuellerControlError(
     const std::vector<std::vector<double>> &seedCtrl,
     int ctrlRows,
     int *worstRow,
@@ -1010,13 +1154,13 @@ static int AutoFullPilotOrientations(double eps)
     return ReadEnvInt("MBS_AUTOFULL_PILOT_ORIENT", fallback, 32, 4096);
 }
 
-static int AutoFullMaxNphi(int initialNphi)
+static MBS_MAYBE_UNUSED int AutoFullMaxNphi(int initialNphi)
 {
     int fallback = std::max(600, RoundUpToMultiple(initialNphi, 6));
     return ReadEnvInt("MBS_AUTOFULL_MAX_NPHI", fallback, 36, 2400);
 }
 
-static std::vector<int> AutoFullPhiCandidates(int maxNphi)
+static MBS_MAYBE_UNUSED std::vector<int> AutoFullPhiCandidates(int maxNphi)
 {
     std::vector<int> candidates;
     const char *env = std::getenv("MBS_AUTOFULL_PHI_CANDIDATES");
@@ -1049,18 +1193,18 @@ static std::vector<int> AutoFullPhiCandidates(int maxNphi)
     return candidates;
 }
 
-static double AutoFullBoundedQualityEps(double eps)
+static MBS_MAYBE_UNUSED double AutoFullBoundedQualityEps(double eps)
 {
     double value = eps > 0.0 ? eps : 0.01;
     return std::max(1e-4, std::min(value, 0.01));
 }
 
-static double AutoFullPhiSafetyFactor()
+static MBS_MAYBE_UNUSED double AutoFullPhiSafetyFactor()
 {
     return ReadEnvDouble("MBS_AUTOFULL_PHI_SAFETY", 0.85, 0.1, 1.0);
 }
 
-static bool AutoFullFullPhiValidationEnabled(double eps)
+static MBS_MAYBE_UNUSED bool AutoFullFullPhiValidationEnabled(double eps)
 {
     const bool defaultEnabled = eps > 0.0 && eps <= 0.01;
     const char *env = std::getenv("MBS_AUTOFULL_FULL_PHI_VALIDATE");
@@ -1069,7 +1213,7 @@ static bool AutoFullFullPhiValidationEnabled(double eps)
     return !(env[0] == '0' && env[1] == '\0');
 }
 
-static bool AutoFullStrictFullPhiFinalEnabled(double eps)
+static MBS_MAYBE_UNUSED bool AutoFullStrictFullPhiFinalEnabled(double eps)
 {
     const bool defaultEnabled = eps > 0.0 && eps <= 0.01;
     const char *env = std::getenv("MBS_AUTOFULL_STRICT_FULL_PHI");
@@ -1078,18 +1222,18 @@ static bool AutoFullStrictFullPhiFinalEnabled(double eps)
     return !(env[0] == '0' && env[1] == '\0');
 }
 
-static int AutoFullStrictMinFinalOrient(double eps)
+static MBS_MAYBE_UNUSED int AutoFullStrictMinFinalOrient(double eps)
 {
     (void)eps;
     return ReadEnvInt("MBS_AUTOFULL_MIN_FINAL_ORIENT", 0, 0, 1048576);
 }
 
-static int AutoFullOldautoActualOrient(const AutoFullOldautoOrientEstimate &est)
+static MBS_MAYBE_UNUSED int AutoFullOldautoActualOrient(const AutoFullOldautoOrientEstimate &est)
 {
     return ClampOrientCount((long long)(est.nBeta + 1) * est.nGamma);
 }
 
-static bool AutoFullBeamCutoffAutoEnabled()
+static MBS_MAYBE_UNUSED bool AutoFullBeamCutoffAutoEnabled()
 {
     const char *env = std::getenv("MBS_AUTOFULL_BEAM_CUTOFF_AUTO");
     if (!env || !*env)
@@ -1097,7 +1241,7 @@ static bool AutoFullBeamCutoffAutoEnabled()
     return !(env[0] == '0' && env[1] == '\0');
 }
 
-static double AutoFullBeamCutoffSafetyFactor(int zone)
+static MBS_MAYBE_UNUSED double AutoFullBeamCutoffSafetyFactor(int zone)
 {
     if (zone == 0)
         return ReadEnvDouble("MBS_AUTOFULL_BEAM_CUTOFF_FORWARD_SAFETY",
@@ -1109,7 +1253,7 @@ static double AutoFullBeamCutoffSafetyFactor(int zone)
                          0.35, 0.0, 1.0);
 }
 
-static std::vector<double> AutoFullBeamCutoffCandidates(double baseCutoff)
+static MBS_MAYBE_UNUSED std::vector<double> AutoFullBeamCutoffCandidates(double baseCutoff)
 {
     std::vector<double> candidates;
     const char *env = std::getenv("MBS_AUTOFULL_BEAM_CUTOFF_CANDIDATES");
@@ -1335,38 +1479,6 @@ static std::vector<std::vector<double>> AggregateSeedControlRows(
     return out;
 }
 
-static void ApplyForwardPoleSymmetryLocal(matrix &m)
-{
-    const double M00 = m[0][0];
-    const double M11 = 0.5 * (m[1][1] + m[2][2]);
-    const double M33 = m[3][3];
-    const double M03 = m[0][3];
-
-    m.Fill(0.0);
-    m[0][0] = M00;
-    m[1][1] = M11;
-    m[2][2] = M11;
-    m[3][3] = M33;
-    m[0][3] = M03;
-    m[3][0] = M03;
-}
-
-static void ApplyBackwardPoleSymmetryLocal(matrix &m)
-{
-    const double M00 = m[0][0];
-    const double M11 = 0.5 * (m[1][1] - m[2][2]);
-    const double M33 = m[3][3];
-    const double M03 = m[0][3];
-
-    m.Fill(0.0);
-    m[0][0] = M00;
-    m[1][1] = M11;
-    m[2][2] = -M11;
-    m[3][3] = M33;
-    m[0][3] = M03;
-    m[3][0] = M03;
-}
-
 static matrix AzimuthAverageOutputMatrix(const Arr2D &src,
                                          const ScatteringRange &sphere,
                                          int nAz,
@@ -1380,8 +1492,8 @@ static matrix AzimuthAverageOutputMatrix(const Arr2D &src,
         Lp[i][i] = 1.0;
 
     const double theta = sphere.GetZenith(localRow);
-    const bool isForwardPole = theta < __FLT_EPSILON__;
-    const bool isBackwardPole = theta > M_PI - __FLT_EPSILON__;
+    const bool isForwardPole = PoleMueller::IsForward(theta);
+    const bool isBackwardPole = PoleMueller::IsBackward(theta);
 
     for (int p = 0; p < nAz; ++p)
     {
@@ -1399,9 +1511,9 @@ static matrix AzimuthAverageOutputMatrix(const Arr2D &src,
     }
     sum /= nAz;
     if (isBackwardPole)
-        ApplyBackwardPoleSymmetryLocal(sum);
+        PoleMueller::ApplyBackward(sum);
     else if (isForwardPole)
-        ApplyForwardPoleSymmetryLocal(sum);
+        PoleMueller::ApplyForward(sum);
     return sum;
 }
 
@@ -1631,7 +1743,7 @@ static double WriteOwenSpreadByThetaFile(
         return 0.0;
 
     std::ofstream out(fileName.c_str(), std::ios::out);
-    out << std::setprecision(10);
+    out << std::setprecision(17);
     out << "# theta_deg m11_pair_spread_pct max_mueller_pair_spread_pct"
         << " pair_worst_element m11_mean_error_est_pct"
         << " max_mueller_mean_error_est_pct mean_worst_element\n";
@@ -1928,7 +2040,7 @@ static void WriteAveragedRowsFile(const std::string &destName,
         throw std::runtime_error(
             "cannot open Mueller output '" + destName
             + ".dat'.\n  Fix: verify output permissions and free disk space.");
-    outFile << std::setprecision(10);
+    outFile << std::setprecision(17);
     outFile << "ScAngle 2pi*dcos "
             << "M11 M12 M13 M14 "
             << "M21 M22 M23 M24 "
@@ -2724,7 +2836,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     const bool betaMidpoint = OldautoBetaMidpointEnabled() && !m_fastPoleGamma;
     int nBeta = OldautoBetaCount(betaRange, betaMidpoint);
     int nOrientations = nBeta * nGamma;
-    int betaNorm = (m_symmetry.beta < M_PI_2+FLT_EPSILON && m_symmetry.beta > M_PI_2-FLT_EPSILON) ? 1 : 2;
+    int betaNorm = (m_symmetry.beta < M_PI_2+64.0*DBL_EPSILON && m_symmetry.beta > M_PI_2-64.0*DBL_EPSILON) ? 1 : 2;
     double normGamma = gammaRange.number * betaNorm; // MBS-raw: normalize by gammaRange.number
     const bool gammaStagger = OldautoGammaStaggerEnabled();
 
@@ -2738,8 +2850,8 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             double beta = OldautoBetaAngle(betaRange, i, betaMidpoint);
             double dcos;
             CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
-            const bool pole = (fabs(beta) <= FLT_EPSILON
-                               || fabs(beta - M_PI) <= FLT_EPSILON);
+            const bool pole = (fabs(beta) <= 64.0*DBL_EPSILON
+                               || fabs(beta - M_PI) <= 64.0*DBL_EPSILON);
             const bool fastPole = pole && m_fastPoleGamma;
             const int gammaCount = fastPole ? 1 : gammaRange.number;
             const double gammaWeight = fastPole ? dcos * gammaRange.number : dcos;
@@ -2996,8 +3108,8 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         block.gammaStart = gammaStart;
         block.beta = OldautoBetaAngle(betaRange, ib, betaMidpoint);
         CalcCsBeta(betaNorm, block.beta, betaRange, gammaRange, normGamma, block.dcos);
-        const bool pole = (fabs(block.beta) <= FLT_EPSILON
-                           || fabs(block.beta - M_PI) <= FLT_EPSILON);
+        const bool pole = (fabs(block.beta) <= 64.0*DBL_EPSILON
+                           || fabs(block.beta - M_PI) <= 64.0*DBL_EPSILON);
         const bool fastPole = pole && m_fastPoleGamma;
         block.gammaFullCount = fastPole ? 1 : nGamma;
         block.gammaCount = fastPole ? 1 : std::min(gammaLimit, nGamma - gammaStart);
@@ -3005,7 +3117,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         block.traceBeta = block.beta;
         if (pole && !fastPole && betaRange.step > 0.0)
         {
-            if (fabs(block.beta) <= FLT_EPSILON)
+            if (fabs(block.beta) <= 64.0*DBL_EPSILON)
                 block.traceBeta = block.beta + 0.5 * betaRange.step;
             else
                 block.traceBeta = block.beta - 0.5 * betaRange.step;
@@ -3135,8 +3247,8 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         double beta = OldautoBetaAngle(betaRange, ib, betaMidpoint);
         double dcos = 0.0;
         CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
-        const bool pole = (fabs(beta) <= FLT_EPSILON
-                           || fabs(beta - M_PI) <= FLT_EPSILON);
+        const bool pole = (fabs(beta) <= 64.0*DBL_EPSILON
+                           || fabs(beta - M_PI) <= 64.0*DBL_EPSILON);
         const bool fastPole = pole && m_fastPoleGamma;
         const int gammaFullCount = fastPole ? 1 : nGamma;
 
@@ -3317,7 +3429,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             std::string fname = betaDir + "/beta_" + std::to_string(ib)
                 + "_" + std::to_string((int)RadToDeg(beta)) + "deg.dat";
             std::ofstream bf(fname, std::ios::out);
-            bf << std::setprecision(10);
+            bf << std::setprecision(17);
             bf << "# Per-beta Mueller: beta=" << RadToDeg(beta) << " deg, dcos=" << dcos
                << ", " << nGamma << " gamma orientations" << std::endl;
             bf << "ScAngle 2pi*dcos M11 M12 M13 M14 M21 M22 M23 M24 M31 M32 M33 M34 M41 M42 M43 M44";
@@ -3342,7 +3454,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
             std::string cfname = betaDir + "/cumul_" + std::to_string(ib)
                 + "_" + std::to_string((int)RadToDeg(beta)) + "deg.dat";
             std::ofstream cf(cfname, std::ios::out);
-            cf << std::setprecision(10);
+            cf << std::setprecision(17);
             cf << "# Cumulative Mueller up to beta=" << RadToDeg(beta) << " deg"
                << " (" << (ib+1)*nGamma << "/" << nOrientations << " orientations)" << std::endl;
             cf << "ScAngle 2pi*dcos M11 M12 M13 M14 M21 M22 M23 M24 M31 M32 M33 M34 M41 M42 M43 M44";
@@ -3437,7 +3549,9 @@ void TracerPOTotal::TraceMonteCarlo(const AngleRange &betaRange,
     srand(lo ^ hi);
 
     const double betaSpan = betaRange.max - betaRange.min;
-    const double betaIntegral = cos(betaRange.min) - cos(betaRange.max);
+    const double betaIntegral = 2.0
+        * sin(0.5*(betaRange.min + betaRange.max))
+        * sin(0.5*(betaRange.max - betaRange.min));
     const double betaWeightNorm = (fabs(betaIntegral) > DBL_EPSILON)
         ? betaSpan / (betaIntegral * nOrientations)
         : 0.0;
@@ -3476,8 +3590,6 @@ void TracerPOTotal::TraceMonteCarlo(const AngleRange &betaRange,
     // MPI split
     int myStart = m_mpiRank * nOrientations / m_mpiSize;
     int myEnd = (m_mpiRank + 1) * nOrientations / m_mpiSize;
-    int myCount = myEnd - myStart;
-
     // Chunked + OpenMP (same as TraceRandom)
     std::vector<Beam> outBeams;
     for (int i = myStart; i < myEnd; ++i)
@@ -3571,39 +3683,29 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
     // Each chunk: Phase 1 (sequential trace) → Phase 2 (parallel diffraction).
     // Memory: O(chunkSize * beams_per_orient * sizeof(PreparedBeam)).
     //
-    // Chunk size: auto-select based on available RAM.
-    // PreparedBeam ~ 3.5 KB, ~100 beams/orient → ~350 KB/orient.
-    // Target: use at most 50% of available RAM for beam storage.
+    // Chunk size starts with a small pilot and is selected from measured
+    // PreparedOrientation allocations and the current host-memory budget.
     // =========================================================================
     int nAz = handlerPO->m_sphere.nAzimuth;
     int nZen = handlerPO->m_sphere.nZenith;
 
-    // Estimate available memory. In --multigrid_parallel the parent can pass a
-    // per-child cap via MBS_HOST_MEM_BUDGET_MB to avoid N children overbooking RAM.
-    long long availMemBytes = EffectiveMemAvailableMb() * 1024LL * 1024LL;
-    // Reserve memory for thread-local Mueller arrays: nThreads * nAz * nZen * 16 * 8 bytes
+    // Start with a small pilot. After every chunk, measure the actual nested
+    // PreparedBeam allocations and resize the next chunk conservatively.
+    const long long availMemBytes =
+        EffectiveMemAvailableMb() * 1024LL * 1024LL;
     int nThreads = 1;
     #pragma omp parallel
     {
         #pragma omp single
         nThreads = omp_get_num_threads();
     }
-    long long muellerMem = (long long)nThreads * (nAz+1) * (nZen+1) * 16 * 8 * 2; // Mueller + Jones
-    long long beamBudget = (availMemBytes / 2) - muellerMem; // 50% of RAM for beams
-    if (beamBudget < 100LL * 1024 * 1024) beamBudget = 100LL * 1024 * 1024; // min 100 MB
-
-    long long bytesPerOrient = 350LL * 1024; // ~350 KB estimated (100 beams × 3.5 KB)
-    int chunkSize = std::max(32, std::min(4096, std::min(nOrientations, (int)(beamBudget / bytesPerOrient))));
-    // Round up to nice number for Sobol (power of 2 or at least multiple of nThreads)
-    if (chunkSize >= nOrientations) chunkSize = nOrientations;
-
-    int nChunks = (nOrientations + chunkSize - 1) / chunkSize;
+    PreparedChunkController memoryChunks(std::min(4096, nOrientations));
 
     std::cerr << "Memory: " << availMemBytes / (1024*1024) << " MB available, "
-              << "chunk=" << chunkSize << " orientations (" << nChunks << " chunks), "
+              << "adaptive prepared-orientation chunks (pilot "
+              << memoryChunks.Next(nOrientations) << "), "
               << nThreads << " threads" << std::endl;
 
-    auto t_total_start = std::chrono::high_resolution_clock::now();
     double phase1_total = 0, phase2_total = 0;
 
     std::vector<Beam> outBeams;
@@ -3624,7 +3726,7 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
         paramHash ^= std::hash<double>{}(bg.gamma)
             + 0x9e3779b9 + (paramHash << 6) + (paramHash >> 2);
     }
-    int resumeChunk = 0;
+    int resumeOrientation = 0;
     if (m_enableCheckpoint)
     {
         int completedOrient = 0;
@@ -3633,25 +3735,34 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
                            completedOrient, nOrientations, paramHash,
                            computeNoShadow))
         {
-            resumeChunk = completedOrient / chunkSize;
+            resumeOrientation = completedOrient;
             count = completedOrient;
             if (m_mpiRank == 0)
                 std::cout << "*** RESUMED from checkpoint: " << completedOrient
-                          << "/" << nOrientations << " orientations (chunk " << resumeChunk
-                          << "/" << nChunks << ")" << std::endl;
+                          << "/" << nOrientations << " orientations" << std::endl;
         }
     }
 
-    for (int chunk = resumeChunk; chunk < nChunks; ++chunk)
+    for (int iStart = resumeOrientation; iStart < nOrientations; )
     {
-        int iStart = chunk * chunkSize;
-        int iEnd = std::min(iStart + chunkSize, nOrientations);
-        int thisChunkSize = iEnd - iStart;
+        const int thisChunkSize = memoryChunks.Next(nOrientations - iStart);
+        const int iEnd = iStart + thisChunkSize;
 
         // Phase 1: trace and preprocess this chunk
         auto t_p1 = std::chrono::high_resolution_clock::now();
 
-        std::vector<PreparedOrientation> chunkPrepared(thisChunkSize);
+        std::vector<PreparedOrientation> chunkPrepared;
+        try
+        {
+            chunkPrepared.resize(thisChunkSize);
+        }
+        catch (const std::bad_alloc &)
+        {
+            throw std::runtime_error(
+                "cannot allocate the prepared-orientation pilot chunk"
+                "\n  Fix: reduce --orientation-chunk, reduce the scattering "
+                "grid, or raise MBS_HOST_MEM_BUDGET_MB.");
+        }
 
         for (int i = 0; i < thisChunkSize; ++i)
         {
@@ -3735,6 +3846,8 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
         auto t_p2_end = std::chrono::high_resolution_clock::now();
         phase2_total += std::chrono::duration<double>(t_p2_end - t_p2).count();
 
+        memoryChunks.Update(chunkPrepared, "Orientation-file", m_mpiRank);
+
         // Free chunk memory immediately
         chunkPrepared.clear();
         chunkPrepared.shrink_to_fit();
@@ -3746,6 +3859,7 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
                            iEnd, nOrientations, paramHash, nAz+1, nZen+1,
                            computeNoShadow);
         }
+        iStart = iEnd;
     }
 
     EraseConsoleLine(60);
@@ -3760,11 +3874,6 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
     }
     std::cout << "Phase 1 (tracing + preprocessing): " << std::fixed
               << std::setprecision(2) << phase1_total << " s" << std::endl;
-
-    // (t_phase2_end - t_phase2_start) compatibility: set from totals
-    auto t_phase2_start = t_total_start; // dummy for downstream code
-    auto t_phase2_end = std::chrono::high_resolution_clock::now();
-    double phase2_sec = std::chrono::duration<double>(t_phase2_end - t_phase2_start).count();
 
     std::cout << "Phase 2 (diffraction, OpenMP): " << std::fixed
               << std::setprecision(2) << phase2_total << " s" << std::endl;
@@ -3793,7 +3902,7 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
 
 void TracerPOTotal::TraceFromFileMultiSize(const std::string &orientFile,
                                             const std::vector<double> &x_sizes,
-                                            double x_ref)
+                                            double /*x_ref*/)
 {
     const std::vector<EulerOrientationRadians> orientations =
         ReadOrientationFileDegrees(orientFile);
@@ -3903,7 +4012,7 @@ void TracerPOTotal::TraceFromFileMultiSize(const std::string &orientFile,
         // Write the azimuth-averaged format
         {
             std::ofstream outFile(sizeName + ".dat", std::ios::out);
-            outFile << std::setprecision(10);
+            outFile << std::setprecision(17);
             outFile << "ScAngle 2pi*dcos "
                     "M11 M12 M13 M14 "
                     "M21 M22 M23 M24 "
@@ -3931,14 +4040,9 @@ void TracerPOTotal::TraceFromFileMultiSize(const std::string &orientFile,
                     (*Lp)[2][1] = -(*Lp)[1][2];
                     (*Lp)[2][2] = (*Lp)[1][1];
 
-                    matrix Ln = *Lp;
-                    Ln[1][2] *= -1;
-                    Ln[2][1] *= -1;
-
-                    if (radZen > M_PI - __FLT_EPSILON__)
-                        Msum += (*Lp) * m * (*Lp);
-                    else if (radZen < __FLT_EPSILON__)
-                        Msum += Ln * m * (*Lp);
+                    if (PoleMueller::IsForward(radZen)
+                        || PoleMueller::IsBackward(radZen))
+                        Msum += m;
                     else
                         Msum += m * (*Lp);
                 }
@@ -3946,6 +4050,10 @@ void TracerPOTotal::TraceFromFileMultiSize(const std::string &orientFile,
                 double _2Pi_dcos = sphere.Compute2PiDcos(iZen);
 
                 Msum /= nAz;
+                if (PoleMueller::IsBackward(radZen))
+                    PoleMueller::ApplyBackward(Msum);
+                else if (PoleMueller::IsForward(radZen))
+                    PoleMueller::ApplyForward(Msum);
                 outFile << std::endl << RadToDeg(radZen) << ' ' << _2Pi_dcos << ' ';
                 outFile << Msum;
             }
@@ -3988,8 +4096,8 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     const bool betaMidpoint = OldautoBetaMidpointEnabled() && !m_fastPoleGamma;
     int nBeta = OldautoBetaCount(betaRange, betaMidpoint);
     int nOrientations = nBeta * nGamma;
-    int betaNorm = (m_symmetry.beta < M_PI_2 + FLT_EPSILON
-                    && m_symmetry.beta > M_PI_2 - FLT_EPSILON) ? 1 : 2;
+    int betaNorm = (m_symmetry.beta < M_PI_2 + 64.0*DBL_EPSILON
+                    && m_symmetry.beta > M_PI_2 - 64.0*DBL_EPSILON) ? 1 : 2;
     double normGamma = gammaRange.number * betaNorm;
     const bool gammaStagger = OldautoGammaStaggerEnabled();
     double D_ref = m_particle->MaximalDimention();
@@ -4212,12 +4320,12 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
                 double beta = OldautoBetaAngle(betaRange, ib, betaMidpoint);
                 double dcos = 0.0;
                 CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
-                const bool pole = (fabs(beta) <= FLT_EPSILON
-                                   || fabs(beta - M_PI) <= FLT_EPSILON);
+                const bool pole = (fabs(beta) <= 64.0*DBL_EPSILON
+                                   || fabs(beta - M_PI) <= 64.0*DBL_EPSILON);
                 double traceBeta = beta;
                 if (pole && !m_fastPoleGamma && betaRange.step > 0.0)
                 {
-                    if (fabs(beta) <= FLT_EPSILON)
+                    if (fabs(beta) <= 64.0*DBL_EPSILON)
                         traceBeta = beta + 0.5 * betaRange.step;
                     else
                         traceBeta = beta - 0.5 * betaRange.step;
@@ -5643,14 +5751,11 @@ void TracerPOTotal::TraceWeightedOrientations(
     int nAz = handlerPO->m_sphere.nAzimuth;
     int nZen = handlerPO->m_sphere.nZenith;
 
-    // Chunked streaming: auto-size chunks based on available RAM. The value is
-    // capped by MBS_HOST_MEM_BUDGET_MB when launched by the parallel scheduler.
-    long long availMB = EffectiveMemAvailableMb();
-    long long beamBudget = std::max(100LL, availMB / 2);
-    int chunkSize = std::max(32, std::min(4096, std::min(myCount, (int)(beamBudget * 1024 / 350))));
+    const long long availMB = EffectiveMemAvailableMb();
+    int maximumChunk = std::max(1, std::min(4096, myCount));
     if (m_sobolChunkSize > 0)
-        chunkSize = std::max(1, std::min(chunkSize, m_sobolChunkSize));
-    int nChunks = (myCount + chunkSize - 1) / chunkSize;
+        maximumChunk = std::max(1, std::min(maximumChunk, m_sobolChunkSize));
+    PreparedChunkController memoryChunks(maximumChunk);
     int nThreads = 1;
 #ifdef _OPENMP
     #pragma omp parallel
@@ -5666,8 +5771,8 @@ void TracerPOTotal::TraceWeightedOrientations(
         log << "Memory: " << availMB << " MB available";
         if (HostMemoryBudgetOverrideKb() > 0)
             log << " (shared budget)";
-        log << ", chunk="
-            << chunkSize << " orientations (" << nChunks << " chunks), "
+        log << ", adaptive prepared-orientation chunks (pilot "
+            << memoryChunks.Next(myCount) << "), "
             << nThreads << " threads";
         std::cerr << log.str() << std::endl;
         AppendTextLog(log.str() + "\n");
@@ -5682,16 +5787,27 @@ void TracerPOTotal::TraceWeightedOrientations(
     long long count = 0;
     m_scattering->PrepareForParallelTrace();
 
-    for (int chunk = 0; chunk < nChunks; ++chunk)
+    int chunkNumber = 0;
+    for (int iStart = myStart; iStart < myEnd; )
     {
-        int iStart = myStart + chunk * chunkSize;
-        int iEnd = std::min(iStart + chunkSize, myEnd);
-        int thisChunk = iEnd - iStart;
+        const int thisChunk = memoryChunks.Next(myEnd - iStart);
+        const int iEnd = iStart + thisChunk;
 
         // Phase 1: trace and preprocess this chunk in parallel. Each thread
         // has its own Particle, Scattering and HandlerPO scratch state.
         auto tp1 = std::chrono::high_resolution_clock::now();
-        std::vector<PreparedOrientation> chunkPrepared(thisChunk);
+        std::vector<PreparedOrientation> chunkPrepared;
+        try
+        {
+            chunkPrepared.resize(thisChunk);
+        }
+        catch (const std::bad_alloc &)
+        {
+            throw std::runtime_error(
+                "cannot allocate an orientation-average preparation chunk"
+                "\n  Fix: reduce --orientation-chunk, reduce the scattering "
+                "grid, or raise MBS_HOST_MEM_BUDGET_MB.");
+        }
         std::vector<double> chunkEnergies(thisChunk, 0);
         std::vector<double> chunkOutputEnergies(thisChunk, 0);
         ParallelExceptionState parallelError;
@@ -5880,11 +5996,15 @@ void TracerPOTotal::TraceWeightedOrientations(
         }
         phase2_total += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - tp2).count();
 
+        memoryChunks.Update(chunkPrepared, "Orientation average", m_mpiRank);
+
         if (m_mpiRank == 0)
-            OutputProgress(nOrient, count, iEnd - 1, chunk + 1, timer, -1);
+            OutputProgress(nOrient, count, iEnd - 1, chunkNumber + 1, timer, -1);
 
         chunkPrepared.clear();
         chunkPrepared.shrink_to_fit();
+        iStart = iEnd;
+        ++chunkNumber;
     }
 
     // MPI: reduce Mueller matrices from all ranks to rank 0
@@ -6212,7 +6332,7 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
         const std::string thetaWorkName =
             m_resultDirName + "_autofull_theta_work.dat";
         std::ofstream thetaWork(thetaWorkName.c_str(), std::ios::out);
-        thetaWork << std::setprecision(10);
+        thetaWork << std::setprecision(17);
         thetaWork << "# theta_deg zone needed_Nphi needed_Norient"
                   << " orient_source extra_beam_importance_cutoff_rel"
                   << " direct_full_phi\n";
@@ -6304,12 +6424,11 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
     handlerPO->m_extinctionCrossSectionOt = 0.0;
     handlerPO->m_hasExtinctionOt = false;
     const bool computeNoShadow = handlerPO->ComputeNoShadow();
-    long long availMB = EffectiveMemAvailableMb();
-    long long beamBudget = std::max(100LL, availMB / 2);
-    int chunkSize = std::max(32, std::min(4096, std::min(myCount, (int)(beamBudget * 1024 / 350))));
+    const long long availMB = EffectiveMemAvailableMb();
+    int maximumChunk = std::max(1, std::min(4096, myCount));
     if (m_sobolChunkSize > 0)
-        chunkSize = std::max(1, std::min(chunkSize, m_sobolChunkSize));
-    int nChunks = (myCount + chunkSize - 1) / chunkSize;
+        maximumChunk = std::max(1, std::min(maximumChunk, m_sobolChunkSize));
+    PreparedChunkController memoryChunks(maximumChunk);
     int nThreads = 1;
 #ifdef _OPENMP
     #pragma omp parallel
@@ -6323,14 +6442,15 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
         std::cerr << "Variable-phi memory: " << availMB << " MB available";
         if (HostMemoryBudgetOverrideKb() > 0)
             std::cerr << " (shared budget)";
-        std::cerr << ", chunk="
-                  << chunkSize << " orientations (" << nChunks << " chunks), "
+        std::cerr << ", adaptive prepared-orientation chunks (pilot "
+                  << memoryChunks.Next(myCount) << "), "
                   << nThreads << " threads" << std::endl;
     }
 
     double phase1 = 0.0;
     double phase2 = 0.0;
     long long count = 0;
+    int chunkNumber = 0;
     std::vector<Beam> outBeams;
     m_scattering->PrepareForParallelTrace();
 
@@ -6362,14 +6482,24 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
                       << " (" << (seedIndex + 1) << "/" << seedCount << ")"
                       << std::endl;
 
-        for (int chunk = 0; chunk < nChunks; ++chunk)
+        for (int iStart = myStart; iStart < myEnd; )
         {
-            int iStart = myStart + chunk * chunkSize;
-            int iEnd = std::min(iStart + chunkSize, myEnd);
-            int thisChunk = iEnd - iStart;
+            const int thisChunk = memoryChunks.Next(myEnd - iStart);
+            const int iEnd = iStart + thisChunk;
 
             auto tp1 = std::chrono::high_resolution_clock::now();
-            std::vector<PreparedOrientation> chunkPrepared(thisChunk);
+            std::vector<PreparedOrientation> chunkPrepared;
+            try
+            {
+                chunkPrepared.resize(thisChunk);
+            }
+            catch (const std::bad_alloc &)
+            {
+                throw std::runtime_error(
+                    "cannot allocate a variable-phi preparation chunk"
+                    "\n  Fix: reduce --orientation-chunk, reduce the scattering "
+                    "grid, or raise MBS_HOST_MEM_BUDGET_MB.");
+            }
             std::vector<double> chunkEnergies(thisChunk, 0.0);
             std::vector<double> chunkOutputEnergies(thisChunk, 0.0);
             ParallelExceptionState parallelError;
@@ -6774,13 +6904,17 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
         phase2 += std::chrono::duration<double>(
             std::chrono::high_resolution_clock::now() - tp2).count();
 
+            memoryChunks.Update(chunkPrepared, "Variable-phi", m_mpiRank);
+
             if (m_mpiRank == 0)
             {
                 int progressIndex =
                     (int)((long long)seedIndex * nOrient + iEnd - 1);
                 OutputProgress((int)totalOrientationWork, count, progressIndex,
-                               chunk + 1, timer, -1);
+                               chunkNumber + 1, timer, -1);
             }
+            iStart = iEnd;
+            ++chunkNumber;
         }
     }
 
@@ -6967,8 +7101,8 @@ double TracerPOTotal::TraceGridVariablePhi(const AngleRange &betaRange,
     const int nGamma = gammaRange.number;
     const bool betaMidpoint = OldautoBetaMidpointEnabled() && !m_fastPoleGamma;
     const int nBeta = OldautoBetaCount(betaRange, betaMidpoint);
-    const int betaNorm = (m_symmetry.beta < M_PI_2 + FLT_EPSILON
-                       && m_symmetry.beta > M_PI_2 - FLT_EPSILON) ? 1 : 2;
+    const int betaNorm = (m_symmetry.beta < M_PI_2 + 64.0*DBL_EPSILON
+                       && m_symmetry.beta > M_PI_2 - 64.0*DBL_EPSILON) ? 1 : 2;
     const double normGamma = gammaRange.number * betaNorm;
     const bool gammaStagger = OldautoGammaStaggerEnabled();
 
@@ -6981,14 +7115,14 @@ double TracerPOTotal::TraceGridVariablePhi(const AngleRange &betaRange,
         const double beta = OldautoBetaAngle(betaRange, i, betaMidpoint);
         double dcos = 0.0;
         CalcCsBeta(betaNorm, beta, betaRange, gammaRange, normGamma, dcos);
-        const bool pole = std::fabs(beta) <= FLT_EPSILON
-                       || std::fabs(beta - M_PI) <= FLT_EPSILON;
+        const bool pole = std::fabs(beta) <= 64.0*DBL_EPSILON
+                       || std::fabs(beta - M_PI) <= 64.0*DBL_EPSILON;
         const bool fastPole = pole && m_fastPoleGamma;
         const int gammaCount = fastPole ? 1 : nGamma;
         const double weight = fastPole ? dcos * nGamma : dcos;
         double traceBeta = beta;
         if (pole && !fastPole && betaRange.step > 0.0)
-            traceBeta += beta <= FLT_EPSILON
+            traceBeta += beta <= 64.0*DBL_EPSILON
                 ? 0.5 * betaRange.step : -0.5 * betaRange.step;
         for (int j = 0; j < gammaCount; ++j)
         {
@@ -8655,7 +8789,7 @@ int TracerPOTotal::TraceAdaptive(double eps, double betaSym, double gammaSym,
             const std::string orientMapName =
                 m_resultDirName + "_autofull_orient_by_theta.dat";
             std::ofstream orientMap(orientMapName.c_str(), std::ios::out);
-            orientMap << std::setprecision(10);
+            orientMap << std::setprecision(17);
             orientMap << "# theta_deg required_Norient last_orient_error_pct"
                       << " worst_element\n";
             for (int t = 0; t <= nZen; ++t)

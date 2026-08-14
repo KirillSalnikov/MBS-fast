@@ -2,8 +2,21 @@
 
 #include "Beam.h"
 
-#define EPS_COS_90		1.7453292519943295769148298069306e-10	//cos(89.99999999)
+#include <cfloat>
+
 #define EPS_COS_00		0.99999999998254670756866631966593		//1 - cos(89.99999999)
+// Reject only numerically tangent incidence. Directions and normals are
+// double precision, so the former float-sized angular dead zone is too wide.
+constexpr double EPS_GRAZING_INCIDENCE = 0x1p-40;
+
+inline double SignedPhasePlaneDistance(const Point3f &direction,
+                                       double front,
+                                       const Point3f &point)
+{
+    return static_cast<double>(direction.cx)*point.cx
+         + static_cast<double>(direction.cy)*point.cy
+         + static_cast<double>(direction.cz)*point.cz + front;
+}
 
 class Splitting
 {
@@ -44,7 +57,7 @@ public:
 	Point3f ChangeBeamDirection(const Vector3f &oldDir, const Vector3f &normal,
 								Location oldLoc, Location loc);
 private:
-	Point3f r;
+	Point3f r; // tangential component of the incident direction
 	double reRiEff;
 	double s;
 //	double cosA;
@@ -57,7 +70,6 @@ private:
 
 public:
 	double cosA;
-	const double FAR_ZONE_DISTANCE = 10000.0; ///< distance from the center of coordinate system to the "far zone"
 
 	complex GetRi() const;
 
@@ -67,7 +79,7 @@ private:
 	void ComputeRegularJonesParams(const Point3f &normal,
 								   const Beam &incidentBeam,
 								   Beam &inBeam, Beam &outBeam);
-	void ComputeInternalRefractiveDirection(const Vector3f &r,
+	void ComputeInternalRefractiveDirection(const Vector3f &tangential,
 											const Vector3f &normal, Vector3f &dir);
 
 };

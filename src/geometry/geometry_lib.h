@@ -2,6 +2,7 @@
 
 #include <ostream>
 #include <math.h>
+#include <stdexcept>
 
 #define CLIP_RESULT_SINGLE 1
 
@@ -33,6 +34,9 @@ public:
 
 	void Add(int elem)
 	{
+		if (size >= MAX_FACET_NUM)
+			throw std::runtime_error(
+				"facet candidate list exceeded MAX_FACET_NUM");
 		arr[size++] = elem;
 	}
 };
@@ -64,18 +68,20 @@ public:
 
 	void Add(T elem)
 	{
+		if (nElems >= MAX_FACET_NUM)
+			throw std::runtime_error("fixed geometry array overflow");
 		elems[nElems++] = elem;
 	}
 };
 
 struct Point2f
 {
-	float x;
-	float y;
+	double x = 0.0;
+	double y = 0.0;
 
-	Point2f() {}
+	Point2f() = default;
 
-	Point2f(float x, float y)
+	Point2f(double x, double y)
 		: x(x), y(y)
 	{
 	}
@@ -86,7 +92,7 @@ struct Point2f
 		y = other.y;
 	}
 
-	bool IsEqualTo(const Point2f &other, float eps) const
+	bool IsEqualTo(const Point2f &other, double eps) const
 	{
 		return fabs(x - other.x) < eps &&
 				fabs(y - other.y) < eps;
@@ -117,7 +123,9 @@ struct Point2f
  */
 struct Point3f
 {
-	float coordinates[4]; /// coordinates
+	// Keep the historical type name for source compatibility. Geometry is
+	// stored in double precision; no float round trip is allowed in clipping.
+	double coordinates[4]; /// x, y, z and plane d parameter
 
 	Point3f()
 	{
@@ -127,7 +135,7 @@ struct Point3f
 		coordinates[3] = 0;
 	}
 
-	Point3f(float x, float y, float z)
+	Point3f(double x, double y, double z)
 	{
 		coordinates[0] = x;
 		coordinates[1] = y;
@@ -135,7 +143,7 @@ struct Point3f
 		coordinates[3] = 0;
 	}
 
-	Point3f(float x, float y, float z, float d)
+	Point3f(double x, double y, double z, double d)
 	{
 		coordinates[0] = x;
 		coordinates[1] = y;
@@ -151,7 +159,7 @@ struct Point3f
 		coordinates[3] = 0;
 	}
 
-	bool IsEqualTo(const Point3f &other, float eps) const
+	bool IsEqualTo(const Point3f &other, double eps) const
 	{
 		return (fabs(coordinates[0] - other.coordinates[0]) +
 				fabs(coordinates[1] - other.coordinates[1]) +
@@ -226,7 +234,7 @@ struct Point3f
 		return Point3f(-coordinates[0], -coordinates[1], -coordinates[2], -coordinates[3]);
 	}
 
-} __attribute__ ((aligned (16)));
+	};
 
 
 struct Point3d
@@ -305,8 +313,8 @@ void Normalize(Vector3f &v);
 Vector3d NormalizeD(const Vector3d &v);
 double Length(const Vector3f &v);
 
-Point3f ProjectPointToPlane(const Point3f &point, const Vector3f &direction,
-							const Vector3f &planeNormal);
+bool ProjectPointToPlane(const Point3f &point, const Vector3f &direction,
+						 const Vector3f &planeNormal, Point3f &projection);
 
 // REF: try to create template class 'Array<type>'
 

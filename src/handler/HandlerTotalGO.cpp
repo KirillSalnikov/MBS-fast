@@ -2,11 +2,12 @@
 
 #include "IntegralCharacteristics.h"
 
+#include <algorithm>
 #include <iostream>
 #include <limits>
 
 HandlerTotalGO::HandlerTotalGO(Particle *particle, Light *incidentLight, int nTheta,
-                               float wavelength)
+                               double wavelength)
     : HandlerGO(particle, incidentLight, nTheta, wavelength)
 {
 }
@@ -28,7 +29,8 @@ void HandlerTotalGO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
             ApplyAbsorption(beam);
         }
 
-        const float &z = acos(beam.direction.cz);
+        const double z = acos(std::max(-1.0, std::min(
+            1.0, static_cast<double>(beam.direction.cz))));
         matrix m = ComputeMueller(RadToDeg(z), beam);
 
         m_totalContrib.AddMueller(z, m);

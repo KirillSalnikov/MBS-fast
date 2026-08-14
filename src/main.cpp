@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <vector>
 #include <memory>
+#include <new>
 #include <limits>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -193,6 +194,16 @@ void ApplyTraceCutoffOptions(const ArgPP &args, Scattering *scattering)
         scattering->m_traceCutoffAreaRel = 0.0;
         scattering->m_traceCutoffImportanceRel = 0.0;
     }
+    else if (profile == "legacy-default")
+    {
+        // Keep the historical weak-beam termination cost, but express it
+        // relative to the strongest incident branch.  The old absolute test
+        // was proportional to particle area and changed under a uniform
+        // particle/wavelength rescale.
+        scattering->m_traceCutoffJRel = 1e-7;
+        scattering->m_traceCutoffAreaRel = 0.0;
+        scattering->m_traceCutoffImportanceRel = 0.0;
+    }
     else if (profile == "safe" || profile == "balanced" || profile == "fast")
     {
         scattering->m_traceCutoffJRel = 0.0;
@@ -308,10 +319,12 @@ void PrintVersion()
 #ifdef MBS_GPU_BUILD_ARCH
     std::cout << " sm_" << MBS_GPU_BUILD_ARCH;
 #endif
-#ifdef MBS_GPU_FLOAT
-    std::cout << " float";
+#if defined(MBS_GPU_FP32) || defined(MBS_GPU_FLOAT)
+    std::cout << " fp32-diffraction-storage trace-geometry-fp64 critical-phase-fp64";
+#elif defined(MBS_GPU_FP64)
+    std::cout << " fp64-diffraction-storage trace-geometry-fp64 critical-phase-fp64";
 #else
-    std::cout << " double";
+    std::cout << " unknown-precision";
 #endif
 #ifdef MBS_GPU_FAST_MATH
     std::cout << " fast-math";
@@ -1525,6 +1538,15 @@ int main(int argc, const char* argv[])
         args.Parse(argc, argv);
         config = RunConfig::FromCommandLine(args, defaultGpu, cudaCompiled);
     }
+    catch (const std::bad_alloc &)
+    {
+        std::cerr << "ERROR: calculation failed: host memory allocation was denied"
+                  << "\n  Fix: reduce --orientation-chunk or the theta/phi grid, "
+                     "run fewer concurrent jobs, or increase "
+                     "MBS_HOST_MEM_BUDGET_MB."
+                  << std::endl;
+        return 1;
+    }
     catch (const std::exception &ex)
     {
         PrintCommandLineError(ex.what());
@@ -1552,6 +1574,24 @@ int main(int argc, const char* argv[])
 #endif
     if (mpi_rank == 0 && config.adaptive.loadedFromFile)
         std::cout << DescribeAdaptiveConvergenceLimits(config.adaptive);
+
+    const RuntimeEnvironmentSnapshot runtimeEnvironment =
+        QueryRuntimeEnvironmentSnapshot();
+    if (!runtimeEnvironment.experimental.empty()
+        && !args.IsCatched("allow_experimental_environment"))
+    {
+        if (mpi_rank == 0)
+        {
+            std::cerr << "ERROR: result-affecting experimental MBS_* environment variables are active:";
+            for (const std::string &name : runtimeEnvironment.experimental)
+                std::cerr << ' ' << name;
+            std::cerr << "\n  Fix: unset them for a reproducible production run, or pass "
+                         "--allow-experimental-environment to acknowledge and log them."
+                      << std::endl;
+        }
+        return 2;
+    }
+    additionalSummary += FormatRuntimeEnvironmentReport(runtimeEnvironment);
 
     if (mpi_size > 1
         && (config.orientation == OrientationMode::Fixed
@@ -1779,7 +1819,7 @@ int main(int argc, const char* argv[])
 
     additionalSummary += "\tRefractive index: " + to_string(re);
 
-    if (fabs(im) > FLT_EPSILON)
+    if (fabs(im) > 64.0*DBL_EPSILON)
     {
         additionalSummary +=  " + i\n";
     }
@@ -1872,7 +1912,6 @@ int main(int argc, const char* argv[])
                             "cannot create output directory '" + dir + "'.\n"
                             "  Fix: choose a writable --output path and verify free space and permissions.");
                 }
-                particle->Output(dir + "particle_for_check.dat");
                 if (args.IsCatched("save_geometry"))
                 {
                     const std::string geometryPath =
@@ -3534,6 +3573,15 @@ int main(int argc, const char* argv[])
 
     }
 
+    }
+    catch (const std::bad_alloc &)
+    {
+        std::cerr << "ERROR: calculation failed: host memory allocation was denied"
+                  << "\n  Fix: reduce --orientation-chunk or the theta/phi grid, "
+                     "run fewer concurrent jobs, or increase "
+                     "MBS_HOST_MEM_BUDGET_MB."
+                  << std::endl;
+        return 1;
     }
     catch (const std::exception &ex)
     {

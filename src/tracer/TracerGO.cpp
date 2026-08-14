@@ -62,9 +62,9 @@ double OldautoTraceBetaGO(double beta, const AngleRange &betaRange)
 {
     if (betaRange.step <= 0.0)
         return beta;
-    if (fabs(beta) <= FLT_EPSILON)
+    if (fabs(beta) <= 64.0*DBL_EPSILON)
         return beta + 0.5*betaRange.step;
-    if (fabs(beta - M_PI) <= FLT_EPSILON)
+    if (fabs(beta - M_PI) <= 64.0*DBL_EPSILON)
         return beta - 0.5*betaRange.step;
     return beta;
 }
@@ -118,7 +118,7 @@ void TracerGO::TraceRandom(const AngleRange &betaRange, const AngleRange &gammaR
     const int nBeta = OldautoBetaCountGO(betaRange, betaMidpoint);
     const int nGamma = gammaRange.number;
     long long orNum = (long long)nBeta * nGamma;
-    int betaNorm = (m_symmetry.beta < M_PI_2+FLT_EPSILON && m_symmetry.beta > M_PI_2-FLT_EPSILON) ? 1 : 2;
+    int betaNorm = (m_symmetry.beta < M_PI_2+64.0*DBL_EPSILON && m_symmetry.beta > M_PI_2-64.0*DBL_EPSILON) ? 1 : 2;
     double normIndex = gammaRange.number * betaNorm;
     // double norm = CalcNorm(orNum);
     m_handler->SetNormIndex(normIndex);
@@ -568,7 +568,7 @@ void TracerGO::TraceSobol(int nOrientations, unsigned int seed,
 double TracerGO::CalcNorm(long long orNum)
 {
 	double &symBeta = m_symmetry.beta;
-	double dBeta = -(cos(symBeta) - cos(0));
+		double dBeta = 2.0*sin(0.5*symBeta)*sin(0.5*symBeta);
 	return symBeta/(orNum*dBeta);
 }
 

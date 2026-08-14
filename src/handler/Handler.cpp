@@ -1,5 +1,6 @@
 #include "Handler.h"
 #include "HandlerPO_fast.h"
+#include "Intersection.h"
 
 #include "Mueller.hpp"
 #include <iostream>
@@ -10,6 +11,93 @@
 
 using namespace std;
 using ::complex;
+
+namespace
+{
+complex StableComplexSinhc(const complex &z)
+{
+    if (abs(z) < 1e-4)
+    {
+        const complex z2 = z*z;
+        return 1.0 + z2/6.0 + z2*z2/120.0;
+    }
+
+    const double a = real(z);
+    const double b = imag(z);
+    return complex(std::sinh(a)*std::cos(b),
+                   std::cosh(a)*std::sin(b)) / z;
+}
+
+complex StableComplexEdgeQuotient(const complex &coefficient,
+                                  double first, double second,
+                                  double waveIndex)
+{
+    const double delta = second - first;
+    const double middle = 0.5*(first + second);
+    const complex halfDeltaPhase(-0.5*waveIndex*imag(coefficient)*delta,
+                                  0.5*waveIndex*real(coefficient)*delta);
+    const complex middlePhase(-waveIndex*imag(coefficient)*middle,
+                               waveIndex*real(coefficient)*middle);
+    return exp(middlePhase) * complex(0.0, waveIndex*delta)
+         * StableComplexSinhc(halfDeltaPhase);
+}
+
+bool SmallComplexPhasePolygonFactor(const double *vx, const double *vy, int nv,
+                                    const complex &a, const complex &b,
+                                    double waveIndex, complex &factor)
+{
+    if (nv < MIN_VERTEX_NUM)
+        return false;
+
+    const complex qx(-waveIndex*imag(a), waveIndex*real(a));
+    const complex qy(-waveIndex*imag(b), waveIndex*real(b));
+    double maxPhase = 0.0;
+    for (int i = 0; i < nv; ++i)
+        maxPhase = std::max(maxPhase, abs(qx*vx[i] + qy*vy[i]));
+    if (maxPhase > 1e-3)
+        return false;
+
+    double twiceArea = 0.0;
+    double firstX6 = 0.0, firstY6 = 0.0;
+    double secondX12 = 0.0, secondY12 = 0.0, secondXY24 = 0.0;
+    double minX = DBL_MAX, maxX = -DBL_MAX;
+    double minY = DBL_MAX, maxY = -DBL_MAX;
+    for (int i = 0; i < nv; ++i)
+    {
+        const int j = (i + 1 < nv) ? i + 1 : 0;
+        const double xi = vx[i], yi = vy[i];
+        const double xj = vx[j], yj = vy[j];
+        const double cross = xi*yj - xj*yi;
+        twiceArea += cross;
+        firstX6 += (xi + xj)*cross;
+        firstY6 += (yi + yj)*cross;
+        secondX12 += (xi*xi + xi*xj + xj*xj)*cross;
+        secondY12 += (yi*yi + yi*yj + yj*yj)*cross;
+        secondXY24 += (2.0*xi*yi + xi*yj + xj*yi + 2.0*xj*yj)*cross;
+        minX = std::min(minX, xi); maxX = std::max(maxX, xi);
+        minY = std::min(minY, yi); maxY = std::max(maxY, yi);
+    }
+    const double areaScale = std::max(
+        (maxX - minX)*(maxY - minY), DBL_MIN);
+    if (std::fabs(twiceArea) <= 0x1p-40*areaScale)
+    {
+        factor = 1.0;
+        return true;
+    }
+
+    const double invArea = 2.0/twiceArea;
+    const double meanX = firstX6*invArea/6.0;
+    const double meanY = firstY6*invArea/6.0;
+    const double meanXX = secondX12*invArea/12.0;
+    const double meanYY = secondY12*invArea/12.0;
+    const double meanXY = secondXY24*invArea/24.0;
+    const complex meanExponent = qx*meanX + qy*meanY;
+    const complex meanExponent2 = qx*qx*meanXX
+                                + 2.0*qx*qy*meanXY + qy*qy*meanYY;
+    factor = 1.0 + meanExponent + 0.5*meanExponent2;
+    return true;
+}
+}
 
 Handler::Handler(Particle *particle, Light *incidentLight, int nTheta,
                  double wavelength)
@@ -29,14 +117,15 @@ Handler::Handler(Particle *particle, Light *incidentLight, int nTheta,
     m_complWave = (one * m_wavelength) / SQR(M_2PI);
     m_invComplWave = -one/m_wavelength;
 
+    // Coefficient threshold for the analytic zero-denominator limit. Physical
+    // edge lengths use geometry_length_tolerance() separately below.
     m_eps1 = 1e9*DBL_EPSILON;
-//    m_eps2 = 1e6*DBL_EPSILON;
-    m_eps2 = __FLT_EPSILON__*2;
+    m_eps2 = 1e6*DBL_EPSILON;
     m_eps3 = 1e1;
 
 }
 
-void Handler::HandleBeams(std::vector<Beam> &/*beams*/, double sinZenith)
+void Handler::HandleBeams(std::vector<Beam> &/*beams*/, double /*sinZenith*/)
 {
 }
 
@@ -54,7 +143,7 @@ void Handler::SetTracks(Tracks *tracks)
             m_hasAbsorption || (m_tracks && !m_tracks->empty()));
 }
 
-void Handler::WriteMatricesToFile(string &/*destName*/, double nrg)
+void Handler::WriteMatricesToFile(string &/*destName*/, double /*nrg*/)
 {
 }
 
@@ -90,7 +179,7 @@ void Handler::SetAbsorptionPointCount(int value)
     m_absorptionPointCount = (value == -1 || value > 0) ? value : 1;
 }
 
-void Handler::SetScatteringSphere(const ScatteringRange &grid)
+void Handler::SetScatteringSphere(const ScatteringRange &/*grid*/)
 {
 
 }
@@ -113,21 +202,6 @@ void Handler::ExtropolateOpticalLenght(Beam &beam, const std::vector<int> &tr)
                     beam, beam.arr[i], tr);
         lengths.push_back(d);
     }
-
-    Vector3f _n = beam.Normal();
-    Point3d n = Point3d(_n.cx, _n.cy, _n.cz);
-
-    Point3d hor;
-    Point3d ver;
-    ComputeCoordinateSystemAxes(n, hor, ver);
-
-    Point3f cntr = beam.Center();
-    Point3d center = ChangeCoordinateSystem(hor, ver, n,
-                                            Point3d(cntr.cx, cntr.cy, cntr.cz));
-    double ls[3];
-    ls[0] = lengths[0];
-    ls[1] = lengths[1];
-    ls[2] = lengths[2];
 
 //	Point3d lens = ComputeLengthIndices(beam, info);
 
@@ -198,15 +272,15 @@ Point3d Handler::ChangeCoordinateSystem(const Point3d& hor, const Point3d& ver,
 void Handler::ComputeCoordinateSystemAxes(const Point3d& normal,
                                           Point3d &hor, Point3d &ver) const
 {
-    if (fabs(normal.z) > 1-DBL_EPSILON)
+    const double xyNorm = hypot(normal.x, normal.y);
+    if (xyNorm <= 64.0*DBL_EPSILON)
     {
         hor = Point3d(0, -normal.z, 0);
         ver = Point3d(1, 0, 0);
     }
     else
     {
-        const double tmp = sqrt(SQR(normal.x) + SQR(normal.y));
-        hor = Point3d(normal.y/tmp, -normal.x/tmp, 0);
+        hor = Point3d(normal.y/xyNorm, -normal.x/xyNorm, 0);
         ver = CrossProductD(normal, hor);
     }
 }
@@ -225,7 +299,13 @@ void Handler::ComputeLengthIndices(const Beam &beam, BeamInfo &info)
 //	double den = p1.x*(p2.y - p3.y) - p2.x*(p1.y + p3.y) + p3.x*(p1.y - p2.y);
     double den = (p1.x*p2.y-p1.x*p3.y-p2.x*p1.y+p2.x*p3.y+p3.x*p1.y-p3.x*p2.y);
 
-    if (fabs(den) > 1e-3)
+    const double coordinateScale = std::max({
+        std::fabs(p1.x), std::fabs(p1.y),
+        std::fabs(p2.x), std::fabs(p2.y),
+        std::fabs(p3.x), std::fabs(p3.y)});
+    const double determinantTolerance = geometry_area_tolerance(coordinateScale);
+
+    if (std::isfinite(den) && fabs(den) > determinantTolerance)
     {
 #ifdef _DEBUG // DEB
         double aa = lens[0]*(p2.x*p3.y - p3.x*p2.y);
@@ -274,6 +354,9 @@ Point3d Handler::ChangeCoordinateSystem(const Point3d& normal,
 ::complex Handler::DiffractInclineAbs(const BeamInfo &info, const Beam &beam,
                              const Point3d &direction) const
 {
+    if (beam.nVertices < MIN_VERTEX_NUM || beam.nVertices > MAX_VERTEX_NUM)
+        return complex(0, 0);
+
     const Point3f &dir = beam.direction;
     Point3d k_k0 = -direction + Point3d(dir.cx, dir.cy, dir.cz);
 
@@ -286,101 +369,68 @@ Point3d Handler::ChangeCoordinateSystem(const Point3d& normal,
     const ::complex A(pt_x, info.lenIndices.x*m_riIm);
     const ::complex B(pt_y, info.lenIndices.y*m_riIm);
 
-    if (abs(A) < m_eps2 && abs(B) < m_eps2)
+    double vx[MAX_VERTEX_NUM] = {};
+    double vy[MAX_VERTEX_NUM] = {};
+    double coordinateScale = 0.0;
+    for (int i = 0; i < beam.nVertices; ++i)
     {
+        const Point3f &vertex = beam.arr[i];
+        const Point3d p(vertex.cx, vertex.cy, vertex.cz);
+        const Point3d projected = p - info.normald*DotProductD(info.normald, p);
+        vx[i] = DotProductD(projected, info.horAxis) - info.projectedCenter.x;
+        vy[i] = DotProductD(projected, info.verAxis) - info.projectedCenter.y;
+        coordinateScale = std::max(coordinateScale,
+                                   std::max(std::fabs(vx[i]), std::fabs(vy[i])));
+    }
+
+    complex smallPhaseFactor;
+    if (SmallComplexPhasePolygonFactor(vx, vy, beam.nVertices, A, B,
+                                       m_waveIndex, smallPhaseFactor))
+    {
+        const complex areaLimit =
+            (m_legacySign ? m_invComplWave : -m_invComplWave)*info.area;
         double absorp = exp(m_absMag*info.lenIndices.z);
-        return (m_legacySign ? m_invComplWave : -m_invComplWave) * info.area * absorp;
+        return areaLimit*smallPhaseFactor*absorp;
     }
 
     ::complex s(0, 0);
-
-    int begin, startIndex, endIndex;
-
-    // Always iterate forward (order-dependent iteration was broken:
-    // infinite loop + buffer overflow when info.order==true).
-    // Same approach as DiffractIncline where order logic is commented out.
-    {
-        begin = beam.nVertices-1;
-        startIndex = 0;
-        endIndex = beam.nVertices;
-    }
-
-    // Project first vertex once
-    Point3f v0 = beam.arr[begin];
-    Point3d pv0(v0.cx, v0.cy, v0.cz);
-    Point3d pv0_pr = pv0 - info.normald * DotProductD(info.normald, pv0);
-    double p1x = DotProductD(pv0_pr, info.horAxis) - info.projectedCenter.x;
-    double p1y = DotProductD(pv0_pr, info.verAxis) - info.projectedCenter.y;
+    double p1x = vx[beam.nVertices-1];
+    double p1y = vy[beam.nVertices-1];
+    const double edgeTolerance = geometry_length_tolerance(coordinateScale);
 
     if (abs(B) > abs(A))
     {
-        double reB = real(B), imB = imag(B);
-
-        for (int i = startIndex; i != endIndex; i = i+1)
+        for (int i = 0; i < beam.nVertices; ++i)
         {
-            // Project vertex inline (avoid ChangeCoordinateSystem overhead)
-            Point3f vi = beam.arr[i];
-            Point3d pvi(vi.cx, vi.cy, vi.cz);
-            Point3d pvi_pr = pvi - info.normald * DotProductD(info.normald, pvi);
-            double p2x = DotProductD(pvi_pr, info.horAxis) - info.projectedCenter.x;
-            double p2y = DotProductD(pvi_pr, info.verAxis) - info.projectedCenter.y;
+            const double p2x = vx[i];
+            const double p2y = vy[i];
 
             double dx = p1x - p2x;
-            if (fabs(dx) < m_eps1) { p1x = p2x; p1y = p2y; continue; }
+            if (fabs(dx) <= edgeTolerance)
+            {
+                p1x = p2x;
+                p1y = p2y;
+                continue;
+            }
 
             const double ai = (p1y - p2y)/dx;
-
-            if (fabs(ai) > m_eps3)
-            {
-                p1x = p2x; p1y = p2y;
-                continue;
-            }
-
-            ::complex Ci = A + ai*B;
-
-            ::complex tmp;
-            double absCi = abs(Ci);
-
-            if (absCi < m_eps1)
-            {
-                double mul = p2x*p2x - p1x*p1x;
-                tmp = ::complex(-m_wi2*real(Ci)*mul/2.0,
-                              m_waveIndex*(p2x - p1x) + m_wi2*imag(Ci)*mul/2.0);
-            }
-            else if (absCi > m_eps3)
-            {
-                p1x = p2x; p1y = p2y;
-                continue;
-            }
-            else
-            {
-                double kReCi = m_waveIndex*real(Ci);
-                double kImCi = -m_waveIndex*imag(Ci);
-                // Fused exp_im(kRe*p)*exp(kIm*p) = exp(kIm*p)*(cos(kRe*p) + i*sin(kRe*p))
-                double s2, c2, s1, c1;
-                fast_sincos(kReCi*p2x, s2, c2);
-                fast_sincos(kReCi*p1x, s1, c1);
-                double e2 = exp(kImCi*p2x);
-                double e1 = exp(kImCi*p1x);
-                tmp = ::complex(e2*c2 - e1*c1, e2*s2 - e1*s1)/Ci;
-            }
+            const ::complex Ci = A + ai*B;
+            const ::complex tmp = StableComplexEdgeQuotient(
+                Ci, p1x, p2x, m_waveIndex);
 
             const double bi = p1y - ai*p1x;
-            double kBi = m_waveIndex*bi;
-            // Fused: exp_im(kBi*reB) * exp(-kBi*imB)
-            double sb, cb;
-            fast_sincos(kBi*reB, sb, cb);
-            double eb = exp(-kBi*imB);
-            ::complex phase_b(eb*cb, eb*sb);
-            ::complex tmp2 = phase_b * tmp;
+            const ::complex phaseB(-m_waveIndex*imag(B)*bi,
+                                    m_waveIndex*real(B)*bi);
+            const ::complex contribution = exp(phaseB)*tmp;
 
-            if (isnan(real(tmp2)))
+            if (!std::isfinite(real(contribution))
+                || !std::isfinite(imag(contribution)))
             {
                 p1x = p2x; p1y = p2y;
                 continue;
             }
 
-            s += tmp2;
+            s += contribution;
 
             p1x = p2x; p1y = p2y;
         }
@@ -389,73 +439,37 @@ Point3d Handler::ChangeCoordinateSystem(const Point3d& normal,
     }
     else
     {
-        double reA = real(A), imA = imag(A);
-
-        for (int i = startIndex; i != endIndex; i = i+1)
+        for (int i = 0; i < beam.nVertices; ++i)
         {
-            // Project vertex inline
-            Point3f vi = beam.arr[i];
-            Point3d pvi(vi.cx, vi.cy, vi.cz);
-            Point3d pvi_pr = pvi - info.normald * DotProductD(info.normald, pvi);
-            double p2x = DotProductD(pvi_pr, info.horAxis) - info.projectedCenter.x;
-            double p2y = DotProductD(pvi_pr, info.verAxis) - info.projectedCenter.y;
+            const double p2x = vx[i];
+            const double p2y = vy[i];
 
             double dy = p1y - p2y;
-            if (fabs(dy) < m_eps1) { p1x = p2x; p1y = p2y; continue; }
+            if (fabs(dy) <= edgeTolerance)
+            {
+                p1x = p2x;
+                p1y = p2y;
+                continue;
+            }
 
             const double ci = (p1x - p2x)/dy;
-
-            if (fabs(ci) > m_eps3)
-            {
-                p1x = p2x; p1y = p2y;
-                continue;
-            }
-
             const ::complex Ei = A*ci + B;
-
-            ::complex tmp;
-            double absEi = abs(Ei);
-
-            if (absEi < m_eps1)
-            {
-                double mul = p2y*p2y - p1y*p1y;
-                tmp = ::complex(-m_wi2*real(Ei)*mul/2.0,
-                              m_waveIndex*(p2y - p1y) + m_wi2*imag(Ei)*mul/2.0);
-            }
-            else if (absEi > m_eps3)
-            {
-                p1x = p2x; p1y = p2y;
-                continue;
-            }
-            else
-            {
-                double kReEi = m_waveIndex*real(Ei);
-                double kImEi = -m_waveIndex*imag(Ei);
-                // Fused exp_im(kRe*p)*exp(kIm*p)
-                double s2, c2, s1, c1;
-                fast_sincos(kReEi*p2y, s2, c2);
-                fast_sincos(kReEi*p1y, s1, c1);
-                double e2 = exp(kImEi*p2y);
-                double e1 = exp(kImEi*p1y);
-                tmp = ::complex(e2*c2 - e1*c1, e2*s2 - e1*s1)/Ei;
-            }
+            const ::complex tmp = StableComplexEdgeQuotient(
+                Ei, p1y, p2y, m_waveIndex);
 
             const double di = p1x - ci*p1y;
-            double kDi = m_waveIndex*di;
-            // Fused: exp_im(kDi*reA) * exp(-kDi*imA)
-            double sd, cd;
-            fast_sincos(kDi*reA, sd, cd);
-            double ed = exp(-kDi*imA);
-            ::complex phase_d(ed*cd, ed*sd);
-            ::complex tmp2 = phase_d * tmp;
+            const ::complex phaseA(-m_waveIndex*imag(A)*di,
+                                    m_waveIndex*real(A)*di);
+            const ::complex contribution = exp(phaseA)*tmp;
 
-            if (isnan(real(tmp2)))
+            if (!std::isfinite(real(contribution))
+                || !std::isfinite(imag(contribution)))
             {
                 p1x = p2x; p1y = p2y;
                 continue;
             }
 
-            s += tmp2;
+            s += contribution;
             p1x = p2x; p1y = p2y;
         }
 
@@ -501,9 +515,26 @@ double Handler::BeamCrossSection(const Beam &beam) const
     if (beam.id == 423)
         int fff = 0;
 #endif
-    if (absA < m_eps2 && absB < m_eps2)
+    // This is the slow fallback for polygons that do not fit BeamEdgeData.
+    // Use the same dimensionless small-phase limit as the regular fast path.
+    std::vector<double> vx(beam.nVertices), vy(beam.nVertices);
+    for (int i = 0; i < beam.nVertices; ++i)
     {
-        return (m_legacySign ? m_invComplWave : -m_invComplWave) * info.area;
+        const Point3d p = ChangeCoordinateSystem(
+            info.horAxis, info.verAxis, info.normald, beam.arr[i])
+            - info.projectedCenter;
+        vx[i] = p.x;
+        vy[i] = p.y;
+    }
+    double smallPhaseReal = 0.0, smallPhaseImag = 0.0;
+    if (small_phase_polygon_factor(
+            vx.data(), vy.data(), beam.nVertices, A, B, m_waveIndex,
+            smallPhaseReal, smallPhaseImag))
+    {
+        const ::complex areaLimit =
+            (m_legacySign ? m_invComplWave : -m_invComplWave) * info.area;
+        return apply_small_phase_factor(
+            areaLimit, smallPhaseReal, smallPhaseImag);
     }
 
     ::complex s(0, 0);
@@ -527,6 +558,8 @@ double Handler::BeamCrossSection(const Beam &beam) const
                                         info.normald, beam.arr[begin]) - info.projectedCenter;
     Point3d p2;
 
+    const double edgeTolerance = geometry_length_tolerance(
+        m_particle->MaximalDimention());
     if (absB > absA)
     {
         for (int i = startIndex; i != endIndex; i = /*info.order ? i-1 :*/ i+1)
@@ -534,7 +567,7 @@ double Handler::BeamCrossSection(const Beam &beam) const
             p2 = ChangeCoordinateSystem(info.horAxis, info.verAxis,
                                         info.normald, beam.arr[i]) - info.projectedCenter;
 
-            if (fabs(p1.x - p2.x) < m_eps1)
+            if (fabs(p1.x - p2.x) < edgeTolerance)
             {
                 p1 = p2;
                 continue;
@@ -547,8 +580,8 @@ double Handler::BeamCrossSection(const Beam &beam) const
 
             if (fabs(Ci) < m_eps1)
             {
-                tmp = ::complex(-m_wi2*Ci*(p2.x*p2.x - p1.x*p1.x)/2.0,
-                              m_waveIndex*(p2.x - p1.x));
+                tmp = StableComplexEdgeQuotient(
+                    ::complex(Ci, 0.0), p1.x, p2.x, m_waveIndex);
             }
             else
             {
@@ -571,7 +604,7 @@ double Handler::BeamCrossSection(const Beam &beam) const
             p2 = ChangeCoordinateSystem(info.horAxis, info.verAxis,
                                         info.normald, beam.arr[i]) - info.projectedCenter;
 
-            if (fabs(p1.y - p2.y) < m_eps1)
+            if (fabs(p1.y - p2.y) < edgeTolerance)
             {
                 p1 = p2;
                 continue;
@@ -584,8 +617,8 @@ double Handler::BeamCrossSection(const Beam &beam) const
 
             if (fabs(Ei) < m_eps1)
             {
-                tmp = ::complex(-m_wi2*Ei*(p2.y*p2.y - p1.y*p1.y)/2.0,
-                              m_waveIndex*(p2.y - p1.y));
+                tmp = StableComplexEdgeQuotient(
+                    ::complex(Ei, 0.0), p1.y, p2.y, m_waveIndex);
             }
             else
             {
@@ -630,7 +663,10 @@ void Handler::PrecomputeEdgeData(const BeamInfo &info, const Beam &beam,
         edgeData.y[i] = DotProductD(p_pr, info.verAxis) - info.projectedCenter.y;
     }
 
-    // Precompute per-edge data (slopes, intercepts)
+    // Precompute per-edge data (slopes, intercepts). Edge validity is a
+    // geometric decision and therefore scales with the particle.
+    const double edgeTolerance = geometry_length_tolerance(
+        m_particle->MaximalDimention());
     for (int i = 0; i < nv; ++i)
     {
         int inext = (i + 1) % nv;
@@ -641,7 +677,7 @@ void Handler::PrecomputeEdgeData(const BeamInfo &info, const Beam &beam,
 
         // For absB > absA branch: ai = (p1y-p2y)/(p1x-p2x) where p1=v[i], p2=v[next]
         // ai = (y[i]-y[next])/(x[i]-x[next]) = -dy/(-dx) = dy/dx
-        edgeData.edge_valid_x[i] = (fabs(dxi) >= m_eps1);
+        edgeData.edge_valid_x[i] = (fabs(dxi) >= edgeTolerance);
         if (edgeData.edge_valid_x[i])
         {
             edgeData.slope_yx[i] = dyi / dxi;  // NOT negated: (y[next]-y[i])/(x[next]-x[i])
@@ -650,7 +686,7 @@ void Handler::PrecomputeEdgeData(const BeamInfo &info, const Beam &beam,
         }
 
         // For absA >= absB branch: ci = (p1x-p2x)/(p1y-p2y) = dx/dy
-        edgeData.edge_valid_y[i] = (fabs(dyi) >= m_eps1);
+        edgeData.edge_valid_y[i] = (fabs(dyi) >= edgeTolerance);
         if (edgeData.edge_valid_y[i])
         {
             edgeData.slope_xy[i] = dxi / dyi;
@@ -675,13 +711,23 @@ void Handler::PrecomputeEdgeData(const BeamInfo &info, const Beam &beam,
     double absA = fabs(A);
     double absB = fabs(B);
 
-    if (absA < m_eps2 && absB < m_eps2)
-        return (m_legacySign ? m_invComplWave : -m_invComplWave) * info.area;
+    double smallPhaseReal = 0.0, smallPhaseImag = 0.0;
+    if (small_phase_polygon_factor(
+            ed.x, ed.y, ed.nVertices, A, B, m_waveIndex,
+            smallPhaseReal, smallPhaseImag))
+    {
+        const ::complex areaLimit =
+            (m_legacySign ? m_invComplWave : -m_invComplWave) * info.area;
+        return apply_small_phase_factor(
+            areaLimit, smallPhaseReal, smallPhaseImag);
+    }
 
     ::complex s(0, 0);
     const int nv = ed.nVertices;
 
-    // Use precomputed 2D vertices - no ChangeCoordinateSystem calls
+    // Use precomputed 2D vertices - no ChangeCoordinateSystem calls.
+    const double edgeTolerance = geometry_length_tolerance(
+        m_particle->MaximalDimention());
     if (absB > absA)
     {
         double p1x = ed.x[0], p1y = ed.y[0];
@@ -690,15 +736,15 @@ void Handler::PrecomputeEdgeData(const BeamInfo &info, const Beam &beam,
             double p2x = ed.x[i % nv], p2y = ed.y[i % nv];
 
             double dx = p1x - p2x;
-            if (fabs(dx) < m_eps1) { p1x = p2x; p1y = p2y; continue; }
+            if (fabs(dx) < edgeTolerance) { p1x = p2x; p1y = p2y; continue; }
 
             double ai = (p1y - p2y) / dx;
             double Ci = A + ai * B;
 
             ::complex tmp;
             if (fabs(Ci) < m_eps1)
-                tmp = ::complex(-m_wi2*Ci*(p2x*p2x - p1x*p1x)*0.5,
-                              m_waveIndex*(p2x - p1x));
+                tmp = StableComplexEdgeQuotient(
+                    ::complex(Ci, 0.0), p1x, p2x, m_waveIndex);
             else
             {
                 double kCi = m_waveIndex * Ci;
@@ -720,15 +766,15 @@ void Handler::PrecomputeEdgeData(const BeamInfo &info, const Beam &beam,
             double p2x = ed.x[i % nv], p2y = ed.y[i % nv];
 
             double dy = p1y - p2y;
-            if (fabs(dy) < m_eps1) { p1x = p2x; p1y = p2y; continue; }
+            if (fabs(dy) < edgeTolerance) { p1x = p2x; p1y = p2y; continue; }
 
             double ci = (p1x - p2x) / dy;
             double Ei = A * ci + B;
 
             ::complex tmp;
             if (fabs(Ei) < m_eps1)
-                tmp = ::complex(-m_wi2*Ei*(p2y*p2y - p1y*p1y)*0.5,
-                              m_waveIndex*(p2y - p1y));
+                tmp = StableComplexEdgeQuotient(
+                    ::complex(Ei, 0.0), p1y, p2y, m_waveIndex);
             else
             {
                 double kEi = m_waveIndex * Ei;

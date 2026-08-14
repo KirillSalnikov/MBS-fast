@@ -60,9 +60,10 @@ cd MBS-fast
 make -C cpu -j
 
 # CUDA variants
-make -C gpu -j                 # float + --use_fast_math, the default
-make -C gpu float -j           # float, without --use_fast_math
-make -C gpu double_fast -j     # double GPU diffraction + --use_fast_math
+make -C gpu -j                 # FP64, precise math; default/reference
+make -C gpu fp32 -j            # FP32 storage, precise math
+make -C gpu fp32_fast -j       # FP32 storage + --use_fast_math
+make -C gpu fp64_fast -j       # FP64 storage + --use_fast_math
 
 # Rebuild both typeset manuals (two XeLaTeX passes per language)
 make docs
@@ -75,19 +76,22 @@ The resulting binaries are independent:
 | CPU MPI/OpenMP | `cpu/bin/mbs_po_mpi` |
 | CUDA float | `gpu/bin/mbs_po_gpu_float` |
 | CUDA float fast | `gpu/bin/mbs_po_gpu_float_fast` |
+| CUDA double | `gpu/bin/mbs_po_gpu_double` |
 | CUDA double fast | `gpu/bin/mbs_po_gpu_double_fast` |
 
-The default CUDA target is float with `--use_fast_math`; it is the throughput
-build, not the numerical reference build. Validate it against CPU double and a
-CUDA double build on representative convex, non-convex, fixed-orientation, and
-orientation-averaged cases before using it for a production data set. Record
-the output of `--version` with the results.
+The default CUDA target is FP64 without `--use_fast_math`; it is the numerical
+reference build. The `fp32`, `fp64`, `fp32_fast`, and `fp64_fast` Make targets
+select explicit profiles. FP32 stores diffraction-beam geometry and accumulated
+optical quantities in FP32. Visibility/topology tracing, optical paths,
+absorption, cancellation-prone polygon moments, and critical phase
+trigonometry remain FP64. Validate throughput profiles against CPU double and
+CUDA FP64 on representative convex, non-convex, fixed-orientation, and
+orientation-averaged cases before production use. Record `--version` output.
 
 For a double CUDA build without fast math:
 
 ```bash
-make -C gpu GPU_PRECISION=double GPU_FAST_MATH=0 \
-    TARGET=bin/mbs_po_gpu_double -j
+make -C gpu fp64 -j
 ```
 
 The CPU build defaults to architecture-specific optimization. It distinguishes
@@ -172,6 +176,11 @@ requested `L/D` geometry.
 
 Use `--particle-file FILE` for general faceted geometry. Coordinates are
 interpreted in the same length unit as the wavelength, normally micrometers.
+They are parsed and retained in double precision. The loader translates them
+to the order-independent bounding-box centre and snaps only nonphysical text
+serialization noise on a scale-relative binary grid. This removes a physically
+irrelevant global translation while preserving small edges and deterministic
+facet ordering in files with large absolute coordinates.
 [`examples/cube.particle`](examples/cube.particle) is a complete runnable
 example. The strict text format is:
 
@@ -189,10 +198,12 @@ x y z
 ```
 
 Blank lines separate facets; `#` starts a comment. A facet needs at least three
-finite, non-collinear vertices. The current limits are 256 facets and 63
-vertices per facet. Aggregate facet count must be divisible by
-`FACETS_PER_COMPONENT`. Invalid files stop with a line number and a `Fix:`
-instruction instead of continuing with partial geometry.
+finite vertices in one simple convex boundary. Vertices must wind so every
+facet normal points outward. The surface must be closed, consistently oriented,
+and manifold. The current limits are 256 facets and 64 vertices per facet.
+Aggregate facet count must be divisible by `FACETS_PER_COMPONENT`. Invalid
+files stop with a line number and a `Fix:` instruction instead of continuing
+with partial geometry.
 
 `--resize-dmax-um` applies only to file particles. `--k-eq` scales either
 source to
@@ -412,7 +423,7 @@ Common outputs are:
 | `<prefix>_noshadow.dat` | PO with `--no-shadow-output` | Mueller matrix without the shadow/external beam |
 | `<prefix>_jones.dat` | fixed PO with `--jones-output` | complex Jones matrices |
 | `<prefix>_convergence.tsv` | adaptive modes | candidate values, convergence errors, and final selection |
-| `particle_for_check.dat` | every calculation | the effective, resized particle written inside the result directory |
+| `FILE` and `FILE.visibility` from `--save-geometry FILE` | explicit request | the effective particle and per-facet visibility metadata needed for an exact round trip |
 | `<label>.run.log` and child directories | process-parallel scans | one child log and result directory per size/batch |
 
 `--jones-output` is only valid for fixed-orientation PO. `--no-shadow-output`
@@ -423,6 +434,17 @@ whitespace-separated text; the first row is the column header.
 Normal runs do not write diagnostics in the current working directory. To dump
 the first handled PO beam set for debugging, set `MBS_BEAM_LOG` to an explicit
 file path; failure to open that optional path is reported as a warning.
+
+Every active `MBS_*` environment variable is recorded in the result log.
+Overrides that can change sampling, geometry, cutoffs, or numerical results are
+rejected unless `--allow-experimental-environment` is passed explicitly. For a
+production result, unset such overrides instead of acknowledging them.
+
+Prepared-orientation chunks no longer use a fixed bytes-per-orientation guess.
+The calculation starts with 16 orientations, measures nested beam/path
+allocations, and grows the next chunk within current `MemAvailable`,
+`MBS_HOST_MEM_FRACTION`, `MBS_HOST_MEM_RESERVE_MB`, and an optional
+`MBS_HOST_MEM_BUDGET_MB`. Allocation failures include a corrective action.
 
 Exit status is part of the CLI contract:
 
@@ -439,8 +461,14 @@ environment variable `MBS_GPU_ALLOW_FALLBACK=1` is set explicitly.
 ## Verification
 
 ```bash
-# Complete CPU release gate: build, CLI matrix, adaptive tests, regressions
+# Complete release gate; CUDA is run when nvcc and a GPU are available
 make test
+
+# Strict project-warning gate
+make test_warnings
+
+# Precise FP64 CPU/CUDA numerical agreement gate on an NVIDIA host
+make test_cuda
 
 # CLI schema and validation unit tests
 tests/run_cli_tests.sh
@@ -465,9 +493,10 @@ particles, valid and malformed file geometry and trajectory input, all
 pairwise primary-mode conflicts, serial-scan support, adaptive limits, output
 failures, integer-overflow guards, and MPI/scan conflicts. Every expected
 rejection must have a nonzero status, `ERROR:`, and an actionable `Fix:` line.
-CUDA builds still require verification on a host with the intended GPU and
-driver; the CPU gate cannot validate CUDA kernels, device memory limits,
-cuFFT, or the target compute capability.
+GitHub Actions builds the precise FP64 CUDA target. Runtime CUDA validation
+still requires a self-hosted runner with the intended GPU and driver; the CPU
+gate cannot validate kernels, device-memory limits, cuFFT, or compute
+capability.
 
 The matrix is schema-complete and covers pairwise selectors plus selected
 cross-domain combinations; it is not an exhaustive enumeration of every
@@ -485,9 +514,8 @@ A release is ready only after all of the following are true:
    warnings, `make docs`, and the two-rank MPI cases with `mpicxx` and `mpirun`
    from the same MPI installation. Filter third-party MPI-header diagnostics
    separately instead of hiding project warnings.
-3. Add a CI workflow that runs the portable CPU release gate from a clean clone
-   and retains test logs. Keep the hardware CUDA gate as a separately recorded
-   release job when no compatible CI runner is available.
+3. Verify the CPU and CUDA GitHub Actions workflows. Run the hardware FP64
+   CPU/CUDA agreement gate on a compatible self-hosted GPU runner.
 4. Review the English and Russian TeX manuals for matching production CLI and
    physics coverage, rebuild both PDFs, and require zero `Overfull` or LaTeX
    errors. Page count alone is not a substitute for content parity.

@@ -33,7 +33,7 @@ MBS-fast считает рассеяние света несферическим
 
 ```bash
 make -C cpu -j          # CPU MPI/OpenMP
-make -C gpu -j          # GPU float_fast по умолчанию
+make -C gpu -j          # GPU FP64 без fast-math по умолчанию
 ```
 
 Объектные файлы CPU лежат в `cpu/build/`, CUDA - в `gpu/build/`. Общая физика и CLI остаются в `src/`, поэтому CPU и GPU версии не расходятся в разные кодовые базы.
@@ -65,13 +65,14 @@ cpu/bin/mbs_po_mpi_debug --help-debug
 ### GPU
 
 ```bash
-# GPU binary по умолчанию: float + fast math
+# Контрольный GPU-бинарный файл по умолчанию: FP64 без fast-math
 PATH=/usr/local/cuda/bin:$PATH make -C gpu -j
 
 # Явные варианты
-make -C gpu float       -j   # gpu/bin/mbs_po_gpu_float
-make -C gpu float_fast  -j   # gpu/bin/mbs_po_gpu_float_fast
-make -C gpu double_fast -j   # gpu/bin/mbs_po_gpu_double_fast
+make -C gpu fp32      -j   # gpu/bin/mbs_po_gpu_float
+make -C gpu fp64      -j   # gpu/bin/mbs_po_gpu_double
+make -C gpu fp32_fast -j   # gpu/bin/mbs_po_gpu_float_fast
+make -C gpu fp64_fast -j   # gpu/bin/mbs_po_gpu_double_fast
 ```
 
 `gpu/Makefile` работает и без `nvcc` в `PATH`: компилятор берётся из
@@ -84,10 +85,17 @@ make -C gpu double_fast -j   # gpu/bin/mbs_po_gpu_double_fast
 
 | Target | Binary | CUDA точность | Fast math | Когда использовать |
 |---|---|---:|---:|---|
-| `make -C gpu` | `gpu/bin/mbs_po_gpu_float_fast` | FP32 | да | Быстрые production сканы |
-| `make -C gpu float` | `gpu/bin/mbs_po_gpu_float` | FP32 | нет | Проверка FP32 без fast math |
-| `make -C gpu double_fast` | `gpu/bin/mbs_po_gpu_double_fast` | FP64 | да | Контрольные GPU расчеты |
+| `make -C gpu` или `make -C gpu fp64` | `gpu/bin/mbs_po_gpu_double` | FP64 | нет | Контрольный и основной режим |
+| `make -C gpu fp32` | `gpu/bin/mbs_po_gpu_float` | FP32 | нет | FP32 после проверки ошибки |
+| `make -C gpu fp32_fast` | `gpu/bin/mbs_po_gpu_float_fast` | FP32 | да | Максимальная скорость после проверки |
+| `make -C gpu fp64_fast` | `gpu/bin/mbs_po_gpu_double_fast` | FP64 | да | Ускоренный FP64 после проверки |
 | `make -C gpu double_debug` | `gpu/bin/mbs_po_gpu_double_debug` | FP64 | да | `--help-debug` и диагностика |
+
+FP32 применяется к хранению геометрии дифракционных пучков, сумм Джонса и
+результата Мюллера. Трассировка видимости и топологии, оптические пути,
+поглощение, чувствительные к сокращению моменты многоугольников и вычисление
+фазы остаются FP64. Команда `--version` выводит фактический профиль хранения,
+фазы, математических функций и архитектуры GPU.
 
 В split GPU build CUDA backend включен по умолчанию. Флаг `--gpu` можно писать, но он не обязателен. Флаг `--cpu` принудительно запускает CPU backend внутри GPU-capable бинарника.
 
@@ -205,6 +213,12 @@ J_beam(theta, phi) = F_edge(theta, phi) * R_out(theta, phi) * F_n(theta, phi)
 GOAD. Включать ее имеет смысл, когда сравниваются поляризационно-чувствительные
 элементы Mueller или reference calculation использует Karczewski convention.
 
+Поперечные нормы в этой ветви вычисляются устойчиво через `hypot`, все базисы
+проверяются перед нормировкой. В вырожденной полюсной конфигурации программа
+автоматически применяет основной `RotateJones`; `NaN` из экспериментальной
+ветви в итоговую матрицу не пропускается. Это защищает численный расчёт, но не
+делает неполную реализацию конвенции GOAD физическим эталоном.
+
 Ожидаемый эффект:
 
 | Величина | Что должно происходить |
@@ -256,6 +270,12 @@ M(theta, phi) = sum_beams Mueller(J_beam(theta, phi))
 
 Преобразование Jones -> Mueller реализовано в `src/math/Mueller.cpp`: элементы 4x4 строятся из билинейных комбинаций `|S_i|^2`, `Re(S_i conj(S_j))`, `Im(S_i conj(S_j))`.
 
+Когерентная сумма выполняется только между лучевыми путями одной частицы при одной фиксированной ориентации. Для ансамбля случайно и независимо ориентированных частиц программа сначала строит `Mueller(J_total)` для каждой ориентации, затем усредняет матрицы Mueller с ориентационными весами. Складывать Jones-матрицы разных ориентаций нельзя без координат частиц и относительных фаз падающего поля. Поэтому устаревший `--coherent-orientations` отключен: его прежняя реализация фактически давала обычное некогерентное усреднение ориентаций.
+
+Это также означает, что модель одной частицы не воспроизводит когерентное обратное рассеяние среды, возникающее из интерференции взаимно обратных многократных путей между разными частицами. Для такой задачи нужен многочастичный решатель с положениями частиц и межчастичным распространением поля.
+
+Отсечения `--beam-cutoff*` и `--trace-cutoff*` удаляют амплитуды до когерентной суммы и потому могут исказить перекрестные члены, даже если удаляемые интенсивности малы. Обратное направление следует проверять повторным расчетом с `--cutoff-profile safe` или `--cutoff-profile off`.
+
 ### Усреднение ориентаций и `--pole`
 
 Ориентационные режимы задают веса по beta/gamma. На точных beta-полюсах все gamma эквивалентны, поэтому `--pole` считает одну gamma и умножает вес. В текущей версии при `--pole` используются beta endpoints, чтобы точка beta=0 или beta=pi действительно присутствовала в сетке, а не заменялась midpoint.
@@ -281,6 +301,13 @@ dOmega(theta_j) = 2*pi * (cos(theta_left) - cos(theta_right))
 | `--ri` | `Re Im` | Комплексный показатель преломления. |
 | `-w` | `LAMBDA` | Длина волны в микрометрах. |
 | `-n` | `N` | Максимальная глубина внутренних отражений/преломлений. |
+
+Координаты файловой частицы и вся внутренняя геометрия трассировки хранятся в
+двойной точности. Загрузчик сдвигает координаты относительно не зависящего от
+порядка центра ограничивающего параллелепипеда и удаляет только относительный к
+масштабу шум текстовой сериализации. Глобальный перенос меняет лишь общую
+оптическую фазу; каноническая форма сохраняет матрицу Мюллера, малые рёбра и
+порядок граней при больших абсолютных координатах.
 
 Типы `-p`:
 
@@ -338,7 +365,7 @@ scale = (k_eq_target * lambda / (2*pi)) / r_eq_original
 | `--g` | `G1 G2` | Диапазон gamma для `--random`, градусы. |
 | `--maxorient` | `N` | Верхняя граница adaptive orientations. |
 | `--chunk` | `N` | Chunk size по ориентациям/gamma. |
-| `--coh_orient` | none | Legacy coherent-across-orientations. |
+| `--coh_orient` | none | Отключенный устаревший режим; когерентность между разными ориентациями не определена без относительных фаз. |
 | `--pole` | none | Одна gamma на точных beta poles. |
 | `--owen_avg` | `K` | Усреднение `K` Owen seeds в `--autofull`. |
 | `--owen_seeds` | `S...` | Явный список Owen seeds. |
@@ -660,7 +687,7 @@ budget или делить задачу на меньшие независимы
 |---|---|
 | `MBS_PARALLEL_MEM_FRACTION` | Доля текущей `MemAvailable`, делится между GPU child processes; default `0.70`. |
 | `MBS_HOST_MEM_BUDGET_MB` | Жесткий host-memory budget для child. Scheduler задает автоматически, если переменная уже не выставлена. |
-| `MBS_HOST_MEM_FRACTION` | Доля total host RAM для oldauto/random chunking. |
+| `MBS_HOST_MEM_FRACTION` | Доля текущей доступной ОЗУ для блоков подготовленных ориентаций. |
 | `MBS_HOST_MEM_RESERVE_MB` | Резерв host RAM, который oldauto/random старается оставить свободным; default `4096`. |
 | `MBS_OLDAUTO_GRID_MEM_SAFETY` | Запас для transient массивов direct-grid; default `1.25`. |
 | `MBS_OLDAUTO_BYTES_PER_GAMMA_MB` | Оценка памяти на один gamma для prepared beams. |
@@ -718,7 +745,7 @@ budget или делить задачу на меньшие независимы
 | `--g` | `G1 G2` | Gamma range for `--random`. |
 | `--maxorient` | `N` | Max adaptive orientations. |
 | `--chunk` | `N` | Orientation/gamma chunk size. |
-| `--coh_orient` | none | Legacy coherent orientation mode. |
+| `--coh_orient` | none | Отключенный устаревший режим; не использовать. |
 | `--pole` | none | Exact beta-pole gamma shortcut. |
 | `--sym` | `Sb Sg` | Override symmetry. |
 
@@ -746,7 +773,7 @@ budget или делить задачу на меньшие независимы
 | `--trace_cutoff_j` | `EPS` | Trace prune by `|J|^2`. |
 | `--trace_cutoff_area` | `EPS` | Trace prune by area. |
 | `--trace_cutoff_importance` | `EPS` | Trace prune by `|J|^2*area`. |
-| `--trace_max_beams` | `N` | Abort orientation after `N` beam nodes; `0` disables. |
+| `--trace_max_beams` | `N` | Аварийно завершить расчёт после `N` узлов дерева в одной ориентации; `0` отключает предел. |
 | `--gpu_trace` | none | Experimental CUDA candidate prefilter. |
 | `--trace_prefilter` | none | Enable CPU projected-AABB prefilter. |
 | `--no_trace_prefilter` | none | Disable CPU prefilter. |
@@ -799,6 +826,14 @@ budget или делить задачу на меньшие независимы
 
 ## Переменные окружения
 
+Все активные переменные `MBS_*` записываются в итоговый журнал. Переменные,
+которые меняют выборку, геометрию, отсечения или численный результат, по
+умолчанию запрещены. Флаг `--allow-experimental-environment` явно разрешает их
+и сохраняет имена и значения в журнале; в рабочем расчёте их предпочтительно
+снять. Для блоков ориентаций программа начинает с 16 пробных ориентаций,
+измеряет фактическую память вложенных пучков и траекторий и подбирает следующий
+блок по текущей доступной ОЗУ и ограничениям ниже.
+
 | Переменная | Смысл |
 |---|---|
 | `CUDA_VISIBLE_DEVICES` | Стандартный выбор видимых CUDA devices. |
@@ -812,7 +847,7 @@ budget или делить задачу на меньшие независимы
 | `MBS_GPU_TIMING` | Печатать CUDA timing breakdown. |
 | `MBS_GPU_BLOCK` | Override CUDA block size. |
 | `MBS_ORIENTATION_TIMING` | Печатать разбиение CPU-времени поворота, трассировки и подготовки пучков. |
-| `MBS_HOST_MEM_FRACTION` | Доля host RAM для oldauto/random chunking. |
+| `MBS_HOST_MEM_FRACTION` | Доля текущей доступной ОЗУ для измеряемых блоков подготовленных ориентаций. |
 | `MBS_HOST_MEM_RESERVE_MB` | Резерв host RAM в MB. |
 | `MBS_HOST_MEM_BUDGET_MB` | Жесткий host RAM budget. |
 | `MBS_OLDAUTO_GRID_MEM_SAFETY` | Коэффициент запаса для оценки host RAM больших сеток `theta x phi` в oldauto; default `1.25`. |

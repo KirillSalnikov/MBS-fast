@@ -29,7 +29,7 @@ inline void diffract_4dir(
     double verAx, double verAy, double verAz,
     double beamDx, double beamDy, double beamDz,
     const double *dirx4, const double *diry4, const double *dirz4,
-    double area, double waveIndex, double wi2,
+    double area, double waveIndex, double /*wi2*/,
     double eps1, double eps2,
     double complWaveRe, double complWaveIm,
     double invComplWaveRe, double invComplWaveIm,

@@ -33,7 +33,7 @@ public:
 
     void Rotate(double beta, double gamma, double alpha);
     void RotateQuaternion(double qx, double qy, double qz, double qw);
-    void Move(float dx, float dy, float dz);
+    void Move(double dx, double dy, double dz);
     void Fix();
     void Resize(double size);
 

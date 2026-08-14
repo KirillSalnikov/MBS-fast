@@ -3,6 +3,8 @@
 #include "GpuSupport.h"
 
 #include <fstream>
+#include <algorithm>
+#include <cstdlib>
 #include <iomanip>
 #include <set>
 #include <sstream>
@@ -13,6 +15,8 @@
 #ifdef _OPENMP
 #include <omp.h>
 #endif
+
+extern char **environ;
 
 namespace
 {
@@ -84,6 +88,33 @@ double ToMib(long long kib)
     return (double)kib / 1024.0;
 }
 
+bool StartsWith(const std::string &value, const char *prefix)
+{
+    const std::string p(prefix);
+    return value.compare(0, p.size(), p) == 0;
+}
+
+bool IsExperimentalEnvironmentName(const std::string &name)
+{
+    static const char *const prefixes[] = {
+        "MBS_AUTOFULL_", "MBS_OLDAUTO_", "MBS_OLDAUTOFULL_",
+        "MBS_FFT_", "MBS_DEBUG_ORIENT_", "MBS_AGGREGATE_PART_SHADOW",
+        "MBS_GPU_TRACE_"
+    };
+    for (const char *prefix : prefixes)
+        if (StartsWith(name, prefix))
+            return true;
+
+    static const char *const exact[] = {
+        "MBS_DISABLE_TRACK_IDS", "MBS_FORCE_TRACK_IDS", "MBS_GPU_EPS1",
+        "MBS_GPU_MULTI_K_FULL", "MBS_MONTE_SEED",
+        "MBS_SHARED_GPU_EXPLICIT_SCALE", "MBS_SHARED_PIPELINE",
+        "MBS_TRACE_CPU_PREFILTER_MARGIN", "MBS_TRACE_MIN_GAMMA"
+    };
+    return std::find(std::begin(exact), std::end(exact), name)
+        != std::end(exact);
+}
+
 } // namespace
 
 RuntimeResourceSnapshot QueryRuntimeResourceSnapshot()
@@ -110,6 +141,30 @@ RuntimeResourceSnapshot QueryRuntimeResourceSnapshot()
     snapshot.ramAvailableKb = ReadNamedKb("/proc/meminfo", "MemAvailable:");
     snapshot.processRssKb = ReadNamedKb("/proc/self/status", "VmRSS:");
     snapshot.processPeakRssKb = ReadNamedKb("/proc/self/status", "VmHWM:");
+    return snapshot;
+}
+
+RuntimeEnvironmentSnapshot QueryRuntimeEnvironmentSnapshot()
+{
+    RuntimeEnvironmentSnapshot snapshot;
+    for (char **entry = environ; entry && *entry; ++entry)
+    {
+        const std::string item(*entry);
+        const size_t equals = item.find('=');
+        const std::string name = item.substr(0, equals);
+        if (!StartsWith(name, "MBS_"))
+            continue;
+        const std::string value = equals == std::string::npos
+            ? std::string() : item.substr(equals + 1);
+        snapshot.active.push_back(std::make_pair(name, value));
+        if (IsExperimentalEnvironmentName(name))
+            snapshot.experimental.push_back(name);
+    }
+    std::sort(snapshot.active.begin(), snapshot.active.end());
+    std::sort(snapshot.experimental.begin(), snapshot.experimental.end());
+    snapshot.experimental.erase(
+        std::unique(snapshot.experimental.begin(), snapshot.experimental.end()),
+        snapshot.experimental.end());
     return snapshot;
 }
 
@@ -147,5 +202,31 @@ std::string FormatRuntimeResourceReport(const std::string &stage,
         }
     }
     out << "=======================================\n";
+    return out.str();
+}
+
+std::string FormatRuntimeEnvironmentReport(
+    const RuntimeEnvironmentSnapshot &snapshot)
+{
+    std::ostringstream out;
+    out << "\n===== MBS ENVIRONMENT =====\n";
+    if (snapshot.active.empty())
+    {
+        out << "Active MBS_* variables: none\n";
+    }
+    else
+    {
+        out << "Active MBS_* variables:\n";
+        for (const auto &entry : snapshot.active)
+            out << "  " << entry.first << '=' << entry.second << '\n';
+    }
+    if (!snapshot.experimental.empty())
+    {
+        out << "Explicitly allowed experimental variables:";
+        for (const std::string &name : snapshot.experimental)
+            out << ' ' << name;
+        out << '\n';
+    }
+    out << "===========================\n";
     return out.str();
 }

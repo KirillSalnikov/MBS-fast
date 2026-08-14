@@ -148,17 +148,17 @@ printf '%s\n' \
     '0' \
     '90 90' \
     '' \
-    '-0.5 -0.5 -0.5' '0.5 -0.5 -0.5' '0.5 0.5 -0.5' '-0.5 0.5 -0.5' \
+    '-0.5 0.5 -0.5' '0.5 0.5 -0.5' '0.5 -0.5 -0.5' '-0.5 -0.5 -0.5' \
     '' \
-    '-0.5 -0.5 0.5' '-0.5 0.5 0.5' '0.5 0.5 0.5' '0.5 -0.5 0.5' \
+    '0.5 -0.5 0.5' '0.5 0.5 0.5' '-0.5 0.5 0.5' '-0.5 -0.5 0.5' \
     '' \
-    '-0.5 -0.5 -0.5' '-0.5 -0.5 0.5' '0.5 -0.5 0.5' '0.5 -0.5 -0.5' \
+    '0.5 -0.5 -0.5' '0.5 -0.5 0.5' '-0.5 -0.5 0.5' '-0.5 -0.5 -0.5' \
     '' \
-    '0.5 -0.5 -0.5' '0.5 -0.5 0.5' '0.5 0.5 0.5' '0.5 0.5 -0.5' \
+    '0.5 0.5 -0.5' '0.5 0.5 0.5' '0.5 -0.5 0.5' '0.5 -0.5 -0.5' \
     '' \
-    '0.5 0.5 -0.5' '0.5 0.5 0.5' '-0.5 0.5 0.5' '-0.5 0.5 -0.5' \
+    '-0.5 0.5 -0.5' '-0.5 0.5 0.5' '0.5 0.5 0.5' '0.5 0.5 -0.5' \
     '' \
-    '-0.5 0.5 -0.5' '-0.5 0.5 0.5' '-0.5 -0.5 0.5' '-0.5 -0.5 -0.5' \
+    '-0.5 -0.5 -0.5' '-0.5 -0.5 0.5' '-0.5 0.5 0.5' '-0.5 0.5 -0.5' \
     >"$PARTICLE_FILE" || exit 2
 printf '' >"$EMPTY_PARTICLE_FILE" || exit 2
 printf '%s\n' '0' '0' '90 90' '' '0 0' >"$BAD_PARTICLE_FILE" || exit 2
@@ -511,6 +511,13 @@ expect_success 'theta grid: production default' \
 expect_success 'backend: auto in CPU build' \
     "$MBS" --method po "${PHYSICS[@]}" --backend auto --threads 1 --close \
     --fixed-orientation 0 0 "${GRID[@]}"
+expect_error 'environment: result-affecting override requires acknowledgement' \
+    env MBS_GPU_EPS1=1e-7 "${PO_CORE[@]}" --fixed-orientation 0 0 "${GRID[@]}"
+expect_success 'environment: acknowledged override is logged and permitted' \
+    env MBS_GPU_EPS1=1e-7 "${PO_CORE[@]}" --allow-experimental-environment \
+    --fixed-orientation 0 0 "${GRID[@]}"
+expect_error 'memory: explicit host budget fails safely before OOM' \
+    env MBS_HOST_MEM_BUDGET_MB=1 "${PO_CORE[@]}" --so3-quaternion 16 "${GRID[@]}"
 expect_success 'multi-size: dmax grid with Sobol' \
     "${PO_CORE[@]}" --sobol 4 "${GRID[@]}" --dmax-grid 0.5 1 2
 expect_success 'multi-size: k_eq grid with diffraction grid' \
@@ -980,9 +987,9 @@ expect_error 'orientation modifier: chunk with orientation file' \
     --orientation-chunk 4
 expect_error 'orientation modifier: coherent orientations with Sobol' \
     "${PO_CORE[@]}" --sobol 4 "${GRID[@]}" --coherent-orientations
-expect_error 'orientation modifier: coherent and incoherent conflict' \
+expect_error 'orientation modifier: disabled coherent orientations' \
     "${PO_CORE[@]}" --euler-grid 2 3 "${GRID[@]}" \
-    --coherent-orientations --incoherent
+    --coherent-orientations
 expect_error 'orientation modifier: Jones output with Sobol' \
     "${PO_CORE[@]}" --sobol 4 "${GRID[@]}" --jones-output
 expect_error 'orientation modifier: Jones output with incoherent fixed PO' \

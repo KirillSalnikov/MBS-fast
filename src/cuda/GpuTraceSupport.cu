@@ -5,19 +5,11 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <cfloat>
+#include <cmath>
 #include <cstdlib>
 #include <cstdio>
 #include <vector>
-
-struct GpuTraceCandidate
-{
-    float beam[64][4];
-    float facet[64][4];
-    float dir[4];
-    float normal[4];
-    int beamN;
-    int facetN;
-};
 
 struct GpuTraceBeamRecord
 {
@@ -44,7 +36,6 @@ struct GpuTracePair
 
 struct GpuTraceWorkspace
 {
-    GpuTraceCandidate *candidates = nullptr;
     GpuTraceBeamRecord *beams = nullptr;
     GpuTraceFacetRecord *facets = nullptr;
     GpuTracePair *pairs = nullptr;
@@ -89,10 +80,8 @@ static bool ensure_trace_capacity(size_t count)
 {
     if (g_traceWorkspace.cap >= count)
         return true;
-    cudaFree(g_traceWorkspace.candidates);
     cudaFree(g_traceWorkspace.pairs);
     cudaFree(g_traceWorkspace.results);
-    g_traceWorkspace.candidates = nullptr;
     g_traceWorkspace.pairs = nullptr;
     g_traceWorkspace.results = nullptr;
     g_traceWorkspace.cap = 0;
@@ -142,7 +131,8 @@ static bool ensure_trace_facet_capacity(size_t count)
     return true;
 }
 
-static bool upload_trace_facets_if_needed(const Facet *facets, int maxFacetId)
+static bool upload_trace_facets_if_needed(const Facet *facets, int maxFacetId,
+                                          double geometryScale)
 {
     if (maxFacetId < 0)
         return false;
@@ -160,33 +150,25 @@ static bool upload_trace_facets_if_needed(const Facet *facets, int maxFacetId)
         const Facet &facet = facets[facetId];
         GpuTraceFacetRecord &record = hostFacets[(size_t)facetId];
         record.nVertices = facet.nVertices;
-        if (record.nVertices > 64)
-            record.nVertices = 64;
+        if (record.nVertices < 3 || record.nVertices > 64)
+            return false;
         for (int k = 0; k < 4; ++k)
         {
             record.normalIn[k] = facet.in_normal.coordinates[k];
             record.normalOut[k] = facet.ex_normal.coordinates[k];
         }
-        double minCoord[3] = {1e300, 1e300, 1e300};
-        double maxCoord[3] = {-1e300, -1e300, -1e300};
         for (int v = 0; v < record.nVertices; ++v)
         {
             for (int k = 0; k < 4; ++k)
                 record.vertices[v][k] = facet.arr[v].coordinates[k];
-            for (int k = 0; k < 3; ++k)
-            {
-                const double c = record.vertices[v][k];
-                minCoord[k] = std::min(minCoord[k], c);
-                maxCoord[k] = std::max(maxCoord[k], c);
-            }
         }
-        double span = 0.0;
-        for (int k = 0; k < 3; ++k)
-            span = std::max(span, maxCoord[k] - minCoord[k]);
-        record.margin = (marginOverride >= 0.0)
-                      ? marginOverride
-                      : std::max(1e-9, span * 1e-7);
     }
+    const double margin = marginOverride >= 0.0
+        ? marginOverride
+        : 0x1p-40
+            * std::max(std::fabs(geometryScale), DBL_MIN);
+    for (GpuTraceFacetRecord &record : hostFacets)
+        record.margin = margin;
 
     if (!trace_cuda_ok(cudaMemcpy(g_traceWorkspace.facets, hostFacets.data(),
                                   hostFacets.size() * sizeof(GpuTraceFacetRecord),
@@ -201,72 +183,6 @@ void GpuTraceInvalidateFacetCache()
 {
     g_traceWorkspace.facetOwner = nullptr;
     g_traceWorkspace.copiedMaxFacetId = -1;
-}
-
-__device__ inline float dot3_dev(const float *a, const float *b)
-{
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-}
-
-__device__ inline void add_bounds(float u, float v,
-                                  float &minU, float &maxU,
-                                  float &minV, float &maxV)
-{
-    minU = fminf(minU, u);
-    maxU = fmaxf(maxU, u);
-    minV = fminf(minV, v);
-    maxV = fmaxf(maxV, v);
-}
-
-__global__ void trace_prefilter_kernel(const GpuTraceCandidate *candidates,
-                                       unsigned char *results,
-                                       int count)
-{
-    int idx = (int)(blockIdx.x * blockDim.x + threadIdx.x);
-    if (idx >= count) return;
-
-    const GpuTraceCandidate &c = candidates[idx];
-    float dp0 = dot3_dev(c.dir, c.normal);
-    if (fabsf(dp0) < 1.7453284e-5f)
-    {
-        results[idx] = 0;
-        return;
-    }
-
-    float ax = fabsf(c.normal[0]);
-    float ay = fabsf(c.normal[1]);
-    float az = fabsf(c.normal[2]);
-    int drop = (ax > ay && ax > az) ? 0 : ((ay > az) ? 1 : 2);
-
-    float bMinU = 1e30f, bMaxU = -1e30f;
-    float bMinV = 1e30f, bMaxV = -1e30f;
-    float fMinU = 1e30f, fMaxU = -1e30f;
-    float fMinV = 1e30f, fMaxV = -1e30f;
-
-    for (int i = 0; i < c.beamN; ++i)
-    {
-        float p[3] = {c.beam[i][0], c.beam[i][1], c.beam[i][2]};
-        float t = (dot3_dev(p, c.normal) + c.normal[3]) / dp0;
-        p[0] -= c.dir[0] * t;
-        p[1] -= c.dir[1] * t;
-        p[2] -= c.dir[2] * t;
-
-        float u = drop == 0 ? p[1] : p[0];
-        float v = drop == 2 ? p[1] : p[2];
-        add_bounds(u, v, bMinU, bMaxU, bMinV, bMaxV);
-    }
-
-    for (int i = 0; i < c.facetN; ++i)
-    {
-        float u = drop == 0 ? c.facet[i][1] : c.facet[i][0];
-        float v = drop == 2 ? c.facet[i][1] : c.facet[i][2];
-        add_bounds(u, v, fMinU, fMaxU, fMinV, fMaxV);
-    }
-
-    const float margin = 0.1f;
-    bool overlap = !(bMaxU < fMinU - margin || fMaxU < bMinU - margin ||
-                     bMaxV < fMinV - margin || fMaxV < bMinV - margin);
-    results[idx] = overlap ? 1 : 0;
 }
 
 __device__ inline double dot3_dev_d(const double *a, const double *b)
@@ -298,7 +214,7 @@ __global__ void trace_prefilter_pair_kernel(const GpuTraceBeamRecord *beams,
     const GpuTraceFacetRecord &f = facets[pair.facet];
     const double *normal = b.location == 0 ? f.normalIn : f.normalOut;
     double dp0 = dot3_dev_d(b.dir, normal);
-    if (fabs(dp0) < 1.7453284e-5)
+    if (fabs(dp0) < 0x1p-40)
     {
         results[idx] = 0;
         return;
@@ -362,10 +278,36 @@ bool GpuTracePrefilterBeamFacets(const Beam &beam,
     item.facetIds = &facetIds;
     item.mayIntersect = &mayIntersect;
     std::vector<GpuTraceBeamFacets> items(1, item);
-    return GpuTracePrefilterBeamFacetBatch(facets, items);
+    double minCoord[3] = {1e300, 1e300, 1e300};
+    double maxCoord[3] = {-1e300, -1e300, -1e300};
+    const auto include = [&minCoord, &maxCoord](const Point3f &point) {
+        for (int coordinate = 0; coordinate < 3; ++coordinate)
+        {
+            minCoord[coordinate] = std::min(
+                minCoord[coordinate],
+                static_cast<double>(point.coordinates[coordinate]));
+            maxCoord[coordinate] = std::max(
+                maxCoord[coordinate],
+                static_cast<double>(point.coordinates[coordinate]));
+        }
+    };
+    for (int vertex = 0; vertex < beam.nVertices; ++vertex)
+        include(beam.arr[vertex]);
+    for (size_t index = 0; index < facetIds.size; ++index)
+    {
+        const Facet &facet = facets[facetIds.arr[index]];
+        for (int vertex = 0; vertex < facet.nVertices; ++vertex)
+            include(facet.arr[vertex]);
+    }
+    const double dx = maxCoord[0] - minCoord[0];
+    const double dy = maxCoord[1] - minCoord[1];
+    const double dz = maxCoord[2] - minCoord[2];
+    const double geometryScale = std::sqrt(dx*dx + dy*dy + dz*dz);
+    return GpuTracePrefilterBeamFacetBatch(facets, geometryScale, items);
 }
 
 bool GpuTracePrefilterBeamFacetBatch(const Facet *facets,
+                                     double geometryScale,
                                      const std::vector<GpuTraceBeamFacets> &items)
 {
     size_t total = 0;
@@ -395,7 +337,7 @@ bool GpuTracePrefilterBeamFacetBatch(const Facet *facets,
     }
     if (maxFacetId < 0)
         return false;
-    if (!upload_trace_facets_if_needed(facets, maxFacetId))
+    if (!upload_trace_facets_if_needed(facets, maxFacetId, geometryScale))
         return false;
 
     std::vector<GpuTraceBeamRecord> hostBeams(items.size());
@@ -408,6 +350,8 @@ bool GpuTracePrefilterBeamFacetBatch(const Facet *facets,
     for (size_t itemIdx = 0; itemIdx < items.size(); ++itemIdx)
     {
         const Beam &beam = *items[itemIdx].beam;
+        if (beam.nVertices <= 0 || beam.nVertices > 64)
+            continue;
         GpuTraceBeamRecord &record = hostBeams[itemIdx];
         record.nVertices = beam.nVertices;
         record.location = beam.location == Location::In ? 0 : 1;
@@ -482,6 +426,7 @@ bool GpuTracePrefilterBeamFacets(const Beam &/*beam*/,
 }
 
 bool GpuTracePrefilterBeamFacetBatch(const Facet */*facets*/,
+                                     double /*geometryScale*/,
                                      const std::vector<GpuTraceBeamFacets> &items)
 {
     for (size_t i = 0; i < items.size(); ++i)

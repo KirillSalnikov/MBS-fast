@@ -12,7 +12,8 @@ HandlerBackScatterPoint::HandlerBackScatterPoint(Particle *particle,
 {
 }
 
-void HandlerBackScatterPoint::HandleBeams(std::vector<Beam> &beams, double sinZenith)
+void HandlerBackScatterPoint::HandleBeams(std::vector<Beam> &beams,
+                                          double /*sinZenith*/)
 {
     Point3d backDirection(0, 0, 1);
     Point3d vf = -m_incidentLight->polarizationBasis;

@@ -189,13 +189,14 @@ Debug help build:
 
 \begin{Shaded}
 \begin{Highlighting}[]
-\CommentTok{\# Default GPU binary: float + fast math}
+\CommentTok{\# Default/reference GPU binary: FP64 with precise math}
 \VariableTok{PATH}\OperatorTok{=}\NormalTok{/usr/local/cuda/bin:}\VariableTok{$PATH} \FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu }\AttributeTok{{-}j}
 
 \CommentTok{\# Explicit variants}
-\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu float       }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_float}
-\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu float\_fast  }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_float\_fast}
-\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu double\_fast }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_double\_fast}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu fp32      }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_float}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu fp64      }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_double}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu fp32\_fast }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_float\_fast}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu fp64\_fast }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_double\_fast}
 \end{Highlighting}
 \end{Shaded}
 
@@ -206,17 +207,24 @@ Target & Binary & CUDA precision & Fast math & Typical use \\
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-\texttt{make\ -C\ gpu} & \nolinkurl{gpu/bin/mbs_po_gpu_float_fast} &
-FP32 & yes & Fast production scans \\
-\texttt{make\ -C\ gpu\ float} & \nolinkurl{gpu/bin/mbs_po_gpu_float} &
-FP32 & no & FP32 check without fast math \\
-\texttt{make\ -C\ gpu\ double\_fast} &
-\nolinkurl{gpu/bin/mbs_po_gpu_double_fast} & FP64 & yes & Reference GPU
-checks \\
+\texttt{make\ -C\ gpu} or \texttt{make\ -C\ gpu\ fp64} &
+\nolinkurl{gpu/bin/mbs_po_gpu_double} & FP64 & no & Numerical reference and production default \\
+\texttt{make\ -C\ gpu\ fp32} & \nolinkurl{gpu/bin/mbs_po_gpu_float} &
+FP32 & no & Calibrated FP32 throughput \\
+\texttt{make\ -C\ gpu\ fp32\_fast} &
+\nolinkurl{gpu/bin/mbs_po_gpu_float_fast} & FP32 & yes & Maximum throughput after validation \\
+\texttt{make\ -C\ gpu\ fp64\_fast} &
+\nolinkurl{gpu/bin/mbs_po_gpu_double_fast} & FP64 & yes & FP64 throughput after validation \\
 \texttt{make\ -C\ gpu\ double\_debug} &
 \nolinkurl{gpu/bin/mbs_po_gpu_double_debug} & FP64 & yes & Debug help
 and diagnostics \\
 \end{longtable}
+
+FP32 applies to diffraction-beam storage, Jones sums, and Mueller output.
+Visibility/topology tracing, optical paths, absorption, cancellation-prone
+polygon moments, and critical phase trigonometry remain FP64.
+\texttt{-/-version} reports the storage, critical-phase, math, and target
+architecture profile.
 
 The GPU split build enables CUDA diffraction by default.
 \texttt{-\/-gpu} is accepted but optional. Use \texttt{-\/-cpu} only
@@ -428,6 +436,12 @@ with the Karczewski polarization matrix. The code comments note that
 \texttt{M11} is unchanged because the Frobenius norm is preserved, while
 polarization-sensitive elements can change.
 
+The transverse norms are evaluated with 	exttt{hypot}, and each basis is
+validated before normalization. A degenerate pole configuration or a
+non-finite result falls back to the default 	exttt{RotateJones}. This
+safeguard prevents 	exttt{NaN} values but does not turn the incomplete GOAD
+convention implementation into a physical reference.
+
 \subsection{Kirchhoff diffraction
 integral}\label{kirchhoff-diffraction-integral}
 
@@ -501,6 +515,27 @@ products such as \texttt{\textbar{}S1\textbar{}\^{}2},
 \texttt{\textbar{}S2\textbar{}\^{}2}, \texttt{Re(S1\ conj(S2))}, and
 \texttt{Im(S1\ conj(S2))}.
 
+The coherent sum is limited to ray paths of one particle at one fixed
+orientation. For a randomly and independently oriented ensemble, the
+code first forms \texttt{Mueller(J\_total)} for each orientation and then
+averages Mueller matrices with orientation weights. Jones matrices from
+distinct orientations cannot be summed without particle positions and
+relative incident phases. The deprecated
+\texttt{-\/-coherent-orientations} option is therefore disabled; its
+previous implementation was effectively the ordinary incoherent
+orientation average.
+
+This single-particle model does not reproduce coherent backscattering of
+a particulate medium caused by interference of reciprocal multiple
+scattering paths between distinct particles. That problem requires a
+multi-particle solver with particle positions and inter-particle field
+propagation.
+
+\texttt{-\/-beam-cutoff*} and \texttt{-\/-trace-cutoff*} remove
+amplitudes before coherent summation and can bias cross terms even when
+the removed intensities are small. Validate backscatter with
+\texttt{-\/-cutoff-profile safe} or \texttt{-\/-cutoff-profile off}.
+
 \subsection{Orientation averaging}\label{orientation-averaging}
 
 For randomly oriented particles, each orientation produces a Mueller
@@ -553,6 +588,13 @@ is enabled automatically when \texttt{Im\ !=\ 0}, or explicitly with
 \texttt{-n} & \texttt{N} & Maximum internal reflection/refraction
 depth. \\
 \end{longtable}
+
+File coordinates and all internal tracing geometry are stored in double
+precision. The loader translates coordinates relative to the
+order-independent bounding-box centre and removes only scale-relative binary
+serialization noise. A global translation changes only a common optical phase;
+this canonical form preserves the Mueller matrix, small edges, and facet order
+for files with large absolute coordinates.
 
 Built-in particle types:
 
@@ -616,11 +658,14 @@ The native format starts with three nonempty header records:
 record gives the positive beta and gamma fundamental-domain widths. Blank
 lines separate facets; each facet must have at least three finite,
 non-collinear vertices. Full-line and inline comments begin with
-\texttt{\#}. Vertex order defines the facet normal, so a hand-edited file
-must preserve one consistent winding convention.
+\texttt{\#}. Each facet must be a simple planar convex polygon. Vertex order
+defines its normal; every component must be a closed manifold with consistent
+outward winding. A facet may contain at most 64 vertices and a particle at most
+256 facets.
 
-\texttt{-\/-save-geometry FILE} writes 17-digit coordinates and validates
-aggregate metadata before writing. A useful round-trip check is:
+\texttt{-\/-save-geometry FILE} writes 17-digit coordinates. Loading validates
+facet geometry, closed manifold topology, outward winding, and aggregate
+metadata before tracing. A useful round-trip check is:
 
 \begin{Shaded}
 \begin{Highlighting}[]
@@ -630,11 +675,12 @@ aggregate metadata before writing. A useful round-trip check is:
 \end{Highlighting}
 \end{Shaded}
 
-The exported file contains the effective scaled geometry. It is therefore
-the appropriate artifact for reproducing a run or inspecting the exact
-facets used by clipping. The automatically written
-\texttt{particle\_for\_check.dat} remains available in result directories;
-the explicit flag is preferable when a stable path is needed.
+The export consists of \texttt{FILE} and \texttt{FILE.visibility}.  The
+sidecar stores the two clipping-visibility flags of every facet and is loaded
+automatically when it is present.  Keep both files together: coordinates
+alone are insufficient for an exact round trip of concave built-in particles.
+Geometry is not written automatically; request it explicitly with
+\texttt{--save-geometry FILE} (alias \texttt{--save-particle}).
 
 Equivalent-size scaling:
 
@@ -730,8 +776,8 @@ modes. \\
 \texttt{-\/-max\_gamma\_points} & \texttt{N} & Hard adaptive
 \(N_\gamma\) limit. \\
 \texttt{-\/-chunk} & \texttt{N} & Orientation/gamma chunk size. \\
-\texttt{-\/-coh\_orient} & none & Legacy coherent-across-orientations
-mode. \\
+\texttt{-\/-coh\_orient} & none & Disabled legacy mode; cross-orientation
+coherence is undefined without relative phases. \\
 \texttt{-\/-pole} & none & Use one gamma value at beta poles. Best with
 endpoint grids such as \texttt{-\/-oldauto}. \\
 \texttt{-\/-owen\_avg} & \texttt{K} & Average \texttt{K} nested Owen
@@ -1057,14 +1103,16 @@ candidate after comparison with \texttt{off}. \\
 after particle-class calibration. \\
 \texttt{fast} & $10^{-6}$ & $10^{-8}$ & $10^3$ & Exploratory scans;
 not a validation setting. \\
-legacy default & 0 & 0 & 100 & Backward-compatible behavior when no profile
+legacy default & 0 & $j_b=10^{-7}$ & 100 & Scale-invariant replacement of the historical weak-branch test when no profile
 or individual cutoff is supplied. \\
 \end{longtable}
 
-The preset values enable the combined importance criterion, not separate
+The named \texttt{safe}, \texttt{balanced}, and \texttt{fast} presets enable the combined importance criterion, not separate
 Jones and area OR thresholds. This avoids removing a large but weak branch or
 a small but intense branch solely because one factor is small. The legacy
-area-ratio simplification remains at 100 for reproducibility; use
+default additionally terminates a branch when its Jones norm is below
+$10^{-7}$ of the strongest incident branch; this replaces the former
+area-dependent threshold. Its area-ratio simplification remains at 100; use
 \texttt{-\/-cutoff-profile off} when a genuinely uncut reference is required.
 The profiles do not set \texttt{-\/-trace-max-beams}.  For unattended runs
 on deeply concave particles, use a finite beam limit as a diagnostic guard:
@@ -1099,8 +1147,8 @@ $i_b<\mathrm{EPS}$. \\
 replace two fragments by the larger one only when their area ratio is at
 least $R$. \\
 \texttt{-\/-trace-max-beams N} & $N\ge0$ & Hard per-orientation beam-tree
-cap; 0 disables the configured cap. Any reported hit means that branches
-were truncated and the run is not a cutoff-convergence reference. \\
+cap; 0 disables the configured cap. Reaching it aborts the calculation so an
+incomplete orientation cannot enter the average. \\
 \end{longtable}
 
 If a legacy common shortcut and a corresponding specific Jones/area option
@@ -1521,7 +1569,7 @@ count. \\
 \(N_\gamma\). \\
 \texttt{-\/-chunk} & \texttt{N} & Chunk size for orientation/gamma
 processing. \\
-\texttt{-\/-coh\_orient} & none & Legacy coherent orientation mode. \\
+\texttt{-\/-coh\_orient} & none & Disabled legacy mode; do not use. \\
 \texttt{-\/-pole} & none & Exact beta-pole gamma shortcut. \\
 \texttt{-\/-sym} & \texttt{Sb\ Sg} & Override particle symmetry. \\
 \end{longtable}
@@ -1580,7 +1628,7 @@ relative area. \\
 \texttt{-\/-trace-cutoff-importance} & \texttt{EPS} & Prune trace tree
 by relative Jones intensity times area. \\
 \texttt{-\/-trace-max-beams} & \texttt{N} & Hard per-orientation beam-tree
-cap; \texttt{0} disables the configured cap. \\
+cap; \texttt{0} disables it and reaching it aborts the calculation. \\
 \texttt{-\/-gpu\_trace} & none & Experimental CUDA prefilter for
 nonconvex tracing candidates. \\
 \texttt{-\/-trace\_prefilter} & none & Enable CPU projected-AABB
@@ -1643,6 +1691,14 @@ cone. \\
 
 \section{Environment variables}\label{environment-variables}
 
+Every active \texttt{MBS\_*} variable is written to the run summary.
+Variables that alter sampling, geometry, cutoffs, or numerical results are
+rejected by default. The debug option
+\texttt{-{}-allow-experimental-environment} permits them after explicit
+acknowledgement and records their names and values. Prepared-orientation modes
+start with a 16-orientation pilot, measure nested beam/path allocations, and
+adapt the next chunk to current available RAM and the configured limits.
+
 Production-use variables:
 
 \begin{longtable}[]{@{}L{0.30\linewidth}L{0.64\linewidth}@{}}
@@ -1672,8 +1728,8 @@ for debugging. \\
 \texttt{MBS\_GPU\_BLOCK} & Override CUDA kernel block size. \\
 \texttt{MBS\_ORIENTATION\_TIMING} & Print summed CPU time for rotation,
 tracing, and prepared-beam construction. \\
-\texttt{MBS\_HOST\_MEM\_FRACTION} & Host-memory fraction for
-oldauto/random chunking. \\
+\texttt{MBS\_HOST\_MEM\_FRACTION} & Fraction of current available host
+memory for measured prepared-orientation chunks. \\
 \texttt{MBS\_HOST\_MEM\_RESERVE\_MB} & Host memory reserve in MB. \\
 \texttt{MBS\_HOST\_MEM\_BUDGET\_MB} & Hard host memory budget, also set
 for parallel children. \\
@@ -1746,8 +1802,6 @@ checkpoint files & \texttt{-\/-checkpoint} & Resume data for long
 orientation-grid runs. \\
 Jones output & \texttt{-\/-jones} & Raw Jones matrices in supported PO
 modes. \\
-\nolinkurl{particle_for_check.dat} & every calculation & Effective resized
-particle, stored inside the result directory. \\
 \texttt{FILE} from \texttt{-\/-save-geometry} & explicit request & Effective
 scaled native particle at a stable user-selected path. \\
 \texttt{<result>\_integrals.tsv} & PO and GO output & Machine-readable primary

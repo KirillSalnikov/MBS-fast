@@ -16,8 +16,6 @@
 #define MAX_BEAM_REFL_NUM 65536
 //#define MAX_BEAM_REFL_NUM 1048576
 
-#define EPS_M_COS_90	-1.7453292519943295769148298069306e-10	//cos(89.99999999)
-
 /**
  * @brief The BeamTree struct
  * Tree of beams (works like stack).
@@ -43,6 +41,7 @@ public:
 
 protected:
     Facet *m_facets;
+    double m_geometryScale;
     Splitting splitting;
     Light *m_incidentLight;
 
@@ -53,7 +52,6 @@ protected:
     std::vector<Beam> m_beamTree;	///< tree of beams (works like stack), grows lazily
     int m_treeSize;
     double m_incidentEnergy;
-    double EPS_BEAM_ENERGY;
     double m_traceRefJNorm = 0;
     double m_traceRefArea = 0;
     double m_traceRefImportance = 0;
@@ -82,7 +80,7 @@ public:
     std::string m_cutoffProfileName = "legacy-default";
     bool m_gpuTracePrefilter = false;
     bool m_traceCpuProjectedPrefilter = true;
-    double m_traceCpuProjectedPrefilterMargin = 8.0;
+    double m_traceCpuProjectedPrefilterMargin = -1.0;
     bool m_tracePrefilterStats = false;
     void SetTrackIdsRequired(bool value) { m_trackIdsRequired = value; }
     void CopyRuntimeOptionsFrom(const Scattering &source);
@@ -109,7 +107,8 @@ protected:
 
     void Difference(const Polygon &subject, const Vector3f &subjNormal,
                     const Polygon &clip, const Vector3f &clipNormal,
-                    const Vector3f &clipDir, PolygonArray &difference) const;
+                    const Vector3f &clipDir, PolygonArray &difference,
+                    Polygon *overlap = nullptr) const;
 
     void Intersect(int facetId, const Beam& beam, Polygon &intersection) const;
 
@@ -142,11 +141,14 @@ protected:
     void RemoveDublicatedVertices2f(const std::vector<Point2f> &projected,
                                   std::vector<Point2f> &cleared);
 
-private:
-    void SetOutputPolygon(__m128 *_output_points, int outputSize,
+    void SetOutputPolygon(const Point3f *outputPoints, int outputSize,
                           Polygon &polygon) const;
 
+    void SetConvexOutputPolygon(const Point3f *outputPoints, int outputSize,
+                                const Point3f &normal,
+                                Polygon &polygon) const;
+
     bool ProjectToFacetPlane(const Polygon &polygon, const Vector3f &dir,
-                             const Point3f &normal, __m128 *_projection) const;
+                             const Point3f &normal, Point3f *projection) const;
 
 };

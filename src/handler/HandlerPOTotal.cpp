@@ -1,4 +1,5 @@
 #include "HandlerPOTotal.h"
+#include "PoleMueller.h"
 
 #include "IntegralCharacteristics.h"
 #include "Mueller.hpp"
@@ -11,41 +12,6 @@
 #include <algorithm>
 #include <stdexcept>
 #include <vector>
-
-namespace
-{
-void ApplyForwardPoleSymmetry(matrix &m)
-{
-    const double M00 = m[0][0];
-    const double M11 = 0.5 * (m[1][1] + m[2][2]);
-    const double M33 = m[3][3];
-    const double M03 = m[0][3];
-
-    m.Fill(0.0);
-    m[0][0] = M00;
-    m[1][1] = M11;
-    m[2][2] = M11;
-    m[3][3] = M33;
-    m[0][3] = M03;
-    m[3][0] = M03;
-}
-
-void ApplyBackwardPoleSymmetry(matrix &m)
-{
-    const double M00 = m[0][0];
-    const double M11 = 0.5 * (m[1][1] - m[2][2]);
-    const double M33 = m[3][3];
-    const double M03 = m[0][3];
-
-    m.Fill(0.0);
-    m[0][0] = M00;
-    m[1][1] = M11;
-    m[2][2] = -M11;
-    m[3][3] = M33;
-    m[0][3] = M03;
-    m[3][0] = M03;
-}
-}
 
 HandlerPOTotal::HandlerPOTotal(Particle *particle, Light *incidentLight, int nTheta,
                                double wavelength)
@@ -63,7 +29,7 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
             "cannot open Mueller output '" + destName
             + ".dat'.\n  Fix: verify output permissions and free disk space.");
 
-    outFile << std::setprecision(10);
+    outFile << std::setprecision(17);
     outFile << "ScAngle 2pi*dcos "\
             "M11 M12 M13 M14 "\
             "M21 M22 M23 M24 "\
@@ -87,8 +53,8 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
     {
         Msum.Fill(0.0);
         double radZen = m_sphere.GetZenith(iZen);
-        const bool isForwardPole = radZen < __FLT_EPSILON__;
-        const bool isBackwardPole = radZen > M_PI-__FLT_EPSILON__;
+        const bool isForwardPole = PoleMueller::IsForward(radZen);
+        const bool isBackwardPole = PoleMueller::IsBackward(radZen);
 //        double tt = RadToDeg(m_sphere.zenithEnd) - RadToDeg((t*dT));
 
         for (int iAz = 0; iAz < nAz; ++iAz)
@@ -116,11 +82,11 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
         Msum /= m_sphere.nAzimuth;
         if (isBackwardPole)
         {
-            ApplyBackwardPoleSymmetry(Msum);
+            PoleMueller::ApplyBackward(Msum);
         }
         else if (isForwardPole)
         {
-            ApplyForwardPoleSymmetry(Msum);
+            PoleMueller::ApplyForward(Msum);
         }
 
         C_sca_integral += Msum[0][0] * _2Pi_dcos;

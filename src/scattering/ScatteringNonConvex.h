@@ -21,11 +21,8 @@ public:
                              std::vector<Beam> &scaterredBeams) override;
 private:
     void SortFacets_faster(const Point3f &beamDir, IntArray &facetIDs);
-    void CutBeamByFacet(const Facet &facet, Beam &beam,
-                        PolygonArray &result);
-
-    double CalcMinDistanceToFacet(const Polygon &polygon, const Point3f &beamDir);
-    void SortFacets(const Point3f &beamDir, IntArray &facetIds); ///< use 'Fast sort' algorithm
+    bool CutBeamByFacet(const Polygon &intersection, int facetId, Beam &beam,
+                        Polygon &reachedIntersection, PolygonArray &result);
 
     void CutExternalBeam(const Beam &beam, std::vector<Beam> &scaterredBeams);
 
@@ -44,27 +41,22 @@ private:
     void IntersectWithFacet(const IntArray &facetIds, int prevFacetNum,
                             PolygonArray &resFacets);
 
-    void SplitLightToBeams();
+    bool SplitLightToBeams();
 
     bool IsOutgoingBeam(Beam &incidentBeam);
 
-    int FindFacetId(int facetId, const IntArray &arr);
-
     void TraceFirstBeamFixedFacet(int facetID, bool &isIncident);
 
-    void PushBeamsToTree(int facetId, const PolygonArray &polygons,
+    bool PushBeamsToTree(int facetId, const PolygonArray &polygons,
                          Beam &inBeam, Beam &outBeam);
 
     bool IsVisibleFacet(int facetID, const Beam &beam);
     bool MayBeamIntersectFacetProjected(const Beam &beam, int facetId) const;
 
-    void SplitByFacet(const IntArray &facetIDs, int facetIndex);
+    bool SplitByFacet(const IntArray &facetIDs, int facetIndex);
 
     bool SplitBeamByFacet(const Polygon &intersection, int facetId,
                           Beam &beam, bool &ok);
-
-    void PushBeamsToBuffer(int facetID, const Beam &beam, bool hasOutBeam,
-                           Beam &inBeam, Beam &outBeam, std::vector<Beam> &passed);
 
     void CutPolygonByFacets(const Polygon &pol,
                             const IntArray &facetIds, size_t size,

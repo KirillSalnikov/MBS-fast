@@ -14,8 +14,7 @@ void Facet::SetCenter()
 
 bool Facet::IsConormal(Point3f normal) const
 {
-    __m128 dp = _dp(_set(this->normal[Out]), _set(normal), MASK_FULL);
-    return dp[0] > __FLT_EPSILON__;
+    return DotProduct(this->normal[Out], normal) > EPS_PROJECTION;
 }
 
 Facet &Facet::operator =(const Facet &other)

@@ -19,7 +19,7 @@ double RandomDouble(double min, double max)
     return min + double(rand())/(double(RAND_MAX/(max - min)));
 }
 
-void RenameConsole(const string &title)
+void RenameConsole(const string &/*title*/)
 {
 //	LPCWSTR t = title.c_str();
 //    SetConsoleTitleA(title.c_str());

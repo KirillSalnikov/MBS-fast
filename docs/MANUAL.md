@@ -58,13 +58,14 @@ cpu/bin/mbs_po_mpi_debug --help-debug
 ### GPU build
 
 ```bash
-# Default GPU binary: float + fast math
+# Default/reference GPU binary: FP64 with precise math
 PATH=/usr/local/cuda/bin:$PATH make -C gpu -j
 
 # Explicit variants
-make -C gpu float       -j   # gpu/bin/mbs_po_gpu_float
-make -C gpu float_fast  -j   # gpu/bin/mbs_po_gpu_float_fast
-make -C gpu double_fast -j   # gpu/bin/mbs_po_gpu_double_fast
+make -C gpu fp32      -j   # gpu/bin/mbs_po_gpu_float
+make -C gpu fp64      -j   # gpu/bin/mbs_po_gpu_double
+make -C gpu fp32_fast -j   # gpu/bin/mbs_po_gpu_float_fast
+make -C gpu fp64_fast -j   # gpu/bin/mbs_po_gpu_double_fast
 ```
 
 `gpu/Makefile` also works when `nvcc` is not in `PATH`: it uses
@@ -77,10 +78,16 @@ compiler; changing the system-wide GCC alternative is not required.
 
 | Target | Binary | CUDA precision | Fast math | Typical use |
 |---|---|---:|---:|---|
-| `make -C gpu` | `gpu/bin/mbs_po_gpu_float_fast` | FP32 | yes | Fast production scans |
-| `make -C gpu float` | `gpu/bin/mbs_po_gpu_float` | FP32 | no | FP32 check without fast math |
-| `make -C gpu double_fast` | `gpu/bin/mbs_po_gpu_double_fast` | FP64 | yes | Reference GPU checks |
+| `make -C gpu` or `make -C gpu fp64` | `gpu/bin/mbs_po_gpu_double` | FP64 | no | Numerical reference and production default |
+| `make -C gpu fp32` | `gpu/bin/mbs_po_gpu_float` | FP32 | no | Calibrated FP32 throughput |
+| `make -C gpu fp32_fast` | `gpu/bin/mbs_po_gpu_float_fast` | FP32 | yes | Maximum throughput after validation |
+| `make -C gpu fp64_fast` | `gpu/bin/mbs_po_gpu_double_fast` | FP64 | yes | FP64 throughput after validation |
 | `make -C gpu double_debug` | `gpu/bin/mbs_po_gpu_double_debug` | FP64 | yes | Debug help and diagnostics |
+
+FP32 applies to diffraction-beam storage, Jones sums, and Mueller output.
+Visibility/topology tracing, optical paths, absorption, cancellation-prone
+polygon moments, and critical phase trigonometry remain FP64. `--version`
+reports the storage, critical-phase, math, and target-architecture profile.
 
 The GPU split build enables CUDA diffraction by default. `--gpu` is accepted but optional. Use `--cpu` only when you deliberately want the CPU diffraction backend from a GPU-capable binary.
 
@@ -222,6 +229,12 @@ not fully reproduce the whole GOAD coordinate pipeline. Use it when comparing
 polarization-sensitive Mueller elements or when a reference calculation uses
 the Karczewski convention.
 
+The transverse norms in this branch are evaluated with `hypot`, and every
+basis is validated before normalization. A degenerate pole configuration
+falls back to the default `RotateJones`; a non-finite experimental result is
+never accumulated into the Mueller matrix. This numerical safeguard does not
+turn the incomplete GOAD convention implementation into a physical reference.
+
 Expected behavior:
 
 | Quantity | Expected effect |
@@ -275,6 +288,12 @@ M(theta, phi) = sum_beams Mueller(J_beam(theta, phi))
 
 The Jones-to-Mueller conversion is implemented in `src/math/Mueller.cpp`. For Jones elements `S1..S4`, the code computes the standard 4x4 real Mueller matrix from bilinear products such as `|S1|^2`, `|S2|^2`, `Re(S1 conj(S2))`, and `Im(S1 conj(S2))`.
 
+The coherent sum is limited to ray paths of one particle at one fixed orientation. For an ensemble of randomly and independently oriented particles, the code first forms `Mueller(J_total)` for each orientation and then averages Mueller matrices with the orientation weights. Jones matrices from distinct orientations cannot be summed without particle positions and relative incident phases. The deprecated `--coherent-orientations` option is therefore disabled; its previous implementation was effectively the ordinary incoherent orientation average.
+
+Consequently, this single-particle model does not reproduce coherent backscattering of a particulate medium caused by interference of reciprocal multiple-scattering paths between distinct particles. That problem requires a multi-particle solver with particle positions and inter-particle field propagation.
+
+`--beam-cutoff*` and `--trace-cutoff*` remove amplitudes before coherent summation and can bias cross terms even when the removed intensities are small. Validate backscatter with a repeat using `--cutoff-profile safe` or `--cutoff-profile off`.
+
 ### Orientation averaging
 
 For randomly oriented particles, each orientation produces a Mueller matrix on the scattering grid. `HandlerPOTotal` and `TracerPOTotal` average orientations with the beta/gamma weights selected by the orientation mode. At beta poles, `--pole` uses one gamma value because all gamma rotations are equivalent at the exact pole. In current code, `--pole` keeps beta endpoints instead of midpoint beta sampling, so the beta pole is actually present in the grid.
@@ -300,6 +319,13 @@ For endpoint rows the interval is half-width and clipped to the requested range.
 | `--ri` | `Re Im` | Complex refractive index. Absorption is enabled automatically when `Im != 0`, or explicitly with `--abs`. |
 | `-w` | `LAMBDA` | Wavelength in micrometers. |
 | `-n` | `N` | Maximum internal reflection/refraction depth. |
+
+File coordinates and all internal tracing geometry are stored in double
+precision. The loader translates coordinates relative to the
+order-independent bounding-box centre and removes only scale-relative binary
+serialization noise. A global translation changes only a common optical phase;
+this canonical form preserves the Mueller matrix, small edges, and facet order
+for files with large absolute coordinates.
 
 Built-in particle types:
 
@@ -356,7 +382,7 @@ Orientation modifiers:
 | `--g` | `G1 G2` | Manual gamma range in degrees for `--random`. |
 | `--maxorient` | `N` | Maximum orientations for adaptive modes. |
 | `--chunk` | `N` | Orientation/gamma chunk size. |
-| `--coh_orient` | none | Legacy coherent-across-orientations mode. |
+| `--coh_orient` | none | Disabled legacy mode; cross-orientation coherence is undefined without relative phases. |
 | `--pole` | none | Use one gamma value at beta poles. Best with endpoint grids such as `--oldauto`. |
 | `--owen_avg` | `K` | Average `K` nested Owen final seeds in `--autofull`; default can be controlled by environment. |
 | `--owen_seeds` | `S...` | Explicit Owen seeds for `--autofull` final averaging. |
@@ -704,7 +730,7 @@ Common scheduler controls:
 |---|---|
 | `MBS_PARALLEL_MEM_FRACTION` | Fraction of current `MemAvailable` divided among GPU child processes; default `0.70`. |
 | `MBS_HOST_MEM_BUDGET_MB` | Hard host-memory budget seen by a child. The scheduler sets it automatically unless already set. |
-| `MBS_HOST_MEM_FRACTION` | Fraction of total host RAM allowed inside oldauto/random chunking. |
+| `MBS_HOST_MEM_FRACTION` | Fraction of current available host RAM allowed for prepared-orientation chunks. |
 | `MBS_HOST_MEM_RESERVE_MB` | Host RAM reserve kept free by oldauto/random chunking; default `4096`. |
 | `MBS_OLDAUTO_GRID_MEM_SAFETY` | Safety multiplier for direct-grid transient arrays; default `1.25`. |
 | `MBS_OLDAUTO_BYTES_PER_GAMMA_MB` | Per-gamma host-memory estimate for prepared beams; default is conservative. |
@@ -762,7 +788,7 @@ Common scheduler controls:
 | `--g` | `G1 G2` | Gamma range for `--random`. |
 | `--maxorient` | `N` | Maximum adaptive orientation count. |
 | `--chunk` | `N` | Chunk size for orientation/gamma processing. |
-| `--coh_orient` | none | Legacy coherent orientation mode. |
+| `--coh_orient` | none | Disabled legacy mode; do not use. |
 | `--pole` | none | Exact beta-pole gamma shortcut. |
 | `--sym` | `Sb Sg` | Override particle symmetry. |
 
@@ -790,7 +816,7 @@ Common scheduler controls:
 | `--trace_cutoff_j` | `EPS` | Prune trace tree by relative `|J|^2`. |
 | `--trace_cutoff_area` | `EPS` | Prune trace tree by relative area. |
 | `--trace_cutoff_importance` | `EPS` | Prune trace tree by `|J|^2*area`. |
-| `--trace_max_beams` | `N` | Abort one orientation after `N` beam nodes; `0` disables. |
+| `--trace_max_beams` | `N` | Abort the calculation after `N` beam nodes in one orientation; `0` disables. |
 | `--gpu_trace` | none | Experimental CUDA prefilter for nonconvex tracing candidates. |
 | `--trace_prefilter` | none | Enable CPU projected-AABB prefilter. |
 | `--no_trace_prefilter` | none | Disable CPU projected-AABB prefilter. |
@@ -843,6 +869,14 @@ Common scheduler controls:
 
 ## Environment variables
 
+Every active `MBS_*` variable is written to the run summary. Variables that
+alter sampling, geometry, cutoffs, or numerical results are rejected by
+default. `--allow-experimental-environment` permits them after explicit
+acknowledgement and keeps their names and values in the result log. Production
+runs should normally unset them. Prepared-orientation modes begin with a
+16-orientation pilot, measure actual nested beam/path storage, and adapt the
+next chunk to current available RAM and the limits below.
+
 Production-use variables:
 
 | Variable | Meaning |
@@ -858,7 +892,7 @@ Production-use variables:
 | `MBS_GPU_TIMING` | Print CUDA timing breakdowns. |
 | `MBS_GPU_BLOCK` | Override CUDA kernel block size. |
 | `MBS_ORIENTATION_TIMING` | Print CPU-time breakdown for rotation, tracing, and prepared-beam construction. |
-| `MBS_HOST_MEM_FRACTION` | Host-memory fraction for oldauto/random chunking. |
+| `MBS_HOST_MEM_FRACTION` | Fraction of current available host RAM for measured prepared-orientation chunking. |
 | `MBS_HOST_MEM_RESERVE_MB` | Host memory reserve in MB. |
 | `MBS_HOST_MEM_BUDGET_MB` | Hard host memory budget, also set for parallel children. |
 | `MBS_OLDAUTO_GRID_MEM_SAFETY` | Safety multiplier for oldauto host-RAM estimate of large `theta x phi` grids; default `1.25`. |

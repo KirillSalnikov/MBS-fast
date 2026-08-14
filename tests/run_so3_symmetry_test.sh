@@ -19,7 +19,9 @@ COMMON=(
 )
 
 OMP_NUM_THREADS=2 "$MBS" "${COMMON[@]}" \
-    --so3-quaternion 512 --output "$WORK_DIR/reduced" >/dev/null 2>&1
+    --so3-quaternion 512 \
+    --save-geometry "$WORK_DIR/reduced-particle.dat" \
+    --output "$WORK_DIR/reduced" >/dev/null 2>&1
 OMP_NUM_THREADS=2 "$MBS" "${COMMON[@]}" \
     --so3-quaternion 512 --so3-mirror-audit \
     --output "$WORK_DIR/paired" >"$WORK_DIR/paired.console.log" 2>&1
@@ -101,7 +103,7 @@ awk -v m="$paired_mirror_m11" -v a="$paired_mirror_all" 'BEGIN {
     exit 1
 }
 
-grep -Eq '^90 59[.]9' "$WORK_DIR/reduced/particle_for_check.dat"
+grep -Eq '^90 59[.]9' "$WORK_DIR/reduced-particle.dat"
 grep -q 'alpha integrated by scattering azimuth' \
     "$WORK_DIR/reduced/reduced_out.txt"
 grep -q 'paired gamma audit: 256 half-domain Hammersley points' \

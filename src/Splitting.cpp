@@ -1,5 +1,7 @@
 #include "Splitting.h"
 
+#include <algorithm>
+#include <cmath>
 #include <float.h>
 
 Splitting::Splitting(bool isOpticalPath)
@@ -19,25 +21,18 @@ void Splitting::ComputeRiParams(const complex &ri)
 
 void Splitting::ComputeSplittingParams(const Point3f &dir, const Point3f &normal)
 {
-    r = dir/cosA - normal;
+    // Work with the tangential component directly.  The former formulation
+    // used r = dir/cosA-normal and s ~ 1/cosA^2, although the factors cancel
+    // in every resulting direction.  Near grazing incidence those temporary
+    // values overflowed or lost most significant digits.
+    r = dir - normal*cosA;
     reRiEff = ComputeEffectiveReRi();
-#ifdef _DEBUG
-    // double x = r.cx;
-    // double xx = x*x;
-    // double y = r.cy * r.cy;
-    // double z = r.cz * r.cz;
-    // double n = (double)r.cx * (double)r.cx
-    //         + (double)r.cy * (double)r.cy
-    //         + (double)r.cz * (double)r.cz;
-    // double rr = reRiEff*cosA*cosA;
-    // double ss = s = 1.0/rr - n;
-#endif
-    s = 1.0/(reRiEff*cosA*cosA) - Norm(r);
+    s = 1.0/reRiEff - Norm(r);
 }
 
 bool Splitting::IsCompleteReflection()
 {
-    return s <= DBL_EPSILON;
+    return s <= 0.0;
 }
 
 bool Splitting::IsNormalIncidence()
@@ -47,29 +42,18 @@ bool Splitting::IsNormalIncidence()
 
 bool Splitting::IsIncident()
 {
-    return cosA >= EPS_COS_90;
+    return cosA > EPS_GRAZING_INCIDENCE;
 }
 
 double Splitting::ComputeSegmentOpticalPath(const Beam &beam, const Point3f &facetPoint) const
 {
-    double tmp = DotProductD(beam.direction, facetPoint);
-#ifdef _DEBUG // DEB
-//	if (tmp + beam.front < 0)
-//		int fff = 0;
-    Point3f dd = beam.Center();
-    Point3f pd = beam.Center() + (beam.direction * 10);
-#endif
-
-    double path = fabs(tmp + beam.front); // refractive index of external media = 1
-
-    /* ПРоверка на нахождения плоскости за пучком
-     * REF: вынести в случай невыпуклых частиц, т.к. характерно только для них */
-    double cosB = DotProductD(NormalizeD(facetPoint - beam.Center()), beam.direction);
-
-    if (cosB < 0)
-    {
-        path = -path;
-    }
+    // beam.front is the phase-plane offset established when the beam is
+    // created.  Clipping may replace its aperture polygon and move Center(),
+    // but it must not move that phase plane.  Therefore the signed propagation
+    // distance follows directly from the plane equation instead of being
+    // re-signed relative to the current aperture centroid.
+    double path = SignedPhasePlaneDistance(beam.direction, beam.front,
+                                           facetPoint);
 
     if (beam.location == Location::In)
     {
@@ -84,7 +68,7 @@ double Splitting::ComputeSegmentOpticalPath(const Beam &beam, const Point3f &fac
 void Splitting::ComputeCRBeamParams(const Point3f &normal, const Beam &incidentBeam,
                                     Beam &inBeam)
 {
-    Point3f reflDir = r - normal;
+    Point3f reflDir = incidentBeam.direction - normal*(2.0*cosA);
     Normalize(reflDir);
     inBeam.SetLight(reflDir, incidentBeam.polarizationBasis);
 
@@ -127,23 +111,24 @@ void Splitting::ComputeRegularJonesParams(const Point3f &normal, const Beam &inc
     inBeam.MultiplyJonesMatrix(Tv/Tv0, Th/Th0);
 }
 
-void Splitting::ComputeInternalRefractiveDirection(const Vector3f &r,
+void Splitting::ComputeInternalRefractiveDirection(const Vector3f &tangential,
                                                    const Vector3f &normal,
                                                    Vector3f &dir)
 {
-    double cosA2 = cosA * cosA;
-    double tmp = m_cRiRe + cosA2 - 1.0;
+    const double sinA2 = std::max(0.0, Norm(tangential));
+    const double delta = m_cRiRe - sinA2;
+    const double loss = std::sqrt(std::max(0.0, m_cRiIm));
+    const double root = std::hypot(delta, loss);
 
-    if (m_cRiIm > FLT_EPSILON)
-    {
-        tmp = sqrt(tmp*tmp + m_cRiIm);
-    }
+    // q=(delta+sqrt(delta^2+loss^2))/2.  Use the conjugate form when
+    // delta<0 to avoid cancellation near the critical angle.
+    double q = 0.0;
+    if (delta >= 0.0)
+        q = 0.5*(delta + root);
+    else if (loss > 0.0)
+        q = (0.5*loss)*(loss/(root - delta));
 
-    tmp = (m_cRiRe + 1.0 - cosA2 + tmp)/2.0;
-    tmp = (tmp/cosA2);
-    tmp -= Norm(r);
-    tmp = sqrt(tmp);
-    dir = (r/tmp) - normal;
+    dir = tangential - normal*std::sqrt(std::max(0.0, q));
     Normalize(dir);
 }
 
@@ -162,18 +147,19 @@ void Splitting::ComputeCRJonesParams(complex &cv, complex &ch)
 
 void Splitting::ComputeCosA(const Point3f &normal, const Point3f &incidentDir)
 {
-    cosA = DotProduct(normal, incidentDir);
+    cosA = std::max(-1.0, std::min(1.0,
+        static_cast<double>(DotProduct(normal, incidentDir))));
 }
 
 void Splitting::ComputeRegularBeamsParams(const Point3f &normal,
                                           const Beam &incidentBeam,
                                           Beam &inBeam, Beam &outBeam)
 {
-    Point3f reflDir = r - normal;
+    Point3f reflDir = incidentBeam.direction - normal*(2.0*cosA);
     Normalize(reflDir);
     inBeam.SetLight(reflDir, incidentBeam.polarizationBasis);
 
-    Point3f refrDir = r/sqrt(s) + normal;
+    Point3f refrDir = r + normal*std::sqrt(std::max(0.0, s));
     Normalize(refrDir);
     outBeam.SetLight(refrDir, incidentBeam.polarizationBasis);
 
@@ -252,12 +238,12 @@ void Splitting::ComputeRegularBeamParamsExternal(const Point3f &facetNormal,
     Point3f refrDir;
     const Point3f &dir = incidentBeam.direction;
 
-    Point3f r = dir/cosA - facetNormal;
+    const Point3f tangential = dir - facetNormal*cosA;
 
-    refrDir = r - facetNormal;
+    refrDir = dir - facetNormal*(2.0*cosA);
     Normalize(refrDir);
 
-    ComputeInternalRefractiveDirection(r, -facetNormal, inBeam.direction);
+    ComputeInternalRefractiveDirection(tangential, -facetNormal, inBeam.direction);
 
     outBeam.SetLight(refrDir, incidentBeam.polarizationBasis);
 
@@ -283,12 +269,12 @@ double Splitting::ComputeIncidentOpticalPath(const Point3f &direction,
 #ifdef _DEBUG  /* DEB */
 //    double dp = DotProduct(direction, facetPoint);
 #endif
-    return FAR_ZONE_DISTANCE + DotProduct(direction, facetPoint);
+    return DotProductD(direction, facetPoint);
 }
 
 double Splitting::ComputeOutgoingOpticalPath(const Beam &beam)
 {
-    return FAR_ZONE_DISTANCE + beam.front;
+    return beam.front;
 }
 
 Point3f Splitting::ChangeBeamDirection(const Vector3f &oldDir,
@@ -300,16 +286,19 @@ Point3f Splitting::ChangeBeamDirection(const Vector3f &oldDir,
     if (oldLoc == Location::Out) // refraction
     {
         ComputeCosA(oldDir, -normal);
-        Vector3f r = normal + oldDir/cosA;
+        const Vector3f interfaceNormal = -normal;
+        const Vector3f tangential = oldDir
+            - interfaceNormal*cosA;
 
         if (oldLoc == loc)
         {
-            newDir = normal + r;
+            newDir = oldDir
+                - interfaceNormal*(2.0*cosA);
             Normalize(newDir);
         }
         else
         {
-            ComputeInternalRefractiveDirection(r, normal, newDir);
+            ComputeInternalRefractiveDirection(tangential, normal, newDir);
         }
     }
     else // reflection
@@ -319,11 +308,11 @@ Point3f Splitting::ChangeBeamDirection(const Vector3f &oldDir,
 
         if (oldLoc == loc)
         {
-            newDir = r - normal;
+            newDir = oldDir - normal*(2.0*cosA);
         }
         else
         {
-            newDir = r/sqrt(s) + normal;
+            newDir = r + normal*std::sqrt(std::max(0.0, s));
         }
 
         Normalize(newDir);
@@ -339,5 +328,13 @@ complex Splitting::GetRi() const
 
 double Splitting::ComputeEffectiveReRi() const
 {
-    return (m_cRiRe + sqrt(m_cRiRe2 + m_cRiIm/(cosA*cosA)))/2.0;
+    const double absCos = std::max(std::fabs(cosA), DBL_MIN);
+    const double lossTerm = std::sqrt(std::max(0.0, m_cRiIm))/absCos;
+    const double root = std::hypot(m_cRiRe, lossTerm);
+
+    if (m_cRiRe >= 0.0)
+        return 0.5*(m_cRiRe + root);
+    if (lossTerm == 0.0)
+        return 0.0;
+    return (0.5*lossTerm)*(lossTerm/(root - m_cRiRe));
 }

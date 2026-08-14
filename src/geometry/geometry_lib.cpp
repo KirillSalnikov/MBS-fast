@@ -1,7 +1,6 @@
 #include <math.h>
 #include "Particle.h"
 #include "Intersection.h"
-#include "intrinsic/intrinsics.h"
 
 double DotProductD(const Vector3d &v1, const Vector3d &v2)
 {
@@ -26,44 +25,25 @@ double NormD(const Vector3d &p)
 
 void CrossProduct(const Vector3f &v1, const Vector3f &v2, Vector3f &res)
 {
-	__m128 _v1 = _mm_setr_ps(v1.cx, v1.cy, v1.cz, 0.0);
-	__m128 _v2 = _mm_setr_ps(v2.cx, v2.cy, v2.cz, 0.0);
-	__m128 _cp = _cross_product(_v1, _v2);
-
-	res.cx = _cp[0];
-	res.cy = _cp[1];
-	res.cz = _cp[2];
+	res.cx = v1.cy*v2.cz - v1.cz*v2.cy;
+	res.cy = v1.cz*v2.cx - v1.cx*v2.cz;
+	res.cz = v1.cx*v2.cy - v1.cy*v2.cx;
+	res.d_param = 0.0;
 }
 
 Point3f IntersectVectors(const Point3f &c1, const Point3f &c2,
 						 const Point3f &v1, const Point3f &v2,
 						 const Point3f &normalToFacet, bool &isOk)
 {
-	__m128 _c1 = _mm_setr_ps(c1.cx, c1.cy, c1.cz, 0.0);
-	__m128 _c2 = _mm_setr_ps(c2.cx, c2.cy, c2.cz, 0.0);
-	__m128 _v1 = _mm_setr_ps(v1.cx, v1.cy, v1.cz, 0.0);
-	__m128 _v2 = _mm_setr_ps(v2.cx, v2.cy, v2.cz, 0.0);
-	__m128 _en = _mm_setr_ps(normalToFacet.cx,
-							 normalToFacet.cy,
-							 normalToFacet.cz, 0.0);
-
-	__m128 _x = intersect_iv(_c1, _c2, _v1, _v2, _en, isOk);
-	return Point3f(_x[0], _x[1], _x[2]);
+	return intersect_iv(c1, c2, v1, v2, normalToFacet, isOk);
 }
 
 // REF: try to move to Point3f
 Point3f CrossProduct(const Point3f &v1, const Point3f &v2)
 {
-	__m128 _v1 = _mm_setr_ps(v1.cx, v1.cy, v1.cz, 0.0);
-	__m128 _v2 = _mm_setr_ps(v2.cx, v2.cy, v2.cz, 0.0);
-	__m128 _cp = _cross_product(_v1, _v2);
-
-	Point3f res;
-	res.cx = _cp[0];
-	res.cy = _cp[1];
-	res.cz = _cp[2];
-
-	return res;
+	return Point3f(v1.cy*v2.cz - v1.cz*v2.cy,
+				   v1.cz*v2.cx - v1.cx*v2.cz,
+				   v1.cx*v2.cy - v1.cy*v2.cx);
 }
 
 std::ostream &operator <<(std::ostream &os, const Point3f &p)
@@ -96,28 +76,45 @@ double LengthD(const Vector3d &v)
 
 void Normalize(Vector3f &v)
 {
-	double lenght = sqrt(Norm(v));
-	v.cx /= lenght;
-	v.cy /= lenght;
-	v.cz /= lenght;
+	const double length = sqrt(Norm(v));
+	if (!(length > DBL_MIN) || !std::isfinite(length))
+	{
+		v = Vector3f(0, 0, 0);
+		return;
+	}
+	v.cx /= length;
+	v.cy /= length;
+	v.cz /= length;
 }
 
 Vector3d NormalizeD(const Vector3d &v)
 {
 	Vector3d res;
-	double lenght = sqrt(NormD(v));
-	res.x = v.x / lenght;
-	res.y = v.y / lenght;
-	res.z = v.z / lenght;
+	const double length = sqrt(NormD(v));
+	if (!(length > DBL_MIN) || !std::isfinite(length))
+		return Vector3d(0, 0, 0);
+	res.x = v.x / length;
+	res.y = v.y / length;
+	res.z = v.z / length;
 	return res;
 }
 
-Point3f ProjectPointToPlane(const Point3f &point, const Vector3f &direction,
-							const Vector3f &planeNormal)
+bool ProjectPointToPlane(const Point3f &point, const Vector3f &direction,
+						 const Vector3f &planeNormal, Point3f &projection)
 {
 	double tmp = DotProduct(point, planeNormal);
 	double dp  = DotProduct(direction, planeNormal);
+	const double scale = Length(direction)*Length(planeNormal);
+	if (scale <= DBL_MIN
+		|| std::fabs(dp) <= geometry_parallel_tolerance(scale))
+		return false;
 	tmp += planeNormal.d_param;
 	tmp /= dp;
-	return point - (direction * tmp);
+	const double x = static_cast<double>(point.cx) - direction.cx*tmp;
+	const double y = static_cast<double>(point.cy) - direction.cy*tmp;
+	const double z = static_cast<double>(point.cz) - direction.cz*tmp;
+	if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+		return false;
+	projection = Point3f(x, y, z);
+	return true;
 }

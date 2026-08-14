@@ -19,6 +19,7 @@ bool GpuTracePrefilterBeamFacets(const Beam &beam,
                                  std::vector<unsigned char> &mayIntersect);
 
 bool GpuTracePrefilterBeamFacetBatch(const Facet *facets,
+                                     double geometryScale,
                                      const std::vector<GpuTraceBeamFacets> &items);
 
 void GpuTraceInvalidateFacetCache();

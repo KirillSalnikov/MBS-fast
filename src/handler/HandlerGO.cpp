@@ -19,7 +19,7 @@ void HandlerGO::SetTracks(Tracks *tracks)
     m_groupMatrices.resize(m_tracks->size());
 }
 
-void HandlerGO::SetScatteringSphere(const ScatteringRange &grid)
+void HandlerGO::SetScatteringSphere(const ScatteringRange &/*grid*/)
 {
 
 }
@@ -128,14 +128,14 @@ void HandlerGO::MultiplyMueller(const Beam &beam, matrix &m)
     m *= area;
 }
 
-matrix HandlerGO::ComputeMueller(float zenAng, Beam &beam)
+matrix HandlerGO::ComputeMueller(double /*zenAng*/, Beam &beam)
 {
     matrix m = Mueller(beam.J);
 //#ifdef _DEBUG // DEB
 //    double &ddd = m[0][0];
 //#endif
-    const float &x = beam.direction.cx;
-    const float &y = beam.direction.cy;
+    const double &x = beam.direction.cx;
+    const double &y = beam.direction.cy;
     if (x*x + y*y > DBL_EPSILON)
     {
         // Rotate the Mueller matrix to the scattering-plane basis.  The old
@@ -160,8 +160,8 @@ matrix HandlerGO::ComputeMueller(float zenAng, Beam &beam)
 
 void HandlerGO::RotateMuller(const Point3f &dir, matrix &bf)
 {
-    const float &x = dir.cx;
-    const float &y = dir.cy;
+    const double &x = dir.cx;
+    const double &y = dir.cy;
 
     double tmp = atan2(y, x);
 
@@ -190,8 +190,8 @@ void HandlerGO::WriteToFile(ContributionGO &contrib, double norm,
                 "M41 M42 M43 M44";
 
     double radius = m_sphere.zenithEnd - m_sphere.zenithStart;
-    float thetaStepDeg = contrib.thetaStep;
-    float thetaStepRad = DegToRad(contrib.thetaStep);
+    const double thetaStepDeg = contrib.thetaStep;
+    const double thetaStepRad = DegToRad(contrib.thetaStep);
 
     for (int j = contrib.nTheta; j >= 0; j--)
     {
@@ -200,8 +200,8 @@ void HandlerGO::WriteToFile(ContributionGO &contrib, double norm,
 //        double tmp2 = (j == (int)contrib.nTheta) ? (0.25*180.0)/contrib.nTheta : 0;
 
         double sn = (j == 0 || j == contrib.nTheta)
-                ? 1-cos(thetaStepRad/2.0)
-                : (cos((j-0.5)*thetaStepRad)-cos((j+0.5)*thetaStepRad));
+	                ? 2.0*sin(thetaStepRad/4.0)*sin(thetaStepRad/4.0)
+	                : 2.0*sin(j*thetaStepRad)*sin(thetaStepRad/2.0);
 
         // Special case in first and last step
 //        allFile << '\n' << tmp0 + tmp1 + tmp2 << ' ' << (M_2PI*sn);

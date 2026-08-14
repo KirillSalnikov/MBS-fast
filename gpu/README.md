@@ -6,8 +6,8 @@ you deliberately want the CPU backend from the GPU-capable binary. The legacy
 `--gpu` and `--cpu` switches remain accepted.
 
 ```bash
-make -C gpu -j
-gpu/bin/mbs_po_gpu_float_fast --method po --backend cuda \
+make -C gpu fp64 -j
+gpu/bin/mbs_po_gpu_double --method po --backend cuda \
     --particle 1 10 10 --refractive-index 1.3116 0 \
     --wavelength-um 10 --max-reflections 2 --sobol 256 \
     --scattering-grid 0 180 48 180 --threads 4 \
@@ -37,10 +37,20 @@ Run `make -C gpu clean` when changing the CUDA toolkit or host compiler.
 Other precision variants:
 
 ```bash
-make -C gpu float       # gpu/bin/mbs_po_gpu_float
-make -C gpu float_fast  # gpu/bin/mbs_po_gpu_float_fast
-make -C gpu double_fast # gpu/bin/mbs_po_gpu_double_fast
+make -C gpu fp32       # gpu/bin/mbs_po_gpu_float
+make -C gpu fp64       # gpu/bin/mbs_po_gpu_double
+make -C gpu fp32_fast  # gpu/bin/mbs_po_gpu_float_fast
+make -C gpu fp64_fast  # gpu/bin/mbs_po_gpu_double_fast
 ```
+
+`fp32`/`float` and `fp64`/`double` are accepted aliases. Invalid precision and
+fast-math values stop at Makefile parsing instead of silently selecting a
+different arithmetic type. The default is the FP64 reference build without
+`--use_fast_math`; the `_fast` targets enable that CUDA option explicitly.
+FP32 stores diffraction-beam geometry, Jones sums, and Mueller output in FP32.
+Visibility/topology tracing, optical paths, absorption, cancellation-prone
+polygon moments, and critical phase trigonometry remain FP64. The binary
+reports these choices in `--version`.
 
 Objects are written under `gpu/build/`, so this build does not conflict with
 the CPU MPI/OpenMP build.
@@ -66,10 +76,20 @@ diffraction workspace per device. It currently requires direct diffraction
 and orientation offsets are uploaded once per orientation chunk and cached in
 each worker's device workspace while its theta groups are processed.
 
-The default target uses float and CUDA fast math. Treat CPU double and CUDA
-double results as the numerical reference, and calibrate float-fast on the
-same particle, orientation mode, angular grid, and convergence limits before
-production use.
+For diffraction-kernel profiling, `MBS_GPU_TIMING=1` reports the selected path
+and stage timings.
+
+The direct-diffraction hot path keeps phase trigonometry in FP64.  For the
+normal polygon branch, the internal-beam centre phase is folded into the
+already required vertex phasors, so it does not require a separate `sincos`.
+The vertex phase also reuses the previously formed diffraction coefficients
+`A` and `B` as `k*A*x + k*B*y`.  Both transformations are algebraically exact;
+the rare small-phase moment branch still evaluates and applies its common
+phase explicitly.
+
+Treat CPU double and CUDA FP64 results as the numerical reference, and calibrate
+FP32 and fast-math builds on the same particle, orientation mode, angular grid,
+and convergence limits before production use.
 
 CUDA runtime errors stop the process by default. This is intentional: otherwise
 an invalid GPU build can silently fall back to CPU and ruin speed measurements.

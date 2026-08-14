@@ -101,18 +101,19 @@ Tracer::~Tracer()
 }
 
 void Tracer::CalcCsBeta(int betaNorm, double beta, const AngleRange &betaRange,
-                          const AngleRange &gammaRange, double normIndex, double &cs_beta)
+		                          const AngleRange &/*gammaRange*/, double normIndex, double &cs_beta)
 {
+	const double halfStep = 0.5*betaRange.step;
+	const double poleWeight = 2.0*sin(0.5*halfStep)*sin(0.5*halfStep);
+	const double interiorWeight = 2.0*sin(beta)*sin(halfStep);
     if (betaNorm == 2)
-        cs_beta = (fabs(beta)<=FLT_EPSILON || fabs(beta-M_PI)<=FLT_EPSILON) ?
-                      (1.0-cos(0.5*betaRange.step)) :
-                      (cos(beta-0.5*betaRange.step)-cos(beta+0.5*betaRange.step));
+        cs_beta = (fabs(beta)<=64.0*DBL_EPSILON || fabs(beta-M_PI)<=64.0*DBL_EPSILON) ?
+	                      poleWeight : interiorWeight;
     else
     {
-        cs_beta = (fabs(beta)<=FLT_EPSILON) ?
-                      (1.0-cos(0.5*betaRange.step)) :
-                      (cos(beta-0.5*betaRange.step)-cos(beta+0.5*betaRange.step));
-        if(fabs(beta-M_PI/2.0)<=FLT_EPSILON)
+        cs_beta = (fabs(beta)<=64.0*DBL_EPSILON) ?
+	                      poleWeight : interiorWeight;
+        if(fabs(beta-M_PI/2.0)<=64.0*DBL_EPSILON)
             cs_beta *= 0.5;
     }
 
@@ -136,7 +137,8 @@ void Tracer::OutputOrientationToLog(int i, int j, ostream &logfile)
 }
 
 void Tracer::OutputProgress(int nOrientation, long long count,
-                            int zenith, int azimuth, CalcTimer &timer, int nBeams)
+                            int /*zenith*/, int /*azimuth*/, CalcTimer &timer,
+                            int nBeams)
 {
     string split = "\t";
 
@@ -235,7 +237,7 @@ double Tracer::CalcNorm(long long orNum)
 
     double &symBeta = m_symmetry.beta;
 
-    if (symBeta < M_PI - FLT_EPSILON) //
+    if (symBeta < M_PI - 64.0*DBL_EPSILON) //
     {
         double tmp = symBeta;
         double dBeta = -(cos(symBeta) - 1);
@@ -310,8 +312,9 @@ void Tracer::SetIsOutputGroups(bool value)
 }
 
 //REF: объединить с предыдущим
-void Tracer::TraceRandomPO2(int betaNumber, int gammaNumber, const ScatteringRange &bsCone,
-                              const Tracks &tracks, double wave)
+void Tracer::TraceRandomPO2(int /*betaNumber*/, int /*gammaNumber*/,
+                           const ScatteringRange &/*bsCone*/,
+                           const Tracks &/*tracks*/, double /*wave*/)
 {
 //	m_wavelength = wave;
 //	CalcTimer timer;
@@ -392,7 +395,9 @@ void Tracer::SetHandler(Handler *handler)
     m_handler->SetScattering(m_scattering);
 }
 
-void Tracer::HandleBeamsPO2(vector<Beam> &outBeams, const ScatteringRange &bsCone, int groupID)
+void Tracer::HandleBeamsPO2(vector<Beam> &/*outBeams*/,
+                            const ScatteringRange &/*bsCone*/,
+                            int /*groupID*/)
 {
 //	for (unsigned int i = 0; i < outBeams.size(); ++i)
 //	{

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <cstring>
 #include <vector>
 #include <iomanip>
 #ifdef _OPENMP
@@ -22,8 +23,6 @@
 //#ifdef _DEBUG // DEB
 #include "Tracer.h"
 //#endif
-
-#define EPS_ORTO_FACET 0.0001
 
 #ifdef USE_CUDA
 namespace {
@@ -75,15 +74,112 @@ double CpuTraceProjectedPrefilterMargin()
     static const double margin = []() {
         const char *value = std::getenv("MBS_TRACE_CPU_PREFILTER_MARGIN");
         if (!value || !*value)
-            return 8.0;
+            return -1.0;
         char *end = nullptr;
         double parsed = std::strtod(value, &end);
         if (!end || *end != '\0' || parsed < 0.0)
-            return 8.0;
+            return -1.0;
         return parsed;
     }();
     return margin;
 }
+
+bool FacetReachesForwardHalfSpace(const Facet &facet,
+                                  const Point3f &origin,
+                                  const Point3f &forward,
+                                  double tolerance)
+{
+    // A facet may cross the source plane even when its arithmetic center is
+    // behind it.  Reject it only when every vertex is safely behind the plane;
+    // otherwise later direction and projected-AABB tests decide intersection.
+    for (int vertex = 0; vertex < facet.nVertices; ++vertex)
+    {
+        if (DotProduct(forward, facet.arr[vertex] - origin) >= -tolerance)
+            return true;
+    }
+    return false;
+}
+
+double ProjectedCross(const Point2f &a, const Point2f &b, const Point2f &c)
+{
+    return (b.x - a.x)*(c.y - a.y) - (b.y - a.y)*(c.x - a.x);
+}
+
+double ProjectedSignedArea(const std::vector<Point2f> &polygon)
+{
+    double twiceArea = 0.0;
+    for (size_t i = 0; i < polygon.size(); ++i)
+    {
+        const Point2f &a = polygon[i];
+        const Point2f &b = polygon[(i + 1) % polygon.size()];
+        twiceArea += a.x*b.y - a.y*b.x;
+    }
+    return 0.5*twiceArea;
+}
+
+std::vector<Point2f> IntersectProjectedFacets(
+    const std::vector<Point2f> &subject,
+    const std::vector<Point2f> &clip,
+    double areaTolerance)
+{
+    std::vector<Point2f> result = subject;
+    const double orientation = ProjectedSignedArea(clip) >= 0.0 ? 1.0 : -1.0;
+    for (size_t edge = 0; edge < clip.size() && !result.empty(); ++edge)
+    {
+        const Point2f &a = clip[edge];
+        const Point2f &b = clip[(edge + 1) % clip.size()];
+        std::vector<Point2f> input;
+        input.swap(result);
+        Point2f previous = input.back();
+        double previousSide = orientation*ProjectedCross(a, b, previous);
+        bool previousInside = previousSide >= -areaTolerance;
+        for (const Point2f &current : input)
+        {
+            const double currentSide = orientation*ProjectedCross(a, b, current);
+            const bool currentInside = currentSide >= -areaTolerance;
+            if (currentInside != previousInside)
+            {
+                const double denominator = previousSide - currentSide;
+                if (std::fabs(denominator) > DBL_MIN)
+                {
+                    const double t = previousSide/denominator;
+                    result.push_back(Point2f(
+                        previous.x + t*(current.x - previous.x),
+                        previous.y + t*(current.y - previous.y)));
+                }
+            }
+            if (currentInside)
+                result.push_back(current);
+            previous = current;
+            previousSide = currentSide;
+            previousInside = currentInside;
+        }
+    }
+    return result;
+}
+
+bool ProjectedOverlapPoint(const std::vector<Point2f> &first,
+                           const std::vector<Point2f> &second,
+                           double areaTolerance,
+                           Point2f &point)
+{
+    const std::vector<Point2f> overlap = IntersectProjectedFacets(
+        first, second, areaTolerance);
+    if (overlap.size() < 3
+        || std::fabs(ProjectedSignedArea(overlap)) <= areaTolerance)
+        return false;
+
+    point = Point2f();
+    for (const Point2f &vertex : overlap)
+    {
+        point.x += vertex.x;
+        point.y += vertex.y;
+    }
+    point.x /= overlap.size();
+    point.y /= overlap.size();
+    return true;
+}
+
 }
 
 #ifdef _DEBUG
@@ -99,7 +195,7 @@ ScatteringNonConvex::ScatteringNonConvex(Particle *particle, Light *incidentLigh
 {
 }
 
-bool ScatteringNonConvex::ScatterLight(double beta, double gamma,
+bool ScatteringNonConvex::ScatterLight(double /*beta*/, double /*gamma*/,
                                        std::vector<Beam> &scaterredBeams)
 {
     // m_particle->Rotate(beta, gamma, 0);
@@ -113,11 +209,13 @@ bool ScatteringNonConvex::ScatterLight(double beta, double gamma,
     if (m_gpuTracePrefilter)
         GpuTraceInvalidateFacetCache();
 #endif
-    SplitLightToBeams();
+    if (!SplitLightToBeams())
+        return false;
     return SplitBeams(scaterredBeams);
 }
 
-void ScatteringNonConvex::PushBeamsToTree(int facetId, const PolygonArray &polygons,
+bool ScatteringNonConvex::PushBeamsToTree(int facetId,
+                                          const PolygonArray &polygons,
                                           Beam &inBeam, Beam &outBeam)
 {
     auto id = RecomputeTrackId(0, facetId);
@@ -173,23 +271,17 @@ void ScatteringNonConvex::PushBeamsToTree(int facetId, const PolygonArray &polyg
 #ifdef _DEBUG // DEB
         in.dirs.push_back(in.direction);
         out.dirs.push_back(out.direction);
-        if (m_treeSize >= MAX_BEAM_REFL_NUM-1)
-        {
-            throw false;
-        }
 #endif
-        if (m_treeSize >= MAX_BEAM_REFL_NUM-1)
-            return;
-        if (!EnsureBeamTree())
-            return;
-        m_beamTree.push_back(in);
-        m_beamTree.push_back(out);
-        m_treeSize = (int)m_beamTree.size();
+        if (!Scattering::PushBeamToTree(in, facetId, 0, Location::In)
+            || !Scattering::PushBeamToTree(out, facetId, 0, Location::Out))
+            return false;
         AddProjectedIncidentEnergy(facetId, out);
     }
+
+    return true;
 }
 
-void ScatteringNonConvex::SplitByFacet(const IntArray &facetIDs, int facetIndex)
+bool ScatteringNonConvex::SplitByFacet(const IntArray &facetIDs, int facetIndex)
 {
     m_polygonResultBuffer.Clear();
     IntersectWithFacet(facetIDs, facetIndex, m_polygonResultBuffer);
@@ -205,11 +297,14 @@ void ScatteringNonConvex::SplitByFacet(const IntArray &facetIDs, int facetIndex)
             int fff = 0;
 #endif
         SetIncidentBeamOpticalParams(id, inBeam, outBeam);
-        PushBeamsToTree(id, m_polygonResultBuffer, inBeam, outBeam);
+        if (!PushBeamsToTree(id, m_polygonResultBuffer, inBeam, outBeam))
+            return false;
     }
+
+    return true;
 }
 
-void ScatteringNonConvex::SplitLightToBeams()
+bool ScatteringNonConvex::SplitLightToBeams()
 {
     m_incidentEnergy = 0;
     m_treeSize = 0;
@@ -219,10 +314,12 @@ void ScatteringNonConvex::SplitLightToBeams()
     IntArray facetIDs;
     SelectVisibleFacetsForLight(facetIDs);
 
-    for (int i = 0; i < facetIDs.size; ++i)
+    for (size_t i = 0; i < facetIDs.size; ++i)
     {
-        SplitByFacet(facetIDs, i);
+        if (!SplitByFacet(facetIDs, (int)i))
+            return false;
     }
+    return true;
 //#ifdef _DEBUG // DEB
 //	ofstream logfile("logscat1.txt", ios::out);
 //	for (int i = 0; i < m_treeSize; ++i)
@@ -243,8 +340,7 @@ void ScatteringNonConvex::IntersectWithFacet(const IntArray &facetIds, int prevF
 {
     int id = facetIds.arr[prevFacetNum];
 
-    const char *noInitialClip = std::getenv("MBS_NO_INITIAL_SHADOW_CLIP");
-    if ((noInitialClip && *noInitialClip) || prevFacetNum == 0 || m_facets[id].isVisibleOut)
+    if (prevFacetNum == 0 || m_facets[id].isVisibleOut)
     {
         if (PgLikePartShadow())
             CutPolygonByAggregateParts(m_facets[id], id, m_facets[id].ex_normal, m_incidentDir, resFacets);
@@ -323,7 +419,7 @@ void ScatteringNonConvex::CutPolygonByAggregateParts(const Polygon &pol, int fac
         for (int fid = begin; fid < end; ++fid)
         {
             const Facet &f = m_facets[fid];
-            if (DotProduct(f.ex_normal, dir) >= -1.0e-3)
+            if (DotProduct(f.ex_normal, dir) >= -EPS_PROJECTION)
                 continue;
 
             bool faceInFront = false;
@@ -337,17 +433,21 @@ void ScatteringNonConvex::CutPolygonByAggregateParts(const Polygon &pol, int fac
                 const Point3f &src = f.arr[vi];
                 const double t = (DotProduct(src, polNormal) + polNormal.d_param) / denom;
                 const char *depthMode = std::getenv("MBS_AGGREGATE_PART_SHADOW_DEPTH");
+                const double depthTolerance = geometry_length_tolerance(
+                    m_geometryScale);
                 if (depthMode && depthMode[0] == '1')
                 {
-                    if (t > 0.0)
+                    if (t > depthTolerance)
                         faceInFront = true;
                 }
                 else if (depthMode && depthMode[0] == '2')
                 {
-                    if (t < 0.0)
+                    if (t < -depthTolerance)
                         faceInFront = true;
                 }
-                else if (DotProduct(src - pol.arr[0], polNormal) > 0.0)
+                else if (DotProduct(src - pol.arr[0], polNormal)
+                         > geometry_length_tolerance(
+                               m_geometryScale))
                 {
                     faceInFront = true;
                 }
@@ -360,8 +460,12 @@ void ScatteringNonConvex::CutPolygonByAggregateParts(const Polygon &pol, int fac
                 faceProjected.push_back(Point2f(x, y));
             }
 
-            const bool bboxOverlap = faceMaxX >= targetMinX && faceMinX <= targetMaxX
-                                  && faceMaxY >= targetMinY && faceMinY <= targetMaxY;
+            const double bboxTolerance = geometry_length_tolerance(
+                m_geometryScale);
+            const bool bboxOverlap = faceMaxX + bboxTolerance >= targetMinX
+                                  && faceMinX - bboxTolerance <= targetMaxX
+                                  && faceMaxY + bboxTolerance >= targetMinY
+                                  && faceMinY - bboxTolerance <= targetMaxY;
             if (!faceInFront || !bboxOverlap)
                 continue;
 
@@ -372,15 +476,21 @@ void ScatteringNonConvex::CutPolygonByAggregateParts(const Polygon &pol, int fac
         if (!mayBlock || projected.size() < 3)
             continue;
 
-        std::sort(projected.begin(), projected.end(), [](const Point2f &a, const Point2f &b) {
-            if (std::fabs(a.x - b.x) > 1e-7) return a.x < b.x;
-            return a.y < b.y;
-        });
+        std::sort(projected.begin(), projected.end(),
+            [](const Point2f &a, const Point2f &b) {
+                return a.x < b.x || (a.x == b.x && a.y < b.y);
+            });
         std::vector<Point2f> unique;
         unique.reserve(projected.size());
         for (const Point2f &p2 : projected)
         {
-            if (unique.empty() || std::fabs(unique.back().x - p2.x) > 1e-7 || std::fabs(unique.back().y - p2.y) > 1e-7)
+            const double tolerance = geometry_length_tolerance(
+                m_geometryScale);
+            if (unique.empty()
+                || std::fabs(static_cast<double>(unique.back().x) - p2.x)
+                       > tolerance
+                || std::fabs(static_cast<double>(unique.back().y) - p2.y)
+                       > tolerance)
                 unique.push_back(p2);
         }
         if (unique.size() < 3)
@@ -389,7 +499,9 @@ void ScatteringNonConvex::CutPolygonByAggregateParts(const Polygon &pol, int fac
         std::vector<Point2f> hull;
         for (const Point2f &p2 : unique)
         {
-            while (hull.size() >= 2 && HullCross(hull[hull.size()-2], hull[hull.size()-1], p2) <= 0)
+            while (hull.size() >= 2
+                   && HullCross(hull[hull.size()-2], hull[hull.size()-1], p2)
+                      <= 0.0)
                 hull.pop_back();
             hull.push_back(p2);
         }
@@ -397,14 +509,19 @@ void ScatteringNonConvex::CutPolygonByAggregateParts(const Polygon &pol, int fac
         for (int i = (int)unique.size() - 2; i >= 0; --i)
         {
             const Point2f &p2 = unique[i];
-            while (hull.size() > lower && HullCross(hull[hull.size()-2], hull[hull.size()-1], p2) <= 0)
+            while (hull.size() > lower
+                   && HullCross(hull[hull.size()-2], hull[hull.size()-1], p2)
+                      <= 0.0)
                 hull.pop_back();
             hull.push_back(p2);
         }
         if (hull.size() > 1)
             hull.pop_back();
-        if (hull.size() < 3 || hull.size() >= MAX_VERTEX_NUM)
+        if (hull.size() < 3)
             continue;
+        if (hull.size() > MAX_VERTEX_NUM)
+            throw std::runtime_error(
+                "aggregate shadow hull exceeds the 64-vertex geometry limit");
 
         Polygon clip;
         for (const Point2f &p2 : hull)
@@ -512,166 +629,280 @@ void ScatteringNonConvex::CutExternalBeam(const Beam &beam,
     }
 }
 
-void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir, IntArray &facetIDs)
+void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
+                                             IntArray &facetIDs)
 {
     if (facetIDs.size < 2)
-    {
         return;
-    }
 
-    double keys[MAX_FACET_NUM];
-
-    for (int i = 0; i < facetIDs.size; ++i)
+    struct FacetDepth
     {
-        const int &id = facetIDs.arr[i];
+        int facetId;
+        double depth;
+        double maximumDepth;
+    };
+    std::vector<FacetDepth> ordered;
+    ordered.reserve(facetIDs.size);
+    for (size_t i = 0; i < facetIDs.size; ++i)
+    {
+        const int id = facetIDs.arr[i];
         const Polygon &facet = m_facets[id];
         double key = facet.arr[0].cx * beamDir.cx
                    + facet.arr[0].cy * beamDir.cy
                    + facet.arr[0].cz * beamDir.cz;
+        double maximumKey = key;
 
-        for (unsigned vertex = 1; vertex < facet.nVertices; ++vertex)
+        for (int vertex = 1; vertex < facet.nVertices; ++vertex)
         {
             const Point3f &p = facet.arr[vertex];
             double projection = p.cx * beamDir.cx
                               + p.cy * beamDir.cy
                               + p.cz * beamDir.cz;
-            if (key - projection > FLT_EPSILON)
-            {
+            if (projection < key)
                 key = projection;
-            }
+            if (projection > maximumKey)
+                maximumKey = projection;
         }
-
-        keys[i] = key;
+        ordered.push_back({id, key, maximumKey});
     }
 
-    if (facetIDs.size == 2)
+    // Exact double ordering is scale invariant.  The previous quicksort used
+    // absolute FLT_EPSILON comparisons on dimensional depths, so a uniform
+    // particle resize could change the clipping order and the beam topology.
+    std::stable_sort(ordered.begin(), ordered.end(),
+        [](const FacetDepth &a, const FacetDepth &b) {
+            if (a.depth != b.depth)
+                return a.depth < b.depth;
+            return a.facetId < b.facetId;
+        });
+
+    // Floating-point rotations perturb theoretically coplanar facets by a few ulps.
+    // Give every such group a deterministic order because subtraction of
+    // zero-area clipping remnants is otherwise order-dependent. Particle-file
+    // facets are canonically indexed by the loader, so this id is independent
+    // of their serialization order.
+    const double depthTolerance = geometry_length_tolerance(
+        m_geometryScale);
+    for (size_t begin = 0; begin < ordered.size();)
     {
-        if (keys[0] - keys[1] >= EPS_M_COS_90)
-        {
-            int temp_v = facetIDs.arr[0];
-            facetIDs.arr[0] = facetIDs.arr[1];
-            facetIDs.arr[1] = temp_v;
-        }
+        size_t end = begin + 1;
+        while (end < ordered.size()
+               && ordered[end].depth - ordered[begin].depth <= depthTolerance)
+            ++end;
+        std::sort(ordered.begin() + begin, ordered.begin() + end,
+            [](const FacetDepth &a, const FacetDepth &b) {
+                return a.facetId < b.facetId;
+            });
+        begin = end;
+    }
+
+    bool hasOverlappingDepthIntervals = false;
+    for (size_t first = 0; first < ordered.size() && !hasOverlappingDepthIntervals;
+         ++first)
+    {
+        if (first + 1 < ordered.size()
+            && ordered[first + 1].depth
+               <= ordered[first].maximumDepth + depthTolerance)
+            hasOverlappingDepthIntervals = true;
+    }
+    if (!hasOverlappingDepthIntervals)
+    {
+        for (size_t i = 0; i < facetIDs.size; ++i)
+            facetIDs.arr[i] = ordered[i].facetId;
         return;
     }
 
-    int left = 0;
-    int rigth = facetIDs.size - 1;
-
-    int stack[MAX_FACET_NUM*2];
-    int size = 0;
-
-    stack[size++] = left;
-    stack[size++] = rigth;
-
-    while (true)
+    Point3f direction(beamDir.cx, beamDir.cy, beamDir.cz);
+    const double directionLength = Length(direction);
+    if (!(directionLength > DBL_MIN))
     {
-        int id = (left + rigth)/2;
-        int i = left;
-        int j = rigth;
+        for (size_t i = 0; i < facetIDs.size; ++i)
+            facetIDs.arr[i] = ordered[i].facetId;
+        return;
+    }
+    direction = direction/directionLength;
 
-        double base = keys[id];
+    Point3f reference;
+    const double ax = std::fabs(direction.cx);
+    const double ay = std::fabs(direction.cy);
+    const double az = std::fabs(direction.cz);
+    if (ax <= ay && ax <= az)
+        reference = Point3f(1, 0, 0);
+    else if (ay <= az)
+        reference = Point3f(0, 1, 0);
+    else
+        reference = Point3f(0, 0, 1);
+    Point3f axisU = CrossProduct(direction, reference);
+    Normalize(axisU);
+    Point3f axisV = CrossProduct(direction, axisU);
+    Normalize(axisV);
 
-        while (i <= j)
+    const size_t count = ordered.size();
+    std::vector<std::vector<Point2f> > projected(count);
+    for (size_t index = 0; index < count; ++index)
+    {
+        const Polygon &facet = m_facets[ordered[index].facetId];
+        projected[index].reserve(facet.nVertices);
+        for (int vertex = 0; vertex < facet.nVertices; ++vertex)
+            projected[index].push_back(Point2f(
+                DotProduct(facet.arr[vertex], axisU),
+                DotProduct(facet.arr[vertex], axisV)));
+    }
+
+    std::vector<std::vector<unsigned char> > precedes(
+        count, std::vector<unsigned char>(count, 0));
+    std::vector<int> indegree(count, 0);
+    const double areaTolerance = geometry_area_tolerance(
+        m_geometryScale);
+    for (size_t first = 0; first < count; ++first)
+    {
+        for (size_t second = first + 1; second < count; ++second)
         {
-            double cosVN;
+            if (ordered[second].depth
+                > ordered[first].maximumDepth + depthTolerance)
+                break;
+            Point2f overlapPoint;
+            if (!ProjectedOverlapPoint(projected[first], projected[second],
+                                       areaTolerance, overlapPoint))
+                continue;
 
-            do
+            const Point3f rayOrigin = axisU*overlapPoint.x
+                                    + axisV*overlapPoint.y;
+            const Polygon &firstFacet = m_facets[ordered[first].facetId];
+            const Polygon &secondFacet = m_facets[ordered[second].facetId];
+            const Point3f firstNormal = firstFacet.Normal();
+            const Point3f secondNormal = secondFacet.Normal();
+            const double firstDenominator = DotProduct(direction, firstNormal);
+            const double secondDenominator = DotProduct(direction, secondNormal);
+            if (std::fabs(firstDenominator) <= EPS_PROJECTION
+                || std::fabs(secondDenominator) <= EPS_PROJECTION)
+                continue;
+            const double firstDepth = DotProduct(
+                firstFacet.arr[0] - rayOrigin, firstNormal)/firstDenominator;
+            const double secondDepth = DotProduct(
+                secondFacet.arr[0] - rayOrigin, secondNormal)/secondDenominator;
+            if (std::fabs(firstDepth - secondDepth) <= depthTolerance)
+                continue;
+
+            const size_t before = firstDepth < secondDepth ? first : second;
+            const size_t after = firstDepth < secondDepth ? second : first;
+            if (!precedes[before][after])
             {
-                cosVN = base - keys[i];
-                ++i;
-            }
-            while (cosVN > FLT_EPSILON);
-            --i;
-
-            do
-            {
-                cosVN = base - keys[j];
-                --j;
-            }
-            while (cosVN < EPS_M_COS_90);
-            ++j;
-
-            if (i <= j)
-            {
-                double temp_d = keys[i];
-                keys[i] = keys[j];
-                keys[j] = temp_d;
-
-                int temp_v = facetIDs.arr[i];
-                facetIDs.arr[i] = facetIDs.arr[j];
-                facetIDs.arr[j] = temp_v;
-
-                ++i;
-                --j;
+                precedes[before][after] = 1;
+                ++indegree[after];
             }
         }
+    }
 
-        if (i < rigth)
+    std::vector<unsigned char> emitted(count, 0);
+    size_t output = 0;
+    while (output < count)
+    {
+        size_t selected = count;
+        for (size_t candidate = 0; candidate < count; ++candidate)
         {
-            stack[size++] = i;
-            stack[size++] = rigth;
+            if (!emitted[candidate] && indegree[candidate] == 0)
+            {
+                selected = candidate;
+                break;
+            }
         }
-
-        if (left < j)
+        if (selected == count)
         {
-            stack[size++] = left;
-            stack[size++] = j;
-        }
-
-        if (size == 0)
-        {
+            // A cycle can only arise from a numerically unresolved contact.
+            // Preserve the deterministic scale-invariant fallback order.
+            for (size_t candidate = 0; candidate < count; ++candidate)
+                if (!emitted[candidate])
+                    facetIDs.arr[output++] = ordered[candidate].facetId;
             break;
         }
-
-        rigth = stack[--size];
-        left = stack[--size];
+        emitted[selected] = 1;
+        facetIDs.arr[output++] = ordered[selected].facetId;
+        for (size_t after = 0; after < count; ++after)
+            if (precedes[selected][after])
+                --indegree[after];
     }
 }
 
-void ScatteringNonConvex::CutBeamByFacet(const Facet &facet, Beam &beam,
+bool ScatteringNonConvex::CutBeamByFacet(const Polygon &intersection,
+                                         int facetId, Beam &beam,
+                                         Polygon &reachedIntersection,
                                          PolygonArray &result)
 {
+    reachedIntersection.Clear();
     const Location &loc = beam.location;
     const Facet &beamFacet = m_facets[beam.lastFacetId];
+    const double sourceArea = beam.Area();
+    Polygon reachedAperture;
+    // Build the reached region once on the source plane.  Difference returns
+    // both its complement and the exact overlap, so child creation and parent
+    // subtraction cannot use different projected polygons.
+    Difference(beam, beamFacet.normal[loc], intersection,
+               beamFacet.normal[loc], -beam.direction, result,
+               &reachedAperture);
 
+    if (reachedAperture.nVertices < MIN_VERTEX_NUM)
+    {
+        result.Clear();
+        return false;
+    }
+
+    double remainingArea = 0.0;
+    for (unsigned i = 0; i < result.size; ++i)
+        remainingArea += result.arr[i].Area();
+    const double overlapArea = reachedAperture.Area();
+    const double areaImbalance = std::fabs(
+        sourceArea - remainingArea - overlapArea);
+    const double relativeScale = std::max(
+        sourceArea, std::max(remainingArea, overlapArea));
+    const double areaTolerance = std::max(
+        1024.0*geometry_area_tolerance(m_geometryScale),
+        1.0e-9*relativeScale);
+    if (areaImbalance > areaTolerance)
+    {
+        throw std::runtime_error(
+            "beam partition does not conserve projected area: imbalance="
+            + std::to_string(areaImbalance)
+            + ", source=" + std::to_string(sourceArea)
+            + ", remaining=" + std::to_string(remainingArea)
+            + ", overlap=" + std::to_string(overlapArea)
+            + ", tolerance=" + std::to_string(areaTolerance));
+    }
+
+    const Facet &targetFacet = m_facets[facetId];
+    Point3f targetProjection[MAX_VERTEX_NUM];
+    if (!ProjectToFacetPlane(reachedAperture, beam.direction,
+                             targetFacet.normal[loc], targetProjection))
+    {
+        throw std::runtime_error(
+            "reached aperture cannot be projected to the target facet");
+    }
+    SetOutputPolygon(targetProjection, reachedAperture.nVertices,
+                     reachedIntersection);
+    if (reachedIntersection.nVertices < MIN_VERTEX_NUM)
+    {
+        // The source partition is still physical, but a nearly tangent target
+        // can shrink its child below the representable geometry threshold.
+        m_traceCutoffStatistics->smallFragmentSimplifications.fetch_add(
+            1, std::memory_order_relaxed);
+    }
+
+    // Preserve the historical internal-visibility behavior: the reached
+    // child is constrained to the source aperture, but this parent continues
+    // to the remaining candidate facets without subtraction.
     if (loc == Location::In && beamFacet.isVisibleIn)
     {
-        return;
+        result.Clear();
+        return false;
     }
 
-    const Point3f &facetNormal = (loc == Location::Out) ? -beamFacet.normal[loc]
-                                                        :  beamFacet.normal[loc];
-    Difference(beam, beamFacet.normal[loc],
-               facet, facetNormal, -beam.direction, result);
-
-    if (result.size == 0) // beam is totaly swallowed by facet
-    {
-        beam.nVertices = 0;
-    }
+    return true;
 }
 
 bool ScatteringNonConvex::IsOutgoingBeam(Beam &incidentBeam)
 {
     return (incidentBeam.location == Location::Out
             && incidentBeam.nVertices != 0); // OPT: replace each other
-}
-
-int ScatteringNonConvex::FindFacetId(int facetId, const IntArray &arr)
-{
-    int i = 0;
-
-    while ((facetId == arr.arr[i]) && (i < arr.size))
-    {
-        ++i;
-    }
-
-    if (i == arr.size)
-    {
-        i = -1;
-    }
-
-    return i;
 }
 
 bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
@@ -864,7 +1095,10 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
                 {
                     m_traceCutoffStatistics->configuredBeamLimitHits.fetch_add(
                         1, std::memory_order_relaxed);
-                    return false;
+                    throw std::runtime_error(
+                        "tracing processed more than --trace-max-beams="
+                        + std::to_string(m_traceMaxBeams)
+                        + " branches; raise the limit or use 0 to disable it");
                 }
                 TraceBatchItem item;
                 item.beam = m_beamTree.back();
@@ -892,7 +1126,8 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
                 }
             }
             if (!gpuItems.empty())
-                GpuTracePrefilterBeamFacetBatch(m_facets, gpuItems);
+                GpuTracePrefilterBeamFacetBatch(
+                    m_facets, m_geometryScale, gpuItems);
 
             for (size_t i = 0; i < batch.size(); ++i)
             {
@@ -908,7 +1143,10 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
         {
             m_traceCutoffStatistics->configuredBeamLimitHits.fetch_add(
                 1, std::memory_order_relaxed);
-            return false;
+            throw std::runtime_error(
+                "tracing processed more than --trace-max-beams="
+                + std::to_string(m_traceMaxBeams)
+                + " branches; raise the limit or use 0 to disable it");
         }
         Beam beam = m_beamTree.back();
         m_beamTree.pop_back();
@@ -1012,7 +1250,7 @@ void ScatteringNonConvex::FindVisibleFacetsForLight(IntArray &facetIDs)
     {
         double cosA = DotProduct(m_incidentDir, m_facets[i].in_normal);
 
-        if (cosA >= FLT_EPSILON) // beam incidents to this facet
+        if (cosA > EPS_PROJECTION) // beam incidents to this facet
         {
             facetIDs.Add(i);
         }
@@ -1021,15 +1259,12 @@ void ScatteringNonConvex::FindVisibleFacetsForLight(IntArray &facetIDs)
 
 bool ScatteringNonConvex::IsVisibleFacet(int facetID, const Beam &beam)
 {
-//	int loc = !beam.location;
     const Point3f &beamNormal = -m_facets[beam.lastFacetId].normal[!beam.location];
-
-    const Point3f &facetCenter = m_facets[facetID].center;
     const Point3f &beamCenter = m_facets[beam.lastFacetId].center;
-    Point3f vectorFromBeamToFacet = facetCenter - beamCenter;
-
-    double cosBF = DotProduct(beamNormal, vectorFromBeamToFacet);
-    return (cosBF >= EPS_ORTO_FACET);
+    const double tolerance = geometry_length_tolerance(
+        m_geometryScale);
+    return FacetReachesForwardHalfSpace(m_facets[facetID], beamCenter,
+                                        beamNormal, tolerance);
 }
 
 bool ScatteringNonConvex::MayBeamIntersectFacetProjected(const Beam &beam, int facetId) const
@@ -1094,9 +1329,12 @@ bool ScatteringNonConvex::MayBeamIntersectFacetProjected(const Beam &beam, int f
     }
 
     const double *bounds = m_facetProjectionBounds[drop][facetId];
+    const double environmentMargin = CpuTraceProjectedPrefilterMargin();
     const double margin = m_traceCpuProjectedPrefilterMargin >= 0.0
         ? m_traceCpuProjectedPrefilterMargin
-        : CpuTraceProjectedPrefilterMargin();
+        : (environmentMargin >= 0.0
+            ? environmentMargin
+            : geometry_length_tolerance(m_geometryScale));
     return !(bMaxU < bounds[0] - margin || bounds[1] < bMinU - margin ||
              bMaxV < bounds[2] - margin || bounds[3] < bMinV - margin);
 }
@@ -1119,15 +1357,16 @@ void ScatteringNonConvex::BuildFacetVisibilityCache()
 
             const Point3f &beamNormal = -m_facets[sourceFacet].normal[!loc];
             const Point3f &beamCenter = m_facets[sourceFacet].center;
+            const double tolerance = geometry_length_tolerance(
+                m_geometryScale);
             for (int targetFacet = begin; targetFacet < end; ++targetFacet)
             {
                 if (targetFacet == sourceFacet)
                     continue;
 
-                const Point3f &facetCenter = m_facets[targetFacet].center;
-                Point3f vectorFromBeamToFacet = facetCenter - beamCenter;
-                double cosBF = DotProduct(beamNormal, vectorFromBeamToFacet);
-                if (cosBF >= EPS_ORTO_FACET)
+                if (FacetReachesForwardHalfSpace(m_facets[targetFacet],
+                                                 beamCenter, beamNormal,
+                                                 tolerance))
                     m_visibleFacetCache[locInt][sourceFacet][count++] = targetFacet;
             }
         }
@@ -1194,9 +1433,13 @@ void ScatteringNonConvex::CopyVisibilityCacheFrom(const ScatteringNonConvex &sou
     m_visibilityCacheOwner = nullptr;
     if (!m_visibilityCacheBuilt)
         return;
-    m_visibilityCacheOwner = source.m_visibilityCacheOwner
-                           ? source.m_visibilityCacheOwner
-                           : &source;
+    const ScatteringNonConvex &cache = source.m_visibilityCacheOwner
+                                     ? *source.m_visibilityCacheOwner
+                                     : source;
+    std::memcpy(m_visibleFacetCache, cache.m_visibleFacetCache,
+                sizeof(m_visibleFacetCache));
+    std::memcpy(m_visibleFacetCacheSize, cache.m_visibleFacetCacheSize,
+                sizeof(m_visibleFacetCacheSize));
 }
 
 void ScatteringNonConvex::FindVisibleFacets(const Beam &beam, IntArray &facetIds)
@@ -1214,120 +1457,11 @@ void ScatteringNonConvex::FindVisibleFacets(const Beam &beam, IntArray &facetIds
                      + beam.direction.cy * facetNormal.cy
                      + beam.direction.cz * facetNormal.cz;
 
-        if (cosFB >= FLT_EPSILON) // beam incidents to this facet
+        if (cosFB >= -EPS_PROJECTION) // conservative candidate filter
         {
             facetIds.Add(i);
         }
     }
-}
-
-/// OPT: поменять все int и пр. параметры функций на ссылочные
-
-/** TODO: придумать более надёжную сортировку по близости
- * (как вариант определять, что одна грань затеняют другую по мин. и макс.
- * удалённым вершинам, типа: "//" )
-*/
-void ScatteringNonConvex::SortFacets(const Point3f &beamDir, IntArray &facetIds)
-{
-    float distances[MAX_FACET_NUM];
-
-    for (int i = 0; i < facetIds.size; ++i)
-    {
-        const int &id = facetIds.arr[i];
-        distances[i] = CalcMinDistanceToFacet(m_facets[id], beamDir);
-    }
-
-    int left = 0;
-    int rigth = facetIds.size - 1;
-
-    int stack[MAX_FACET_NUM*2];
-    int size = 0;
-
-    stack[size++] = left;
-    stack[size++] = rigth;
-
-    while (true)
-    {
-        float base = distances[(left + rigth)/2];
-
-        int i = left;
-        int j = rigth;
-
-        while (i <= j)
-        {
-            while (distances[i] < base)
-            {
-                ++i;
-            }
-
-            while (distances[j] > base)
-            {
-                --j;
-            }
-
-            if (i <= j)	// exchange elems
-            {
-                float temp_d = distances[i];
-                distances[i] = distances[j];
-                distances[j] = temp_d;
-
-                int temp_v = facetIds.arr[i];
-                facetIds.arr[i] = facetIds.arr[j];
-                facetIds.arr[j] = temp_v;
-
-                ++i;
-                --j;
-            }
-        }
-
-        if (i < rigth)
-        {
-            stack[size++] = i;
-            stack[size++] = rigth;
-        }
-
-        if (left < j)
-        {
-            stack[size++] = left;
-            stack[size++] = j;
-        }
-
-        if (size == 0)
-        {
-            break;
-        }
-
-        rigth = stack[--size];
-        left = stack[--size];
-    }
-}
-
-double ScatteringNonConvex::CalcMinDistanceToFacet(const Polygon &facet,
-                                              const Point3f &beamDir)
-{
-    double dist = FLT_MAX;
-    const Point3f *pol = facet.arr;
-    Point3f point;
-    Point3f dir = -beamDir;
-    double dp = DotProduct(dir, beamDir);
-
-    for (int i = 0; i < facet.nVertices; ++i)
-    {
-        /// REF: заменить на сущ. фуyкцию ProjectPointToPlane
-        // measure dist
-        double t = DotProduct(pol[i], beamDir);
-        t = t + beamDir.d_param;
-        t = t/dp;
-        point = pol[i] - (dir * t);
-        double newDist = sqrt(Norm(point - pol[i]));
-
-        if (newDist < dist) // choose minimum with previews
-        {
-            dist = newDist;
-        }
-    }
-
-    return dist;
 }
 
 /* TODO: Разобраться с параметром 'n' (кол-во вн. столкновений)
@@ -1337,24 +1471,13 @@ bool ScatteringNonConvex::PushBeamPartsToTree(const Beam &beam,
 {
     Beam tmp = beam; // OPT: try to replace 'tmp' to 'beam'
 
-    for (unsigned i = 0; i < parts.size; ++i)
+    for (size_t i = 0; i < parts.size; ++i)
     {
         tmp = parts.arr[i];
 
-        if (tmp.location == Location::In && IsTracePruned(tmp))
-        {
-            continue;
-        }
-
-        if (m_treeSize >= MAX_BEAM_REFL_NUM-1)
-        {
+        if (!Scattering::PushBeamToTree(tmp, tmp.lastFacetId,
+                                        tmp.nActs, tmp.location))
             return false;
-        }
-        if (!EnsureBeamTree())
-            return false;
-
-        m_beamTree.push_back(tmp);
-        m_treeSize = (int)m_beamTree.size();
     }
 
     return true;
@@ -1381,33 +1504,51 @@ bool ScatteringNonConvex::SplitBeamByFacet(const Polygon &intersection,
     auto newId = RecomputeTrackId(beam.id, facetId);
     Facet &facet = m_facets[facetId];
 
-    Beam inBeam, outBeam;
-    inBeam.SetPolygon(intersection);
-    outBeam.SetPolygon(intersection);
+    m_polygonBuffer.Clear();
+    Polygon reachedIntersection;
+    const bool cutParent = CutBeamByFacet(intersection, facetId, beam,
+                                          reachedIntersection,
+                                          m_polygonBuffer);
+    if (reachedIntersection.nVertices >= MIN_VERTEX_NUM)
+    {
+        Beam inBeam, outBeam;
+        inBeam.SetPolygon(reachedIntersection);
+        outBeam.SetPolygon(reachedIntersection);
 #ifdef _DEBUG // DEB
 //if (beam.lastFacetId==0 && facetId==6)
 //if (beam.trackId.toLong()==9633 && facetID==0)
 //    int f =0;
-    inBeam.pols = beam.pols;
-    outBeam.pols = beam.pols;
-    inBeam.pols.push_back(intersection);
-    outBeam.pols.push_back(intersection);
+        inBeam.pols = beam.pols;
+        outBeam.pols = beam.pols;
+        inBeam.pols.push_back(reachedIntersection);
+        outBeam.pols.push_back(reachedIntersection);
 
-    if (newId == 3496)
-        int fff = 0;
+        if (newId == 3496)
+            int fff = 0;
 #endif
 
-    bool hasOutBeam = SetOpticalBeamParams(facet, beam, inBeam, outBeam);
+        const bool hasOutBeam = SetOpticalBeamParams(facet, beam, inBeam,
+                                                     outBeam);
+        ok = PushBeamToTree(inBeam, beam, newId, facetId, Location::In);
+        if (!ok)
+            return false;
 
-    ok = PushBeamToTree(inBeam, beam, newId, facetId, Location::In);
-
-    if (hasOutBeam)
-    {
-        ok = PushBeamToTree(outBeam, beam, newId, facetId, Location::Out);
+        if (hasOutBeam)
+        {
+            ok = PushBeamToTree(outBeam, beam, newId, facetId, Location::Out);
+            if (!ok)
+                return false;
+        }
     }
 
-    m_polygonBuffer.Clear();
-    CutBeamByFacet(facet, beam, m_polygonBuffer);
+    if (!cutParent)
+        return false;
+
+    if (m_polygonBuffer.size == 0)
+    {
+        beam.nVertices = 0;
+        return false;
+    }
 
     bool isDivided = m_polygonBuffer.size > CLIP_RESULT_SINGLE;
 
@@ -1418,32 +1559,45 @@ bool ScatteringNonConvex::SplitBeamByFacet(const Polygon &intersection,
             double a0 = m_polygonBuffer.arr[0].Area();
             double a1 = m_polygonBuffer.arr[1].Area();
 
-            double r = a0/a1;
-
-            if (std::isfinite(restriction) && r >= restriction)
+            const double areaTolerance = geometry_area_tolerance(
+                m_geometryScale);
+            if (a0 <= areaTolerance || a1 <= areaTolerance)
             {
-                beam = m_polygonBuffer.arr[0];
-                isDivided = false;
-                m_traceCutoffStatistics->smallFragmentSimplifications.fetch_add(
-                    1, std::memory_order_relaxed);
-            }
-            else if (std::isfinite(restriction) && r < 1.0/restriction)
-            {
-                beam = m_polygonBuffer.arr[1];
+                beam = a0 >= a1 ? m_polygonBuffer.arr[0]
+                                : m_polygonBuffer.arr[1];
                 isDivided = false;
                 m_traceCutoffStatistics->smallFragmentSimplifications.fetch_add(
                     1, std::memory_order_relaxed);
             }
             else
             {
-                ok = PushBeamPartsToTree(beam, m_polygonBuffer);
+                double r = a0/a1;
 
-                if (!ok)
+                if (std::isfinite(restriction) && r >= restriction)
                 {
-                    return false;
+                    beam = m_polygonBuffer.arr[0];
+                    isDivided = false;
+                    m_traceCutoffStatistics->smallFragmentSimplifications.fetch_add(
+                        1, std::memory_order_relaxed);
                 }
+                else if (std::isfinite(restriction) && r < 1.0/restriction)
+                {
+                    beam = m_polygonBuffer.arr[1];
+                    isDivided = false;
+                    m_traceCutoffStatistics->smallFragmentSimplifications.fetch_add(
+                        1, std::memory_order_relaxed);
+                }
+                else
+                {
+                    ok = PushBeamPartsToTree(beam, m_polygonBuffer);
 
-                beam.nVertices = 0;
+                    if (!ok)
+                    {
+                        return false;
+                    }
+
+                    beam.nVertices = 0;
+                }
             }
 
 //            double a0 = sqrt(m_polygonBuffer.arr[0].Area());
@@ -1495,25 +1649,6 @@ bool ScatteringNonConvex::SplitBeamByFacet(const Polygon &intersection,
     }
 
     return isDivided;
-}
-
-void ScatteringNonConvex::PushBeamsToBuffer(int facetID, const Beam &beam, bool hasOutBeam,
-                                       Beam &inBeam, Beam &outBeam,
-                                       std::vector<Beam> &passed)
-{
-    inBeam.id = beam.id;
-
-    if (hasOutBeam)
-    {
-        outBeam.id = beam.id;
-        outBeam.SetTracingParams(facetID, beam.nActs+1, Location::Out);
-        outBeam.id = RecomputeTrackId(outBeam.id, outBeam.lastFacetId);
-        passed.push_back(outBeam);
-    }
-
-    inBeam.SetTracingParams(facetID, beam.nActs+1, Location::In);
-    inBeam.id = RecomputeTrackId(outBeam.id, outBeam.lastFacetId);
-    passed.push_back(inBeam);
 }
 
 bool ScatteringNonConvex::ScatterLight(double beta, double gamma,

@@ -5,6 +5,7 @@
 #include "PhysMtr.hpp"
 #include "MullerMatrix.h"
 #include "Tracks.h"
+#include "PoleMueller.h"
 
 #include <vector>
 #include <fstream>
@@ -18,8 +19,8 @@ public:
         : zenithStart(zenStart), zenithEnd(zenEnd), nAzimuth(nAz), nZenith(nZen),
           isNonUniform(false)
     {
-        azinuthStep = M_2PI/nAz;
-        zenithStep = (zenEnd - zenStart)/nZen;
+        azinuthStep = nAz > 0 ? M_2PI/nAz : 0.0;
+        zenithStep = nZen > 0 ? (zenEnd - zenStart)/nZen : 0.0;
     }
 
     /// Load non-uniform theta grid from file (theta values in degrees, one per line).
@@ -90,7 +91,11 @@ public:
                 theta_hi = radZen + 0.5 * zenithStep;
             }
 
-            double _2Pi_dcos = cos(theta_lo) - cos(theta_hi);
+            // Stable form of cos(theta_lo)-cos(theta_hi).  Direct subtraction
+            // loses all significant digits in narrow bins near 0 and pi.
+            const double _2Pi_dcos = 2.0
+                * sin(0.5 * (theta_lo + theta_hi))
+                * sin(0.5 * (theta_hi - theta_lo));
             return _2Pi_dcos * M_2PI;
         }
 
@@ -113,7 +118,9 @@ public:
             theta_hi = 0.5 * (thetaValues[j] + thetaValues[j + 1]);
         }
 
-        double _2Pi_dcos = cos(theta_lo) - cos(theta_hi);
+        const double _2Pi_dcos = 2.0
+            * sin(0.5 * (theta_lo + theta_hi))
+            * sin(0.5 * (theta_hi - theta_lo));
         return _2Pi_dcos * M_2PI;
     }
 
@@ -146,11 +153,15 @@ public:
                 Point3d dir(sinZen*cosAz, sinZen*sinAz, -cosZen);
                 directions[i].push_back(dir);
 
-                if (dir.z >= 1-DBL_EPSILON)
+                // Detect the coordinate singularity from the angle itself.
+                // Testing 1-|cos(theta)| against DBL_EPSILON creates a much
+                // wider O(sqrt(eps)) cap and switches the polarization basis
+                // discontinuously for valid near-pole directions.
+                if (PoleMueller::IsBackward(zen))
                 {
                     vf[i].push_back(-incidentLight.polarizationBasis);
                 }
-                else if (dir.z <= DBL_EPSILON-1)
+                else if (PoleMueller::IsForward(zen))
                 {
                     vf[i].push_back(incidentLight.polarizationBasis);
                 }
@@ -298,17 +309,18 @@ public:
         muellers.ClearArr();
     }
 
-    void AddMueller(float fAngle, const matrix &m)
+    void AddMueller(double fAngle, const matrix &m)
     {
         double degA = RadToDeg(fAngle);
 
         int iCell = lround(degA/thetaStep);
 
-        if (degA >= 180-FLT_EPSILON)
+        const double poleTolerance = 64.0*DBL_EPSILON;
+        if (degA >= 180.0-poleTolerance)
         {
             forward += m;
         }
-        else if (degA <= FLT_EPSILON)
+        else if (degA <= poleTolerance)
         {
             back += m;
         }
@@ -324,7 +336,7 @@ public:
     }
 
     int nTheta;
-    float thetaStep;
+    double thetaStep;
     Arr2D muellers;		///< Scattering matrices
     matrix back;		///< Mueller matrix in backward direction
     matrix forward;		///< Mueller matrix in forward direction

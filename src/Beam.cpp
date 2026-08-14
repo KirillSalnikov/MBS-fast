@@ -1,5 +1,6 @@
 #include "Beam.h"
 
+#include <algorithm>
 #include <float.h>
 #include <math.h>
 #include <assert.h>
@@ -55,10 +56,9 @@ void Beam::Copy(const Beam &other)
 }
 
 Beam::Beam(const Beam &other)
-	: J(other.J)
+	: Polygon(other), J(other.J)
 {
 	Copy(other);
-	Polygon::operator =(other);
 }
 
 Beam::Beam(const Polygon &other)
@@ -76,7 +76,8 @@ Beam::Beam(Beam &&other)
 Vector3f Beam::RotateSpherical(const Vector3f &dir, const Vector3f &polarBasis)
 {
 	Vector3f newBasis;
-	double cs = DotProduct(dir, direction);
+	double cs = std::max(-1.0, std::min(1.0,
+		static_cast<double>(DotProduct(dir, direction))));
 
 	if (fabs(1.0 - cs) <= DBL_EPSILON)
 	{
@@ -107,42 +108,25 @@ void Beam::SetMatrix(const Matrix2x2c &matrix)
 
 void Beam::GetSpherical(double &fi, double &teta) const
 {
-	const float &x = direction.cx;
-	const float &y = direction.cy;
-	const float &z = direction.cz;
+	const double &x = direction.cx;
+	const double &y = direction.cy;
+	const double &z = direction.cz;
 
-	if (fabs(z + 1.0) < DBL_EPSILON) // forward
-	{
-		fi = 0;
-		teta = M_PI;
-		return;
-	}
-
-	if (fabs(z - 1.0) < DBL_EPSILON) // bacward
-	{
-		fi = 0;
-		teta = 0;
-		return;
-	}
-
-	double tmp = y*y;
-
-	if (tmp < DBL_EPSILON)
-	{
-		tmp = (x > 0) ? 0 : M_PI;
-	}
+	// atan2 remains well conditioned next to both poles. The old y*y < eps
+	// branch discarded a perfectly resolvable azimuth whenever y alone was
+	// small, creating a direction-dependent basis jump near backscatter.
+	const double transverse = std::hypot(x, y);
+	if (transverse <= 64.0*DBL_EPSILON)
+		fi = 0.0;
 	else
 	{
-		tmp = acos(x/sqrt(x*x + tmp));
-
-		if (y < 0)
-		{
-			tmp = M_2PI - tmp;
-		}
+		fi = std::atan2(y, x);
+		if (fi < 0.0)
+			fi += M_2PI;
 	}
 
-	fi = (tmp < M_2PI) ? tmp : 0;
-	teta = acos(z);
+	teta = std::atan2(transverse,
+		std::max(-1.0, std::min(1.0, static_cast<double>(z))));
 }
 
 Beam &Beam::operator = (const Beam &other)
@@ -224,8 +208,12 @@ void Beam::MultiplyJonesMatrix(const complex &c1, const complex &c2)
 
 void Beam::RotateJMatrix(const Vector3f &newBasis)
 {
-	const double eps = 1e2 * FLT_EPSILON/*DBL_EPSILON*/; // acceptable precision
-	double cs = DotProduct(newBasis, polarizationBasis);
+	// This is a basis-equivalence band, not a storage precision threshold. Near
+	// the poles an azimuthal basis is non-unique; suppressing an immaterial tiny
+	// rotation keeps the limiting Mueller basis continuous.
+	const double eps = 64.0 * DBL_EPSILON;
+	double cs = std::max(-1.0, std::min(1.0,
+		static_cast<double>(DotProduct(newBasis, polarizationBasis))));
 
 	if (fabs(1.0 - cs) >= eps)
 	{

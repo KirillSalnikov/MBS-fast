@@ -53,7 +53,7 @@ MBS_DEBUG_ORIENT_BEGIN=35744 \
 MBS_DEBUG_ORIENT_END=35760 \
 MBS_SHARED_ORIENT_CHUNK=16 \
 OMP_NUM_THREADS="$THREADS" \
-"$MBS" --pf "$AFINE30" \
+"$MBS" --allow-experimental-environment --pf "$AFINE30" \
     --multikeq_list "$KEQ_LIST" \
     --ri 1.6 0.002 -n 14 --po --oldauto 2 \
     --beam_cutoff_j 0.001 --beam_cutoff_area 0.002 \

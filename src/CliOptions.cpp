@@ -213,7 +213,7 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
         {"mirror_gamma", "mirror-gamma", 0, "", "Orientation",
          "Assert verified numerical mirror symmetry in supported averages, including --so3-quaternion: sample half the default gamma domain and restore the omitted Mueller contribution with its Stokes parity."},
         {"coh_orient", "coherent-orientations", 0, "", "Orientation",
-         "Sum different orientations coherently; retained for legacy research runs.", true},
+         "Disabled legacy option: coherent averaging across unrelated orientations has no defined relative phase.", true},
         {"pole", "pole", 0, "", "Orientation",
          "At exact beta poles, trace one gamma value and apply the full pole weight."},
 
@@ -355,6 +355,8 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
          "Diagnostic optical-theorem far-reference phase shift in wavelengths.", true},
         {"ot_ping", "ot-ping-distance", 1, "DISTANCE", "Output",
          "Legacy far-screen optical-theorem phase correction distance.", true},
+        {"allow_experimental_environment", "allow-experimental-environment", 0, "", "Output",
+         "Acknowledge and permit active MBS_* environment overrides that can change numerical or physical results; every active variable is recorded in the result log.", true},
 
         {"help", "help", 0, "", "Help",
          "Show the supported production options and examples.", false, {"h"}},

@@ -57,7 +57,10 @@ double CoarseAngularIntegral(const std::vector<double> &theta,
         const double upper = (k + 1 == rows.size())
             ? theta.back()
             : 0.5 * (theta[row] + theta[rows[k + 1]]);
-        integral += values[row] * twoPi * (std::cos(lower) - std::cos(upper));
+        const double dCos = 2.0
+            * std::sin(0.5*(lower + upper))
+            * std::sin(0.5*(upper - lower));
+        integral += values[row] * twoPi * dCos;
     }
     return integral;
 }

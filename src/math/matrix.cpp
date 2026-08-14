@@ -346,7 +346,7 @@ double Max(const matrixC& mt)
 
 std::ofstream& operator<<(std::ofstream& out, const matrixC& m)
 {
-	out.precision(10);
+	out.precision(17);
 	for(unsigned int i=0; i<Str(m); i++){
 		for(unsigned int j=0; j<Col(m); j++)
 			out<<"{"<<real(m[i][j])<<", "<<imag(m[i][j])<<"} ";
@@ -355,4 +355,3 @@ std::ofstream& operator<<(std::ofstream& out, const matrixC& m)
 	return out;
 }
 //-----------------------------------------------------------------------------
-

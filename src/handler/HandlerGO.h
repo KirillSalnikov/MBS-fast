@@ -25,7 +25,7 @@ protected:
     std::vector<matrixC> m_groupMatrices;
 
 protected:
-    matrix ComputeMueller(float zenAng, Beam &beam);
+    matrix ComputeMueller(double zenAng, Beam &beam);
     void RotateMuller(const Point3f &dir, matrix &bf);
     void AverageOverAlpha(int EDF, double norm, ContributionGO &contrib,
                           const std::string &destDir);

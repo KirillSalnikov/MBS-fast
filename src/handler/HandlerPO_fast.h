@@ -1,5 +1,7 @@
 #pragma once
 // Fully inlined per-direction computation for maximum performance
+#include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <immintrin.h>
 #include "compl.hpp"
@@ -149,21 +151,133 @@ inline complex fast_exp_im(double x) {
     return complex(c, s);
 }
 
+// Stable normalized Fourier integral of a polygon for a small phase span.
+//
+// The edge formula used by the regular path contains differences of nearly
+// equal exponentials followed by divisions by A/B.  Close to the forward
+// direction that loses precision even though the polygon integral is smooth.
+// For max |k(A*x+B*y)| <= 1e-3, the second-order moment expansion has an
+// absolute remainder below exp(1e-3)*(1e-3)^3/6 < 1.7e-10.
+inline bool small_phase_polygon_factor(
+    const double *vx, const double *vy, int nv,
+    double A, double B, double waveIndex,
+    double &factorReal, double &factorImag)
+{
+    if (nv < 3)
+        return false;
+
+    const double qx = waveIndex * A;
+    const double qy = waveIndex * B;
+    double maxPhase = 0.0;
+    for (int i = 0; i < nv; ++i)
+        maxPhase = std::max(maxPhase, std::fabs(qx * vx[i] + qy * vy[i]));
+    if (maxPhase > 1e-3)
+        return false;
+
+    // Signed polygon moments.  Dividing by signed area makes the normalized
+    // moments independent of vertex winding.
+    double twiceArea = 0.0;
+    double firstX6 = 0.0, firstY6 = 0.0;
+    double secondX12 = 0.0, secondY12 = 0.0, secondXY24 = 0.0;
+    double minX = DBL_MAX, maxX = -DBL_MAX;
+    double minY = DBL_MAX, maxY = -DBL_MAX;
+    for (int i = 0; i < nv; ++i)
+    {
+        const int j = (i + 1 < nv) ? i + 1 : 0;
+        const double xi = vx[i], yi = vy[i];
+        const double xj = vx[j], yj = vy[j];
+        const double cross = xi * yj - xj * yi;
+        twiceArea += cross;
+        firstX6 += (xi + xj) * cross;
+        firstY6 += (yi + yj) * cross;
+        secondX12 += (xi * xi + xi * xj + xj * xj) * cross;
+        secondY12 += (yi * yi + yi * yj + yj * yj) * cross;
+        secondXY24 += (2.0 * xi * yi + xi * yj + xj * yi
+                       + 2.0 * xj * yj) * cross;
+        minX = std::min(minX, xi); maxX = std::max(maxX, xi);
+        minY = std::min(minY, yi); maxY = std::max(maxY, yi);
+    }
+    const double areaScale = std::max(
+        (maxX - minX) * (maxY - minY), DBL_MIN);
+    if (std::fabs(twiceArea) <= 0x1p-40 * areaScale)
+    {
+        // A zero-area clipping remnant has a zero areaLimit at every caller.
+        // Return the finite phase limit instead of falling through to 1/A or
+        // 1/B with an undefined polygon moment.
+        factorReal = 1.0;
+        factorImag = 0.0;
+        return true;
+    }
+
+    const double invArea = 2.0 / twiceArea;
+    const double meanX = (firstX6 / 6.0) * invArea;
+    const double meanY = (firstY6 / 6.0) * invArea;
+    const double meanXX = (secondX12 / 12.0) * invArea;
+    const double meanYY = (secondY12 / 12.0) * invArea;
+    const double meanXY = (secondXY24 / 24.0) * invArea;
+    const double meanPhase = qx * meanX + qy * meanY;
+    const double meanPhase2 = qx * qx * meanXX
+                            + 2.0 * qx * qy * meanXY
+                            + qy * qy * meanYY;
+
+    factorReal = 1.0 - 0.5 * meanPhase2;
+    factorImag = meanPhase;
+    return true;
+}
+
+inline complex apply_small_phase_factor(const complex &areaLimit,
+                                        double factorReal,
+                                        double factorImag)
+{
+    return areaLimit * complex(factorReal, factorImag);
+}
+
+inline double stable_sinc(double x)
+{
+    const double ax = std::fabs(x);
+    if (ax < 1e-4)
+    {
+        const double x2 = x*x;
+        return 1.0 - x2/6.0 + x2*x2/120.0;
+    }
+    return std::sin(x)/x;
+}
+
+// Add exp(i*phaseStart) * (exp(i*k*coefficient*delta)-1)/coefficient
+// without dividing by a nearly zero edge coefficient.  This is the exact
+// half-angle form, including the finite coefficient -> 0 limit.
+inline void add_stable_edge_quotient(double phaseReal,
+                                     double phaseImag,
+                                     double delta,
+                                     double coefficient,
+                                     double waveIndex,
+                                     double &sumReal,
+                                     double &sumImag)
+{
+    const double z = waveIndex*coefficient*delta;
+    const double sincHalf = stable_sinc(0.5*z);
+    const double localReal = -0.5*waveIndex*waveIndex*coefficient
+                           * delta*delta*sincHalf*sincHalf;
+    const double localImag = waveIndex*delta*stable_sinc(z);
+    sumReal += phaseReal*localReal - phaseImag*localImag;
+    sumImag += phaseReal*localImag + phaseImag*localReal;
+}
+
 // Diffraction integral using precomputed edge data and trigonometric form
 // Uses GOAD-style approach: one sincos per edge instead of two exp_im
 inline complex diffract_inline(
     const double *vx, const double *vy, int nv,
-    const double *edge_slope_yx, const double *edge_intercept_y,
+    const double *edge_slope_yx, const double */*edge_intercept_y*/,
     const bool *edge_valid_x,
-    const double *edge_slope_xy, const double *edge_intercept_x,
+    const double *edge_slope_xy, const double */*edge_intercept_x*/,
     const bool *edge_valid_y,
     double horAx, double horAy, double horAz,
     double verAx, double verAy, double verAz,
     double beamDx, double beamDy, double beamDz,
     double dirx, double diry, double dirz,
     double area,
-    double waveIndex, double wi2,
-    double eps1, double eps2,
+    double waveIndex, double /*wi2*/,
+    double eps1, double /*eps2*/,
     complex complWave, complex invComplWave)
 {
     // k_k0 = -direction + beamDir
@@ -178,8 +292,11 @@ inline complex diffract_inline(
     double absA = fabs(A);
     double absB = fabs(B);
 
-    if (absA < eps2 && absB < eps2)
-        return invComplWave * area;
+    double smallPhaseReal = 0.0, smallPhaseImag = 0.0;
+    if (small_phase_polygon_factor(
+            vx, vy, nv, A, B, waveIndex, smallPhaseReal, smallPhaseImag))
+        return apply_small_phase_factor(
+            invComplWave * area, smallPhaseReal, smallPhaseImag);
 
     complex s(0, 0);
 
@@ -219,11 +336,8 @@ inline complex diffract_inline(
             si += (vs[inext] - vs[i]) * inv_Ci;
             // Near-singular case: add Taylor term (rare, branchless)
             if (__builtin_expect(absCi <= eps1, 0)) {
-                double p1x = vx[i], p2x = vx[inext];
-                double tr = -wi2*Ci*(p2x*p2x-p1x*p1x)*0.5;
-                double ti = waveIndex*(p2x-p1x);
-                sr += vc[i]*tr - vs[i]*ti;
-                si += vc[i]*ti + vs[i]*tr;
+                add_stable_edge_quotient(
+                    vc[i], vs[i], vx[inext]-vx[i], Ci, waveIndex, sr, si);
             }
         }
         double inv_B = 1.0 / B;
@@ -242,11 +356,8 @@ inline complex diffract_inline(
             sr += (vc[inext] - vc[i]) * inv_Ei;
             si += (vs[inext] - vs[i]) * inv_Ei;
             if (__builtin_expect(absEi <= eps1, 0)) {
-                double p1y = vy[i], p2y = vy[inext];
-                double tr = -wi2*Ei*(p2y*p2y-p1y*p1y)*0.5;
-                double ti = waveIndex*(p2y-p1y);
-                sr += vc[i]*tr - vs[i]*ti;
-                si += vc[i]*ti + vs[i]*tr;
+                add_stable_edge_quotient(
+                    vc[i], vs[i], vy[inext]-vy[i], Ei, waveIndex, sr, si);
             }
         }
         double inv_nA = -1.0 / A;
@@ -398,10 +509,10 @@ inline void precompute_theta_coeffs(
     double cenx, double ceny, double cenz,
     double cos_phi, double sin_phi,
     double waveIndex,
-    double NTx, double NTy, double NTz,
-    double NPx, double NPy, double NPz,
-    double nxDTx, double nxDTy, double nxDTz,
-    double nxDPx, double nxDPy, double nxDPz,
+    double /*NTx*/, double /*NTy*/, double /*NTz*/,
+    double /*NPx*/, double /*NPy*/, double /*NPz*/,
+    double /*nxDTx*/, double /*nxDTy*/, double /*nxDTz*/,
+    double /*nxDPx*/, double /*nxDPy*/, double /*nxDPz*/,
     ThetaCoeffs &tc)
 {
     tc.nv = nv;
@@ -490,6 +601,8 @@ inline void rotate_jones_inline(
         __m128d three_half = _mm_set_sd(1.5);
         __m128d xrs2 = _mm_mul_sd(_mm_mul_sd(v2, rs), rs);
         rs = _mm_mul_sd(rs, _mm_sub_sd(three_half, _mm_mul_sd(half, xrs2)));
+        xrs2 = _mm_mul_sd(_mm_mul_sd(v2, rs), rs);
+        rs = _mm_mul_sd(rs, _mm_sub_sd(three_half, _mm_mul_sd(half, xrs2)));
         double invLen;
         _mm_store_sd(&invLen, rs);
 #else
@@ -502,9 +615,11 @@ inline void rotate_jones_inline(
         __m128 three_half_f = _mm_set_ss(1.5f);
         __m128 xrs2f = _mm_mul_ss(_mm_mul_ss(vf, rsf), rsf);
         rsf = _mm_mul_ss(rsf, _mm_sub_ss(three_half_f, _mm_mul_ss(half_f, xrs2f)));
-        // One more NR step in double for full precision
+        // Two double NR steps recover full binary64 precision from the float seed.
         double invLen = (double)_mm_cvtss_f32(rsf);
         double xr2 = vtLen2 * invLen * invLen;
+        invLen *= 1.5 - 0.5 * xr2;
+        xr2 = vtLen2 * invLen * invLen;
         invLen *= 1.5 - 0.5 * xr2;
 #endif
         vtx *= invLen; vty *= invLen; vtz *= invLen;

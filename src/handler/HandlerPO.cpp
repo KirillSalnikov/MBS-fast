@@ -1,6 +1,8 @@
 #include "HandlerPO.h"
 #include "HandlerPO_fast.h"
 #include "HandlerPO_avx.h"
+#include "PoleMueller.h"
+#include "BigIntegerUtils.hh"
 
 #include "Mueller.hpp"
 #include <iostream>
@@ -9,6 +11,7 @@
 #include <cmath>
 #include <chrono>
 #include <algorithm>
+#include <cfloat>
 #include <cerrno>
 #include <cstdlib>
 #include <stdexcept>
@@ -121,6 +124,8 @@ void HandlerPO::WriteMatricesToFile(std::string &destName, double nrg)
                 "cannot open Mueller output '" + destName
                 + ".dat'.\n  Fix: verify output permissions and free disk space.");
 
+		outFile << std::setprecision(17);
+
         outFile /*<< std::to_string(m_sphere.radius) << ' '*/
                 << std::to_string(m_sphere.nZenith) << ' '
                 << std::to_string(m_sphere.nAzimuth);
@@ -150,13 +155,14 @@ void HandlerPO::WriteMatricesToFile(std::string &destName, double nrg)
 void HandlerPO::WriteGroupMatrices(Arr2D &matrices, const std::string &name)
 {
     auto &Lp = *m_Lp;
-    auto &Ln = *m_Ln;
 
     std::ofstream outFile(name, std::ios::out);
     if (!outFile.is_open())
         throw std::runtime_error(
             "cannot open group output '" + name
             + "'.\n  Fix: verify output permissions and free disk space.");
+
+    outFile << std::setprecision(17);
 
     outFile /*<< std::to_string(m_sphere.radius) << ' '*/
             << std::to_string(m_sphere.nZenith) << ' '
@@ -167,7 +173,10 @@ void HandlerPO::WriteGroupMatrices(Arr2D &matrices, const std::string &name)
     for (int t = m_sphere.nZenith; t >= 0; --t)
     {
         sum.Fill(0.0);
-        double tt = RadToDeg(m_sphere.zenithEnd - m_sphere.GetZenith(t));
+        const double outputTheta = m_sphere.zenithEnd - m_sphere.GetZenith(t);
+        const bool isForwardPole = PoleMueller::IsForward(outputTheta);
+        const bool isBackwardPole = PoleMueller::IsBackward(outputTheta);
+        double tt = RadToDeg(outputTheta);
 
         for (int p = 0; p < m_sphere.nAzimuth; ++p)
         {
@@ -179,26 +188,20 @@ void HandlerPO::WriteGroupMatrices(Arr2D &matrices, const std::string &name)
             Lp[2][1] = -Lp[1][2];
             Lp[2][2] = Lp[1][1];
 
-            Ln = Lp;
-            Ln[1][2] *= -1;
-            Ln[2][1] *= -1;
-
-            if (t == 0)
-            {
-                sum += Lp*m*Lp;    // backward (theta ~ 180°)
-            }
-            else if (t == m_sphere.nZenith)
-            {
-                sum += Ln*m*Lp;    // forward (theta ~ 0°)
-            }
+            if (isForwardPole || isBackwardPole)
+                sum += m;
             else
-            {
                 sum += m*Lp;
-            }
         }
 
+        sum /= m_sphere.nAzimuth;
+        if (isBackwardPole)
+            PoleMueller::ApplyBackward(sum);
+        else if (isForwardPole)
+            PoleMueller::ApplyForward(sum);
+
         outFile << std::endl << tt << " ";
-        outFile << sum/m_sphere.nAzimuth;
+        outFile << sum;
     }
     outFile.flush();
     if (!outFile)
@@ -297,7 +300,23 @@ void HandlerPO::RotateJones(const Beam &beam, const BeamInfo &info,
     auto &dir = direction;
 
     Vector3d vt = CrossProductD(vf, dir);
-    vt = vt/LengthD(vt);
+    double vtLength = LengthD(vt);
+    if (!(vtLength > std::sqrt(DBL_EPSILON)) || !std::isfinite(vtLength))
+    {
+        Point3d reference = std::fabs(dir.x) <= std::fabs(dir.y)
+                          && std::fabs(dir.x) <= std::fabs(dir.z)
+                          ? Point3d(1, 0, 0)
+                          : (std::fabs(dir.y) <= std::fabs(dir.z)
+                             ? Point3d(0, 1, 0) : Point3d(0, 0, 1));
+        vt = CrossProductD(reference, dir);
+        vtLength = LengthD(vt);
+    }
+    if (!(vtLength > DBL_MIN) || !std::isfinite(vtLength))
+    {
+        matrix.Fill(complex(0.0, 0.0));
+        return;
+    }
+    vt = vt/vtLength;
 
     Vector3f NT = CrossProduct(info.normal, info.beamBasis);
     Vector3f NE = CrossProduct(info.normal, beam.polarizationBasis);
@@ -367,6 +386,10 @@ void HandlerPO::KarczewskiJones(const Beam &beam, const BeamInfo &info,
                                  const Vector3d &vf_out, const Vector3d &direction,
                                  matrixC &matrix) const
 {
+    const auto useStableDefault = [&]() {
+        RotateJones(beam, info, vf_out, direction, matrix);
+    };
+    const double basisTolerance = std::sqrt(DBL_EPSILON);
     // =========================================================================
     // GOAD-compatible Karczewski pipeline (replicates diff2.rs)
     // =========================================================================
@@ -401,6 +424,13 @@ void HandlerPO::KarczewskiJones(const Beam &beam, const BeamInfo &info,
     // --- Step 1: Build aperture coordinate system ---
     // z_ap = face normal (pointing in beam propagation direction)
     Point3d z_ap = info.normald;
+    const double zLength = LengthD(z_ap);
+    if (!(zLength > basisTolerance) || !std::isfinite(zLength))
+    {
+        useStableDefault();
+        return;
+    }
+    z_ap = z_ap/zLength;
 
     // Project beam's polarizationBasis (e_perp) onto the face plane -> y_ap
     Point3f bp = beam.polarizationBasis;
@@ -410,17 +440,37 @@ void HandlerPO::KarczewskiJones(const Beam &beam, const BeamInfo &info,
                  e_perp_beam.y - dot_en*z_ap.y,
                  e_perp_beam.z - dot_en*z_ap.z);
     double y_len = LengthD(y_ap);
-    if (y_len < 1e-12) {
+    if (!(y_len > basisTolerance) || !std::isfinite(y_len)) {
         // Fallback: beam e_perp is parallel to normal, use MBS default axes
-        y_ap = info.verAxis;
+        y_ap = info.verAxis - z_ap*DotProductD(info.verAxis, z_ap);
         y_len = LengthD(y_ap);
+    }
+    if (!(y_len > basisTolerance) || !std::isfinite(y_len))
+    {
+        Point3d reference = std::fabs(z_ap.x) <= std::fabs(z_ap.y)
+                          && std::fabs(z_ap.x) <= std::fabs(z_ap.z)
+                          ? Point3d(1, 0, 0)
+                          : (std::fabs(z_ap.y) <= std::fabs(z_ap.z)
+                             ? Point3d(0, 1, 0) : Point3d(0, 0, 1));
+        y_ap = CrossProductD(z_ap, reference);
+        y_len = LengthD(y_ap);
+    }
+    if (!(y_len > basisTolerance) || !std::isfinite(y_len))
+    {
+        useStableDefault();
+        return;
     }
     y_ap = y_ap / y_len;
 
     // x_ap completes right-handed system: x = y × z
     Point3d x_ap = CrossProductD(y_ap, z_ap);
     double x_len = LengthD(x_ap);
-    if (x_len > 1e-12) x_ap = x_ap / x_len;
+    if (!(x_len > basisTolerance) || !std::isfinite(x_len))
+    {
+        useStableDefault();
+        return;
+    }
+    x_ap = x_ap / x_len;
 
     // rot3 matrix: transforms lab vector v to aperture frame
     // rot3 * v = (v·x_ap, v·y_ap, v·z_ap)
@@ -436,19 +486,30 @@ void HandlerPO::KarczewskiJones(const Beam &beam, const BeamInfo &info,
               direction.x*y_ap.x + direction.y*y_ap.y + direction.z*y_ap.z,
               direction.x*z_ap.x + direction.y*z_ap.y + direction.z*z_ap.z);
 
+    const double propLength = LengthD(prop);
+    const double kLength = LengthD(k);
+    if (!(propLength > basisTolerance) || !(kLength > basisTolerance)
+        || !std::isfinite(propLength) || !std::isfinite(kLength))
+    {
+        useStableDefault();
+        return;
+    }
+    prop = prop/propLength;
+    k = k/kLength;
+
     // --- Step 3: Karczewski matrix in aperture frame ---
     double Kx = prop.x, Ky = prop.y, Kz = prop.z;
     double kx = k.x, ky = k.y, kz = k.z;
 
-    double one_minus_ky2 = 1.0 - ky*ky;
-    if (one_minus_ky2 < 1e-12) one_minus_ky2 = 1e-12;
-    double r_k = sqrt(one_minus_ky2);
-
-    double one_minus_Ky2 = 1.0 - Ky*Ky;
-    if (one_minus_Ky2 < 1e-12) one_minus_Ky2 = 1e-12;
-
-    double frac = sqrt(one_minus_ky2 / one_minus_Ky2);
-    if (fabs(frac) < 1e-12) frac = 1e-12;
+    const double r_k = std::hypot(kx, kz);
+    const double r_K = std::hypot(Kx, Kz);
+    if (!(r_k > basisTolerance) || !(r_K > basisTolerance)
+        || !std::isfinite(r_k) || !std::isfinite(r_K))
+    {
+        useStableDefault();
+        return;
+    }
+    const double frac = r_k/r_K;
 
     double a1m = -Kz * frac;
     double b2m = -kz / frac;
@@ -480,11 +541,21 @@ void HandlerPO::KarczewskiJones(const Beam &beam, const BeamInfo &info,
     double dot1 = DotProductD(hc, m_vec);
     Point3d evo2 = CrossProductD(k, m_vec);
     double evo2_len = LengthD(evo2);
-    if (evo2_len > 1e-12) evo2 = evo2 / evo2_len;
+    if (!(evo2_len > basisTolerance) || !std::isfinite(evo2_len))
+    {
+        useStableDefault();
+        return;
+    }
+    evo2 = evo2 / evo2_len;
     double dot2 = DotProductD(hc, evo2);
 
     double det4 = dot1*dot1 + dot2*dot2;
-    double inv_sqrt_det4 = (det4 > 1e-12) ? 1.0/sqrt(det4) : 1.0;
+    if (!(det4 > basisTolerance*basisTolerance) || !std::isfinite(det4))
+    {
+        useStableDefault();
+        return;
+    }
+    double inv_sqrt_det4 = 1.0/std::sqrt(det4);
 
     double r4_00 = dot1*inv_sqrt_det4, r4_01 = dot2*inv_sqrt_det4;
     double r4_10 = -dot2*inv_sqrt_det4, r4_11 = dot1*inv_sqrt_det4;
@@ -514,11 +585,21 @@ void HandlerPO::KarczewskiJones(const Beam &beam, const BeamInfo &info,
     double pre_dot1 = DotProductD(vf_out, inc_e_perp);
     Point3d pre_evo2 = CrossProductD(inc_prop, inc_e_perp);
     double pre_evo2_len = LengthD(pre_evo2);
-    if (pre_evo2_len > 1e-12) pre_evo2 = pre_evo2 / pre_evo2_len;
+    if (!(pre_evo2_len > basisTolerance) || !std::isfinite(pre_evo2_len))
+    {
+        useStableDefault();
+        return;
+    }
+    pre_evo2 = pre_evo2 / pre_evo2_len;
     double pre_dot2 = DotProductD(vf_out, pre_evo2);
 
     double pre_det = pre_dot1*pre_dot1 + pre_dot2*pre_dot2;
-    double pre_norm = (pre_det > 1e-12) ? 1.0/sqrt(pre_det) : 1.0;
+    if (!(pre_det > basisTolerance*basisTolerance) || !std::isfinite(pre_det))
+    {
+        useStableDefault();
+        return;
+    }
+    double pre_norm = 1.0/std::sqrt(pre_det);
 
     // rotation_matrix result (before transpose)
     double pr_00 = pre_dot1*pre_norm, pr_01 = pre_dot2*pre_norm;
@@ -540,6 +621,18 @@ void HandlerPO::KarczewskiJones(const Beam &beam, const BeamInfo &info,
     matrix[0][1] = complex(t00*pre_01 + t01*pre_11, 0);
     matrix[1][0] = complex(t10*pre_00 + t11*pre_10, 0);
     matrix[1][1] = complex(t10*pre_01 + t11*pre_11, 0);
+    for (int row = 0; row < 2; ++row)
+    {
+        for (int column = 0; column < 2; ++column)
+        {
+            if (!std::isfinite(real(matrix[row][column]))
+                || !std::isfinite(imag(matrix[row][column])))
+            {
+                useStableDefault();
+                return;
+            }
+        }
+    }
 }
 
 matrixC HandlerPO::ApplyDiffractionFast(const Beam &beam, const BeamInfo &info,
@@ -586,7 +679,6 @@ matrixC HandlerPO::ApplyDiffractionFast2(const Beam &beam, const BeamInfo &info,
                                          const Vector3d &direction,
                                          const Vector3d &vf)
 {
-    auto t0 = std::chrono::high_resolution_clock::now();
     // J_phased already contains beam.J * fast_exp_im(k * projLength) [internal]
     // or beam.J * fast_exp_im(k * opticalPath) [external].
     // For internal beams, we only need the direction-dependent phase:
@@ -599,8 +691,6 @@ matrixC HandlerPO::ApplyDiffractionFast2(const Beam &beam, const BeamInfo &info,
     } else {
         dirPhase = complex(1.0, 0.0);
     }
-    auto t1 = std::chrono::high_resolution_clock::now();
-
     matrixC jones_rot(2, 2);
     RotateJones(beam, info, vf, direction, jones_rot);
 
@@ -767,7 +857,18 @@ BeamInfo HandlerPO::ComputeBeamInfo(Beam &beam)
 //				beam, beam.Center(), tr);
 //#endif
     info.beamBasis = CrossProduct(beam.polarizationBasis, beam.direction);
-    info.beamBasis = info.beamBasis/Length(info.beamBasis); // basis of beam
+    const double beamBasisLength = Length(info.beamBasis);
+    if (!(beamBasisLength > EPS_PROJECTION) || !std::isfinite(beamBasisLength))
+    {
+        info.beamBasis = Point3f(0, 0, 0);
+        info.isBad = true;
+        m_isBadBeam = true;
+        ++m_nBadBeams;
+    }
+    else
+    {
+        info.beamBasis = info.beamBasis/beamBasisLength;
+    }
 
     return info;
 }
@@ -973,9 +1074,29 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
     ++g_handleBeams_calls;
 
     m_sinZenith = sinZenith;
+#ifdef _DEBUG
     double sum = 0;
+#endif
     int groupId;
     CleanJ();
+
+    const char *coherenceAuditPath = std::getenv("MBS_COHERENCE_AUDIT");
+    std::ofstream coherenceAudit;
+    if (coherenceAuditPath && *coherenceAuditPath)
+    {
+        coherenceAudit.open(coherenceAuditPath, std::ios::out);
+        if (!coherenceAudit.is_open())
+        {
+            throw std::runtime_error(
+                std::string("cannot open MBS_COHERENCE_AUDIT path '")
+                + coherenceAuditPath + "'");
+        }
+        coherenceAudit << "# beam\ttrack_id\tpath\texternal\tn_acts\tlast_facet"
+                       << "\tarea\tbeam_jones_norm2\toptical_path\tprojected_path"
+                       << "\tj00_re\tj00_im\tj01_re\tj01_im"
+                       << "\tj10_re\tj10_im\tj11_re\tj11_im\n";
+        coherenceAudit << std::scientific << std::setprecision(17);
+    }
 
     const char *beamLogPath = std::getenv("MBS_BEAM_LOG");
     if (beamLogPath && *beamLogPath)
@@ -989,13 +1110,20 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                           << beamLogPath << "'.\n";
                 return;
             }
-            logFile << "# beam_num  nActs  area  opticalPath  |Jones|  cx  cy  cz  nVertices\n";
+            logFile << "# beam_num  trackId  lastFacet  location  nActs  area  opticalPath  |Jones|  cx  cy  cz  nVertices\n";
             logFile << std::scientific << std::setprecision(8);
             int beamCounter = 0;
             for (const Beam &b : beams)
             {
                 const double jonesNorm = std::sqrt(b.J.Norm());
                 logFile << beamCounter
+#ifdef _DEBUG
+                        << "  " << b.id
+#else
+                        << "  " << bigIntegerToString(b.id)
+#endif
+                        << "  " << b.lastFacetId
+                        << "  " << (b.location == Location::Out ? "out" : "in")
                         << "  " << b.nActs
                         << "  " << b.Area()
                         << "  " << b.opticalPath
@@ -1029,6 +1157,7 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
         fast_sincos(phi_rad, sin_phi_arr[i], cos_phi_arr[i]);
     }
 
+    int coherenceBeamIndex = 0;
     for (Beam &beam : beams)
     {
         //++g_count_beams;
@@ -1113,7 +1242,6 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
         // Extract scalars for inlined computation
         double horAx = info.horAxis.x, horAy = info.horAxis.y, horAz = info.horAxis.z;
         double verAx = info.verAxis.x, verAy = info.verAxis.y, verAz = info.verAxis.z;
-        double normx = info.normald.x, normy = info.normald.y, normz = info.normald.z;
         double bdx = beamDirD.x, bdy = beamDirD.y, bdz = beamDirD.z;
         double cenx = info.center.x, ceny = info.center.y, cenz = info.center.z;
         double beam_area = info.area;
@@ -1127,6 +1255,19 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
         complex jp10 = J_phased[1][0], jp11 = J_phased[1][1];
         double jp00r=real(jp00),jp00i=imag(jp00),jp01r=real(jp01),jp01i=imag(jp01);
         double jp10r=real(jp10),jp10i=imag(jp10),jp11r=real(jp11),jp11i=imag(jp11);
+
+        std::string coherenceTrack;
+        if (coherenceAudit.is_open() && !isExternal)
+        {
+            std::vector<int> track;
+            Tracks::RecoverTrack(beam, m_particle->nFacets, track);
+            for (size_t k = 0; k < track.size(); ++k)
+            {
+                if (k != 0)
+                    coherenceTrack += ',';
+                coherenceTrack += std::to_string(track[k]);
+            }
+        }
 
 #ifdef _DEBUG // DEB
         sum += beam.Area();
@@ -1188,9 +1329,15 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                     double absB = fabs(B);
 
                     complex fresnel;
-                    if (absA < m_eps2 && absB < m_eps2)
+                    double smallPhaseReal = 0.0, smallPhaseImag = 0.0;
+                    if (small_phase_polygon_factor(
+                            edgeData.x, edgeData.y, edgeData.nVertices,
+                            A, B, m_waveIndex, smallPhaseReal, smallPhaseImag))
                     {
-                        fresnel = (m_legacySign ? m_invComplWave : -m_invComplWave) * beam_area;
+                        const complex areaLimit =
+                            (m_legacySign ? m_invComplWave : -m_invComplWave) * beam_area;
+                        fresnel = apply_small_phase_factor(
+                            areaLimit, smallPhaseReal, smallPhaseImag);
                     }
                     else
                     {
@@ -1223,11 +1370,10 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                                 sr += (vc[enext] - vc[e]) * inv_Ci;
                                 si += (vs[enext] - vs[e]) * inv_Ci;
                                 if (__builtin_expect(absCi <= m_eps1, 0)) {
-                                    double p1x = edgeData.x[e], p2x = edgeData.x[enext];
-                                    double tr = -m_wi2*Ci*(p2x*p2x-p1x*p1x)*0.5;
-                                    double ti = m_waveIndex*(p2x-p1x);
-                                    sr += vc[e]*tr - vs[e]*ti;
-                                    si += vc[e]*ti + vs[e]*tr;
+                                    add_stable_edge_quotient(
+                                        vc[e], vs[e],
+                                        edgeData.x[enext]-edgeData.x[e],
+                                        Ci, m_waveIndex, sr, si);
                                 }
                             }
                             double inv_B = 1.0 / B;
@@ -1245,11 +1391,10 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                                 sr += (vc[enext] - vc[e]) * inv_Ei;
                                 si += (vs[enext] - vs[e]) * inv_Ei;
                                 if (__builtin_expect(absEi <= m_eps1, 0)) {
-                                    double p1y = edgeData.y[e], p2y = edgeData.y[enext];
-                                    double tr = -m_wi2*Ei*(p2y*p2y-p1y*p1y)*0.5;
-                                    double ti = m_waveIndex*(p2y-p1y);
-                                    sr += vc[e]*tr - vs[e]*ti;
-                                    si += vc[e]*ti + vs[e]*tr;
+                                    add_stable_edge_quotient(
+                                        vc[e], vs[e],
+                                        edgeData.y[enext]-edgeData.y[e],
+                                        Ei, m_waveIndex, sr, si);
                                 }
                             }
                             double inv_nA = -1.0 / A;
@@ -1301,6 +1446,30 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                     d10 = tmp[1][0]; d11 = tmp[1][1];
                 }
 
+                if (coherenceAudit.is_open() && i == 0
+                    && j == m_sphere.nZenith)
+                {
+                    coherenceAudit << coherenceBeamIndex << '\t'
+#ifdef _DEBUG
+                                   << beam.id
+#else
+                                   << bigIntegerToString(beam.id)
+#endif
+                                   << '\t' << (isExternal ? "external" : coherenceTrack)
+                                   << '\t' << (isExternal ? 1 : 0)
+                                   << '\t' << beam.nActs
+                                   << '\t' << beam.lastFacetId
+                                   << '\t' << info.area
+                                   << '\t' << beam.J.Norm()
+                                   << '\t' << beam.opticalPath
+                                   << '\t' << info.projLenght
+                                   << '\t' << real(d00) << '\t' << imag(d00)
+                                   << '\t' << real(d01) << '\t' << imag(d01)
+                                   << '\t' << real(d10) << '\t' << imag(d10)
+                                   << '\t' << real(d11) << '\t' << imag(d11)
+                                   << '\n';
+                }
+
                 if (!isCoh)
                 {
                     matrixC diffractedMatrix(2, 2);
@@ -1320,6 +1489,7 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
         complex ddd = m_diffractedMatrices[0](0,0)[0][0];
         int fff = 0;
 #endif
+        ++coherenceBeamIndex;
     }
 
     auto beam_loop_end = std::chrono::high_resolution_clock::now();
@@ -1351,7 +1521,7 @@ void HandlerPO::SetTracks(Tracks *tracks)
 {
     m_tracks = tracks;
 
-    for (int i = 0; i < m_tracks->size() + 1; ++i)
+    for (size_t i = 0; i < m_tracks->size() + 1; ++i)
     {
         Arr2D tmp = Arr2D(m_sphere.nAzimuth+1, m_sphere.nZenith+1, 4, 4);
         m_groupMatrices.push_back(tmp);
@@ -1555,7 +1725,6 @@ double HandlerPO::ComputeForwardExtinctionOt(
     complex f00(0.0, 0.0), f01(0.0, 0.0);
     complex f10(0.0, 0.0), f11(0.0, 0.0);
 
-    const double sin_t = 0.0;
     const double cos_t = 1.0;
     const double cp = 1.0;
     const double sp = 0.0;
@@ -1595,10 +1764,15 @@ double HandlerPO::ComputeForwardExtinctionOt(
         const double absB = std::fabs(B);
 
         complex fresnel;
-        if (absA < m_eps2 && absB < m_eps2)
+        double smallPhaseReal = 0.0, smallPhaseImag = 0.0;
+        if (small_phase_polygon_factor(
+                pb.edgeData.x, pb.edgeData.y, pb.edgeData.nVertices,
+                A, B, m_waveIndex, smallPhaseReal, smallPhaseImag))
         {
-            fresnel = (m_legacySign ? m_invComplWave : -m_invComplWave)
-                * pb.beam_area;
+            const complex areaLimit =
+                (m_legacySign ? m_invComplWave : -m_invComplWave) * pb.beam_area;
+            fresnel = apply_small_phase_factor(
+                areaLimit, smallPhaseReal, smallPhaseImag);
         }
         else
         {
@@ -1626,13 +1800,10 @@ double HandlerPO::ComputeForwardExtinctionOt(
                     si += (vs[en] - vs[e]) * inv;
                     if (__builtin_expect(absCi <= m_eps1, 0))
                     {
-                        double p1x = pb.edgeData.x[e];
-                        double p2x = pb.edgeData.x[en];
-                        double tr = -m_wi2 * Ci * (p2x * p2x - p1x * p1x)
-                            * 0.5;
-                        double ti = m_waveIndex * (p2x - p1x);
-                        sr += vc[e] * tr - vs[e] * ti;
-                        si += vc[e] * ti + vs[e] * tr;
+                        add_stable_edge_quotient(
+                            vc[e], vs[e],
+                            pb.edgeData.x[en]-pb.edgeData.x[e],
+                            Ci, m_waveIndex, sr, si);
                     }
                 }
                 if (std::fabs(B) <= m_eps1)
@@ -1654,13 +1825,10 @@ double HandlerPO::ComputeForwardExtinctionOt(
                     si += (vs[en] - vs[e]) * inv;
                     if (__builtin_expect(absEi <= m_eps1, 0))
                     {
-                        double p1y = pb.edgeData.y[e];
-                        double p2y = pb.edgeData.y[en];
-                        double tr = -m_wi2 * Ei * (p2y * p2y - p1y * p1y)
-                            * 0.5;
-                        double ti = m_waveIndex * (p2y - p1y);
-                        sr += vc[e] * tr - vs[e] * ti;
-                        si += vc[e] * ti + vs[e] * tr;
+                        add_stable_edge_quotient(
+                            vc[e], vs[e],
+                            pb.edgeData.y[en]-pb.edgeData.y[e],
+                            Ei, m_waveIndex, sr, si);
                     }
                 }
                 if (std::fabs(A) <= m_eps1)
@@ -1764,8 +1932,6 @@ double HandlerPO::ComputeForwardExtinctionOtScaled(
 
     const double scale2 = scale * scale;
     const double scaledWaveIndex = waveIndex;
-    const double scaledWi2 = 0.5 * scaledWaveIndex * scaledWaveIndex;
-    const double sin_t = 0.0;
     const double cos_t = 1.0;
     const double cp = 1.0;
     const double sp = 0.0;
@@ -1814,10 +1980,15 @@ double HandlerPO::ComputeForwardExtinctionOtScaled(
         const double absB = std::fabs(B);
 
         complex fresnel;
-        if (absA < m_eps2 && absB < m_eps2)
+        double smallPhaseReal = 0.0, smallPhaseImag = 0.0;
+        if (small_phase_polygon_factor(
+                edge.x, edge.y, edge.nVertices,
+                A, B, scaledWaveIndex, smallPhaseReal, smallPhaseImag))
         {
-            fresnel = (m_legacySign ? m_invComplWave : -m_invComplWave)
-                * (pb.beam_area * scale2);
+            const complex areaLimit = (m_legacySign ? m_invComplWave : -m_invComplWave)
+                                    * (pb.beam_area * scale2);
+            fresnel = apply_small_phase_factor(
+                areaLimit, smallPhaseReal, smallPhaseImag);
         }
         else
         {
@@ -1845,13 +2016,9 @@ double HandlerPO::ComputeForwardExtinctionOtScaled(
                     si += (vs[en] - vs[e]) * inv;
                     if (__builtin_expect(absCi <= m_eps1, 0))
                     {
-                        double p1x = edge.x[e];
-                        double p2x = edge.x[en];
-                        double tr = -scaledWi2 * Ci * (p2x * p2x - p1x * p1x)
-                            * 0.5;
-                        double ti = scaledWaveIndex * (p2x - p1x);
-                        sr += vc[e] * tr - vs[e] * ti;
-                        si += vc[e] * ti + vs[e] * tr;
+                        add_stable_edge_quotient(
+                            vc[e], vs[e], edge.x[en]-edge.x[e],
+                            Ci, scaledWaveIndex, sr, si);
                     }
                 }
                 if (std::fabs(B) <= m_eps1)
@@ -1873,13 +2040,9 @@ double HandlerPO::ComputeForwardExtinctionOtScaled(
                     si += (vs[en] - vs[e]) * inv;
                     if (__builtin_expect(absEi <= m_eps1, 0))
                     {
-                        double p1y = edge.y[e];
-                        double p2y = edge.y[en];
-                        double tr = -scaledWi2 * Ei * (p2y * p2y - p1y * p1y)
-                            * 0.5;
-                        double ti = scaledWaveIndex * (p2y - p1y);
-                        sr += vc[e] * tr - vs[e] * ti;
-                        si += vc[e] * ti + vs[e] * tr;
+                        add_stable_edge_quotient(
+                            vc[e], vs[e], edge.y[en]-edge.y[e],
+                            Ei, scaledWaveIndex, sr, si);
                     }
                 }
                 if (std::fabs(A) <= m_eps1)
@@ -2070,8 +2233,14 @@ void HandlerPO::DiffractControlPoints(const PreparedOrientation &prepared,
                 double absA = fabs(A), absB = fabs(B);
 
                 complex fresnel;
-                if (absA < m_eps2 && absB < m_eps2) {
-                    fresnel = (m_legacySign ? m_invComplWave : -m_invComplWave) * beam_area;
+                double smallPhaseReal = 0.0, smallPhaseImag = 0.0;
+                if (small_phase_polygon_factor(
+                        edgeData.x, edgeData.y, edgeData.nVertices,
+                        A, B, m_waveIndex, smallPhaseReal, smallPhaseImag)) {
+                    const complex areaLimit =
+                        (m_legacySign ? m_invComplWave : -m_invComplWave) * beam_area;
+                    fresnel = apply_small_phase_factor(
+                        areaLimit, smallPhaseReal, smallPhaseImag);
                 } else {
                     double phases[32], vc[32], vs[32];
                     for (int v = 0; v < nv; ++v)
@@ -2085,8 +2254,14 @@ void HandlerPO::DiffractControlPoints(const PreparedOrientation &prepared,
                             if (!edgeData.edge_valid_x[e]) continue;
                             int en = (e+1<nv)?e+1:0;
                             double Ci = A + edgeData.slope_yx[e]*B;
-                            double inv = (fabs(Ci)>m_eps1)?1.0/Ci:0.0;
+                            const double absCi = fabs(Ci);
+                            double inv = (absCi>m_eps1)?1.0/Ci:0.0;
                             sr += (vc[en]-vc[e])*inv; si += (vs[en]-vs[e])*inv;
+                            if (__builtin_expect(absCi <= m_eps1, 0)) {
+                                add_stable_edge_quotient(
+                                    vc[e], vs[e], edgeData.x[en]-edgeData.x[e],
+                                    Ci, m_waveIndex, sr, si);
+                            }
                         }
                         sr /= B; si /= B;
                     } else {
@@ -2094,8 +2269,14 @@ void HandlerPO::DiffractControlPoints(const PreparedOrientation &prepared,
                             if (!edgeData.edge_valid_y[e]) continue;
                             int en = (e+1<nv)?e+1:0;
                             double Ei = A*edgeData.slope_xy[e]+B;
-                            double inv = (fabs(Ei)>m_eps1)?1.0/Ei:0.0;
+                            const double absEi = fabs(Ei);
+                            double inv = (absEi>m_eps1)?1.0/Ei:0.0;
                             sr += (vc[en]-vc[e])*inv; si += (vs[en]-vs[e])*inv;
+                            if (__builtin_expect(absEi <= m_eps1, 0)) {
+                                add_stable_edge_quotient(
+                                    vc[e], vs[e], edgeData.y[en]-edgeData.y[e],
+                                    Ei, m_waveIndex, sr, si);
+                            }
                         }
                         double inv_nA = -1.0/A; sr *= inv_nA; si *= inv_nA;
                     }
@@ -2197,8 +2378,9 @@ void HandlerPO::DiffractAtThetas(const PreparedOrientation &prepared,
 
                 // vf: compute on the fly (same logic as ComputeSphereDirections)
                 double vfx, vfy, vfz;
-                if (dz >= 1.0-1e-15) { vfx=0; vfy=-1; vfz=0; }       // theta=pi (backward)
-                else if (dz <= -1.0+1e-15) { vfx=0; vfy=1; vfz=0; }  // theta=0 (forward)
+                const double theta = theta_rads[k];
+                if (PoleMueller::IsBackward(theta)) { vfx=0; vfy=-1; vfz=0; }
+                else if (PoleMueller::IsForward(theta)) { vfx=0; vfy=1; vfz=0; }
                 else { vfx=-sp; vfy=cp; vfz=0; }                       // general
 
                 double A=sin_t*tc.a_sin+cos_t*tc.a_cos+tc.a0;
@@ -2206,8 +2388,14 @@ void HandlerPO::DiffractAtThetas(const PreparedOrientation &prepared,
                 double absA=fabs(A),absB=fabs(B);
 
                 complex fresnel;
-                if (absA<m_eps2&&absB<m_eps2){
-                    fresnel=(m_legacySign?m_invComplWave:-m_invComplWave)*beam_area;
+                double smallPhaseReal = 0.0, smallPhaseImag = 0.0;
+                if (small_phase_polygon_factor(
+                        edgeData.x, edgeData.y, edgeData.nVertices,
+                        A, B, m_waveIndex, smallPhaseReal, smallPhaseImag)){
+                    const complex areaLimit =
+                        (m_legacySign?m_invComplWave:-m_invComplWave)*beam_area;
+                    fresnel=apply_small_phase_factor(
+                        areaLimit,smallPhaseReal,smallPhaseImag);
                 } else {
                     double phases[32],vc[32],vs[32];
                     for(int v=0;v<nv;++v) phases[v]=sin_t*tc.psin[v]+cos_t*tc.pcos[v]+tc.p0[v];
@@ -2218,8 +2406,14 @@ void HandlerPO::DiffractAtThetas(const PreparedOrientation &prepared,
                             if(!edgeData.edge_valid_x[e])continue;
                             int en=(e+1<nv)?e+1:0;
                             double Ci=A+edgeData.slope_yx[e]*B;
-                            double inv=(fabs(Ci)>m_eps1)?1.0/Ci:0.0;
+                            const double absCi=fabs(Ci);
+                            double inv=(absCi>m_eps1)?1.0/Ci:0.0;
                             sr+=(vc[en]-vc[e])*inv; si+=(vs[en]-vs[e])*inv;
+                            if (__builtin_expect(absCi <= m_eps1, 0)) {
+                                add_stable_edge_quotient(
+                                    vc[e], vs[e], edgeData.x[en]-edgeData.x[e],
+                                    Ci, m_waveIndex, sr, si);
+                            }
                         }
                         sr/=B; si/=B;
                     } else {
@@ -2227,8 +2421,14 @@ void HandlerPO::DiffractAtThetas(const PreparedOrientation &prepared,
                             if(!edgeData.edge_valid_y[e])continue;
                             int en=(e+1<nv)?e+1:0;
                             double Ei=A*edgeData.slope_xy[e]+B;
-                            double inv=(fabs(Ei)>m_eps1)?1.0/Ei:0.0;
+                            const double absEi=fabs(Ei);
+                            double inv=(absEi>m_eps1)?1.0/Ei:0.0;
                             sr+=(vc[en]-vc[e])*inv; si+=(vs[en]-vs[e])*inv;
+                            if (__builtin_expect(absEi <= m_eps1, 0)) {
+                                add_stable_edge_quotient(
+                                    vc[e], vs[e], edgeData.y[en]-edgeData.y[e],
+                                    Ei, m_waveIndex, sr, si);
+                            }
                         }
                         double inv_nA=-1.0/A; sr*=inv_nA; si*=inv_nA;
                     }
@@ -2385,9 +2585,15 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                     double absB = fabs(B);
 
                     complex fresnel;
-                    if (absA < m_eps2 && absB < m_eps2)
+                    double smallPhaseReal = 0.0, smallPhaseImag = 0.0;
+                    if (small_phase_polygon_factor(
+                            edgeData.x, edgeData.y, edgeData.nVertices,
+                            A, B, m_waveIndex, smallPhaseReal, smallPhaseImag))
                     {
-                        fresnel = (m_legacySign ? m_invComplWave : -m_invComplWave) * beam_area;
+                        const complex areaLimit =
+                            (m_legacySign ? m_invComplWave : -m_invComplWave) * beam_area;
+                        fresnel = apply_small_phase_factor(
+                            areaLimit, smallPhaseReal, smallPhaseImag);
                     }
                     else
                     {
@@ -2408,11 +2614,10 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                                 sr += (vc[enext] - vc[e]) * inv_Ci;
                                 si += (vs[enext] - vs[e]) * inv_Ci;
                                 if (__builtin_expect(absCi <= m_eps1, 0)) {
-                                    double p1x = edgeData.x[e], p2x = edgeData.x[enext];
-                                    double tr = -m_wi2*Ci*(p2x*p2x-p1x*p1x)*0.5;
-                                    double ti = m_waveIndex*(p2x-p1x);
-                                    sr += vc[e]*tr - vs[e]*ti;
-                                    si += vc[e]*ti + vs[e]*tr;
+                                    add_stable_edge_quotient(
+                                        vc[e], vs[e],
+                                        edgeData.x[enext]-edgeData.x[e],
+                                        Ci, m_waveIndex, sr, si);
                                 }
                             }
                             double inv_B = 1.0 / B;
@@ -2430,11 +2635,10 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                                 sr += (vc[enext] - vc[e]) * inv_Ei;
                                 si += (vs[enext] - vs[e]) * inv_Ei;
                                 if (__builtin_expect(absEi <= m_eps1, 0)) {
-                                    double p1y = edgeData.y[e], p2y = edgeData.y[enext];
-                                    double tr = -m_wi2*Ei*(p2y*p2y-p1y*p1y)*0.5;
-                                    double ti = m_waveIndex*(p2y-p1y);
-                                    sr += vc[e]*tr - vs[e]*ti;
-                                    si += vc[e]*ti + vs[e]*tr;
+                                    add_stable_edge_quotient(
+                                        vc[e], vs[e],
+                                        edgeData.y[enext]-edgeData.y[e],
+                                        Ei, m_waveIndex, sr, si);
                                 }
                             }
                             double inv_nA = -1.0 / A;
@@ -3018,9 +3222,6 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
                     for (int e = 0; e < nv; ++e)
                         enext_arr[e] = (e + 1 < nv) ? e + 1 : 0;
 
-                    // Precompute branch divisor (size-independent, hoisted out of size loop)
-                    double branch_inv = use_B_branch ? (1.0 / B) : (-1.0 / A);
-
                     // -------------------------------------------------------
                     // Batch sincos: compute ALL vertex sincos for ALL sizes
                     // before entering the size loop. Uses AVX to batch across
@@ -3028,11 +3229,8 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
                     // simultaneously with fast_sincos_4x.
                     // Layout: vc_all[s][v], vs_all[s][v]
                     // -------------------------------------------------------
-                    bool is_forward = (absA < m_eps2 && absB < m_eps2);
-
                     double vc_all[32][32], vs_all[32][32]; // [size][vertex]
 
-                    if (!is_forward)
                     {
                         // For each vertex, batch the nSizes phases via AVX
                         // phase[s] = kD[s] * base_phase[v]
@@ -3090,15 +3288,25 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
 
                         double fr, fi; // fresnel result
 
-                        // Forward direction: area * invComplWave
-                        if (is_forward)
+                        // In the small-phase cone use the polygon-moment limit.
+                        // Its validity depends on k*D, so it must be selected
+                        // separately for every size rather than from A/B alone.
+                        double smallPhaseReal = 0.0, smallPhaseImag = 0.0;
+                        if (small_phase_polygon_factor(
+                                cb.vx_norm, cb.vy_norm, nv, A, B, kD[s],
+                                smallPhaseReal, smallPhaseImag))
                         {
                             double area_s = cb.area_norm * D_s * D_s;
                             fr = (m_legacySign ? icwr : -icwr) * area_s;
                             fi = (m_legacySign ? icwi : -icwi) * area_s;
+                            const double limitedFr = fr*smallPhaseReal-fi*smallPhaseImag;
+                            fi = fr*smallPhaseImag+fi*smallPhaseReal;
+                            fr = limitedFr;
                         }
                         else
                         {
+                            const double branch_inv = use_B_branch
+                                ? (1.0 / B) : (-1.0 / A);
                             // Use precomputed sincos arrays
                             const double *vc = vc_all[s];
                             const double *vs_arr = vs_all[s];
@@ -3116,12 +3324,10 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
                                     esi += (vs_arr[en] - vs_arr[e]) * ic;
                                     if (__builtin_expect(ic == 0.0 && cb.edge_valid_x[e], 0)) {
                                         double Ci = A + cb.slope_yx[e] * B;
-                                        double p1x = cb.vx_norm[e] * D_s;
-                                        double p2x = cb.vx_norm[en] * D_s;
-                                        double tr = -m_wi2*Ci*(p2x*p2x-p1x*p1x)*0.5;
-                                        double ti = m_waveIndex*(p2x-p1x);
-                                        esr += vc[e]*tr - vs_arr[e]*ti;
-                                        esi += vc[e]*ti + vs_arr[e]*tr;
+                                        add_stable_edge_quotient(
+                                            vc[e], vs_arr[e],
+                                            (cb.vx_norm[en]-cb.vx_norm[e])*D_s,
+                                            Ci, m_waveIndex, esr, esi);
                                     }
                                 }
                                 esr *= branch_inv;
@@ -3138,12 +3344,10 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
                                     esi += (vs_arr[en] - vs_arr[e]) * ic;
                                     if (__builtin_expect(ic == 0.0 && cb.edge_valid_y[e], 0)) {
                                         double Ei = A * cb.slope_xy[e] + B;
-                                        double p1y = cb.vy_norm[e] * D_s;
-                                        double p2y = cb.vy_norm[en] * D_s;
-                                        double tr = -m_wi2*Ei*(p2y*p2y-p1y*p1y)*0.5;
-                                        double ti = m_waveIndex*(p2y-p1y);
-                                        esr += vc[e]*tr - vs_arr[e]*ti;
-                                        esi += vc[e]*ti + vs_arr[e]*tr;
+                                        add_stable_edge_quotient(
+                                            vc[e], vs_arr[e],
+                                            (cb.vy_norm[en]-cb.vy_norm[e])*D_s,
+                                            Ei, m_waveIndex, esr, esi);
                                     }
                                 }
                                 esr *= branch_inv;
