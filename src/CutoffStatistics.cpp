@@ -13,7 +13,8 @@ BeamCutoffStatistics::BeamCutoffStatistics()
 TraceCutoffStatistics::TraceCutoffStatistics()
     : evaluated(0), rejected(0), rejectedJones(0), rejectedArea(0),
       rejectedImportance(0), smallFragmentSimplifications(0),
-      configuredBeamLimitHits(0), hardBeamLimitHits(0)
+      configuredBeamLimitHits(0), hardBeamLimitHits(0), retryAttempts(0),
+      recoveredOrientations(0), unrecoveredOrientations(0)
 {
 }
 
@@ -96,6 +97,11 @@ std::string FormatTraceCutoffReport(
     out << "Configured beam-limit hits: "
         << statistics.configuredBeamLimitHits.load() << "\n";
     out << "Hard tree-limit hits: " << statistics.hardBeamLimitHits.load() << "\n";
+    out << "Adaptive retry attempts: " << statistics.retryAttempts.load() << "\n";
+    out << "Orientations recovered by retry: "
+        << statistics.recoveredOrientations.load() << "\n";
+    out << "Orientations still incomplete: "
+        << statistics.unrecoveredOrientations.load() << "\n";
     out << "===============================\n";
     return out.str();
 }

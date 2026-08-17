@@ -229,6 +229,12 @@ void ApplyTraceCutoffOptions(const ArgPP &args, Scattering *scattering)
         scattering->m_traceCutoffImportanceRel = args.GetDoubleValue("trace_cutoff_importance", 0);
     if (args.IsCatched("trace_max_beams"))
         scattering->m_traceMaxBeams = args.GetIntValue("trace_max_beams", 0);
+    if (args.IsCatched("trace_limit_retries"))
+        scattering->m_traceLimitRetries = args.GetIntValue(
+            "trace_limit_retries", 0);
+    if (args.IsCatched("trace_retry_factor"))
+        scattering->m_traceRetryFactor = args.GetDoubleValue(
+            "trace_retry_factor", 0);
     if (args.IsCatched("gpu_trace"))
         scattering->m_gpuTracePrefilter = true;
     if (args.IsCatched("trace_prefilter"))

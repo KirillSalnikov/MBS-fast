@@ -1605,6 +1605,28 @@ RunConfig RunConfig::FromCommandLine(const ArgPP &args,
                 : "adaptive command-line settings");
     }
     RequireNonnegativeInt(args, "trace_max_beams");
+    RequireNonnegativeInt(args, "trace_limit_retries");
+    RequirePositiveDouble(args, "trace_retry_factor");
+    const int traceRetries = args.IsCatched("trace_limit_retries")
+        ? IntValue(args, "trace_limit_retries", 0) : 0;
+    const int traceMaxBeams = args.IsCatched("trace_max_beams")
+        ? IntValue(args, "trace_max_beams", 0) : 0;
+    if (traceRetries > 0 && traceMaxBeams <= 0)
+    {
+        Fail("--trace-limit-retries requires a positive --trace-max-beams.",
+             "set a finite initial beam limit, for example 500000.");
+    }
+    if (args.IsCatched("trace_retry_factor") && traceRetries <= 0)
+    {
+        Fail("--trace-retry-factor requires --trace-limit-retries above zero.",
+             "enable retries or remove the unused factor.");
+    }
+    if (args.IsCatched("trace_retry_factor")
+        && DoubleValue(args, "trace_retry_factor", 0) <= 1.0)
+    {
+        Fail("--trace-retry-factor must exceed 1.",
+             "use a factor such as 10, or remove the option for the default.");
+    }
     RequireNonnegativeInt(args, "log");
     RequirePositiveDouble(args, "r");
     if (args.IsCatched("r") && DoubleValue(args, "r", 0) < 1.0)

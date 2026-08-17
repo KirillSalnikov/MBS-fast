@@ -478,6 +478,36 @@ int main()
     profileOff.insert(profileOff.end(), {"--cutoff-profile", "off"});
     ExpectSuccess("cutoff profile off", profileOff);
 
+    std::vector<std::string> traceRetry = CanonicalBase();
+    traceRetry.insert(traceRetry.end(), {
+        "--trace-max-beams", "50000",
+        "--trace-limit-retries", "3",
+        "--trace-retry-factor", "10"
+    });
+    ExpectSuccess("adaptive trace-limit retry", traceRetry);
+
+    std::vector<std::string> badTraceRetryFactor = CanonicalBase();
+    badTraceRetryFactor.insert(badTraceRetryFactor.end(), {
+        "--trace-max-beams", "50000", "--trace-limit-retries", "3",
+        "--trace-retry-factor", "1"
+    });
+    ExpectFailure("trace retry factor range", badTraceRetryFactor,
+                  "must exceed 1");
+
+    std::vector<std::string> retryWithoutLimit = CanonicalBase();
+    retryWithoutLimit.insert(retryWithoutLimit.end(), {
+        "--trace-limit-retries", "2"
+    });
+    ExpectFailure("trace retry requires limit", retryWithoutLimit,
+                  "requires a positive --trace-max-beams");
+
+    std::vector<std::string> factorWithoutRetry = CanonicalBase();
+    factorWithoutRetry.insert(factorWithoutRetry.end(), {
+        "--trace-retry-factor", "4"
+    });
+    ExpectFailure("trace retry factor requires retries", factorWithoutRetry,
+                  "requires --trace-limit-retries above zero");
+
     std::vector<std::string> saveGeometry = CanonicalBase();
     saveGeometry.insert(saveGeometry.end(), {
         "--save-geometry", "saved.particle"

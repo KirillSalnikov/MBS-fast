@@ -1,4 +1,4 @@
-# Coherent Backscatter Audit, 2026-08-14
+# Coherent Backscatter Audit, updated 2026-08-17
 
 ## Scope
 
@@ -18,14 +18,16 @@ conversion happens once per orientation. Multi-GPU partitioning assigns whole
 orientations to devices and therefore does not split one coherent beam sum
 between devices.
 
-The per-beam audit at reflection depth 4 produced 416 outgoing contributions:
+The per-beam audit at reflection depth 4 now produces 607 outgoing
+contributions. Before target facets were clipped at the source aperture plane,
+the same case produced only 416 contributions:
 
 | Quantity | Value |
 |---|---:|
-| `0.5 * norm(sum_b J_b)^2` | 0.0137133849549 |
-| `0.5 * sum_b norm(J_b)^2` | 0.0369448516738 |
-| Interference cross term relative to the incoherent sum | -62.8815% |
-| Relative error between `sum_b J_b` and written Jones output | 2.34e-17 |
+| `0.5 * norm(sum_b J_b)^2` | 0.0512922268562 |
+| `0.5 * sum_b norm(J_b)^2` | 0.0579249895 |
+| Interference cross term relative to the incoherent sum | -11.451% |
+| Relative error between `sum_b J_b` and written Jones output | 2.13e-16 |
 | Relative error between summed per-beam Mueller and `--incoherent` output | 0 |
 
 Interference is therefore present and strongly destructive in this probe.
@@ -37,16 +39,16 @@ With all cutoffs disabled, exact-backscatter `M11` was:
 
 | `--max-reflections` | `M11(180 deg)` |
 |---:|---:|
-| 2 | 0.00201826577 |
-| 4 | 0.01371338495 |
-| 6 | 0.06465435994 |
-| 8 | 0.08294429804 |
-| 12 | 0.09416216180 |
-| 16 | 0.09280063544 |
-| 20 | 0.09181165326 |
-| 24 | 0.09182191258 |
+| 2 | 0.01100370283 |
+| 4 | 0.05129222686 |
+| 6 | 0.06511251830 |
+| 8 | 0.08860667759 |
+| 12 | 0.09273171485 |
+| 16 | 0.09242936386 |
+| 20 | 0.09181820477 |
+| 24 | 0.09182458069 |
 
-Depth 12 is about 2.55% above the depth-24 value for this one orientation.
+Depth 12 is about 0.99% above the depth-24 value for this one orientation.
 Reflection depth must therefore be converged separately from orientation and
 scattering grids.
 
@@ -55,22 +57,44 @@ scattering grids.
 At depth 24, the production-like custom settings
 `--beam-cutoff-jones 0.001 --beam-cutoff-area 0.002`
 `--trace-cutoff-importance 0.0001 --trace-max-beams 20000` produced
-`M11=0.08079797162`, about 12.0% below the cutoff-off reference. The tracer
-evaluated 3009 branches and rejected 806 (26.8%).
+`M11=0.07956817292`, about 13.3% below the cutoff-off reference.
 
 The preset profiles were close to the cutoff-off result in this probe:
 
 | Profile | `M11(180 deg)` |
 |---|---:|
-| off | 0.09182191258 |
-| safe | 0.09181820867 |
-| balanced | 0.09182698430 |
-| fast | 0.09190307223 |
+| off | 0.09182458069 |
+| safe | 0.09182079600 |
+| balanced | 0.09183413793 |
+| fast | 0.09187037688 |
 
 This is a single-orientation diagnostic, not a universal error bound. Custom
 relative cutoffs can remove weak amplitudes whose cross terms are not weak.
 Backscatter production runs should be repeated with `safe` or `off` at selected
 orientations and sizes.
+
+For a 128-orientation `k_eq=92.06446` check over `170..180 deg`, depth 6 was
+11.03% below depth 20 in weighted M11 L2, depth 12 differed by 0.69%, and depth
+16 by 0.10%. The production-like manual cutoffs were 3.37% below the uncut
+depth-12 result in the same metric, whereas the `safe` profile differed from
+`off` by only 0.00069%.
+
+## Forward-depth clipping regression
+
+The exact intersection path clipped a target facet at the source aperture
+plane, but `Difference`, used for parent subtraction and outgoing occlusion,
+only checked whether any target vertex was forward. It then projected the
+complete tilted facet, including its behind-plane portion. That portion could
+shadow a physical outgoing aperture and postpone valid ray paths until a much
+larger reflection limit.
+
+`Difference` now clips the target polygon by `t <= 0` before projection. The
+half-space predicate avoids division by a nearly parallel denominator and is
+tested at geometry scales `1e-6`, `1`, and `1e6`. At depth 4 the regression
+case changes from 416 beams and `M11=0.01371338495` to 607 beams and
+`M11=0.05129222686`. Over 512 orientations at `k_eq=92.06446`, however, the
+change is only 0.139% weighted M11 L2 over `160..180 deg` and 0.073% at exact
+backscatter, so it does not by itself explain a large ensemble discrepancy.
 
 ## Ensemble interpretation
 

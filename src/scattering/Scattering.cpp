@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 #include <stdexcept>
 
 #include "geometry_lib.h"
@@ -81,6 +82,8 @@ void Scattering::CopyRuntimeOptionsFrom(const Scattering &source)
     m_traceCutoffAreaRel = source.m_traceCutoffAreaRel;
     m_traceCutoffImportanceRel = source.m_traceCutoffImportanceRel;
     m_traceMaxBeams = source.m_traceMaxBeams;
+    m_traceLimitRetries = source.m_traceLimitRetries;
+    m_traceRetryFactor = source.m_traceRetryFactor;
     m_cutoffProfileName = source.m_cutoffProfileName;
     m_traceCutoffStatistics = source.m_traceCutoffStatistics;
     m_gpuTracePrefilter = source.m_gpuTracePrefilter;
@@ -88,6 +91,67 @@ void Scattering::CopyRuntimeOptionsFrom(const Scattering &source)
     m_traceCpuProjectedPrefilterMargin = source.m_traceCpuProjectedPrefilterMargin;
     m_tracePrefilterStats = source.m_tracePrefilterStats;
     m_trackIdsRequired = source.m_trackIdsRequired;
+}
+
+bool Scattering::ScatterLightWithLimitRetry(
+    double beta, double gamma, std::vector<Beam> &scatteredBeams,
+    bool formShadow)
+{
+    const int originalMaxBeams = m_traceMaxBeams;
+    bool ok = false;
+    int attempt = 0;
+    const auto prepareRetry = [&]() {
+        m_traceCutoffStatistics->retryAttempts.fetch_add(
+            1, std::memory_order_relaxed);
+        const double grown = std::ceil(
+            static_cast<double>(m_traceMaxBeams) * m_traceRetryFactor);
+        m_traceMaxBeams = grown >= std::numeric_limits<int>::max()
+            ? std::numeric_limits<int>::max()
+            : std::max(m_traceMaxBeams + 1, static_cast<int>(grown));
+        ++attempt;
+    };
+    try
+    {
+        for (;;)
+        {
+            scatteredBeams.clear();
+            if (formShadow)
+                FormShadowBeam(scatteredBeams);
+            try
+            {
+                ok = ScatterLight(beta, gamma, scatteredBeams);
+            }
+            catch (const TraceLimitExceeded &)
+            {
+                if (attempt >= m_traceLimitRetries)
+                {
+                    m_traceCutoffStatistics->unrecoveredOrientations.fetch_add(
+                        1, std::memory_order_relaxed);
+                    throw;
+                }
+                prepareRetry();
+                continue;
+            }
+            if (ok)
+            {
+                if (attempt > 0)
+                    m_traceCutoffStatistics->recoveredOrientations.fetch_add(
+                        1, std::memory_order_relaxed);
+                break;
+            }
+            m_traceCutoffStatistics->unrecoveredOrientations.fetch_add(
+                1, std::memory_order_relaxed);
+            throw std::runtime_error(
+                "orientation tracing failed before producing a complete beam set");
+        }
+    }
+    catch (...)
+    {
+        m_traceMaxBeams = originalMaxBeams;
+        throw;
+    }
+    m_traceMaxBeams = originalMaxBeams;
+    return ok;
 }
 
 IdType Scattering::Scattering::RecomputeTrackId(const IdType &oldId, int facetId)
@@ -111,19 +175,11 @@ bool Scattering::PushBeamToTree(Beam &beam, int facetId, int level, Location loc
     {
         return true;
     }
-    if (m_treeSize >= MAX_BEAM_REFL_NUM)
-    {
-        m_traceCutoffStatistics->hardBeamLimitHits.fetch_add(
-            1, std::memory_order_relaxed);
-        throw std::runtime_error(
-            "beam tree reached the compiled 65536-branch hard limit; "
-            "the orientation result would be incomplete");
-    }
     if (m_traceMaxBeams > 0 && m_treeSize >= m_traceMaxBeams)
     {
         m_traceCutoffStatistics->configuredBeamLimitHits.fetch_add(
             1, std::memory_order_relaxed);
-        throw std::runtime_error(
+        throw TraceLimitExceeded(
             "beam tree reached --trace-max-beams="
             + std::to_string(m_traceMaxBeams)
             + "; raise the limit or use 0 to disable it");
@@ -482,8 +538,21 @@ void Scattering::Difference(const Polygon &subject, const Vector3f &subjNormal,
         return;
     }
 
+    Point3f forwardClipPoints[MAX_VERTEX_NUM];
+    const int forwardClipSize =
+        clip_polygon_by_nonpositive_projection_parameter(
+            clip.arr, clip.nVertices, subjNormal, clipDir,
+            geometry_depth_tolerance(m_geometryScale), forwardClipPoints);
+    Polygon forwardClip;
+    SetOutputPolygon(forwardClipPoints, forwardClipSize, forwardClip);
+    if (forwardClip.nVertices < MIN_VERTEX_NUM)
+    {
+        difference.Push(subject);
+        return;
+    }
+
     Point3f clipProjection[MAX_VERTEX_NUM];
-    bool isProjected = ProjectToFacetPlane(clip, clipDir, subjNormal,
+    bool isProjected = ProjectToFacetPlane(forwardClip, clipDir, subjNormal,
                                            clipProjection);
 
     if (!isProjected)
@@ -498,12 +567,12 @@ void Scattering::Difference(const Polygon &subject, const Vector3f &subjNormal,
     Polygon projectedClip;
     if (overlap != nullptr)
     {
-        SetConvexOutputPolygon(clipProjection, clip.nVertices, clipNormal,
+        SetConvexOutputPolygon(clipProjection, forwardClip.nVertices, clipNormal,
                                projectedClip);
     }
     else
     {
-        SetOutputPolygon(clipProjection, clip.nVertices, projectedClip);
+        SetOutputPolygon(clipProjection, forwardClip.nVertices, projectedClip);
         if (projectedClip.nVertices >= MIN_VERTEX_NUM
             && DotProduct(projectedClip.Normal(), clipNormal) < 0.0)
         {
@@ -516,25 +585,6 @@ void Scattering::Difference(const Polygon &subject, const Vector3f &subjNormal,
         return;
     }
     const Point3f effectiveClipNormal = projectedClip.Normal();
-
-    const double projectionDenominator = DotProduct(clipDir, subjNormal);
-    const double depthTolerance = geometry_depth_tolerance(m_geometryScale);
-    bool hasForwardDepth = false;
-    for (int i = 0; i < clip.nVertices; ++i)
-    {
-        const double depth = (DotProduct(clip.arr[i], subjNormal)
-                              + subjNormal.d_param) / projectionDenominator;
-        if (depth <= depthTolerance)
-        {
-            hasForwardDepth = true;
-            break;
-        }
-    }
-    if (!hasForwardDepth)
-    {
-        difference.Push(subject);
-        return;
-    }
 
     Polygon retained = subject;
     Point3f edgeEnd = projectedClip.arr[projectedClip.nVertices - 1];

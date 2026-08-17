@@ -203,6 +203,9 @@ test_coherence: cpu
 test_forward_depth:
 	tests/run_forward_depth_clipping_test.sh
 
+test_concave_visibility:
+	tests/run_concave_visibility_test.sh
+
 test_warnings:
 	tests/run_warning_gate.sh
 
@@ -237,7 +240,7 @@ test_sanitize:
 		MBS=$(CURDIR)/cpu/bin/mbs_po_mpi_sanitize \
 		MBS_RELEASE_TIMEOUT_SECONDS=90 tests/run_release_cli_matrix.sh
 
-test: test_release test_adaptive test_regression test_extinction test_so3 test_poles test_beam_topology test_coherence test_forward_depth test_warnings test_cuda_profiles test_cuda_if_available
+test: test_release test_adaptive test_regression test_extinction test_so3 test_poles test_beam_topology test_coherence test_forward_depth test_concave_visibility test_warnings test_cuda_profiles test_cuda_if_available
 
 $(TARGET): $(OBJECTS)
 	@mkdir -p bin
@@ -347,7 +350,7 @@ endif
 .PHONY: all cuda_check cpu gpu gpu_float gpu_float_fast gpu_double gpu_double_fast \
 	gpu_fp32 gpu_fp64 gpu_fp32_fast gpu_fp64_fast split docs \
 	test test_cli test_release test_adaptive test_regression test_so3 test_poles \
-	test_beam_topology test_coherence test_forward_depth test_warnings test_cuda_build test_cuda \
+	test_beam_topology test_coherence test_forward_depth test_concave_visibility test_warnings test_cuda_build test_cuda \
 	test_cuda_profiles test_cuda_if_available test_sanitize clean \
 	clean_cuda_objects cuda_float cuda_float_fast cuda_double cuda_double_fast cuda_variants \
 	fft_probe gpu_trace_probe gpu_quaternion_probe

@@ -3155,8 +3155,8 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
                                                      globalGamma, ib,
                                                      gammaStagger && !fastPole);
                     localParticle.Rotate(block.traceBeta, gamma, 0);
-                    if (!shadowOff) localScatter->FormShadowBeam(localBeams);
-                    bool ok = localScatter->ScatterLight(0, 0, localBeams);
+                    bool ok = localScatter->ScatterLightWithLimitRetry(
+                        0, 0, localBeams, !shadowOff);
                     block.beamCounts[jj] = (int)localBeams.size();
                     if (ok)
                     {
@@ -3198,8 +3198,8 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
                                                  globalGamma, ib,
                                                  gammaStagger && !fastPole);
                 localParticle.Rotate(block.traceBeta, gamma, 0);
-                if (!shadowOff) localScatter->FormShadowBeam(localBeams);
-                bool ok = localScatter->ScatterLight(0, 0, localBeams);
+                bool ok = localScatter->ScatterLightWithLimitRetry(
+                    0, 0, localBeams, !shadowOff);
                 block.beamCounts[jj] = (int)localBeams.size();
                 if (ok)
                 {

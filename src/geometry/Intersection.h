@@ -114,6 +114,48 @@ inline int clip_polygon_by_nonnegative_scalar(const Point3f *input,
     return outputSize;
 }
 
+// ProjectToFacetPlane maps p to p - t*direction, where
+// t = plane(p)/(direction.planeNormal).  In the beam-clipping callers the
+// projection direction points from a target facet back to the source aperture,
+// so only t <= 0 belongs to the forward ray half-space.  Clip the polygon
+// before projection: accepting the complete polygon when only one vertex is
+// forward lets its behind-plane part shadow the aperture.
+inline int clip_polygon_by_nonpositive_projection_parameter(
+    const Point3f *input, int inputSize,
+    const Point3f &planeNormal, const Point3f &projectionDirection,
+    double depthTolerance, Point3f *output)
+{
+    if (inputSize <= 0)
+        return 0;
+    if (inputSize > MAX_VERTEX_NUM)
+        throw std::runtime_error("invalid polygon size in projection-depth clipping");
+
+    const double denominator = DotProduct(projectionDirection, planeNormal);
+    const double denominatorScale = geometry_length3(
+        projectionDirection.cx, projectionDirection.cy,
+        projectionDirection.cz) * geometry_length3(
+            planeNormal.cx, planeNormal.cy, planeNormal.cz);
+    if (denominatorScale <= DBL_MIN
+        || std::fabs(denominator)
+            <= geometry_parallel_tolerance(denominatorScale))
+    {
+        return 0;
+    }
+
+    const double denominatorSign = denominator >= 0.0 ? 1.0 : -1.0;
+    double forwardScalar[MAX_VERTEX_NUM];
+    for (int i = 0; i < inputSize; ++i)
+    {
+        const double planeValue = DotProduct(input[i], planeNormal)
+            + planeNormal.d_param;
+        // -t >= 0, without dividing by a possibly small denominator.
+        forwardScalar[i] = -planeValue * denominatorSign;
+    }
+    return clip_polygon_by_nonnegative_scalar(
+        input, forwardScalar, inputSize,
+        depthTolerance * std::fabs(denominator), output);
+}
+
 inline bool is_inside_i(const Point3f &x, const Point3f &p1,
                         const Point3f &p2, const Point3f &normal)
 {

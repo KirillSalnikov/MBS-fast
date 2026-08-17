@@ -301,6 +301,10 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
          "Prune internal beam branches by relative Jones-intensity times area."},
         {"trace_max_beams", "trace-max-beams", 1, "N", "Cutoffs",
          "Abort an orientation after N traced beam nodes; zero disables the limit."},
+        {"trace_limit_retries", "trace-limit-retries", 1, "N", "Cutoffs",
+         "Retry an orientation that reaches --trace-max-beams N times, increasing only that limit and preserving all accuracy cutoffs."},
+        {"trace_retry_factor", "trace-retry-factor", 1, "FACTOR", "Cutoffs",
+         "Multiply --trace-max-beams by FACTOR after each retry; must exceed 1, default 10."},
 
         // Multi-size execution.
         {"multigrid", "dmax-grid", 3, "DMIN DMAX N", "Multi-size",

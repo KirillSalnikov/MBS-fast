@@ -28,6 +28,9 @@ struct TraceCutoffStatistics
     std::atomic<long long> smallFragmentSimplifications;
     std::atomic<long long> configuredBeamLimitHits;
     std::atomic<long long> hardBeamLimitHits;
+    std::atomic<long long> retryAttempts;
+    std::atomic<long long> recoveredOrientations;
+    std::atomic<long long> unrecoveredOrientations;
 };
 
 std::string FormatBeamCutoffReport(

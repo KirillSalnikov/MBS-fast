@@ -9,26 +9,15 @@
 
 #include <float.h>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
-//#define MAX_BEAM_REFL_NUM 32768
-#define MAX_BEAM_REFL_NUM 65536
-//#define MAX_BEAM_REFL_NUM 1048576
-
-/**
- * @brief The BeamTree struct
- * Tree of beams (works like stack).
- */
-struct BeamTree
+class TraceLimitExceeded : public std::runtime_error
 {
-    Beam tree[MAX_BEAM_REFL_NUM];
-    int size = 0;
-
-//	void Push(const Beam &beam)
-//	{
-//		tree[size++] = beam;
-//	}
+public:
+    explicit TraceLimitExceeded(const std::string &message)
+        : std::runtime_error(message) {}
 };
 
 class Scattering
@@ -77,6 +66,8 @@ public:
     double m_traceCutoffAreaRel = 0;
     double m_traceCutoffImportanceRel = 0;
     int m_traceMaxBeams = 0;
+    int m_traceLimitRetries = 0;
+    double m_traceRetryFactor = 10.0;
     std::string m_cutoffProfileName = "legacy-default";
     bool m_gpuTracePrefilter = false;
     bool m_traceCpuProjectedPrefilter = true;
@@ -93,6 +84,10 @@ public:
 
     virtual bool ScatterLight(double beta, double gamma, const std::vector<std::vector<int>> &tracks,
                                      std::vector<Beam> &scaterredBeams);
+
+    bool ScatterLightWithLimitRetry(double beta, double gamma,
+                                    std::vector<Beam> &scatteredBeams,
+                                    bool formShadow);
 
     virtual void FormShadowBeam(std::vector<Beam> &scaterredBeams);
 

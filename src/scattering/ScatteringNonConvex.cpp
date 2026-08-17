@@ -1095,7 +1095,7 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
                 {
                     m_traceCutoffStatistics->configuredBeamLimitHits.fetch_add(
                         1, std::memory_order_relaxed);
-                    throw std::runtime_error(
+                    throw TraceLimitExceeded(
                         "tracing processed more than --trace-max-beams="
                         + std::to_string(m_traceMaxBeams)
                         + " branches; raise the limit or use 0 to disable it");
@@ -1143,7 +1143,7 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
         {
             m_traceCutoffStatistics->configuredBeamLimitHits.fetch_add(
                 1, std::memory_order_relaxed);
-            throw std::runtime_error(
+            throw TraceLimitExceeded(
                 "tracing processed more than --trace-max-beams="
                 + std::to_string(m_traceMaxBeams)
                 + " branches; raise the limit or use 0 to disable it");

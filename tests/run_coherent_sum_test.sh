@@ -68,8 +68,10 @@ with open(audit_path, encoding="utf-8") as stream:
         incoherent_m11 += 0.5 * sum(value * value for value in values)
         beam_count += 1
 
-if beam_count < 2:
-    raise SystemExit(f"expected multiple outgoing beams, got {beam_count}")
+if beam_count < 500:
+    raise SystemExit(
+        f"too few outgoing beams ({beam_count}); a tilted occluding facet may "
+        "have been projected without clipping it at the source plane")
 
 expected = None
 with open(jones_path, encoding="utf-8") as stream:
@@ -92,6 +94,10 @@ if relative_jones_error > 1e-12:
         f"relative error={relative_jones_error:.6g}")
 
 coherent_m11 = 0.5 * sum(value * value for value in sums)
+if coherent_m11 < 0.04:
+    raise SystemExit(
+        f"exact-backscatter M11 is unexpectedly low ({coherent_m11:.9g}); "
+        "check forward-depth clipping of tilted occluding facets")
 cross_fraction = (coherent_m11 - incoherent_m11) / incoherent_m11
 if abs(cross_fraction) < 0.01:
     raise SystemExit(
