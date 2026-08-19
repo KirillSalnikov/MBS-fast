@@ -598,6 +598,9 @@ expect_success 'accuracy/performance and diagnostic controls' \
 expect_success 'tracing prefilter explicit disable' \
     "${PO_CORE[@]}" --fixed-orientation 0 0 "${GRID[@]}" \
     --no-trace-prefilter
+expect_success 'adaptive trace-limit retry controls' \
+    "${PO_CORE[@]}" --fixed-orientation 0 0 "${GRID[@]}" \
+    --trace-max-beams 50000 --trace-limit-retries 3 --trace-retry-factor 10
 expect_success 'trajectory selection and grouping' \
     "${PO_CORE[@]}" --fixed-orientation 0 0 "${GRID[@]}" \
     --trajectories "$TRAJECTORY_FILE" --all-trajectories --trajectory-groups
