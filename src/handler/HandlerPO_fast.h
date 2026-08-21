@@ -577,20 +577,14 @@ inline double fast_rcp(double x) {
 inline double fast_rcp(double x) { return 1.0 / x; }
 #endif
 
-// Inline RotateJones using precomputed polData
-inline void rotate_jones_inline(
-    double NTx, double NTy, double NTz,
-    double NPx, double NPy, double NPz,
-    double nxDTx, double nxDTy, double nxDTz,
-    double nxDPx, double nxDPy, double nxDPz,
+inline void compute_transverse_basis_inline(
     double vfx, double vfy, double vfz,
     double dirx, double diry, double dirz,
-    double &r00, double &r01, double &r10, double &r11)
+    double &vtx, double &vty, double &vtz)
 {
-    double vtx = vfy*dirz - vfz*diry;
-    double vty = vfz*dirx - vfx*dirz;
-    double vtz = vfx*diry - vfy*dirx;
-    // Normalize vt
+    vtx = vfy*dirz - vfz*diry;
+    vty = vfz*dirx - vfx*dirz;
+    vtz = vfx*diry - vfy*dirx;
     double vtLen2 = vtx*vtx + vty*vty + vtz*vtz;
     if (__builtin_expect(vtLen2 > 1e-30, 1)) {
 #ifdef __AVX512F__
@@ -624,7 +618,18 @@ inline void rotate_jones_inline(
 #endif
         vtx *= invLen; vty *= invLen; vtz *= invLen;
     }
+}
 
+inline void rotate_jones_from_basis_inline(
+    double NTx, double NTy, double NTz,
+    double NPx, double NPy, double NPz,
+    double nxDTx, double nxDTy, double nxDTz,
+    double nxDPx, double nxDPy, double nxDPz,
+    double vfx, double vfy, double vfz,
+    double vtx, double vty, double vtz,
+    double dirx, double diry, double dirz,
+    double &r00, double &r01, double &r10, double &r11)
+{
     double dot_dir_nxDT = dirx*nxDTx + diry*nxDTy + dirz*nxDTz;
     double cpTx = (diry*NTz - dirz*NTy) + nxDTx - dirx*dot_dir_nxDT;
     double cpTy = (dirz*NTx - dirx*NTz) + nxDTy - diry*dot_dir_nxDT;
@@ -639,4 +644,40 @@ inline void rotate_jones_inline(
     r01 = (cpPx*vtx + cpPy*vty + cpPz*vtz) * 0.5;
     r10 = (cpTx*vfx + cpTy*vfy + cpTz*vfz) * 0.5;
     r11 = (cpPx*vfx + cpPy*vfy + cpPz*vfz) * 0.5;
+}
+
+inline void rotate_jones_inline(
+    double NTx, double NTy, double NTz,
+    double NPx, double NPy, double NPz,
+    double nxDTx, double nxDTy, double nxDTz,
+    double nxDPx, double nxDPy, double nxDPz,
+    double vfx, double vfy, double vfz,
+    double dirx, double diry, double dirz,
+    double &r00, double &r01, double &r10, double &r11)
+{
+    double vtx, vty, vtz;
+    compute_transverse_basis_inline(
+        vfx, vfy, vfz, dirx, diry, dirz, vtx, vty, vtz);
+    rotate_jones_from_basis_inline(
+        NTx, NTy, NTz, NPx, NPy, NPz,
+        nxDTx, nxDTy, nxDTz, nxDPx, nxDPy, nxDPz,
+        vfx, vfy, vfz, vtx, vty, vtz, dirx, diry, dirz,
+        r00, r01, r10, r11);
+}
+
+inline void rotate_jones_precomputed_inline(
+    double NTx, double NTy, double NTz,
+    double NPx, double NPy, double NPz,
+    double nxDTx, double nxDTy, double nxDTz,
+    double nxDPx, double nxDPy, double nxDPz,
+    double vfx, double vfy, double vfz,
+    double vtx, double vty, double vtz,
+    double dirx, double diry, double dirz,
+    double &r00, double &r01, double &r10, double &r11)
+{
+    rotate_jones_from_basis_inline(
+        NTx, NTy, NTz, NPx, NPy, NPz,
+        nxDTx, nxDTy, nxDTz, nxDPx, nxDPy, nxDPz,
+        vfx, vfy, vfz, vtx, vty, vtz, dirx, diry, dirz,
+        r00, r01, r10, r11);
 }

@@ -258,6 +258,8 @@ public:
 protected:
     std::shared_ptr<BeamCutoffStatistics> m_beamCutoffStatistics;
     std::shared_ptr<FftInterpolationStatistics> m_fftStatistics;
+    std::shared_ptr<const std::vector<Point3d>> m_transverseBasis;
+    int m_transverseThetaStride = 0;
     bool isNanOccured = false;
     bool isNan = false;
     bool isBackScatteringConusEnabled = false;

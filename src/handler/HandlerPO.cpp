@@ -1027,6 +1027,8 @@ void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
     m_fftPhiFactor = source.m_fftPhiFactor;
     m_fftTolerance = source.m_fftTolerance;
     m_fftStatistics = source.m_fftStatistics;
+    m_transverseBasis = source.m_transverseBasis;
+    m_transverseThetaStride = source.m_transverseThetaStride;
     m_otFarReferencePath = source.m_otFarReferencePath;
     m_otPingDistance = source.m_otPingDistance;
     m_otPhaseAverage = source.m_otPhaseAverage;
@@ -1043,6 +1045,31 @@ void HandlerPO::SetScatteringSphere(const ScatteringRange &grid)
         : Arr2D();
 
     m_sphere.ComputeSphereDirections(*m_incidentLight);
+
+    m_transverseThetaStride = m_sphere.nZenith + 1;
+    std::shared_ptr<std::vector<Point3d>> transverseBasis =
+        std::make_shared<std::vector<Point3d>>(
+            m_sphere.nAzimuth * m_transverseThetaStride);
+    std::vector<double> sinTheta(m_transverseThetaStride);
+    std::vector<double> cosTheta(m_transverseThetaStride);
+    for (int j = 0; j <= m_sphere.nZenith; ++j)
+        fast_sincos(m_sphere.GetZenith(j), sinTheta[j], cosTheta[j]);
+    for (int i = 0; i < m_sphere.nAzimuth; ++i)
+    {
+        double sinPhi, cosPhi;
+        fast_sincos(i * m_sphere.azinuthStep, sinPhi, cosPhi);
+        for (int j = 0; j <= m_sphere.nZenith; ++j)
+        {
+            const Point3d &vf = m_sphere.vf[i][j];
+            Point3d &vt = (*transverseBasis)[
+                i * m_transverseThetaStride + j];
+            compute_transverse_basis_inline(
+                vf.x, vf.y, vf.z,
+                sinTheta[j] * cosPhi, sinTheta[j] * sinPhi, -cosTheta[j],
+                vt.x, vt.y, vt.z);
+        }
+    }
+    m_transverseBasis = transverseBasis;
 }
 
 void HandlerPO::ComputeOpticalLengths(const Beam &beam, BeamInfo &info)
@@ -1283,7 +1310,7 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                     int ddd = 0;
 #else
 
-        // Precompute vf in SOA layout for better cache access
+        // Scattering directions and polarization bases are grid-invariant.
         int nAz_total = m_sphere.nAzimuth;
         int nZen_total = m_sphere.nZenith;
 
@@ -1312,6 +1339,74 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                     tc);
             }
 
+            // Batch phase trigonometry across theta. Concave-particle output
+            // is dominated by triangular and quadrilateral clipped beams;
+            // evaluating their short vertex lists independently would leave
+            // most calls on the scalar sincos path. Per-thread buffers retain
+            // capacity across beams and azimuth rows.
+            const int nv = edgeData.valid ? tc.nv : 0;
+            static thread_local std::vector<double> phaseScratch;
+            static thread_local std::vector<double> phaseSinScratch;
+            static thread_local std::vector<double> phaseCosScratch;
+            static thread_local std::vector<double> directionPhaseScratch;
+            static thread_local std::vector<double> directionSinScratch;
+            static thread_local std::vector<double> directionCosScratch;
+            if (nv > 0)
+            {
+                const int thetaCount = nZen_total + 1;
+                const int phaseCount = thetaCount * nv;
+                phaseScratch.resize(phaseCount);
+                phaseSinScratch.resize(phaseCount);
+                phaseCosScratch.resize(phaseCount);
+                directionPhaseScratch.resize(thetaCount);
+                directionSinScratch.resize(thetaCount);
+                directionCosScratch.resize(thetaCount);
+
+                for (int j = 0; j < thetaCount; ++j)
+                {
+                    const double sin_t = sin_theta_arr[j];
+                    const double cos_t = cos_theta_arr[j];
+                    const int base = j * nv;
+                    for (int v = 0; v < nv; ++v)
+                        phaseScratch[base + v] = sin_t * tc.psin[v]
+                            + cos_t * tc.pcos[v] + tc.p0[v];
+                }
+                int phase = 0;
+                for (; phase + 7 < phaseCount; phase += 8)
+                    fast_sincos_8x(&phaseScratch[phase],
+                                   &phaseSinScratch[phase],
+                                   &phaseCosScratch[phase]);
+                for (; phase + 3 < phaseCount; phase += 4)
+                    fast_sincos_4x(&phaseScratch[phase],
+                                   &phaseSinScratch[phase],
+                                   &phaseCosScratch[phase]);
+                for (; phase < phaseCount; ++phase)
+                    fast_sincos(phaseScratch[phase],
+                                phaseSinScratch[phase],
+                                phaseCosScratch[phase]);
+
+                if (!isExternal)
+                {
+                    for (int j = 0; j < thetaCount; ++j)
+                        directionPhaseScratch[j] = -m_waveIndex
+                            * (sin_theta_arr[j] * tc.dp_sin
+                               + cos_theta_arr[j] * tc.dp_cos);
+                    int j = 0;
+                    for (; j + 7 < thetaCount; j += 8)
+                        fast_sincos_8x(&directionPhaseScratch[j],
+                                       &directionSinScratch[j],
+                                       &directionCosScratch[j]);
+                    for (; j + 3 < thetaCount; j += 4)
+                        fast_sincos_4x(&directionPhaseScratch[j],
+                                       &directionSinScratch[j],
+                                       &directionCosScratch[j]);
+                    for (; j < thetaCount; ++j)
+                        fast_sincos(directionPhaseScratch[j],
+                                    directionSinScratch[j],
+                                    directionCosScratch[j]);
+                }
+            }
+
             for (int j = 0; j <= nZen; ++j)
             {
 #endif
@@ -1330,6 +1425,8 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                     // vf from sphere (direction-dependent)
                     Point3d &vf = m_sphere.vf[i][j];
                     double vfx = vf.x, vfy = vf.y, vfz = vf.z;
+                    const Point3d &vt = (*m_transverseBasis)[
+                        i * m_transverseThetaStride + j];
 
                     // A, B from theta-coefficients
                     double A = sin_t * tc.a_sin + cos_t * tc.a_cos + tc.a0;
@@ -1351,21 +1448,9 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                     }
                     else
                     {
-                        // Vertex phases from theta-coefficients
-                        int nv = tc.nv;
-                        double vc[32], vs[32];
-                        double phases[32];
-                        for (int v = 0; v < nv; ++v)
-                            phases[v] = sin_t * tc.psin[v] + cos_t * tc.pcos[v] + tc.p0[v];
-
-                        // AVX-512 / AVX2 / scalar sincos
-                        int vv = 0;
-                        for (; vv + 7 < nv; vv += 8)
-                            fast_sincos_8x(&phases[vv], &vs[vv], &vc[vv]);
-                        for (; vv + 3 < nv; vv += 4)
-                            fast_sincos_4x(&phases[vv], &vs[vv], &vc[vv]);
-                        for (; vv < nv; ++vv)
-                            fast_sincos(phases[vv], vs[vv], vc[vv]);
+                        const int phaseBase = j * nv;
+                        const double *vc = &phaseCosScratch[phaseBase];
+                        const double *vs = &phaseSinScratch[phaseBase];
 
                         double sr = 0, si = 0;
                         if (absB > absA)
@@ -1416,17 +1501,16 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
 
                     if (!isnan(real(fresnel)))
                     {
-                        double dpr,dpi;
-                        if (!isExternal) {
-                            double dpArg = -m_waveIndex*(sin_t*tc.dp_sin + cos_t*tc.dp_cos);
-                            fast_sincos(dpArg,dpi,dpr);
-                        } else { dpr=1.0; dpi=0.0; }
+                        const double dpr = isExternal
+                            ? 1.0 : directionCosScratch[j];
+                        const double dpi = isExternal
+                            ? 0.0 : directionSinScratch[j];
 
                         double r00, r01, r10, r11;
-                        rotate_jones_inline(
+                        rotate_jones_precomputed_inline(
                             pNTx, pNTy, pNTz, pNPx, pNPy, pNPz,
                             pnxDTx, pnxDTy, pnxDTz, pnxDPx, pnxDPy, pnxDPz,
-                            vfx, vfy, vfz, dx, dy, dz,
+                            vfx, vfy, vfz, vt.x, vt.y, vt.z, dx, dy, dz,
                             r00, r01, r10, r11);
 
                         double fr = real(fresnel), fi = imag(fresnel);

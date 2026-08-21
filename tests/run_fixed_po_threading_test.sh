@@ -18,7 +18,6 @@ ${CXX:-g++} -O2 -std=gnu++11 \
 common=(
   --method po
   --particle 10 8 5.6 43.4
-  --refractive-index 1.3116 0
   --wavelength-um 0.532
   --max-reflections 4
   --fixed-orientation 37 19
@@ -28,14 +27,25 @@ common=(
   --close
 )
 
-"$mbs" "${common[@]}" --threads 1 --output "$work/serial" \
-  >"$work/serial.stdout" 2>"$work/serial.stderr"
-"$mbs" "${common[@]}" --threads 4 --output "$work/parallel" \
-  >"$work/parallel.stdout" 2>"$work/parallel.stderr"
+run_case() {
+  local case_name=$1
+  local imaginary_index=$2
+  shift 2
+  local serial_dir="$work/${case_name}_serial"
+  local parallel_dir="$work/${case_name}_parallel"
 
-serial="$work/serial/serial.dat"
-parallel="$work/parallel/parallel.dat"
-awk '
+  "$mbs" "${common[@]}" \
+    --refractive-index 1.3116 "$imaginary_index" "$@" \
+    --threads 1 --output "$serial_dir" \
+    >"$work/${case_name}_serial.stdout" \
+    2>"$work/${case_name}_serial.stderr"
+  "$mbs" "${common[@]}" \
+    --refractive-index 1.3116 "$imaginary_index" "$@" \
+    --threads 4 --output "$parallel_dir" \
+    >"$work/${case_name}_parallel.stdout" \
+    2>"$work/${case_name}_parallel.stderr"
+
+  awk -v case_name="$case_name" '
   NR == FNR {
     for (i = 1; i <= NF; ++i) reference[FNR, i] = $i
     fields[FNR] = NF
@@ -53,6 +63,11 @@ awk '
   }
   END {
     if (seen != rows || max_abs > 2e-12) exit 1
-    printf "fixed PO threading regression passed: rows=%d max_abs=%.3g\n", rows, max_abs
+    printf "fixed PO threading regression (%s) passed: rows=%d max_abs=%.3g\n", case_name, rows, max_abs
   }
-' "$serial" "$parallel"
+' "$serial_dir/${case_name}_serial.dat" \
+    "$parallel_dir/${case_name}_parallel.dat"
+}
+
+run_case nonabsorbing 0
+run_case absorbing 0.01 --absorption
