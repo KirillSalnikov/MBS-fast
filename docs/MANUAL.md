@@ -553,6 +553,12 @@ gpu/bin/mbs_po_gpu_double --po -p 1 100 70 --ri 1.3116 0 -w 0.532 \
 | `--fft` | Use cuFFT angular phi interpolation backend. Requires GPU. |
 | `--threads N` | OpenMP host worker threads. Also controls tracing-side parallelism before GPU diffraction. |
 
+For fixed-orientation CPU PO, the direction-grid calculation is parallelized
+over azimuth rows when the grid is large enough to amortize OpenMP startup.
+Each worker owns disjoint Jones/Mueller cells, while beam contributions to a
+cell are still accumulated in their original order. Results are therefore
+independent of `--threads` up to ordinary floating-point output precision.
+
 GPU runtime errors are fatal in the split GPU build. For debugging only:
 
 ```bash

@@ -17,4 +17,4 @@ jobs:
       - name: Command-line release matrix
         run: make test_release
       - name: Numerical stability tests
-        run: make test_so3 test_poles test_beam_topology test_forward_depth
+        run: make test_so3 test_poles test_beam_topology test_forward_depth test_fixed_threads

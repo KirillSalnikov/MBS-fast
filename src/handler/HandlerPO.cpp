@@ -808,10 +808,14 @@ void HandlerPO::AddToMueller()
         {
             for (int p = 0; p < m_sphere.nAzimuth; ++p)
             {
-                matrix m = Mueller(m_diffractedMatrices[q](p, t));
-                m *= m_normIndex;
-                M.insert(p, t, m);
-                m_groupMatrices[q].insert(p, t, m);
+                const complex j00 = m_diffractedMatrices[q](p, t, 0, 0);
+                const complex j01 = m_diffractedMatrices[q](p, t, 0, 1);
+                const complex j10 = m_diffractedMatrices[q](p, t, 1, 0);
+                const complex j11 = m_diffractedMatrices[q](p, t, 1, 1);
+                AddMuellerFromJones(M.RawCell(p, t),
+                                    j00, j01, j10, j11, m_normIndex);
+                AddMuellerFromJones(m_groupMatrices[q].RawCell(p, t),
+                                    j00, j01, j10, j11, m_normIndex);
             }
         }
     }
@@ -1283,6 +1287,12 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
         int nAz_total = m_sphere.nAzimuth;
         int nZen_total = m_sphere.nZenith;
 
+        // Every azimuth row owns disjoint Mueller/Jones cells.  Keep the
+        // outer beam loop serial so each cell receives beam contributions in
+        // the original order, but distribute the expensive direction grid.
+        // This also makes --threads effective for fixed-orientation CPU PO.
+        #pragma omp parallel for schedule(static) \
+            if(nAz_total * (nZen_total + 1) >= 4096)
         for (int i = 0; i < nAz_total; ++i)
         {
             int nZen = nZen_total;
@@ -1472,12 +1482,8 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
 
                 if (!isCoh)
                 {
-                    matrixC diffractedMatrix(2, 2);
-                    diffractedMatrix[0][0] = d00; diffractedMatrix[0][1] = d01;
-                    diffractedMatrix[1][0] = d10; diffractedMatrix[1][1] = d11;
-                    matrix m = Mueller(diffractedMatrix);
-                    m *= m_sinZenith;
-                    M.insert(i, j, m);
+                    AddMuellerFromJones(M.RawCell(i, j),
+                                        d00, d01, d10, d11, m_sinZenith);
                 }
                 else
                 {
@@ -2689,12 +2695,8 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
 
                 if (!isCoh)
                 {
-                    matrixC diffractedMatrix(2, 2);
-                    diffractedMatrix[0][0] = d00; diffractedMatrix[0][1] = d01;
-                    diffractedMatrix[1][0] = d10; diffractedMatrix[1][1] = d11;
-                    matrix m = Mueller(diffractedMatrix);
-                    m *= sinZenith;
-                    localM.insert(i, j, m);
+                    AddMuellerFromJones(localM.RawCell(i, j),
+                                        d00, d01, d10, d11, sinZenith);
                 }
                 else
                 {
@@ -2813,42 +2815,8 @@ void HandlerPO::AddToMuellerLocal(const std::vector<Arr2DC> &localJ,
                 const complex j01 = localJ[q](p, t, 0, 1);
                 const complex j10 = localJ[q](p, t, 1, 0);
                 const complex j11 = localJ[q](p, t, 1, 1);
-
-                const double a11 = norm(j00);
-                const double a12 = norm(j01);
-                const double a21 = norm(j10);
-                const double a22 = norm(j11);
-
-                double A1 = a11 + a21;
-                double A2 = a12 + a22;
-                localM(p, t, 0, 0) += ((A1 + A2) * 0.5) * normIndex;
-                localM(p, t, 0, 1) += ((A1 - A2) * 0.5) * normIndex;
-
-                A1 = a11 - a21;
-                A2 = a12 - a22;
-                localM(p, t, 1, 0) += ((A1 + A2) * 0.5) * normIndex;
-                localM(p, t, 1, 1) += ((A1 - A2) * 0.5) * normIndex;
-
-                complex C1 = j00 * conj(j01);
-                complex C2 = j11 * conj(j10);
-                localM(p, t, 0, 2) += (-real(C1) - real(C2)) * normIndex;
-                localM(p, t, 0, 3) += ( imag(C2) - imag(C1)) * normIndex;
-                localM(p, t, 1, 2) += ( real(C2) - real(C1)) * normIndex;
-                localM(p, t, 1, 3) += (-imag(C1) - imag(C2)) * normIndex;
-
-                C1 = j00 * conj(j10);
-                C2 = j11 * conj(j01);
-                localM(p, t, 2, 0) += (-real(C1) - real(C2)) * normIndex;
-                localM(p, t, 2, 1) += ( real(C2) - real(C1)) * normIndex;
-                localM(p, t, 3, 0) += ( imag(C1) - imag(C2)) * normIndex;
-                localM(p, t, 3, 1) += ( imag(C2) + imag(C1)) * normIndex;
-
-                C1 = j00 * conj(j11);
-                C2 = j01 * conj(j10);
-                localM(p, t, 2, 2) += ( real(C1) + real(C2)) * normIndex;
-                localM(p, t, 2, 3) += ( imag(C1) - imag(C2)) * normIndex;
-                localM(p, t, 3, 2) += (-imag(C1) - imag(C2)) * normIndex;
-                localM(p, t, 3, 3) += ( real(C1) - real(C2)) * normIndex;
+                AddMuellerFromJones(localM.RawCell(p, t),
+                                    j00, j01, j10, j11, normIndex);
             }
         }
     }

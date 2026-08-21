@@ -203,6 +203,9 @@ test_coherence: cpu
 test_forward_depth:
 	tests/run_forward_depth_clipping_test.sh
 
+test_fixed_threads: cpu
+	MBS_BIN=cpu/bin/mbs_po_mpi tests/run_fixed_po_threading_test.sh
+
 test_concave_visibility:
 	tests/run_concave_visibility_test.sh
 
@@ -240,7 +243,7 @@ test_sanitize:
 		MBS=$(CURDIR)/cpu/bin/mbs_po_mpi_sanitize \
 		MBS_RELEASE_TIMEOUT_SECONDS=90 tests/run_release_cli_matrix.sh
 
-test: test_release test_adaptive test_regression test_extinction test_so3 test_poles test_beam_topology test_coherence test_forward_depth test_concave_visibility test_warnings test_cuda_profiles test_cuda_if_available
+test: test_release test_adaptive test_regression test_extinction test_so3 test_poles test_beam_topology test_coherence test_forward_depth test_fixed_threads test_concave_visibility test_warnings test_cuda_profiles test_cuda_if_available
 
 $(TARGET): $(OBJECTS)
 	@mkdir -p bin

@@ -152,6 +152,12 @@ cpu/bin/mbs_po_mpi --method po --backend cpu \
     --output results/po_column --close
 ```
 
+For a fixed-orientation CPU PO calculation, `--threads N` distributes
+independent azimuth rows of the scattering grid across OpenMP workers. Beam
+contributions within each grid cell retain their original accumulation order,
+so changing the thread count does not change the numerical result. Very small
+grids remain serial to avoid OpenMP startup overhead.
+
 CUDA PO calculation:
 
 ```bash
