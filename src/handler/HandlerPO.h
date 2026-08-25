@@ -122,6 +122,15 @@ public:
                                       double scale = 1.0,
                                       double waveIndex = 0.0,
                                       unsigned long long cacheToken = 0);
+    bool HandleOrientationsToLocalGpuCached(
+                                      const std::vector<PreparedOrientation> &prepared,
+                                      int start,
+                                      int count,
+                                      Arr2D &localM,
+                                      Arr2D &localM_noshadow,
+                                      double scale,
+                                      double waveIndex,
+                                      unsigned long long cacheToken);
     bool HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOrientation> &prepared,
                                             int start,
                                             int count,

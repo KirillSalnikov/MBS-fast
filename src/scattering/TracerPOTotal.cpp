@@ -6805,13 +6805,26 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
                         handlerPO->IsFftEnabled()
                         && !canUseFftAverage
                         && !entry.first.directFullPhi;
-                    bool ok = useFftForGroup
-                        ? handlerPO->HandleOrientationsToLocalGpuFftPhi(
-                            *preparedForGroup, gpuStart, gpuEnd - gpuStart,
-                            localM, localMns)
-                        : handlerPO->HandleOrientationsToLocalGpu(
+                    bool ok = false;
+                    if (useFftForGroup)
+                    {
+                        ok = handlerPO->HandleOrientationsToLocalGpuFftPhi(
                             *preparedForGroup, gpuStart, gpuEnd - gpuStart,
                             localM, localMns);
+                    }
+                    else if (extraCutoff <= 0.0)
+                    {
+                        ok = handlerPO->HandleOrientationsToLocalGpuCached(
+                            *preparedForGroup, gpuStart, gpuEnd - gpuStart,
+                            localM, localMns, 1.0, 0.0,
+                            gpuPackCacheToken);
+                    }
+                    else
+                    {
+                        ok = handlerPO->HandleOrientationsToLocalGpu(
+                            *preparedForGroup, gpuStart, gpuEnd - gpuStart,
+                            localM, localMns);
+                    }
                     if (!ok)
                     {
                         handlerPO->m_sphere = savedSphere;

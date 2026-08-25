@@ -580,6 +580,7 @@ J10.re, J10.im, J11.re, J11.im
 | `MBS_GPU_NO_ATOMICS=0` | Форсировать atomic путь для сравнения/debug. |
 | `MBS_GPU_FUSED_MUELLER=1` | Предпочитать fused diffraction-to-Mueller kernels. |
 | `MBS_GPU_STAGE_MUELLER=1` | Включить staged per-orientation Mueller reduction. |
+| `MBS_GPU_COMPACT_BEAMS=0` | Отключить компактную упаковку пучков с не более чем 8 вершинами и использовать общий формат для диагностики. |
 | `MBS_GPU_TIMING=1` | Печатать breakdown count/pack/copy/kernels/d2h/add. |
 | `MBS_GPU_BLOCK=N` | Override CUDA block size. |
 | `MBS_ORIENTATION_TIMING=1` | Печатать суммарное CPU-время поворота, трассировки и подготовки пучков. |
@@ -851,6 +852,7 @@ budget или делить задачу на меньшие независимы
 | `MBS_GPU_FUSED_MUELLER` | Fused diffraction-to-Mueller kernels. |
 | `MBS_GPU_STAGE_MUELLER` | Staged per-orientation Mueller reduction. |
 | `MBS_GPU_NO_VERTEX_CACHE` | Отключить cached/packed vertex path. |
+| `MBS_GPU_COMPACT_BEAMS=0` | Отключить компактную упаковку пучков с не более чем 8 вершинами. |
 | `MBS_GPU_TIMING` | Печатать CUDA timing breakdown. |
 | `MBS_GPU_BLOCK` | Override CUDA block size. |
 | `MBS_ORIENTATION_TIMING` | Печатать разбиение CPU-времени поворота, трассировки и подготовки пучков. |

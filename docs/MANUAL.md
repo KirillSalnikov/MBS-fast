@@ -619,6 +619,7 @@ Useful controls:
 | `MBS_GPU_FUSED_MUELLER=1` | Prefer fused diffraction-to-Mueller kernels when no-atomic mode is active. |
 | `MBS_GPU_STAGE_MUELLER=1` | Use staged per-orientation Mueller plus reduction where supported. |
 | `MBS_GPU_NO_VERTEX_CACHE=1` | Disable cached/packed vertex path for debugging. |
+| `MBS_GPU_COMPACT_BEAMS=0` | Disable compact packing for beams with at most 8 vertices and use the general layout for diagnostics. |
 | `MBS_GPU_TIMING=1` | Print GPU timing breakdown for count/pack/copy/kernels/d2h/add. |
 | `MBS_GPU_BLOCK=N` | Override CUDA block size for kernel tuning. |
 | `MBS_ORIENTATION_TIMING=1` | Print summed CPU time for rotation, tracing, and prepared-beam construction. |
@@ -895,6 +896,7 @@ Production-use variables:
 | `MBS_GPU_FUSED_MUELLER` | Select fused diffraction-to-Mueller kernels when no-atomic mode is active. |
 | `MBS_GPU_STAGE_MUELLER` | Enable staged per-orientation Mueller reduction when supported. |
 | `MBS_GPU_NO_VERTEX_CACHE` | Disable cached/packed vertex path for debugging. |
+| `MBS_GPU_COMPACT_BEAMS=0` | Disable compact packing for beams with at most 8 vertices. |
 | `MBS_GPU_TIMING` | Print CUDA timing breakdowns. |
 | `MBS_GPU_BLOCK` | Override CUDA kernel block size. |
 | `MBS_ORIENTATION_TIMING` | Print CPU-time breakdown for rotation, tracing, and prepared-beam construction. |

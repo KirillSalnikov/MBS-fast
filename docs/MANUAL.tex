@@ -1385,6 +1385,8 @@ diffraction-to-Mueller kernels when no-atomic mode is active. \\
 plus reduction where supported. \\
 \texttt{MBS\_GPU\_NO\_VERTEX\_CACHE=1} & Disable cached/packed vertex
 path for debugging. \\
+\texttt{MBS\_GPU\_COMPACT\_BEAMS=0} & Disable compact packing for beams
+with at most 8 vertices and use the general layout for diagnostics. \\
 \texttt{MBS\_GPU\_TIMING=1} & Print GPU timing breakdown for
 count/pack/copy/kernels/d2h/add. \\
 \texttt{MBS\_GPU\_BLOCK=N} & Override CUDA block size for kernel
@@ -1724,6 +1726,8 @@ kernels when no-atomic mode is active. \\
 Mueller reduction when supported. \\
 \texttt{MBS\_GPU\_NO\_VERTEX\_CACHE} & Disable cached/packed vertex path
 for debugging. \\
+\texttt{MBS\_GPU\_COMPACT\_BEAMS=0} & Disable compact packing for beams
+with at most 8 vertices. \\
 \texttt{MBS\_GPU\_TIMING} & Print CUDA timing breakdowns. \\
 \texttt{MBS\_GPU\_BLOCK} & Override CUDA kernel block size. \\
 \texttt{MBS\_ORIENTATION\_TIMING} & Print summed CPU time for rotation,

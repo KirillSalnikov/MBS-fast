@@ -489,6 +489,12 @@ static int gpu_stage_mueller_mode()
     return -1;
 }
 
+static bool gpu_compact_beams_enabled()
+{
+    const char *value = std::getenv("MBS_GPU_COMPACT_BEAMS");
+    return !(value && value[0] == '0' && value[1] == '\0');
+}
+
 static bool gpu_beam_stats_enabled()
 {
     const char *value = std::getenv("MBS_GPU_BEAM_STATS");
@@ -3501,6 +3507,34 @@ bool HandlerPO::HandleOrientationsToLocalGpuOnDevice(
                                         scale, waveIndex);
 }
 
+bool HandlerPO::HandleOrientationsToLocalGpuCached(
+                                             const std::vector<PreparedOrientation> &prepared,
+                                             int start,
+                                             int count,
+                                             Arr2D &localM,
+                                             Arr2D &localM_noshadow,
+                                             double scale,
+                                             double waveIndex,
+                                             unsigned long long cacheToken)
+{
+    struct CacheTokenGuard
+    {
+        unsigned long long previous;
+        explicit CacheTokenGuard(unsigned long long token)
+            : previous(g_gpuPackCacheToken)
+        {
+            g_gpuPackCacheToken = token;
+        }
+        ~CacheTokenGuard()
+        {
+            g_gpuPackCacheToken = previous;
+        }
+    } guard(cacheToken);
+    return HandleOrientationsToLocalGpu(prepared, start, count,
+                                        localM, localM_noshadow,
+                                        scale, waveIndex);
+}
+
 bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOrientation> &prepared,
                                                    int start,
                                                    int count,
@@ -4323,10 +4357,17 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     double t0 = timing ? gpu_now_ms() : 0.0;
     const bool scaleOnPack = (fabs(scale - 1.0) > 1e-15);
     const double scale2 = scale * scale;
-    // The compact 8-vertex packing path is a speed optimization only.  It has
-    // proven fragile for non-convex clipped beams in the threaded pack stage,
-    // while the general 32-vertex path is stable and handles the same beams.
-    const bool canUseBeam8 = false;
+    // Compact packing is valid only when the kernel selected below consumes
+    // GpuBeam8. Keep the packing and kernel decisions coupled so diagnostic
+    // overrides cannot pack one representation and launch the other.
+    const int requestedFusedMueller = gpu_fused_mueller_mode();
+    const int requestedStageMueller = gpu_stage_mueller_mode();
+    const int requestedNoVertexCache = gpu_no_vertex_cache_mode();
+    const bool canUseBeam8 = gpu_compact_beams_enabled()
+        && !computeNoShadow
+        && requestedFusedMueller != 0
+        && requestedStageMueller != 1
+        && requestedNoVertexCache != 1;
     const bool packBeam8 = allBeam8 && canUseBeam8;
     const bool packMixedBeam8 = !allBeam8 && canUseBeam8
                              && nBeams8 > 0 && nBeamsLarge > 0;
@@ -4769,7 +4810,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         tAdd = gpu_now_ms() - t0;
         std::fprintf(stderr,
                      "GPU timing diffract path=%s block=%d orient=%d beams=%zu nAz=%d nZen=%d count=%.3fms pack=%.3fms ensure=%.3fms grid=%.3fms copy=%.3fms kernels=%.3fms d2h=%.3fms add=%.3fms total=%.3fms\n",
-                     useBeam8 ? "beam8-atomic" : "generic",
+                     useBeam8 ? "beam8" : (useMixedBeam8 ? "mixed-beam8" : "generic"),
                      block, nOrient, nBeams, nAz, nZen, tCount, tPack, tEnsure,
                      tGrid, tCopy, tKernel, tD2h, tAdd, gpu_now_ms() - tStart);
     }
