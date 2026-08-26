@@ -1029,6 +1029,7 @@ void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
     m_fftTolerance = source.m_fftTolerance;
     m_fftStatistics = source.m_fftStatistics;
     m_transverseBasis = source.m_transverseBasis;
+    m_scatteringBasisSoA = source.m_scatteringBasisSoA;
     m_transverseThetaStride = source.m_transverseThetaStride;
     m_otFarReferencePath = source.m_otFarReferencePath;
     m_otPingDistance = source.m_otPingDistance;
@@ -1051,6 +1052,9 @@ void HandlerPO::SetScatteringSphere(const ScatteringRange &grid)
     std::shared_ptr<std::vector<Point3d>> transverseBasis =
         std::make_shared<std::vector<Point3d>>(
             m_sphere.nAzimuth * m_transverseThetaStride);
+    std::shared_ptr<ScatteringBasisSoA> scatteringBasisSoA =
+        std::make_shared<ScatteringBasisSoA>(
+            m_sphere.nAzimuth * m_transverseThetaStride);
     std::vector<double> sinTheta(m_transverseThetaStride);
     std::vector<double> cosTheta(m_transverseThetaStride);
     for (int j = 0; j <= m_sphere.nZenith; ++j)
@@ -1068,9 +1072,17 @@ void HandlerPO::SetScatteringSphere(const ScatteringRange &grid)
                 vf.x, vf.y, vf.z,
                 sinTheta[j] * cosPhi, sinTheta[j] * sinPhi, -cosTheta[j],
                 vt.x, vt.y, vt.z);
+            const int index = i * m_transverseThetaStride + j;
+            scatteringBasisSoA->vfx[index] = vf.x;
+            scatteringBasisSoA->vfy[index] = vf.y;
+            scatteringBasisSoA->vfz[index] = vf.z;
+            scatteringBasisSoA->vtx[index] = vt.x;
+            scatteringBasisSoA->vty[index] = vt.y;
+            scatteringBasisSoA->vtz[index] = vt.z;
         }
     }
     m_transverseBasis = transverseBasis;
+    m_scatteringBasisSoA = scatteringBasisSoA;
 }
 
 void HandlerPO::ComputeOpticalLengths(const Beam &beam, BeamInfo &info,
@@ -2757,19 +2769,19 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                     && !std::isnan(fresnel_real[j + 2])
                     && !std::isnan(fresnel_real[j + 3]))
                 {
-                    alignas(32) double r00v[4], r01v[4], r10v[4], r11v[4];
-                    for (int lane = 0; lane < 4; ++lane)
-                    {
-                        Point3d &vf = m_sphere.vf[i][j + lane];
-                        const Point3d &vt = (*m_transverseBasis)[
-                            i * m_transverseThetaStride + j + lane];
-                        rotate_jones_precomputed_inline(
-                            pNTx, pNTy, pNTz, pNPx, pNPy, pNPz,
-                            pnxDTx, pnxDTy, pnxDTz,
-                            pnxDPx, pnxDPy, pnxDPz,
-                            vf.x, vf.y, vf.z, vt.x, vt.y, vt.z,
-                            r00v[lane], r01v[lane], r10v[lane], r11v[lane]);
-                    }
+                    const int basisIndex = i * m_transverseThetaStride + j;
+                    __m256d r00v, r01v, r10v, r11v;
+                    rotate_jones_4_precomputed_inline(
+                        pNTx, pNTy, pNTz, pNPx, pNPy, pNPz,
+                        pnxDTx, pnxDTy, pnxDTz,
+                        pnxDPx, pnxDPy, pnxDPz,
+                        m_scatteringBasisSoA->vfx.data() + basisIndex,
+                        m_scatteringBasisSoA->vfy.data() + basisIndex,
+                        m_scatteringBasisSoA->vfz.data() + basisIndex,
+                        m_scatteringBasisSoA->vtx.data() + basisIndex,
+                        m_scatteringBasisSoA->vty.data() + basisIndex,
+                        m_scatteringBasisSoA->vtz.data() + basisIndex,
+                        r00v, r01v, r10v, r11v);
 
                     JonesBatch4 batch;
                     compose_jones_4_regular(

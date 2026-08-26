@@ -8,6 +8,22 @@
 #include <utility>
 #include <vector>
 
+struct ScatteringBasisSoA
+{
+    std::vector<double> vfx;
+    std::vector<double> vfy;
+    std::vector<double> vfz;
+    std::vector<double> vtx;
+    std::vector<double> vty;
+    std::vector<double> vtz;
+
+    explicit ScatteringBasisSoA(size_t size)
+        : vfx(size), vfy(size), vfz(size),
+          vtx(size), vty(size), vtz(size)
+    {
+    }
+};
+
 /// Edge data stored with the prepared beam. Most traced polygons have at most
 /// eight vertices, so keeping 32 entries inline wastes both RAM and cache.
 /// Larger valid polygons retain the full representation transparently.
@@ -458,6 +474,7 @@ protected:
     std::shared_ptr<BeamCutoffStatistics> m_beamCutoffStatistics;
     std::shared_ptr<FftInterpolationStatistics> m_fftStatistics;
     std::shared_ptr<const std::vector<Point3d>> m_transverseBasis;
+    std::shared_ptr<const ScatteringBasisSoA> m_scatteringBasisSoA;
     int m_transverseThetaStride = 0;
     bool isNanOccured = false;
     bool isNan = false;

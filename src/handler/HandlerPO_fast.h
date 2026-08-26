@@ -764,6 +764,44 @@ inline void rotate_jones_precomputed_inline(
         r00, r01, r10, r11);
 }
 
+inline void rotate_jones_4_precomputed_inline(
+    double NTx, double NTy, double NTz,
+    double NPx, double NPy, double NPz,
+    double nxDTx, double nxDTy, double nxDTz,
+    double nxDPx, double nxDPy, double nxDPz,
+    const double *vfx, const double *vfy, const double *vfz,
+    const double *vtx, const double *vty, const double *vtz,
+    __m256d &r00, __m256d &r01, __m256d &r10, __m256d &r11)
+{
+    const __m256d vfX = _mm256_loadu_pd(vfx);
+    const __m256d vfY = _mm256_loadu_pd(vfy);
+    const __m256d vfZ = _mm256_loadu_pd(vfz);
+    const __m256d vtX = _mm256_loadu_pd(vtx);
+    const __m256d vtY = _mm256_loadu_pd(vty);
+    const __m256d vtZ = _mm256_loadu_pd(vtz);
+    const __m256d half = _mm256_set1_pd(0.5);
+
+    const auto dot3 = [](__m256d x, __m256d y, __m256d z,
+                         double ax, double ay, double az) {
+        __m256d result = _mm256_mul_pd(x, _mm256_set1_pd(ax));
+        result = _mm256_fmadd_pd(y, _mm256_set1_pd(ay), result);
+        return _mm256_fmadd_pd(z, _mm256_set1_pd(az), result);
+    };
+
+    r00 = _mm256_mul_pd(half, _mm256_sub_pd(
+        dot3(vtX, vtY, vtZ, nxDTx, nxDTy, nxDTz),
+        dot3(vfX, vfY, vfZ, NTx, NTy, NTz)));
+    r01 = _mm256_mul_pd(half, _mm256_sub_pd(
+        dot3(vtX, vtY, vtZ, nxDPx, nxDPy, nxDPz),
+        dot3(vfX, vfY, vfZ, NPx, NPy, NPz)));
+    r10 = _mm256_mul_pd(half, _mm256_add_pd(
+        dot3(vfX, vfY, vfZ, nxDTx, nxDTy, nxDTz),
+        dot3(vtX, vtY, vtZ, NTx, NTy, NTz)));
+    r11 = _mm256_mul_pd(half, _mm256_add_pd(
+        dot3(vfX, vfY, vfZ, nxDPx, nxDPy, nxDPz),
+        dot3(vtX, vtY, vtZ, NPx, NPy, NPz)));
+}
+
 struct JonesBatch4
 {
     alignas(32) double cell[4][8];
@@ -812,8 +850,7 @@ inline void transpose_store_4x4(
 inline void compose_jones_4_regular(
     const double *fresnelReal, const double *fresnelImag,
     const double *directionReal, const double *directionImag,
-    const double *r00, const double *r01,
-    const double *r10, const double *r11,
+    __m256d vr00, __m256d vr01, __m256d vr10, __m256d vr11,
     double jp00r, double jp00i, double jp01r, double jp01i,
     double jp10r, double jp10i, double jp11r, double jp11i,
     JonesBatch4 &out)
@@ -827,10 +864,6 @@ inline void compose_jones_4_regular(
     const __m256d cpi = _mm256_add_pd(
         _mm256_mul_pd(fr, dpi), _mm256_mul_pd(fi, dpr));
 
-    const __m256d vr00 = _mm256_load_pd(r00);
-    const __m256d vr01 = _mm256_load_pd(r01);
-    const __m256d vr10 = _mm256_load_pd(r10);
-    const __m256d vr11 = _mm256_load_pd(r11);
     const __m256d sr00r = _mm256_mul_pd(cpr, vr00);
     const __m256d sr00i = _mm256_mul_pd(cpi, vr00);
     const __m256d sr01r = _mm256_mul_pd(cpr, vr01);
