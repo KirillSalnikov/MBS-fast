@@ -227,6 +227,22 @@ Before adding a beam to a detector direction, the beam-local Jones matrix must b
 | `vf` | Forward reference direction |
 | `info` polarization vectors | Precomputed beam polarization basis |
 
+The optimized CPU and CUDA paths use the transversality of `vf` and
+`vt = vf x direction` to avoid constructing the longitudinally projected
+vectors. With `s = direction`, `X_T = n x D_T`, and `X_P = n x D_P`, the
+rotation is evaluated directly as
+
+```text
+R_out = 0.5 * [ X_T*vt - N_T*vf,  X_P*vt - N_P*vf ]
+              [ X_T*vf + N_T*vt,  X_P*vf + N_P*vt ]
+```
+
+where `*` denotes a dot product. The omitted term is parallel to `s`, while
+both output basis vectors are perpendicular to `s`; therefore this is an
+exact scalar-triple-product reduction, not a polarization approximation. It
+removes two temporary vectors and their longitudinal projections from every
+beam/detector-direction contribution.
+
 The effective far-field Jones contribution has the structure used in `ApplyDiffractionFast`:
 
 ```text

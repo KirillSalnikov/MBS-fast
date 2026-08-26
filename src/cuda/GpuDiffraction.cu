@@ -864,7 +864,6 @@ __device__ inline void transverse_basis_orthonormal_gpu(
     vtz = vfx * diry - vfy * dirx;
 }
 
-template <bool ElideLongitudinal = false>
 __device__ inline void rotate_jones_precomputed_gpu(
     GpuReal NTx, GpuReal NTy, GpuReal NTz,
     GpuReal NPx, GpuReal NPy, GpuReal NPz,
@@ -872,43 +871,19 @@ __device__ inline void rotate_jones_precomputed_gpu(
     GpuReal nxDPx, GpuReal nxDPy, GpuReal nxDPz,
     GpuReal vfx, GpuReal vfy, GpuReal vfz,
     GpuReal vtx, GpuReal vty, GpuReal vtz,
-    GpuReal dirx, GpuReal diry, GpuReal dirz,
     GpuReal &r00, GpuReal &r01, GpuReal &r10, GpuReal &r11)
 {
-
-    GpuReal cpTx, cpTy, cpTz;
-    GpuReal cpPx, cpPy, cpPz;
-    if (ElideLongitudinal)
-    {
-        // For the orthonormal output basis vt=vf x dir, scalar triple
-        // products give (dir x N).vt=-N.vf and (dir x N).vf=N.vt.
-        // The longitudinal term is orthogonal to both output vectors.
-        r00 = (nxDTx * vtx + nxDTy * vty + nxDTz * vtz)
-            - (NTx * vfx + NTy * vfy + NTz * vfz);
-        r01 = (nxDPx * vtx + nxDPy * vty + nxDPz * vtz)
-            - (NPx * vfx + NPy * vfy + NPz * vfz);
-        r10 = (nxDTx * vfx + nxDTy * vfy + nxDTz * vfz)
-            + (NTx * vtx + NTy * vty + NTz * vtz);
-        r11 = (nxDPx * vfx + nxDPy * vfy + nxDPz * vfz)
-            + (NPx * vtx + NPy * vty + NPz * vtz);
-        return;
-    }
-    else
-    {
-        GpuReal dotT = dirx * nxDTx + diry * nxDTy + dirz * nxDTz;
-        GpuReal dotP = dirx * nxDPx + diry * nxDPy + dirz * nxDPz;
-        cpTx = (diry * NTz - dirz * NTy) + nxDTx - dirx * dotT;
-        cpTy = (dirz * NTx - dirx * NTz) + nxDTy - diry * dotT;
-        cpTz = (dirx * NTy - diry * NTx) + nxDTz - dirz * dotT;
-        cpPx = (diry * NPz - dirz * NPy) + nxDPx - dirx * dotP;
-        cpPy = (dirz * NPx - dirx * NPz) + nxDPy - diry * dotP;
-        cpPz = (dirx * NPy - diry * NPx) + nxDPz - dirz * dotP;
-    }
-
-    r00 = cpTx * vtx + cpTy * vty + cpTz * vtz;
-    r01 = cpPx * vtx + cpPy * vty + cpPz * vtz;
-    r10 = cpTx * vfx + cpTy * vfy + cpTz * vfz;
-    r11 = cpPx * vfx + cpPy * vfy + cpPz * vfz;
+    // The output basis is orthonormal and transverse to the scattering
+    // direction. Scalar triple products eliminate the longitudinal projection
+    // and avoid constructing two temporary projected vectors.
+    r00 = (nxDTx * vtx + nxDTy * vty + nxDTz * vtz)
+        - (NTx * vfx + NTy * vfy + NTz * vfz);
+    r01 = (nxDPx * vtx + nxDPy * vty + nxDPz * vtz)
+        - (NPx * vfx + NPy * vfy + NPz * vfz);
+    r10 = (nxDTx * vfx + nxDTy * vfy + nxDTz * vfz)
+        + (NTx * vtx + NTy * vty + NTz * vtz);
+    r11 = (nxDPx * vfx + nxDPy * vfy + nxDPz * vfz)
+        + (NPx * vtx + NPy * vty + NPz * vtz);
 }
 
 __device__ inline void rotate_jones_gpu(
@@ -925,7 +900,7 @@ __device__ inline void rotate_jones_gpu(
     rotate_jones_precomputed_gpu(
         NTx, NTy, NTz, NPx, NPy, NPz,
         nxDTx, nxDTy, nxDTz, nxDPx, nxDPy, nxDPz,
-        vfx, vfy, vfz, vtx, vty, vtz, dirx, diry, dirz,
+        vfx, vfy, vfz, vtx, vty, vtz,
         r00, r01, r10, r11);
 }
 
@@ -1203,11 +1178,11 @@ __device__ inline bool compute_beam_jones_context_limited_gpu(const BeamT &b,
     }
 
     GpuReal r00, r01, r10, r11;
-    rotate_jones_precomputed_gpu<UnitWave>(
+    rotate_jones_precomputed_gpu(
         b.pNTx, b.pNTy, b.pNTz, b.pNPx, b.pNPy, b.pNPz,
         b.pnxDTx, b.pnxDTy, b.pnxDTz,
         b.pnxDPx, b.pnxDPy, b.pnxDPz,
-        vfx, vfy, vfz, vtx, vty, vtz, dx, dy, dz,
+        vfx, vfy, vfz, vtx, vty, vtz,
         r00, r01, r10, r11);
 
     // R is real, so c*(R*J) needs fewer products and shorter-lived
@@ -1403,7 +1378,7 @@ __device__ inline bool compute_beam_jones_context_gpu_multik(
         b.pNTx, b.pNTy, b.pNTz, b.pNPx, b.pNPy, b.pNPz,
         b.pnxDTx, b.pnxDTy, b.pnxDTz,
         b.pnxDPx, b.pnxDPy, b.pnxDPz,
-        vfx, vfy, vfz, vtx, vty, vtz, dx, dy, dz,
+        vfx, vfy, vfz, vtx, vty, vtz,
         r00, r01, r10, r11);
 
     GpuReal sr00r = cpr * r00, sr00i = cpi * r00;

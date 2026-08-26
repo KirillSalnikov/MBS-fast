@@ -1424,11 +1424,6 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                     double sin_t = sin_theta_arr[j];
                     double cos_t = cos_theta_arr[j];
 
-                    // Construct direction from angles (MBS convention: z = -cos(theta))
-                    double dx = sin_t * cp;
-                    double dy = sin_t * sp;
-                    double dz = -cos_t;
-
                     // vf from sphere (direction-dependent)
                     Point3d &vf = m_sphere.vf[i][j];
                     double vfx = vf.x, vfy = vf.y, vfz = vf.z;
@@ -1517,7 +1512,7 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                         rotate_jones_precomputed_inline(
                             pNTx, pNTy, pNTz, pNPx, pNPy, pNPz,
                             pnxDTx, pnxDTy, pnxDTz, pnxDPx, pnxDPy, pnxDPz,
-                            vfx, vfy, vfz, vt.x, vt.y, vt.z, dx, dy, dz,
+                            vfx, vfy, vfz, vt.x, vt.y, vt.z,
                             r00, r01, r10, r11);
 
                         double fr = real(fresnel), fi = imag(fresnel);
@@ -2705,10 +2700,6 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                     double sin_t = sin_theta_arr[j];
                     double cos_t = cos_theta_arr[j];
 
-                    double dx = sin_t * cp;
-                    double dy = sin_t * sp;
-                    double dz = -cos_t;
-
                     Point3d &vf = m_sphere.vf[i][j];
                     double vfx = vf.x, vfy = vf.y, vfz = vf.z;
                     const Point3d &vt = (*m_transverseBasis)[
@@ -2793,7 +2784,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                         rotate_jones_precomputed_inline(
                             pNTx, pNTy, pNTz, pNPx, pNPy, pNPz,
                             pnxDTx, pnxDTy, pnxDTz, pnxDPx, pnxDPy, pnxDPz,
-                            vfx, vfy, vfz, vt.x, vt.y, vt.z, dx, dy, dz,
+                            vfx, vfy, vfz, vt.x, vt.y, vt.z,
                             r00, r01, r10, r11);
 
                         double fr = real(fresnel), fi = imag(fresnel);

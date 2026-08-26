@@ -436,6 +436,25 @@ Vector & Meaning \\
 basis \\
 \end{longtable}
 
+The optimized CPU and CUDA paths use the transversality of $\mathbf v_f$ and
+$\mathbf v_t=\mathbf v_f\times\mathbf s$ to avoid constructing longitudinally
+projected temporary vectors. With
+$\mathbf X_T=\mathbf n\times\mathbf D_T$ and
+$\mathbf X_P=\mathbf n\times\mathbf D_P$, the same rotation is evaluated as
+\[
+  \mathbf R_{\mathrm{out}}=\frac12
+  \begin{pmatrix}
+    \mathbf X_T\cdot\mathbf v_t-\mathbf N_T\cdot\mathbf v_f &
+    \mathbf X_P\cdot\mathbf v_t-\mathbf N_P\cdot\mathbf v_f\\
+    \mathbf X_T\cdot\mathbf v_f+\mathbf N_T\cdot\mathbf v_t &
+    \mathbf X_P\cdot\mathbf v_f+\mathbf N_P\cdot\mathbf v_t
+  \end{pmatrix}.
+\]
+The omitted term is parallel to $\mathbf s$, whereas both output basis vectors
+are perpendicular to $\mathbf s$. This scalar-triple-product reduction is exact,
+not a polarization approximation, and removes two temporary vectors and their
+longitudinal projections from every beam/detector-direction contribution.
+
 The effective far-field Jones contribution has the structure used in
 \texttt{ApplyDiffractionFast}:
 

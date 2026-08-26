@@ -649,6 +649,24 @@ J_{hv}&J_{hh}
     \vect c_T\cdot\vect v_f & \vect c_P\cdot\vect v_f
   \end{pmatrix}.
 \]
+В оптимизированных CPU- и CUDA-путях эта же матрица вычисляется без построения
+продольно спроецированных временных векторов. Поскольку
+$\vect v_f\cdot\vect s=\vect v_t\cdot\vect s=0$, при обозначениях
+$\vect X_T=\vect n\times\vect D_T$ и
+$\vect X_P=\vect n\times\vect D_P$ справедливо точное равенство
+\[
+  \matr R_{\mathrm{out}}=\frac12
+  \begin{pmatrix}
+    \vect X_T\cdot\vect v_t-\vect N_T\cdot\vect v_f &
+    \vect X_P\cdot\vect v_t-\vect N_P\cdot\vect v_f\\
+    \vect X_T\cdot\vect v_f+\vect N_T\cdot\vect v_t &
+    \vect X_P\cdot\vect v_f+\vect N_P\cdot\vect v_t
+  \end{pmatrix}.
+\]
+Отброшенный член параллелен $\vect s$ и обнуляется при проекции на оба вектора
+выходного базиса. Это тождественное преобразование, а не приближение
+поляризации; оно исключает две временные векторные величины и их продольные
+проекции для каждого вклада пучка в направление наблюдения.
 
 \subsection{Полный вклад пучка в матрицу Джонса}
 

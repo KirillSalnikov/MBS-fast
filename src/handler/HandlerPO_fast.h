@@ -631,23 +631,19 @@ inline void rotate_jones_from_basis_inline(
     double nxDPx, double nxDPy, double nxDPz,
     double vfx, double vfy, double vfz,
     double vtx, double vty, double vtz,
-    double dirx, double diry, double dirz,
     double &r00, double &r01, double &r10, double &r11)
 {
-    double dot_dir_nxDT = dirx*nxDTx + diry*nxDTy + dirz*nxDTz;
-    double cpTx = (diry*NTz - dirz*NTy) + nxDTx - dirx*dot_dir_nxDT;
-    double cpTy = (dirz*NTx - dirx*NTz) + nxDTy - diry*dot_dir_nxDT;
-    double cpTz = (dirx*NTy - diry*NTx) + nxDTz - dirz*dot_dir_nxDT;
-
-    double dot_dir_nxDP = dirx*nxDPx + diry*nxDPy + dirz*nxDPz;
-    double cpPx = (diry*NPz - dirz*NPy) + nxDPx - dirx*dot_dir_nxDP;
-    double cpPy = (dirz*NPx - dirx*NPz) + nxDPy - diry*dot_dir_nxDP;
-    double cpPz = (dirx*NPy - diry*NPx) + nxDPz - dirz*dot_dir_nxDP;
-
-    r00 = (cpTx*vtx + cpTy*vty + cpTz*vtz) * 0.5;
-    r01 = (cpPx*vtx + cpPy*vty + cpPz*vtz) * 0.5;
-    r10 = (cpTx*vfx + cpTy*vfy + cpTz*vfz) * 0.5;
-    r11 = (cpPx*vfx + cpPy*vfy + cpPz*vfz) * 0.5;
+    // vf and vt are orthonormal and transverse to the scattering direction.
+    // Therefore the longitudinal projection in cp is annihilated by the
+    // final dot products. Scalar triple products also avoid constructing cp.
+    r00 = ((nxDTx*vtx + nxDTy*vty + nxDTz*vtz)
+         - (NTx*vfx + NTy*vfy + NTz*vfz)) * 0.5;
+    r01 = ((nxDPx*vtx + nxDPy*vty + nxDPz*vtz)
+         - (NPx*vfx + NPy*vfy + NPz*vfz)) * 0.5;
+    r10 = ((nxDTx*vfx + nxDTy*vfy + nxDTz*vfz)
+         + (NTx*vtx + NTy*vty + NTz*vtz)) * 0.5;
+    r11 = ((nxDPx*vfx + nxDPy*vfy + nxDPz*vfz)
+         + (NPx*vtx + NPy*vty + NPz*vtz)) * 0.5;
 }
 
 inline void rotate_jones_inline(
@@ -665,7 +661,7 @@ inline void rotate_jones_inline(
     rotate_jones_from_basis_inline(
         NTx, NTy, NTz, NPx, NPy, NPz,
         nxDTx, nxDTy, nxDTz, nxDPx, nxDPy, nxDPz,
-        vfx, vfy, vfz, vtx, vty, vtz, dirx, diry, dirz,
+        vfx, vfy, vfz, vtx, vty, vtz,
         r00, r01, r10, r11);
 }
 
@@ -676,12 +672,11 @@ inline void rotate_jones_precomputed_inline(
     double nxDPx, double nxDPy, double nxDPz,
     double vfx, double vfy, double vfz,
     double vtx, double vty, double vtz,
-    double dirx, double diry, double dirz,
     double &r00, double &r01, double &r10, double &r11)
 {
     rotate_jones_from_basis_inline(
         NTx, NTy, NTz, NPx, NPy, NPz,
         nxDTx, nxDTy, nxDTz, nxDPx, nxDPy, nxDPz,
-        vfx, vfy, vfz, vtx, vty, vtz, dirx, diry, dirz,
+        vfx, vfy, vfz, vtx, vty, vtz,
         r00, r01, r10, r11);
 }
