@@ -2609,6 +2609,21 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
         fast_sincos(phi_rad, sin_phi_arr[i], cos_phi_arr[i]);
     }
 
+    int maxPreparedVertices = 0;
+    for (const PreparedBeam &pb : prepared.beams)
+    {
+        if (pb.edgeData.valid)
+            maxPreparedVertices = std::max(
+                maxPreparedVertices, pb.edgeData.nVertices);
+    }
+    const size_t phaseCapacity = static_cast<size_t>(nZen_global + 1)
+                               * static_cast<size_t>(maxPreparedVertices);
+    std::vector<double> all_vc(phaseCapacity), all_vs(phaseCapacity);
+    std::vector<double> all_phases(phaseCapacity);
+    std::vector<double> max_phases(nZen_global + 1, 0.0);
+    std::vector<double> dir_dpr(nZen_global + 1), dir_dpi(nZen_global + 1);
+    std::vector<double> dp_phases(nZen_global + 1);
+
     for (const PreparedBeam &pb : prepared.beams)
     {
         const PreparedEdgeData &edgeData = pb.edgeData;
@@ -2627,12 +2642,6 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
         double jp11r = pb.jp11r, jp11i = pb.jp11i;
         bool isExternal = pb.isExternal;
         int nZen = nZen_global;
-        int maxPhaseCount = edgeData.valid ? (nZen + 1) * edgeData.nVertices : 0;
-        std::vector<double> all_vc(maxPhaseCount), all_vs(maxPhaseCount);
-        std::vector<double> all_phases(maxPhaseCount);
-        std::vector<double> max_phases(nZen + 1, 0.0);
-        std::vector<double> dir_dpr(nZen + 1), dir_dpi(nZen + 1);
-        std::vector<double> dp_phases(nZen + 1);
 
         for (int i = 0; i < nAz_global; ++i)
         {
