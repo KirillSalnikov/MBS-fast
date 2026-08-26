@@ -921,12 +921,17 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
     Point3f axisU = CrossProduct(direction, reference);
     Normalize(axisU);
     Point3f axisV = CrossProduct(direction, axisU);
-    Normalize(axisV);
+    // direction and axisU are already unit and mutually perpendicular, so
+    // their cross product is the second unit projection axis. A second sqrt
+    // here only perturbs that basis by roundoff on every sort call.
 
     const size_t count = facetIDs.size;
-    std::vector<ProjectedPolygon> projected(count);
+    static thread_local std::vector<ProjectedPolygon> projected;
+    if (projected.size() < count)
+        projected.resize(count);
     for (size_t index = 0; index < count; ++index)
     {
+        projected[index].Clear();
         const Polygon &facet = m_facets[ordered[index].facetId];
         for (int vertex = 0; vertex < facet.nVertices; ++vertex)
             projected[index].Push(Point2f(
@@ -934,8 +939,16 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
                 DotProduct(facet.arr[vertex], axisV)));
     }
 
-    std::vector<unsigned char> precedes(count*count, 0);
-    std::vector<int> indegree(count, 0);
+    // The relation graph is sparse and contains at most 256 vertices. Keep it
+    // as a compact fixed bit matrix: this avoids four heap allocations and
+    // clears eight times less memory than the previous byte-per-edge matrix.
+    static const size_t relationWords = (MAX_FACET_NUM + 63)/64;
+    uint64_t precedes[MAX_FACET_NUM][relationWords];
+    const size_t usedWords = (count + 63)/64;
+    for (size_t row = 0; row < count; ++row)
+        std::memset(precedes[row], 0, usedWords*sizeof(precedes[row][0]));
+    int indegree[MAX_FACET_NUM];
+    std::memset(indegree, 0, count*sizeof(indegree[0]));
     const double areaTolerance = geometry_area_tolerance(
         m_geometryScale);
     for (size_t first = 0; first < count; ++first)
@@ -972,16 +985,18 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
 
             const size_t before = firstDepth < secondDepth ? first : second;
             const size_t after = firstDepth < secondDepth ? second : first;
-            const size_t relation = before*count + after;
-            if (!precedes[relation])
+            const size_t word = after >> 6;
+            const uint64_t mask = uint64_t(1) << (after & 63);
+            if (!(precedes[before][word] & mask))
             {
-                precedes[relation] = 1;
+                precedes[before][word] |= mask;
                 ++indegree[after];
             }
         }
     }
 
-    std::vector<unsigned char> emitted(count, 0);
+    unsigned char emitted[MAX_FACET_NUM];
+    std::memset(emitted, 0, count*sizeof(emitted[0]));
     size_t output = 0;
     while (output < count)
     {
@@ -1005,9 +1020,19 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
         }
         emitted[selected] = 1;
         facetIDs.arr[output++] = ordered[selected].facetId;
-        for (size_t after = 0; after < count; ++after)
-            if (precedes[selected*count + after])
-                --indegree[after];
+        for (size_t word = 0; word < usedWords; ++word)
+        {
+            uint64_t successors = precedes[selected][word];
+            while (successors)
+            {
+                const unsigned bit = static_cast<unsigned>(
+                    __builtin_ctzll(successors));
+                const size_t after = (word << 6) + bit;
+                if (after < count)
+                    --indegree[after];
+                successors &= successors - 1;
+            }
+        }
     }
 }
 

@@ -2591,12 +2591,18 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
     int nZen_global = m_sphere.nZenith;
 
     // Precompute sin/cos for theta and phi (same as HandleBeams)
-    std::vector<double> sin_theta_arr(nZen_global+1), cos_theta_arr(nZen_global+1);
+    static thread_local std::vector<double> sin_theta_arr;
+    static thread_local std::vector<double> cos_theta_arr;
+    sin_theta_arr.resize(nZen_global + 1);
+    cos_theta_arr.resize(nZen_global + 1);
     for (int j = 0; j <= nZen_global; ++j) {
         double theta_rad = m_sphere.GetZenith(j);
         fast_sincos(theta_rad, sin_theta_arr[j], cos_theta_arr[j]);
     }
-    std::vector<double> sin_phi_arr(nAz_global), cos_phi_arr(nAz_global);
+    static thread_local std::vector<double> sin_phi_arr;
+    static thread_local std::vector<double> cos_phi_arr;
+    sin_phi_arr.resize(nAz_global);
+    cos_phi_arr.resize(nAz_global);
     for (int i = 0; i < nAz_global; ++i) {
         double phi_rad = i * m_sphere.azinuthStep;
         fast_sincos(phi_rad, sin_phi_arr[i], cos_phi_arr[i]);
@@ -2611,11 +2617,20 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
     }
     const size_t phaseCapacity = static_cast<size_t>(nZen_global + 1)
                                * static_cast<size_t>(maxPreparedVertices);
-    std::vector<double> all_vc(phaseCapacity), all_vs(phaseCapacity);
-    std::vector<double> all_phases(phaseCapacity);
-    std::vector<double> max_phases(nZen_global + 1, 0.0);
-    std::vector<double> dir_dpr(nZen_global + 1), dir_dpi(nZen_global + 1);
-    std::vector<double> dp_phases(nZen_global + 1);
+    static thread_local std::vector<double> all_vc;
+    static thread_local std::vector<double> all_vs;
+    static thread_local std::vector<double> all_phases;
+    static thread_local std::vector<double> max_phases;
+    static thread_local std::vector<double> dir_dpr;
+    static thread_local std::vector<double> dir_dpi;
+    static thread_local std::vector<double> dp_phases;
+    all_vc.resize(phaseCapacity);
+    all_vs.resize(phaseCapacity);
+    all_phases.resize(phaseCapacity);
+    max_phases.resize(nZen_global + 1);
+    dir_dpr.resize(nZen_global + 1);
+    dir_dpi.resize(nZen_global + 1);
+    dp_phases.resize(nZen_global + 1);
 
     for (const PreparedBeam &pb : prepared.beams)
     {
