@@ -2702,8 +2702,6 @@ static PreparedOrientation ScalePreparedOrientation(const PreparedOrientation &s
         {
             pb.edgeData.x[e] *= scale;
             pb.edgeData.y[e] *= scale;
-            pb.edgeData.intercept_x[e] *= scale;
-            pb.edgeData.intercept_y[e] *= scale;
         }
 
         pb.cenx *= scale;

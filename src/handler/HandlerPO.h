@@ -69,8 +69,6 @@ struct PreparedEdgeData
             y[i] = source.y[i];
             slope_yx[i] = source.slope_yx[i];
             slope_xy[i] = source.slope_xy[i];
-            intercept_y[i] = source.intercept_y[i];
-            intercept_x[i] = source.intercept_x[i];
             edge_valid_x[i] = source.edge_valid_x[i];
             edge_valid_y[i] = source.edge_valid_y[i];
         }
@@ -85,8 +83,6 @@ struct PreparedEdgeData
     double *y;
     double *slope_yx;
     double *slope_xy;
-    double *intercept_y;
-    double *intercept_x;
     bool *edge_valid_x;
     bool *edge_valid_y;
     int nVertices = 0;
@@ -99,8 +95,6 @@ private:
         y = inlineY;
         slope_yx = inlineSlopeYx;
         slope_xy = inlineSlopeXy;
-        intercept_y = inlineInterceptY;
-        intercept_x = inlineInterceptX;
         edge_valid_x = inlineValidX;
         edge_valid_y = inlineValidY;
     }
@@ -111,8 +105,6 @@ private:
         y = overflow->y;
         slope_yx = overflow->slope_yx;
         slope_xy = overflow->slope_xy;
-        intercept_y = overflow->intercept_y;
-        intercept_x = overflow->intercept_x;
         edge_valid_x = overflow->edge_valid_x;
         edge_valid_y = overflow->edge_valid_y;
     }
@@ -136,8 +128,6 @@ private:
             y[i] = other.y[i];
             slope_yx[i] = other.slope_yx[i];
             slope_xy[i] = other.slope_xy[i];
-            intercept_y[i] = other.intercept_y[i];
-            intercept_x[i] = other.intercept_x[i];
             edge_valid_x[i] = other.edge_valid_x[i];
             edge_valid_y[i] = other.edge_valid_y[i];
         }
@@ -171,8 +161,6 @@ private:
             y[i] = other.y[i];
             slope_yx[i] = other.slope_yx[i];
             slope_xy[i] = other.slope_xy[i];
-            intercept_y[i] = other.intercept_y[i];
-            intercept_x[i] = other.intercept_x[i];
             edge_valid_x[i] = other.edge_valid_x[i];
             edge_valid_y[i] = other.edge_valid_y[i];
         }
@@ -183,8 +171,6 @@ private:
     double inlineY[INLINE_EDGES];
     double inlineSlopeYx[INLINE_EDGES];
     double inlineSlopeXy[INLINE_EDGES];
-    double inlineInterceptY[INLINE_EDGES];
-    double inlineInterceptX[INLINE_EDGES];
     bool inlineValidX[INLINE_EDGES];
     bool inlineValidY[INLINE_EDGES];
     std::shared_ptr<BeamEdgeData> overflow;

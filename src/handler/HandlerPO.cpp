@@ -2076,8 +2076,6 @@ double HandlerPO::ComputeForwardExtinctionOtScaled(
         {
             edge.x[e] *= scale;
             edge.y[e] *= scale;
-            edge.intercept_x[e] *= scale;
-            edge.intercept_y[e] *= scale;
         }
 
         ThetaCoeffs tc = {};
@@ -3016,15 +3014,13 @@ void HandlerPO::CacheBeams(std::vector<Beam> &beams, double weight,
         cb.nVertices = edgeData.nVertices;
         cb.edgeDataValid = edgeData.valid;
 
-        // Normalize vertices and intercepts by D_ref
+        // Normalize vertices by D_ref; slopes and validity are scale-invariant.
         for (int i = 0; i < cb.nVertices; ++i)
         {
             cb.vx_norm[i] = edgeData.x[i] * inv_D;
             cb.vy_norm[i] = edgeData.y[i] * inv_D;
             cb.slope_yx[i] = edgeData.slope_yx[i]; // dimensionless
             cb.slope_xy[i] = edgeData.slope_xy[i]; // dimensionless
-            cb.intercept_y_norm[i] = edgeData.intercept_y[i] * inv_D; // unused in fast path
-            cb.intercept_x_norm[i] = edgeData.intercept_x[i] * inv_D; // unused in fast path
             cb.edge_valid_x[i] = edgeData.edge_valid_x[i];
             cb.edge_valid_y[i] = edgeData.edge_valid_y[i];
         }
@@ -3052,7 +3048,6 @@ void HandlerPO::CacheBeams(std::vector<Beam> &beams, double weight,
         // Aperture axes (unit vectors)
         cb.horAx = info.horAxis.x; cb.horAy = info.horAxis.y; cb.horAz = info.horAxis.z;
         cb.verAx = info.verAxis.x; cb.verAy = info.verAxis.y; cb.verAz = info.verAxis.z;
-        cb.normx = info.normald.x; cb.normy = info.normald.y; cb.normz = info.normald.z;
 
         // Normalized center
         cb.cenx_norm = info.center.x * inv_D;
