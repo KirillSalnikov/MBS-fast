@@ -226,6 +226,17 @@ polygon moments, and critical phase trigonometry remain FP64.
 \texttt{-/-version} reports the storage, critical-phase, math, and target
 architecture profile.
 
+Verify every rebuilt binary before starting a queue:
+
+\begin{verbatim}
+gpu/bin/mbs_po_gpu_double --version  # fp64-diffraction-storage ... precise-math
+gpu/bin/mbs_po_gpu_float --version   # fp32-diffraction-storage ... precise-math
+\end{verbatim}
+
+CUDA host compilation requires exactly one FP32/FP64 profile. A binary that
+reports \texttt{unknown-precision} is stale or was built outside the supported
+profiles and must not be used for production calculations.
+
 On an RTX 3080 Ti, a representative absorbing nonconvex test
 ($k_{\mathrm{eq}}=20$, 64 SO(3) orientations,
 $N_\phi=720$, $N_\theta=360$) gave the following medians:

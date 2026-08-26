@@ -52,6 +52,16 @@ Visibility/topology tracing, optical paths, absorption, cancellation-prone
 polygon moments, and critical phase trigonometry remain FP64. The binary
 reports these choices in `--version`.
 
+Verify the host-side profile after each rebuild:
+
+```bash
+gpu/bin/mbs_po_gpu_double --version  # fp64-diffraction-storage
+gpu/bin/mbs_po_gpu_float --version   # fp32-diffraction-storage
+```
+
+`unknown-precision` is rejected by supported CUDA builds and indicates a stale
+or externally built binary.
+
 Objects are written under `gpu/build/`, so this build does not conflict with
 the CPU MPI/OpenMP build.
 

@@ -111,6 +111,15 @@ absorption, cancellation-prone polygon moments, and critical phase
 trigonometry remain FP64. Validate throughput profiles against CPU double and
 CUDA FP64 on representative convex, non-convex, fixed-orientation, and
 orientation-averaged cases before production use. Record `--version` output.
+After building, verify the selected host and CUDA profiles explicitly:
+
+```bash
+gpu/bin/mbs_po_gpu_double --version  # must report fp64-diffraction-storage
+gpu/bin/mbs_po_gpu_float --version   # must report fp32-diffraction-storage
+```
+
+The build now rejects CUDA host code without exactly one precision profile;
+`unknown-precision` is not an accepted production binary.
 
 For scientific reference and final archive calculations, use
 `mbs_po_gpu_double`. On consumer GPUs with weak FP64 hardware, start with

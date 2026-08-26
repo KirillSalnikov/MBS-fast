@@ -88,6 +88,16 @@ FP32 applies to diffraction-beam storage, Jones sums, and Mueller output.
 Visibility/topology tracing, optical paths, absorption, cancellation-prone
 polygon moments, and critical phase trigonometry remain FP64. `--version`
 reports the storage, critical-phase, math, and target-architecture profile.
+Verify every rebuilt binary before starting a queue:
+
+```bash
+gpu/bin/mbs_po_gpu_double --version  # fp64-diffraction-storage ... precise-math
+gpu/bin/mbs_po_gpu_float --version   # fp32-diffraction-storage ... precise-math
+```
+
+CUDA host compilation requires exactly one FP32/FP64 profile. A binary that
+reports `unknown-precision` is stale or was built outside the supported build
+profiles and must not be used for production calculations.
 
 On an RTX 3080 Ti, a representative non-convex test (`k_eq=20`, absorbing
 material, 64 symmetry-reduced SO(3) samples, `N_phi=720`, `N_theta=360`) gave

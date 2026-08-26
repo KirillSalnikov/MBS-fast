@@ -22,6 +22,8 @@ root_dry_run() {
 
 dry_run fp64 0 >"$TMP/fp64"
 grep -Fq -- '-DMBS_GPU_FP64' "$TMP/fp64"
+grep -F -- '../src/main.cpp' "$TMP/fp64" \
+    | grep -Fq -- '-DMBS_GPU_FP64'
 grep -Fq -- 'build/fp64_lto_sm70/obj' "$TMP/fp64"
 grep -Fq -- 'bin/mbs_po_gpu_double' "$TMP/fp64"
 grep -Fq -- '-flto=auto' "$TMP/fp64"
@@ -36,6 +38,8 @@ fi
 
 dry_run fp32 0 >"$TMP/fp32"
 grep -Fq -- '-DMBS_GPU_FP32 -DMBS_GPU_FLOAT' "$TMP/fp32"
+grep -F -- '../src/main.cpp' "$TMP/fp32" \
+    | grep -Fq -- '-DMBS_GPU_FP32 -DMBS_GPU_FLOAT'
 grep -Fq -- 'build/fp32_lto_sm70/obj' "$TMP/fp32"
 grep -Fq -- 'bin/mbs_po_gpu_float' "$TMP/fp32"
 if grep -Fq -- '--use_fast_math' "$TMP/fp32"; then
@@ -45,6 +49,8 @@ fi
 
 dry_run fp32 1 >"$TMP/fp32_fast"
 grep -Fq -- '--use_fast_math' "$TMP/fp32_fast"
+grep -F -- '../src/main.cpp' "$TMP/fp32_fast" \
+    | grep -Fq -- '-DMBS_GPU_FAST_MATH'
 grep -Fq -- 'build/fp32_fast_lto_sm70/obj' "$TMP/fp32_fast"
 grep -Fq -- 'bin/mbs_po_gpu_float_fast' "$TMP/fp32_fast"
 

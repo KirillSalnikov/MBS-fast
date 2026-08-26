@@ -323,6 +323,11 @@ void PrintVersion()
 #ifndef MBS_GIT_DESCRIBE
 #define MBS_GIT_DESCRIBE "unknown"
 #endif
+#if defined(USE_CUDA) && \
+    ((defined(MBS_GPU_FP32) && defined(MBS_GPU_FP64)) || \
+     (!defined(MBS_GPU_FP32) && !defined(MBS_GPU_FP64)))
+#error "CUDA host code requires exactly one GPU precision profile"
+#endif
     std::cout << "MBS-fast " << MBS_GIT_DESCRIBE << "\n";
 #ifdef USE_CUDA
     std::cout << "backend-build: CUDA";

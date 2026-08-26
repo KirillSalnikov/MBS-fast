@@ -75,10 +75,10 @@ NVCCFLAGS ?= -O3 -std=c++11 -arch=sm_$(GPU_ARCH) -U_GNU_SOURCE -D_DEFAULT_SOURCE
 override NVCCFLAGS += -ccbin $(CUDA_HOST_CXX) -include $(CUDA_HOST_COMPAT)
 override NVCCFLAGS += -Xcompiler -fopenmp
 override NVCCFLAGS += $(GPU_PRECISION_DEFINES)
-CXXFLAGS += $(GPU_PRECISION_DEFINES)
+override CXXFLAGS += $(GPU_PRECISION_DEFINES)
 ifeq ($(GPU_FAST_MATH),1)
 override NVCCFLAGS += --use_fast_math
-CXXFLAGS += -DMBS_GPU_FAST_MATH
+override CXXFLAGS += -DMBS_GPU_FAST_MATH
 endif
 
 INCLUDES := -I$(SRC_DIR) -I$(SRC_DIR)/math -I$(SRC_DIR)/handler \
