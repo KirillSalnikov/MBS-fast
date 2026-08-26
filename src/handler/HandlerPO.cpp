@@ -2713,6 +2713,8 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
 
                     Point3d &vf = m_sphere.vf[i][j];
                     double vfx = vf.x, vfy = vf.y, vfz = vf.z;
+                    const Point3d &vt = (*m_transverseBasis)[
+                        i * m_transverseThetaStride + j];
 
                     double A = sin_t * tc.a_sin + cos_t * tc.a_cos + tc.a0;
                     double B = sin_t * tc.b_sin + cos_t * tc.b_cos + tc.b0;
@@ -2790,10 +2792,10 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                         double dpr = dir_dpr[j], dpi = dir_dpi[j];
 
                         double r00, r01, r10, r11;
-                        rotate_jones_inline(
+                        rotate_jones_precomputed_inline(
                             pNTx, pNTy, pNTz, pNPx, pNPy, pNPz,
                             pnxDTx, pnxDTy, pnxDTz, pnxDPx, pnxDPy, pnxDPz,
-                            vfx, vfy, vfz, dx, dy, dz,
+                            vfx, vfy, vfz, vt.x, vt.y, vt.z, dx, dy, dz,
                             r00, r01, r10, r11);
 
                         double fr = real(fresnel), fi = imag(fresnel);
