@@ -2607,17 +2607,21 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
     static thread_local std::vector<double> cos_theta_arr;
     sin_theta_arr.resize(nZen_global + 1);
     cos_theta_arr.resize(nZen_global + 1);
+    double *const sinTheta = sin_theta_arr.data();
+    double *const cosTheta = cos_theta_arr.data();
     for (int j = 0; j <= nZen_global; ++j) {
         double theta_rad = m_sphere.GetZenith(j);
-        fast_sincos(theta_rad, sin_theta_arr[j], cos_theta_arr[j]);
+        fast_sincos(theta_rad, sinTheta[j], cosTheta[j]);
     }
     static thread_local std::vector<double> sin_phi_arr;
     static thread_local std::vector<double> cos_phi_arr;
     sin_phi_arr.resize(nAz_global);
     cos_phi_arr.resize(nAz_global);
+    double *const sinPhi = sin_phi_arr.data();
+    double *const cosPhi = cos_phi_arr.data();
     for (int i = 0; i < nAz_global; ++i) {
         double phi_rad = i * m_sphere.azinuthStep;
-        fast_sincos(phi_rad, sin_phi_arr[i], cos_phi_arr[i]);
+        fast_sincos(phi_rad, sinPhi[i], cosPhi[i]);
     }
 
     int maxPreparedVertices = 0;
@@ -2653,6 +2657,18 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
     fresnel_real.resize(nZen_global + 1);
     fresnel_imag.resize(nZen_global + 1);
     fresnel_ready.resize(nZen_global + 1);
+    double *const allVc = all_vc.data();
+    double *const allVs = all_vs.data();
+    double *const allPhases = all_phases.data();
+    double *const maxPhases = max_phases.data();
+    double *const dirDpr = dir_dpr.data();
+    double *const dirDpi = dir_dpi.data();
+    double *const dpPhases = dp_phases.data();
+    double *const aValues = a_values.data();
+    double *const bValues = b_values.data();
+    double *const fresnelReal = fresnel_real.data();
+    double *const fresnelImag = fresnel_imag.data();
+    unsigned char *const fresnelReady = fresnel_ready.data();
 
     for (const PreparedBeam &pb : prepared.beams)
     {
@@ -2675,7 +2691,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
 
         for (int i = 0; i < nAz_global; ++i)
         {
-            double cp = cos_phi_arr[i], sp = sin_phi_arr[i];
+            double cp = cosPhi[i], sp = sinPhi[i];
 
             ThetaCoeffs tc = {};
             if (edgeData.valid) {
@@ -2693,68 +2709,67 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
             int nv = edgeData.valid ? tc.nv : 0;
             if (edgeData.valid && nv > 0) {
                 const int thetaStride = nZen + 1;
-                std::fill(max_phases.begin(),
-                          max_phases.begin() + thetaStride, 0.0);
+                std::fill(maxPhases, maxPhases + thetaStride, 0.0);
                 for (int v = 0; v < nv; ++v) {
                     const int base = v * thetaStride;
                     for (int j = 0; j < thetaStride; ++j) {
-                        const double sin_t = sin_theta_arr[j];
-                        const double cos_t = cos_theta_arr[j];
+                        const double sin_t = sinTheta[j];
+                        const double cos_t = cosTheta[j];
                         const double phase = sin_t * tc.psin[v]
                                            + cos_t * tc.pcos[v] + tc.p0[v];
-                        all_phases[base + j] = phase;
-                        max_phases[j] = std::max(
-                            max_phases[j], std::fabs(phase));
+                        allPhases[base + j] = phase;
+                        maxPhases[j] = std::max(
+                            maxPhases[j], std::fabs(phase));
                     }
                     int j = 0;
                     for (; j + 7 < thetaStride; j += 8)
-                        fast_sincos_8x(&all_phases[base + j],
-                                      &all_vs[base + j], &all_vc[base + j]);
+                        fast_sincos_8x(&allPhases[base + j],
+                                      &allVs[base + j], &allVc[base + j]);
                     for (; j + 3 < thetaStride; j += 4)
-                        fast_sincos_4x(&all_phases[base + j],
-                                      &all_vs[base + j], &all_vc[base + j]);
+                        fast_sincos_4x(&allPhases[base + j],
+                                      &allVs[base + j], &allVc[base + j]);
                     for (; j < thetaStride; ++j)
-                        fast_sincos(all_phases[base + j],
-                                    all_vs[base + j], all_vc[base + j]);
+                        fast_sincos(allPhases[base + j],
+                                    allVs[base + j], allVc[base + j]);
                 }
                 if (!isExternal) {
                     for (int j = 0; j <= nZen; ++j)
-                        dp_phases[j] = -m_waveIndex*(sin_theta_arr[j]*tc.dp_sin + cos_theta_arr[j]*tc.dp_cos);
+                        dpPhases[j] = -m_waveIndex*(sinTheta[j]*tc.dp_sin + cosTheta[j]*tc.dp_cos);
                     int jj = 0;
                     for (; jj + 7 <= nZen; jj += 8)
-                        fast_sincos_8x(&dp_phases[jj], &dir_dpi[jj], &dir_dpr[jj]);
+                        fast_sincos_8x(&dpPhases[jj], &dirDpi[jj], &dirDpr[jj]);
                     for (; jj + 3 <= nZen; jj += 4)
-                        fast_sincos_4x(&dp_phases[jj], &dir_dpi[jj], &dir_dpr[jj]);
+                        fast_sincos_4x(&dpPhases[jj], &dirDpi[jj], &dirDpr[jj]);
                     for (; jj <= nZen; ++jj)
-                        fast_sincos(dp_phases[jj], dir_dpi[jj], dir_dpr[jj]);
+                        fast_sincos(dpPhases[jj], dirDpi[jj], dirDpr[jj]);
                 } else {
-                    for (int j = 0; j <= nZen; ++j) { dir_dpr[j] = 1.0; dir_dpi[j] = 0.0; }
+                    for (int j = 0; j <= nZen; ++j) { dirDpr[j] = 1.0; dirDpi[j] = 0.0; }
                 }
 
                 for (int j = 0; j <= nZen; ++j)
                 {
-                    const double sin_t = sin_theta_arr[j];
-                    const double cos_t = cos_theta_arr[j];
-                    a_values[j] = sin_t * tc.a_sin + cos_t * tc.a_cos + tc.a0;
-                    b_values[j] = sin_t * tc.b_sin + cos_t * tc.b_cos + tc.b0;
-                    fresnel_ready[j] = 0;
+                    const double sin_t = sinTheta[j];
+                    const double cos_t = cosTheta[j];
+                    aValues[j] = sin_t * tc.a_sin + cos_t * tc.a_cos + tc.a0;
+                    bValues[j] = sin_t * tc.b_sin + cos_t * tc.b_cos + tc.b0;
+                    fresnelReady[j] = 0;
                 }
                 for (int j = 0; j + 3 <= nZen; j += 4)
                 {
-                    if (max_phases[j] <= 1e-3 || max_phases[j + 1] <= 1e-3
-                        || max_phases[j + 2] <= 1e-3 || max_phases[j + 3] <= 1e-3)
+                    if (maxPhases[j] <= 1e-3 || maxPhases[j + 1] <= 1e-3
+                        || maxPhases[j + 2] <= 1e-3 || maxPhases[j + 3] <= 1e-3)
                         continue;
                     if (diffract_theta_4_regular(
-                            all_vc.data(), all_vs.data(), j,
+                            allVc, allVs, j,
                             nZen + 1, nv,
-                            a_values.data(), b_values.data(),
+                            aValues, bValues,
                             edgeData.slope_yx, edgeData.edge_valid_x,
                             edgeData.slope_xy, edgeData.edge_valid_y,
                             m_eps1, real(m_complWave), imag(m_complWave),
-                            fresnel_real.data(), fresnel_imag.data()))
+                            fresnelReal, fresnelImag))
                     {
-                        fresnel_ready[j] = fresnel_ready[j + 1] = 1;
-                        fresnel_ready[j + 2] = fresnel_ready[j + 3] = 1;
+                        fresnelReady[j] = fresnelReady[j + 1] = 1;
+                        fresnelReady[j + 2] = fresnelReady[j + 3] = 1;
                     }
                 }
             }
@@ -2762,12 +2777,12 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
             for (int j = 0; j <= nZen; ++j)
             {
                 if (edgeData.valid && j + 3 <= nZen
-                    && fresnel_ready[j] && fresnel_ready[j + 1]
-                    && fresnel_ready[j + 2] && fresnel_ready[j + 3]
-                    && !std::isnan(fresnel_real[j])
-                    && !std::isnan(fresnel_real[j + 1])
-                    && !std::isnan(fresnel_real[j + 2])
-                    && !std::isnan(fresnel_real[j + 3]))
+                    && fresnelReady[j] && fresnelReady[j + 1]
+                    && fresnelReady[j + 2] && fresnelReady[j + 3]
+                    && !std::isnan(fresnelReal[j])
+                    && !std::isnan(fresnelReal[j + 1])
+                    && !std::isnan(fresnelReal[j + 2])
+                    && !std::isnan(fresnelReal[j + 3]))
                 {
                     const int basisIndex = i * m_transverseThetaStride + j;
                     __m256d r00v, r01v, r10v, r11v;
@@ -2785,8 +2800,8 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
 
                     JonesBatch4 batch;
                     compose_jones_4_regular(
-                        fresnel_real.data() + j, fresnel_imag.data() + j,
-                        dir_dpr.data() + j, dir_dpi.data() + j,
+                        fresnelReal + j, fresnelImag + j,
+                        dirDpr + j, dirDpi + j,
                         r00v, r01v, r10v, r11v,
                         jp00r, jp00i, jp01r, jp01i,
                         jp10r, jp10i, jp11r, jp11i, batch);
@@ -2824,22 +2839,22 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                     const Point3d &vt = (*m_transverseBasis)[
                         i * m_transverseThetaStride + j];
 
-                    double A = a_values[j];
-                    double B = b_values[j];
+                    double A = aValues[j];
+                    double B = bValues[j];
 
                     double absA = fabs(A);
                     double absB = fabs(B);
 
                     complex fresnel;
                     double smallPhaseReal = 0.0, smallPhaseImag = 0.0;
-                    if (fresnel_ready[j])
+                    if (fresnelReady[j])
                     {
-                        fresnel = complex(fresnel_real[j], fresnel_imag[j]);
+                        fresnel = complex(fresnelReal[j], fresnelImag[j]);
                     }
                     else if (small_phase_polygon_factor(
                             edgeData.x, edgeData.y, edgeData.nVertices,
                             A, B, m_waveIndex, smallPhaseReal, smallPhaseImag,
-                            max_phases[j]))
+                            maxPhases[j]))
                     {
                         const complex areaLimit =
                             (m_legacySign ? m_invComplWave : -m_invComplWave) * beam_area;
@@ -2862,11 +2877,11 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                                 double inv_Ci = (absCi > m_eps1) ? (1.0 / Ci) : 0.0;
                                 const int edgeIndex = e*thetaStride + j;
                                 const int nextIndex = enext*thetaStride + j;
-                                sr += (all_vc[nextIndex] - all_vc[edgeIndex]) * inv_Ci;
-                                si += (all_vs[nextIndex] - all_vs[edgeIndex]) * inv_Ci;
+                                sr += (allVc[nextIndex] - allVc[edgeIndex]) * inv_Ci;
+                                si += (allVs[nextIndex] - allVs[edgeIndex]) * inv_Ci;
                                 if (__builtin_expect(absCi <= m_eps1, 0)) {
                                     add_stable_edge_quotient(
-                                        all_vc[edgeIndex], all_vs[edgeIndex],
+                                        allVc[edgeIndex], allVs[edgeIndex],
                                         edgeData.x[enext]-edgeData.x[e],
                                         Ci, m_waveIndex, sr, si);
                                 }
@@ -2885,11 +2900,11 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                                 double inv_Ei = (absEi > m_eps1) ? (1.0 / Ei) : 0.0;
                                 const int edgeIndex = e*thetaStride + j;
                                 const int nextIndex = enext*thetaStride + j;
-                                sr += (all_vc[nextIndex] - all_vc[edgeIndex]) * inv_Ei;
-                                si += (all_vs[nextIndex] - all_vs[edgeIndex]) * inv_Ei;
+                                sr += (allVc[nextIndex] - allVc[edgeIndex]) * inv_Ei;
+                                si += (allVs[nextIndex] - allVs[edgeIndex]) * inv_Ei;
                                 if (__builtin_expect(absEi <= m_eps1, 0)) {
                                     add_stable_edge_quotient(
-                                        all_vc[edgeIndex], all_vs[edgeIndex],
+                                        allVc[edgeIndex], allVs[edgeIndex],
                                         edgeData.y[enext]-edgeData.y[e],
                                         Ei, m_waveIndex, sr, si);
                                 }
@@ -2903,7 +2918,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
 
                     if (!isnan(real(fresnel)))
                     {
-                        double dpr = dir_dpr[j], dpi = dir_dpi[j];
+                        double dpr = dirDpr[j], dpi = dirDpi[j];
 
                         double r00, r01, r10, r11;
                         rotate_jones_precomputed_inline(
