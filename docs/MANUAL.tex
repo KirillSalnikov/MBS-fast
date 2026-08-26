@@ -1301,6 +1301,13 @@ instead of silently skipping the check.
 
 GPU runtime errors are fatal in the split GPU build. For debugging only:
 
+For regular polygon phases, the CPU PO loop evaluates four adjacent theta
+directions together with AVX2. The edge accumulation order is retained in
+every vector lane. A small phase or an active near-singular denominator
+selects the original stable scalar formula for that group. This selection is
+automatic, has no command-line tolerance, and is enabled in the standard CPU
+build.
+
 \begin{Shaded}
 \begin{Highlighting}[]
 \VariableTok{MBS\_GPU\_ALLOW\_FALLBACK}\OperatorTok{=}\NormalTok{1 }\ExtensionTok{gpu/bin/mbs\_po\_gpu\_float\_fast}\NormalTok{ ...}

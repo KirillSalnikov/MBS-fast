@@ -602,6 +602,13 @@ Each worker owns disjoint Jones/Mueller cells, while beam contributions to a
 cell are still accumulated in their original order. Results are therefore
 independent of `--threads` up to ordinary floating-point output precision.
 
+For regular polygon phases the CPU PO loop evaluates four adjacent theta
+directions together with AVX2. The implementation preserves the edge
+accumulation order in every lane. A small phase or an active near-singular
+denominator selects the original stable scalar formula for that group. The
+selection is automatic, introduces no tolerance visible to the command line,
+and is active in the standard CPU build.
+
 GPU runtime errors are fatal in the split GPU build. For debugging only:
 
 ```bash

@@ -269,6 +269,92 @@ inline void add_stable_edge_quotient(double phaseReal,
     sumImag += phaseReal*localImag + phaseImag*localReal;
 }
 
+// Vectorized regular edge integral for four theta directions.  The caller
+// keeps the small-phase and near-singular cases on the scalar stable path.
+inline bool diffract_theta_4_regular(
+    const double *allVc, const double *allVs, int thetaBase, int nv,
+    const double *aValues, const double *bValues,
+    const double *slopeYx, const bool *validX,
+    const double *slopeXy, const bool *validY,
+    double eps, double complWaveReal, double complWaveImag,
+    double *outReal, double *outImag)
+{
+    const __m256d one = _mm256_set1_pd(1.0);
+    const __m256d signMask = _mm256_set1_pd(-0.0);
+    const __m256d allBits = _mm256_castsi256_pd(_mm256_set1_epi64x(-1));
+    const __m256d zero = _mm256_setzero_pd();
+    const __m256d epsVector = _mm256_set1_pd(eps);
+    const __m256d a = _mm256_loadu_pd(aValues + thetaBase);
+    const __m256d b = _mm256_loadu_pd(bValues + thetaBase);
+    const __m256d absA = _mm256_andnot_pd(signMask, a);
+    const __m256d absB = _mm256_andnot_pd(signMask, b);
+    const __m256d useX = _mm256_cmp_pd(absB, absA, _CMP_GT_OQ);
+    __m256d sumReal = zero;
+    __m256d sumImag = zero;
+
+    for (int edge = 0; edge < nv; ++edge)
+    {
+        if (!validX[edge] && !validY[edge])
+            continue;
+
+        const int next = (edge + 1 < nv) ? edge + 1 : 0;
+        const __m256d denominatorX = _mm256_fmadd_pd(
+            _mm256_set1_pd(slopeYx[edge]), b, a);
+        const __m256d denominatorY = _mm256_fmadd_pd(
+            _mm256_set1_pd(slopeXy[edge]), a, b);
+        const __m256d denominator = _mm256_blendv_pd(
+            denominatorY, denominatorX, useX);
+
+        __m256d validMask;
+        if (validX[edge] && validY[edge])
+            validMask = allBits;
+        else if (validX[edge])
+            validMask = useX;
+        else
+            validMask = _mm256_andnot_pd(useX, allBits);
+
+        const __m256d absDenominator = _mm256_andnot_pd(
+            signMask, denominator);
+        const __m256d regularMask = _mm256_cmp_pd(
+            absDenominator, epsVector, _CMP_GT_OQ);
+        const __m256d singularActive = _mm256_andnot_pd(
+            regularMask, validMask);
+        if (__builtin_expect(_mm256_movemask_pd(singularActive) != 0, 0))
+            return false;
+
+        const __m256d safeDenominator = _mm256_blendv_pd(
+            one, denominator, validMask);
+        const __m256d inverse = _mm256_div_pd(one, safeDenominator);
+        const __m256d deltaReal = _mm256_set_pd(
+            allVc[(thetaBase + 3)*nv + next] - allVc[(thetaBase + 3)*nv + edge],
+            allVc[(thetaBase + 2)*nv + next] - allVc[(thetaBase + 2)*nv + edge],
+            allVc[(thetaBase + 1)*nv + next] - allVc[(thetaBase + 1)*nv + edge],
+            allVc[ thetaBase     *nv + next] - allVc[ thetaBase     *nv + edge]);
+        const __m256d deltaImag = _mm256_set_pd(
+            allVs[(thetaBase + 3)*nv + next] - allVs[(thetaBase + 3)*nv + edge],
+            allVs[(thetaBase + 2)*nv + next] - allVs[(thetaBase + 2)*nv + edge],
+            allVs[(thetaBase + 1)*nv + next] - allVs[(thetaBase + 1)*nv + edge],
+            allVs[ thetaBase     *nv + next] - allVs[ thetaBase     *nv + edge]);
+        sumReal = _mm256_add_pd(sumReal, _mm256_and_pd(
+            _mm256_mul_pd(deltaReal, inverse), validMask));
+        sumImag = _mm256_add_pd(sumImag, _mm256_and_pd(
+            _mm256_mul_pd(deltaImag, inverse), validMask));
+    }
+
+    const __m256d finalDenominator = _mm256_blendv_pd(
+        _mm256_sub_pd(zero, a), b, useX);
+    const __m256d inverseFinal = _mm256_div_pd(one, finalDenominator);
+    sumReal = _mm256_mul_pd(sumReal, inverseFinal);
+    sumImag = _mm256_mul_pd(sumImag, inverseFinal);
+    const __m256d cwReal = _mm256_set1_pd(complWaveReal);
+    const __m256d cwImag = _mm256_set1_pd(complWaveImag);
+    _mm256_storeu_pd(outReal + thetaBase, _mm256_sub_pd(
+        _mm256_mul_pd(cwReal, sumReal), _mm256_mul_pd(cwImag, sumImag)));
+    _mm256_storeu_pd(outImag + thetaBase, _mm256_add_pd(
+        _mm256_mul_pd(cwReal, sumImag), _mm256_mul_pd(cwImag, sumReal)));
+    return true;
+}
+
 // Diffraction integral using precomputed edge data and trigonometric form
 // Uses GOAD-style approach: one sincos per edge instead of two exp_im
 inline complex diffract_inline(

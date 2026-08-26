@@ -2624,6 +2624,11 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
     static thread_local std::vector<double> dir_dpr;
     static thread_local std::vector<double> dir_dpi;
     static thread_local std::vector<double> dp_phases;
+    static thread_local std::vector<double> a_values;
+    static thread_local std::vector<double> b_values;
+    static thread_local std::vector<double> fresnel_real;
+    static thread_local std::vector<double> fresnel_imag;
+    static thread_local std::vector<unsigned char> fresnel_ready;
     all_vc.resize(phaseCapacity);
     all_vs.resize(phaseCapacity);
     all_phases.resize(phaseCapacity);
@@ -2631,6 +2636,11 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
     dir_dpr.resize(nZen_global + 1);
     dir_dpi.resize(nZen_global + 1);
     dp_phases.resize(nZen_global + 1);
+    a_values.resize(nZen_global + 1);
+    b_values.resize(nZen_global + 1);
+    fresnel_real.resize(nZen_global + 1);
+    fresnel_imag.resize(nZen_global + 1);
+    fresnel_ready.resize(nZen_global + 1);
 
     for (const PreparedBeam &pb : prepared.beams)
     {
@@ -2704,6 +2714,32 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                 } else {
                     for (int j = 0; j <= nZen; ++j) { dir_dpr[j] = 1.0; dir_dpi[j] = 0.0; }
                 }
+
+                for (int j = 0; j <= nZen; ++j)
+                {
+                    const double sin_t = sin_theta_arr[j];
+                    const double cos_t = cos_theta_arr[j];
+                    a_values[j] = sin_t * tc.a_sin + cos_t * tc.a_cos + tc.a0;
+                    b_values[j] = sin_t * tc.b_sin + cos_t * tc.b_cos + tc.b0;
+                    fresnel_ready[j] = 0;
+                }
+                for (int j = 0; j + 3 <= nZen; j += 4)
+                {
+                    if (max_phases[j] <= 1e-3 || max_phases[j + 1] <= 1e-3
+                        || max_phases[j + 2] <= 1e-3 || max_phases[j + 3] <= 1e-3)
+                        continue;
+                    if (diffract_theta_4_regular(
+                            all_vc.data(), all_vs.data(), j, nv,
+                            a_values.data(), b_values.data(),
+                            edgeData.slope_yx, edgeData.edge_valid_x,
+                            edgeData.slope_xy, edgeData.edge_valid_y,
+                            m_eps1, real(m_complWave), imag(m_complWave),
+                            fresnel_real.data(), fresnel_imag.data()))
+                    {
+                        fresnel_ready[j] = fresnel_ready[j + 1] = 1;
+                        fresnel_ready[j + 2] = fresnel_ready[j + 3] = 1;
+                    }
+                }
             }
 
             for (int j = 0; j <= nZen; ++j)
@@ -2712,23 +2748,24 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
 
                 if (edgeData.valid)
                 {
-                    double sin_t = sin_theta_arr[j];
-                    double cos_t = cos_theta_arr[j];
-
                     Point3d &vf = m_sphere.vf[i][j];
                     double vfx = vf.x, vfy = vf.y, vfz = vf.z;
                     const Point3d &vt = (*m_transverseBasis)[
                         i * m_transverseThetaStride + j];
 
-                    double A = sin_t * tc.a_sin + cos_t * tc.a_cos + tc.a0;
-                    double B = sin_t * tc.b_sin + cos_t * tc.b_cos + tc.b0;
+                    double A = a_values[j];
+                    double B = b_values[j];
 
                     double absA = fabs(A);
                     double absB = fabs(B);
 
                     complex fresnel;
                     double smallPhaseReal = 0.0, smallPhaseImag = 0.0;
-                    if (small_phase_polygon_factor(
+                    if (fresnel_ready[j])
+                    {
+                        fresnel = complex(fresnel_real[j], fresnel_imag[j]);
+                    }
+                    else if (small_phase_polygon_factor(
                             edgeData.x, edgeData.y, edgeData.nVertices,
                             A, B, m_waveIndex, smallPhaseReal, smallPhaseImag,
                             max_phases[j]))

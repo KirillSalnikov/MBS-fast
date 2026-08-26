@@ -188,6 +188,12 @@ contributions within each grid cell retain their original accumulation order,
 so changing the thread count does not change the numerical result. Very small
 grids remain serial to avoid OpenMP startup overhead.
 
+The CPU PO diffraction loop also batches four regular theta directions in one
+AVX2 edge-integral pass. Small-phase polygons and near-singular edge
+denominators automatically retain the stable scalar formulas. This path is
+enabled by the normal CPU build and has no runtime flag or approximation
+tolerance.
+
 CUDA PO calculation:
 
 ```bash
