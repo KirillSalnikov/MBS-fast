@@ -209,36 +209,66 @@ double ProjectedCross(const Point2f &a, const Point2f &b, const Point2f &c)
     return (b.x - a.x)*(c.y - a.y) - (b.y - a.y)*(c.x - a.x);
 }
 
-double ProjectedSignedArea(const std::vector<Point2f> &polygon)
+struct ProjectedPolygon
+{
+    Point2f vertices[2*MAX_VERTEX_NUM];
+    size_t size = 0;
+
+    void Clear()
+    {
+        size = 0;
+    }
+
+    void Push(const Point2f &point)
+    {
+        if (size >= 2*MAX_VERTEX_NUM)
+            throw std::runtime_error(
+                "projected facet intersection exceeds geometry limit");
+        vertices[size++] = point;
+    }
+
+    void Assign(const ProjectedPolygon &other)
+    {
+        size = other.size;
+        for (size_t index = 0; index < size; ++index)
+            vertices[index] = other.vertices[index];
+    }
+};
+
+double ProjectedSignedArea(const ProjectedPolygon &polygon)
 {
     double twiceArea = 0.0;
-    for (size_t i = 0; i < polygon.size(); ++i)
+    for (size_t i = 0; i < polygon.size; ++i)
     {
-        const Point2f &a = polygon[i];
-        const Point2f &b = polygon[(i + 1) % polygon.size()];
+        const Point2f &a = polygon.vertices[i];
+        const Point2f &b = polygon.vertices[(i + 1) % polygon.size];
         twiceArea += a.x*b.y - a.y*b.x;
     }
     return 0.5*twiceArea;
 }
 
-std::vector<Point2f> IntersectProjectedFacets(
-    const std::vector<Point2f> &subject,
-    const std::vector<Point2f> &clip,
-    double areaTolerance)
+void IntersectProjectedFacets(const ProjectedPolygon &subject,
+                              const ProjectedPolygon &clip,
+                              double areaTolerance,
+                              ProjectedPolygon &overlap)
 {
-    std::vector<Point2f> result = subject;
+    ProjectedPolygon first;
+    ProjectedPolygon second;
+    first.Assign(subject);
+    ProjectedPolygon *input = &first;
+    ProjectedPolygon *result = &second;
     const double orientation = ProjectedSignedArea(clip) >= 0.0 ? 1.0 : -1.0;
-    for (size_t edge = 0; edge < clip.size() && !result.empty(); ++edge)
+    for (size_t edge = 0; edge < clip.size && input->size != 0; ++edge)
     {
-        const Point2f &a = clip[edge];
-        const Point2f &b = clip[(edge + 1) % clip.size()];
-        std::vector<Point2f> input;
-        input.swap(result);
-        Point2f previous = input.back();
+        const Point2f &a = clip.vertices[edge];
+        const Point2f &b = clip.vertices[(edge + 1) % clip.size];
+        result->Clear();
+        Point2f previous = input->vertices[input->size - 1];
         double previousSide = orientation*ProjectedCross(a, b, previous);
         bool previousInside = previousSide >= -areaTolerance;
-        for (const Point2f &current : input)
+        for (size_t index = 0; index < input->size; ++index)
         {
+            const Point2f &current = input->vertices[index];
             const double currentSide = orientation*ProjectedCross(a, b, current);
             const bool currentInside = currentSide >= -areaTolerance;
             if (currentInside != previousInside)
@@ -247,40 +277,42 @@ std::vector<Point2f> IntersectProjectedFacets(
                 if (std::fabs(denominator) > DBL_MIN)
                 {
                     const double t = previousSide/denominator;
-                    result.push_back(Point2f(
+                    result->Push(Point2f(
                         previous.x + t*(current.x - previous.x),
                         previous.y + t*(current.y - previous.y)));
                 }
             }
             if (currentInside)
-                result.push_back(current);
+                result->Push(current);
             previous = current;
             previousSide = currentSide;
             previousInside = currentInside;
         }
+        std::swap(input, result);
     }
-    return result;
+    overlap.Assign(*input);
 }
 
-bool ProjectedOverlapPoint(const std::vector<Point2f> &first,
-                           const std::vector<Point2f> &second,
+bool ProjectedOverlapPoint(const ProjectedPolygon &first,
+                           const ProjectedPolygon &second,
                            double areaTolerance,
                            Point2f &point)
 {
-    const std::vector<Point2f> overlap = IntersectProjectedFacets(
-        first, second, areaTolerance);
-    if (overlap.size() < 3
+    ProjectedPolygon overlap;
+    IntersectProjectedFacets(first, second, areaTolerance, overlap);
+    if (overlap.size < 3
         || std::fabs(ProjectedSignedArea(overlap)) <= areaTolerance)
         return false;
 
     point = Point2f();
-    for (const Point2f &vertex : overlap)
+    for (size_t index = 0; index < overlap.size; ++index)
     {
+        const Point2f &vertex = overlap.vertices[index];
         point.x += vertex.x;
         point.y += vertex.y;
     }
-    point.x /= overlap.size();
-    point.y /= overlap.size();
+    point.x /= overlap.size;
+    point.y /= overlap.size;
     return true;
 }
 
@@ -892,19 +924,17 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
     Normalize(axisV);
 
     const size_t count = facetIDs.size;
-    std::vector<std::vector<Point2f> > projected(count);
+    std::vector<ProjectedPolygon> projected(count);
     for (size_t index = 0; index < count; ++index)
     {
         const Polygon &facet = m_facets[ordered[index].facetId];
-        projected[index].reserve(facet.nVertices);
         for (int vertex = 0; vertex < facet.nVertices; ++vertex)
-            projected[index].push_back(Point2f(
+            projected[index].Push(Point2f(
                 DotProduct(facet.arr[vertex], axisU),
                 DotProduct(facet.arr[vertex], axisV)));
     }
 
-    std::vector<std::vector<unsigned char> > precedes(
-        count, std::vector<unsigned char>(count, 0));
+    std::vector<unsigned char> precedes(count*count, 0);
     std::vector<int> indegree(count, 0);
     const double areaTolerance = geometry_area_tolerance(
         m_geometryScale);
@@ -940,9 +970,10 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
 
             const size_t before = firstDepth < secondDepth ? first : second;
             const size_t after = firstDepth < secondDepth ? second : first;
-            if (!precedes[before][after])
+            const size_t relation = before*count + after;
+            if (!precedes[relation])
             {
-                precedes[before][after] = 1;
+                precedes[relation] = 1;
                 ++indegree[after];
             }
         }
@@ -973,7 +1004,7 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
         emitted[selected] = 1;
         facetIDs.arr[output++] = ordered[selected].facetId;
         for (size_t after = 0; after < count; ++after)
-            if (precedes[selected][after])
+            if (precedes[selected*count + after])
                 --indegree[after];
     }
 }
