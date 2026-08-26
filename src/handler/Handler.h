@@ -375,12 +375,8 @@ struct BeamEdgeData
     double x[MAX_EDGES];       ///< vertex x in aperture 2D
     double y[MAX_EDGES];       ///< vertex y in aperture 2D
     // Precomputed per-edge data (GOAD-style EdgeData)
-    double dx[MAX_EDGES];      ///< x[next] - x[i]
-    double dy[MAX_EDGES];      ///< y[next] - y[i]
-    double slope_yx[MAX_EDGES]; ///< (y[i]-y[next])/(x[i]-x[next]) = -dy/dx
-    double slope_xy[MAX_EDGES]; ///< (x[i]-x[next])/(y[i]-y[next]) = -dx/dy
-    double intercept_y[MAX_EDGES]; ///< y[i] - slope_yx[i]*x[i]
-    double intercept_x[MAX_EDGES]; ///< x[i] - slope_xy[i]*y[i]
+    double slope_yx[MAX_EDGES]; ///< (y[i]-y[next])/(x[i]-x[next]) = dy/dx
+    double slope_xy[MAX_EDGES]; ///< (x[i]-x[next])/(y[i]-y[next]) = dx/dy
     bool edge_valid_x[MAX_EDGES];  ///< |dx| > eps (usable for absB>absA branch)
     bool edge_valid_y[MAX_EDGES];  ///< |dy| > eps (usable for absA>=absB branch)
     int nVertices = 0;

@@ -679,8 +679,8 @@ void Handler::PrecomputeEdgeData(const BeamInfo &info, const Beam &beam,
         edgeData.y[i] = DotProductD(p_pr, info.verAxis) - info.projectedCenter.y;
     }
 
-    // Precompute per-edge data (slopes, intercepts). Edge validity is a
-    // geometric decision and therefore scales with the particle.
+    // Precompute edge slopes and validity. Edge validity is a geometric
+    // decision and therefore scales with the particle.
     const double edgeTolerance = geometry_length_tolerance(
         m_geometryScale);
     for (int i = 0; i < nv; ++i)
@@ -688,26 +688,19 @@ void Handler::PrecomputeEdgeData(const BeamInfo &info, const Beam &beam,
         int inext = (i + 1) % nv;
         double dxi = edgeData.x[inext] - edgeData.x[i];
         double dyi = edgeData.y[inext] - edgeData.y[i];
-        edgeData.dx[i] = dxi;
-        edgeData.dy[i] = dyi;
 
         // For absB > absA branch: ai = (p1y-p2y)/(p1x-p2x) where p1=v[i], p2=v[next]
-        // ai = (y[i]-y[next])/(x[i]-x[next]) = -dy/(-dx) = dy/dx
+        // ai = (y[i]-y[next])/(x[i]-x[next]) = (-dy)/(-dx) = dy/dx
         edgeData.edge_valid_x[i] = (fabs(dxi) >= edgeTolerance);
         if (edgeData.edge_valid_x[i])
         {
-            edgeData.slope_yx[i] = dyi / dxi;  // NOT negated: (y[next]-y[i])/(x[next]-x[i])
-            // but old code uses (p1y-p2y)/(p1x-p2x) = (-dy)/(-dx) = dy/dx. Same!
-            edgeData.intercept_y[i] = edgeData.y[i] - edgeData.slope_yx[i] * edgeData.x[i];
+            edgeData.slope_yx[i] = dyi / dxi;
         }
 
         // For absA >= absB branch: ci = (p1x-p2x)/(p1y-p2y) = dx/dy
         edgeData.edge_valid_y[i] = (fabs(dyi) >= edgeTolerance);
         if (edgeData.edge_valid_y[i])
-        {
             edgeData.slope_xy[i] = dxi / dyi;
-            edgeData.intercept_x[i] = edgeData.x[i] - edgeData.slope_xy[i] * edgeData.y[i];
-        }
     }
 }
 

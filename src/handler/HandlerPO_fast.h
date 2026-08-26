@@ -273,10 +273,8 @@ inline void add_stable_edge_quotient(double phaseReal,
 // Uses GOAD-style approach: one sincos per edge instead of two exp_im
 inline complex diffract_inline(
     const double *vx, const double *vy, int nv,
-    const double *edge_slope_yx, const double */*edge_intercept_y*/,
-    const bool *edge_valid_x,
-    const double *edge_slope_xy, const double */*edge_intercept_x*/,
-    const bool *edge_valid_y,
+    const double *edge_slope_yx, const bool *edge_valid_x,
+    const double *edge_slope_xy, const bool *edge_valid_y,
     double horAx, double horAy, double horAz,
     double verAx, double verAy, double verAz,
     double beamDx, double beamDy, double beamDz,
