@@ -349,10 +349,10 @@ struct BeamInfo
     double area;
     double projLenght;
     double opticalLengths[3];
-    Point3f beamBasis;
+    Point3f beamBasis{};
     Point3d center;
     Point3d projectedCenter;
-    Point3f normal;
+    Point3f normal{};
     Point3d normald;
     Point3d horAxis;
     Point3d verAxis;
@@ -471,6 +471,7 @@ protected:
     Scattering *m_scattering = nullptr;
 
     Particle *m_particle;
+    double m_geometryScale;
     double m_wavelength; // must be double type!!!
     bool m_hasAbsorption;
     double m_normIndex;

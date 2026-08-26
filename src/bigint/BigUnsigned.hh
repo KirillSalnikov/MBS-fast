@@ -178,6 +178,7 @@ public:
 	void add(const BigUnsigned &a, const BigUnsigned &b);
 	void subtract(const BigUnsigned &a, const BigUnsigned &b);
 	void multiply(const BigUnsigned &a, const BigUnsigned &b);
+	void multiplyAdd(Blk multiplier, Blk addend);
 	void bitAnd(const BigUnsigned &a, const BigUnsigned &b);
 	void bitOr(const BigUnsigned &a, const BigUnsigned &b);
 	void bitXor(const BigUnsigned &a, const BigUnsigned &b);

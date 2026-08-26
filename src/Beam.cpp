@@ -4,6 +4,7 @@
 #include <float.h>
 #include <math.h>
 #include <assert.h>
+#include <cstring>
 #include <list>
 
 #include "macro.h"
@@ -255,11 +256,7 @@ void Beam::RotateJMatrix(const Vector3f &newBasis)
 void Beam::SetPolygon(const Polygon &other)
 {
     nVertices = other.nVertices;
-
-    for (int i = 0; i < other.nVertices; ++i)
-	{
-		arr[i] = other.arr[i];
-	}
+    std::memcpy(arr, other.arr, nVertices*sizeof(Point3f));
 }
 
 void Beam::SetLight(const Vector3f &dir, const Vector3f &polarBasis)

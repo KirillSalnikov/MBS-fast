@@ -17,8 +17,8 @@ private:
 
 	struct CavityPoints
 	{
-		Point3f top;
-		Point3f bottom;
+		Point3f top{};
+		Point3f bottom{};
 	}
 	m_defaultStateCavities;
 

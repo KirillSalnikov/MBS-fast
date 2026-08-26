@@ -103,5 +103,73 @@ if not math.isfinite(compact_relative) or compact_relative > compact_tolerance:
         compact_tolerance))
 PY
 
+trace_common=(
+    --method po
+    --particle 10 1.0 0.7 43.4114540493
+    --refractive-index 1.3116 0
+    --wavelength-um 0.532
+    --max-reflections 8
+    --sobol 4
+    --scattering-grid 0 180 24 12
+    --cutoff-profile off
+    --threads 1
+    --close
+)
+
+MBS_GPU_SLOT="$device" "$gpu" "${trace_common[@]}" --backend cuda \
+    --no-gpu-trace-prefilter \
+    --output "$work/trace_reference" >"$work/trace_reference.log" 2>&1
+MBS_GPU_SLOT="$device" "$gpu" "${trace_common[@]}" --backend cuda \
+    --trace-prefilter-stats \
+    --output "$work/trace_gpu" >"$work/trace_gpu.log" 2>&1
+
+grep -q 'GPU trace profile: disabled' "$work/trace_reference.log" || {
+    echo 'ERROR: CUDA tracing reference did not disable the automatic profile' >&2
+    exit 1
+}
+grep -q 'GPU trace profile: automatic' "$work/trace_gpu.log" || {
+    echo 'ERROR: CUDA tracing candidate did not enable the automatic profile' >&2
+    exit 1
+}
+grep -Eq 'gpu_calls=[1-9][0-9]*' "$work/trace_gpu.log" || {
+    echo 'ERROR: CUDA tracing gate did not offload facet ordering' >&2
+    exit 1
+}
+
+python3 - "$work/trace_reference/trace_reference.dat" \
+    "$work/trace_gpu/trace_gpu.dat" "$compact_tolerance" <<'PY'
+import math
+import sys
+
+def load(path):
+    with open(path, encoding="utf-8") as stream:
+        next(stream)
+        return [[float(value) for value in line.split()]
+                for line in stream if line.strip()]
+
+reference = load(sys.argv[1])
+candidate = load(sys.argv[2])
+if len(reference) != len(candidate) or not reference:
+    raise SystemExit("ERROR: CUDA tracing output grids have different sizes")
+num = 0.0
+den = 0.0
+for reference_row, candidate_row in zip(reference, candidate):
+    if (abs(abs(reference_row[0]) - abs(candidate_row[0])) > 1e-10 or
+            abs(reference_row[1] - candidate_row[1]) > 1e-10):
+        raise SystemExit("ERROR: CUDA tracing output grids differ")
+    weight = reference_row[1]
+    for index in range(2, 18):
+        delta = candidate_row[index] - reference_row[index]
+        num += weight * delta * delta
+        den += weight * reference_row[index] * reference_row[index]
+relative = math.sqrt(num / max(den, 1e-300))
+tolerance = float(sys.argv[3])
+print("CUDA tracing weighted L2: {:.3e} (limit {:.3e})".format(
+    relative, tolerance))
+if not math.isfinite(relative) or relative > tolerance:
+    raise SystemExit(
+        "ERROR: CUDA tracing mismatch exceeds {:.3e}".format(tolerance))
+PY
+
 keep_work=0
 echo 'CUDA release gate: PASS'

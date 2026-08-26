@@ -127,13 +127,7 @@ struct Point3f
 	// stored in double precision; no float round trip is allowed in clipping.
 	double coordinates[4]; /// x, y, z and plane d parameter
 
-	Point3f()
-	{
-		coordinates[0] = 0;
-		coordinates[1] = 0;
-		coordinates[2] = 0;
-		coordinates[3] = 0;
-	}
+	Point3f() = default;
 
 	Point3f(double x, double y, double z)
 	{
@@ -176,23 +170,8 @@ struct Point3f
 
 	friend std::ostream & operator << (std::ostream &os, const Point3f &p);
 
-	Point3f(const Point3f &other)
-	{
-		coordinates[0] = other.coordinates[0];
-		coordinates[1] = other.coordinates[1];
-		coordinates[2] = other.coordinates[2];
-		coordinates[3] = other.coordinates[3];
-	}
-
-	Point3f & operator = (const Point3f &other)
-	{
-		coordinates[0] = other.coordinates[0];
-		coordinates[1] = other.coordinates[1];
-		coordinates[2] = other.coordinates[2];
-		coordinates[3] = other.coordinates[3];
-
-		return *this;
-	}
+	Point3f(const Point3f &other) = default;
+	Point3f & operator = (const Point3f &other) = default;
 
 	Point3f operator * (double value) const
 	{

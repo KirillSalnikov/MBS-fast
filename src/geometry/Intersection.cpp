@@ -7,7 +7,9 @@ void computeIntersection(const Point3f &s, const Point3f &e,
     const Point3f segment = e - s;
     const Point3f cuttingPlaneNormal = CrossProduct(p2 - p1, normal);
     const double denominator = DotProduct(segment, cuttingPlaneNormal);
-    const double denominatorScale = Length(segment)*Length(cuttingPlaneNormal);
+    const double denominatorScale = std::sqrt(
+        DotProduct(segment, segment)
+        * DotProduct(cuttingPlaneNormal, cuttingPlaneNormal));
     if (denominatorScale <= DBL_MIN
         || std::fabs(denominator)
             <= geometry_parallel_tolerance(denominatorScale))

@@ -2,6 +2,7 @@
 #include <math.h>
 #include <algorithm>
 #include <cfloat>
+#include <cstring>
 
 #define EPS_NORMAL 0.1
 
@@ -10,7 +11,7 @@ Polygon::Polygon(const Polygon &other)
 	if (other.nVertices < 0 || other.nVertices > MAX_VERTEX_NUM)
 		throw std::runtime_error("invalid polygon vertex count during copy");
 	nVertices = other.nVertices;
-	std::copy_n(other.arr, nVertices, arr);
+	std::memcpy(arr, other.arr, nVertices*sizeof(Point3f));
 }
 
 Polygon::Polygon(Polygon &&other)
@@ -18,7 +19,7 @@ Polygon::Polygon(Polygon &&other)
 	if (other.nVertices < 0 || other.nVertices > MAX_VERTEX_NUM)
 		throw std::runtime_error("invalid polygon vertex count during move");
 	nVertices = other.nVertices;
-	std::copy_n(other.arr, nVertices, arr);
+	std::memcpy(arr, other.arr, nVertices*sizeof(Point3f));
 
 	other.nVertices = 0;
 }
@@ -40,7 +41,7 @@ Polygon &Polygon::operator =(const Polygon &other)
 		if (other.nVertices < 0 || other.nVertices > MAX_VERTEX_NUM)
 			throw std::runtime_error("invalid polygon vertex count during assignment");
 		nVertices = other.nVertices;
-		std::copy_n(other.arr, nVertices, arr);
+		std::memcpy(arr, other.arr, nVertices*sizeof(Point3f));
 	}
 
 	return *this;
@@ -53,7 +54,7 @@ Polygon &Polygon::operator = (Polygon &&other)
 		if (other.nVertices < 0 || other.nVertices > MAX_VERTEX_NUM)
 			throw std::runtime_error("invalid polygon vertex count during move assignment");
 		nVertices = other.nVertices;
-		std::copy_n(other.arr, nVertices, arr);
+		std::memcpy(arr, other.arr, nVertices*sizeof(Point3f));
 
 		other.nVertices = 0;
 	}
@@ -85,11 +86,13 @@ double Polygon::Area() const
     if (nVertices < MIN_VERTEX_NUM)
         return 0.0;
 
-    double square = 0.0;
     const Point3f &basePoint = arr[0];
     double p1x = static_cast<double>(arr[1].cx) - basePoint.cx;
     double p1y = static_cast<double>(arr[1].cy) - basePoint.cy;
     double p1z = static_cast<double>(arr[1].cz) - basePoint.cz;
+    double areaX = 0.0;
+    double areaY = 0.0;
+    double areaZ = 0.0;
 
     for (int i = 2; i < nVertices; ++i)
     {
@@ -99,14 +102,15 @@ double Polygon::Area() const
         const double crossX = p1y*p2z - p1z*p2y;
         const double crossY = p1z*p2x - p1x*p2z;
         const double crossZ = p1x*p2y - p1y*p2x;
-        square += std::sqrt(crossX*crossX + crossY*crossY
-                           + crossZ*crossZ);
+        areaX += crossX;
+        areaY += crossY;
+        areaZ += crossZ;
         p1x = p2x;
         p1y = p2y;
         p1z = p2z;
 	}
 
-	return square/2.0;
+	return 0.5*std::sqrt(areaX*areaX + areaY*areaY + areaZ*areaZ);
 }
 
 Point3f Polygon::Center() const

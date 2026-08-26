@@ -14,12 +14,16 @@ endif
 USE_MPI ?= 0
 GPU_PRECISION ?= double
 GPU_FAST_MATH ?= 0
+GPU_LTO ?= 1
 
 ifeq ($(filter float fp32 double fp64,$(GPU_PRECISION)),)
 $(error GPU_PRECISION must be one of: fp32, float, fp64, double)
 endif
 ifneq ($(filter 0 1,$(GPU_FAST_MATH)),$(GPU_FAST_MATH))
 $(error GPU_FAST_MATH must be 0 or 1)
+endif
+ifneq ($(filter 0 1,$(GPU_LTO)),$(GPU_LTO))
+$(error GPU_LTO must be 0 or 1)
 endif
 ifneq ($(filter 0 1,$(USE_MPI)),$(USE_MPI))
 $(error USE_MPI must be 0 or 1)
@@ -37,10 +41,11 @@ endif
 
 FAST_SUFFIX := $(if $(filter 1,$(GPU_FAST_MATH)),_fast,)
 MPI_SUFFIX := $(if $(filter 1,$(USE_MPI)),_mpi,)
+LTO_SUFFIX := $(if $(filter 1,$(GPU_LTO)),_lto,)
 TARGET ?= bin/mbs_po_gpu$(MPI_SUFFIX)_$(GPU_PRECISION_CANON)$(FAST_SUFFIX)
 GPU_ARCH ?= $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.' | sed 's/[^0-9].*//')
 GPU_ARCH := $(if $(GPU_ARCH),$(GPU_ARCH),86)
-OBJDIR ?= build/$(GPU_PRECISION_LABEL)$(FAST_SUFFIX)$(MPI_SUFFIX)_sm$(GPU_ARCH)/obj
+OBJDIR ?= build/$(GPU_PRECISION_LABEL)$(FAST_SUFFIX)$(MPI_SUFFIX)$(LTO_SUFFIX)_sm$(GPU_ARCH)/obj
 
 ifeq ($(USE_MPI),1)
 CXX := mpicxx
@@ -59,6 +64,11 @@ ifeq ($(USE_MPI),1)
 CXXFLAGS += -DUSE_MPI
 endif
 LDFLAGS ?= -lm -lgomp -L$(CUDA_LIB_PATH) -lcufft -lcudart
+GPU_LTO_FLAGS ?= -flto=auto
+ifeq ($(GPU_LTO),1)
+override CXXFLAGS += $(GPU_LTO_FLAGS)
+override LDFLAGS += $(GPU_LTO_FLAGS)
+endif
 DEPFLAGS := -MMD -MP
 
 NVCCFLAGS ?= -O3 -std=c++11 -arch=sm_$(GPU_ARCH) -U_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700
@@ -113,6 +123,7 @@ $(TARGET): $(OBJECTS)
 	@echo "GPU_PRECISION: $(GPU_PRECISION_LABEL) ($(GPU_PRECISION_CANON) storage)"
 	@echo "GPU_CRITICAL_PHASE: fp64"
 	@echo "GPU_FAST_MATH: $(GPU_FAST_MATH)"
+	@echo "GPU_LTO: $(GPU_LTO)"
 	@echo "USE_MPI: $(USE_MPI)"
 	@echo "GPU_ARCH: sm_$(GPU_ARCH)"
 	@echo "CXXFLAGS: $(CXXFLAGS)"

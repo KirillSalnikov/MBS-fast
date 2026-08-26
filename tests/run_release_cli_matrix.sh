@@ -885,6 +885,12 @@ expect_error 'legacy: unavailable single-backscatter-point mode' \
 expect_error 'backend: GPU trace prefilter from CPU binary' \
     "${PO_CORE[@]}" --fixed-orientation 0 0 "${GRID[@]}" \
     --gpu-trace-prefilter
+expect_error 'backend: GPU trace disable from CPU binary' \
+    "${PO_CORE[@]}" --fixed-orientation 0 0 "${GRID[@]}" \
+    --no-gpu-trace-prefilter
+expect_error 'backend: conflicting GPU trace controls' \
+    "${PO_CORE[@]}" --fixed-orientation 0 0 "${GRID[@]}" \
+    --gpu-trace-prefilter --no-gpu-trace-prefilter
 expect_error 'tracing prefilter: enable and disable together' \
     "${PO_CORE[@]}" --fixed-orientation 0 0 "${GRID[@]}" \
     --trace-prefilter --no-trace-prefilter

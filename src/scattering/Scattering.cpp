@@ -35,6 +35,10 @@ Scattering::Scattering(Particle *particle, Light *incidentLight, bool isOpticalP
                        int nActs)
     : m_particle(particle),
       m_geometryScale(particle->MaximalDimention()),
+      m_geometryLengthTolerance(geometry_length_tolerance(m_geometryScale)),
+      m_geometryAreaTolerance(geometry_area_tolerance(m_geometryScale)),
+      m_geometryDepthTolerance(geometry_depth_tolerance(m_geometryScale)),
+      m_unitFacetNormals(true),
       splitting(isOpticalPath),
       m_incidentLight(incidentLight),
       m_nActs(nActs),
@@ -42,6 +46,16 @@ Scattering::Scattering(Particle *particle, Light *incidentLight, bool isOpticalP
 {
     m_traceCutoffStatistics = std::make_shared<TraceCutoffStatistics>();
     m_facets = m_particle->facets;
+    const double unitTolerance = 128.0*DBL_EPSILON;
+    for (int facet = 0; facet < m_particle->nFacets; ++facet)
+    {
+        if (std::fabs(Norm(m_facets[facet].in_normal) - 1.0)
+            > unitTolerance)
+        {
+            m_unitFacetNormals = false;
+            break;
+        }
+    }
 
     m_incidentDir = m_incidentLight->direction;
     m_incidentDir.d_param = m_incidentLight->direction.d_param;
@@ -162,7 +176,12 @@ IdType Scattering::Scattering::RecomputeTrackId(const IdType &oldId, int facetId
         && std::fabs(imag(m_particle->GetRefractiveIndex())) <= DBL_EPSILON)
         return 0;
 
-    return (oldId + (facetId + 1)) * (m_particle->nFacets + 1);
+    const unsigned long base =
+        static_cast<unsigned long>(m_particle->nFacets + 1);
+    BigInteger newId(oldId);
+    newId.multiplyAddNonnegative(
+        base, static_cast<unsigned long>(facetId + 1) * base);
+    return newId;
 }
 
 bool Scattering::PushBeamToTree(Beam &beam, int facetId, int level, Location location)
@@ -539,20 +558,27 @@ void Scattering::Difference(const Polygon &subject, const Vector3f &subjNormal,
     }
 
     Point3f forwardClipPoints[MAX_VERTEX_NUM];
+    bool clipFullyForward = false;
     const int forwardClipSize =
         clip_polygon_by_nonpositive_projection_parameter(
             clip.arr, clip.nVertices, subjNormal, clipDir,
-            geometry_depth_tolerance(m_geometryScale), forwardClipPoints);
-    Polygon forwardClip;
-    SetOutputPolygon(forwardClipPoints, forwardClipSize, forwardClip);
-    if (forwardClip.nVertices < MIN_VERTEX_NUM)
+            m_geometryDepthTolerance, forwardClipPoints, &clipFullyForward);
+    Polygon forwardClipStorage;
+    const Polygon *forwardClip = &clip;
+    if (!clipFullyForward)
+    {
+        SetOutputPolygon(forwardClipPoints, forwardClipSize,
+                         forwardClipStorage);
+        forwardClip = &forwardClipStorage;
+    }
+    if (forwardClip->nVertices < MIN_VERTEX_NUM)
     {
         difference.Push(subject);
         return;
     }
 
     Point3f clipProjection[MAX_VERTEX_NUM];
-    bool isProjected = ProjectToFacetPlane(forwardClip, clipDir, subjNormal,
+    bool isProjected = ProjectToFacetPlane(*forwardClip, clipDir, subjNormal,
                                            clipProjection);
 
     if (!isProjected)
@@ -567,60 +593,79 @@ void Scattering::Difference(const Polygon &subject, const Vector3f &subjNormal,
     Polygon projectedClip;
     if (overlap != nullptr)
     {
-        SetConvexOutputPolygon(clipProjection, forwardClip.nVertices, clipNormal,
+        SetConvexOutputPolygon(clipProjection, forwardClip->nVertices, clipNormal,
                                projectedClip);
     }
     else
     {
-        SetOutputPolygon(clipProjection, forwardClip.nVertices, projectedClip);
-        if (projectedClip.nVertices >= MIN_VERTEX_NUM
-            && DotProduct(projectedClip.Normal(), clipNormal) < 0.0)
-        {
-            Polygon::InverseVertexOrder(projectedClip);
-        }
+        SetOutputPolygon(clipProjection, forwardClip->nVertices, projectedClip);
     }
     if (projectedClip.nVertices < MIN_VERTEX_NUM)
     {
         difference.Push(subject);
         return;
     }
-    const Point3f effectiveClipNormal = projectedClip.Normal();
 
-    Polygon retained = subject;
+    Point3f effectiveClipNormal = projectedClip.Normal();
+    if (overlap == nullptr
+        && DotProduct(effectiveClipNormal, clipNormal) < 0.0)
+    {
+        Polygon::InverseVertexOrder(projectedClip);
+        effectiveClipNormal = -effectiveClipNormal;
+    }
+    const double normalLengthSquared =
+        DotProduct(effectiveClipNormal, effectiveClipNormal);
+
+    const Polygon *retained = &subject;
+    Polygon retainedStorage;
     Point3f edgeEnd = projectedClip.arr[projectedClip.nVertices - 1];
-    const double normalLength = Length(effectiveClipNormal);
     for (int edgeIndex = 0; edgeIndex < projectedClip.nVertices; ++edgeIndex)
     {
-        if (retained.nVertices < MIN_VERTEX_NUM)
+        if (retained->nVertices < MIN_VERTEX_NUM)
             break;
 
         const Point3f edgeStart = edgeEnd;
         edgeEnd = projectedClip.arr[edgeIndex];
-        const Point3f edge = edgeEnd - edgeStart;
-        const double edgeLength = Length(edge);
+        const double edgeX = edgeEnd.cx - edgeStart.cx;
+        const double edgeY = edgeEnd.cy - edgeStart.cy;
+        const double edgeZ = edgeEnd.cz - edgeStart.cz;
+        const double edgeLengthSquared = edgeX*edgeX
+                                       + edgeY*edgeY
+                                       + edgeZ*edgeZ;
 
         double insideScalar[MAX_VERTEX_NUM];
         double outsideScalar[MAX_VERTEX_NUM];
-        double maximumOffset = edgeLength;
-        for (int vertex = 0; vertex < retained.nVertices; ++vertex)
+        double maximumOffsetSquared = edgeLengthSquared;
+        for (int vertex = 0; vertex < retained->nVertices; ++vertex)
         {
-            const Point3f offset = retained.arr[vertex] - edgeStart;
-            maximumOffset = std::max(maximumOffset, Length(offset));
-            const double side = DotProduct(CrossProduct(edge, offset),
-                                           effectiveClipNormal);
+            const double offsetX = retained->arr[vertex].cx - edgeStart.cx;
+            const double offsetY = retained->arr[vertex].cy - edgeStart.cy;
+            const double offsetZ = retained->arr[vertex].cz - edgeStart.cz;
+            const double offsetSquared = offsetX*offsetX
+                                       + offsetY*offsetY
+                                       + offsetZ*offsetZ;
+            maximumOffsetSquared = std::max(
+                maximumOffsetSquared, offsetSquared);
+            const double crossX = edgeY*offsetZ - edgeZ*offsetY;
+            const double crossY = edgeZ*offsetX - edgeX*offsetZ;
+            const double crossZ = edgeX*offsetY - edgeY*offsetX;
+            const double side = crossX*effectiveClipNormal.cx
+                              + crossY*effectiveClipNormal.cy
+                              + crossZ*effectiveClipNormal.cz;
             insideScalar[vertex] = side;
             outsideScalar[vertex] = -side;
         }
         const double sideTolerance = GEOMETRY_RELATIVE_EPSILON
-            * edgeLength * maximumOffset * normalLength;
+            * std::sqrt(edgeLengthSquared * maximumOffsetSquared
+                        * normalLengthSquared);
 
         Point3f insideVertices[MAX_VERTEX_NUM];
         Point3f outsideVertices[MAX_VERTEX_NUM];
         const int insideSize = clip_polygon_by_nonnegative_scalar(
-            retained.arr, insideScalar, retained.nVertices, sideTolerance,
+            retained->arr, insideScalar, retained->nVertices, sideTolerance,
             insideVertices);
         const int outsideSize = clip_polygon_by_nonnegative_scalar(
-            retained.arr, outsideScalar, retained.nVertices, sideTolerance,
+            retained->arr, outsideScalar, retained->nVertices, sideTolerance,
             outsideVertices);
 
         Polygon outside;
@@ -628,27 +673,30 @@ void Scattering::Difference(const Polygon &subject, const Vector3f &subjNormal,
         if (outside.nVertices >= MIN_VERTEX_NUM)
             difference.Push(outside);
 
-        SetOutputPolygon(insideVertices, insideSize, retained);
+        SetOutputPolygon(insideVertices, insideSize, retainedStorage);
+        retained = &retainedStorage;
     }
     if (overlap != nullptr)
-        *overlap = retained;
+        *overlap = *retained;
 }
 
 bool Scattering::ProjectToFacetPlane(const Polygon &polygon, const Vector3f &dir,
                                   const Point3f &normal, Point3f *projection) const
 {
     const double dp = DotProduct(dir, normal);
-    const double productScale = Length(dir)*Length(normal);
+    const double productScale = std::sqrt(
+        DotProduct(dir, dir) * DotProduct(normal, normal));
     if (productScale <= DBL_MIN
         || std::fabs(dp) <= geometry_parallel_tolerance(productScale))
     {
         return false; /// beam is parallel to facet
     }
+    const double invDp = 1.0 / dp;
 
     for (int i = 0; i < polygon.nVertices; ++i)
     {
         const Point3f &p = polygon.arr[i];
-        const double t = (DotProduct(p, normal) + normal.d_param) / dp;
+        const double t = (DotProduct(p, normal) + normal.d_param) * invDp;
         projection[i] = Point3f(p.cx - t*dir.cx,
                                 p.cy - t*dir.cy,
                                 p.cz - t*dir.cz);
@@ -786,7 +834,9 @@ void Scattering::Intersect(int facetID, const Beam &beam, Polygon &intersection)
         const Point3f &beamPlane =
             m_facets[beam.lastFacetId].normal[beam.location];
         const double denominator = DotProduct(beam.direction, beamPlane);
-        const double denominatorScale = Length(beam.direction)*Length(beamPlane);
+        const double denominatorScale = std::sqrt(
+            DotProduct(beam.direction, beam.direction)
+            * DotProduct(beamPlane, beamPlane));
         if (denominatorScale > DBL_MIN
             && std::fabs(denominator)
                 > geometry_parallel_tolerance(denominatorScale))
@@ -801,11 +851,9 @@ void Scattering::Intersect(int facetID, const Beam &beam, Polygon &intersection)
             }
 
             Point3f forwardIntersection[MAX_VERTEX_NUM];
-            const double depthTolerance = geometry_depth_tolerance(
-                m_geometryScale);
             const int forwardSize = clip_polygon_by_nonnegative_scalar(
                 intersection.arr, forwardScalar, intersection.nVertices,
-                depthTolerance, forwardIntersection);
+                m_geometryDepthTolerance, forwardIntersection);
             SetOutputPolygon(forwardIntersection, forwardSize, intersection);
         }
     }
@@ -816,29 +864,96 @@ void Scattering::SetOutputPolygon(const Point3f *outputPoints, int outputSize,
 {
     polygon.nVertices = 0;
     if (outputSize <= 0)
-    {
-        polygon.nVertices = 0;
         return;
-    }
     if (outputSize > MAX_VERTEX_NUM)
         throw std::runtime_error(
             "clipped polygon exceeds the 64-vertex geometry limit");
 
-    const double geometryScale = m_geometryScale;
+    const double pointToleranceSquared =
+        m_geometryLengthTolerance*m_geometryLengthTolerance;
+    if (outputSize == MIN_VERTEX_NUM)
+    {
+        const Point3f &p0 = outputPoints[0];
+        const Point3f &p1 = outputPoints[1];
+        const Point3f &p2 = outputPoints[2];
+        const double d01x = static_cast<double>(p1.cx) - p0.cx;
+        const double d01y = static_cast<double>(p1.cy) - p0.cy;
+        const double d01z = static_cast<double>(p1.cz) - p0.cz;
+        const double d12x = static_cast<double>(p2.cx) - p1.cx;
+        const double d12y = static_cast<double>(p2.cy) - p1.cy;
+        const double d12z = static_cast<double>(p2.cz) - p1.cz;
+        const double d20x = static_cast<double>(p0.cx) - p2.cx;
+        const double d20y = static_cast<double>(p0.cy) - p2.cy;
+        const double d20z = static_cast<double>(p0.cz) - p2.cz;
+        if (d01x*d01x + d01y*d01y + d01z*d01z
+                <= pointToleranceSquared
+            || d12x*d12x + d12y*d12y + d12z*d12z
+                <= pointToleranceSquared
+            || d20x*d20x + d20y*d20y + d20z*d20z
+                <= pointToleranceSquared)
+            return;
+
+        const double areaX = d01y*(-d20z) - d01z*(-d20y);
+        const double areaY = d01z*(-d20x) - d01x*(-d20z);
+        const double areaZ = d01x*(-d20y) - d01y*(-d20x);
+        const double twiceAreaSquared =
+            areaX*areaX + areaY*areaY + areaZ*areaZ;
+        if (twiceAreaSquared
+            <= 4.0*m_geometryAreaTolerance*m_geometryAreaTolerance)
+            return;
+
+        polygon.arr[0] = p0;
+        polygon.arr[1] = p1;
+        polygon.arr[2] = p2;
+        polygon.nVertices = MIN_VERTEX_NUM;
+        return;
+    }
     Point3f p0 = outputPoints[outputSize-1];
+    double areaX = 0.0;
+    double areaY = 0.0;
+    double areaZ = 0.0;
+    double previousX = 0.0;
+    double previousY = 0.0;
+    double previousZ = 0.0;
     for (int i = 0; i < outputSize; ++i)
     {
-        if (geometry_points_distinct(outputPoints[i], p0, geometryScale))
+        const double dx = static_cast<double>(outputPoints[i].cx) - p0.cx;
+        const double dy = static_cast<double>(outputPoints[i].cy) - p0.cy;
+        const double dz = static_cast<double>(outputPoints[i].cz) - p0.cz;
+        if (dx*dx + dy*dy + dz*dz > pointToleranceSquared)
         {
-            polygon.arr[polygon.nVertices++] = outputPoints[i];
+            const Point3f &point = outputPoints[i];
+            if (polygon.nVertices == 0)
+            {
+                polygon.arr[0] = point;
+            }
+            else
+            {
+                const Point3f &base = polygon.arr[0];
+                const double x = static_cast<double>(point.cx) - base.cx;
+                const double y = static_cast<double>(point.cy) - base.cy;
+                const double z = static_cast<double>(point.cz) - base.cz;
+                if (polygon.nVertices > 1)
+                {
+                    areaX += previousY*z - previousZ*y;
+                    areaY += previousZ*x - previousX*z;
+                    areaZ += previousX*y - previousY*x;
+                }
+                previousX = x;
+                previousY = y;
+                previousZ = z;
+                polygon.arr[polygon.nVertices] = point;
+            }
+            ++polygon.nVertices;
         }
 
         p0 = outputPoints[i];
     }
 
+    const double twiceAreaSquared = areaX*areaX + areaY*areaY + areaZ*areaZ;
     if (polygon.nVertices < MIN_VERTEX_NUM
-        || polygon.Area() <= geometry_area_tolerance(
-               m_geometryScale))
+        || twiceAreaSquared
+           <= 4.0*m_geometryAreaTolerance*m_geometryAreaTolerance)
         polygon.nVertices = 0;
 }
 
@@ -865,19 +980,18 @@ void Scattering::SetConvexOutputPolygon(const Point3f *outputPoints,
         double y;
         Point3f point;
     };
-    std::vector<ProjectedVertex> vertices;
-    vertices.reserve(outputSize);
+    ProjectedVertex vertices[MAX_VERTEX_NUM];
     for (int i = 0; i < outputSize; ++i)
     {
         const Point3f &point = outputPoints[i];
         if (drop == 0)
-            vertices.push_back({point.cy, point.cz, point});
+            vertices[i] = {point.cy, point.cz, point};
         else if (drop == 1)
-            vertices.push_back({point.cx, point.cz, point});
+            vertices[i] = {point.cx, point.cz, point};
         else
-            vertices.push_back({point.cx, point.cy, point});
+            vertices[i] = {point.cx, point.cy, point};
     }
-    std::sort(vertices.begin(), vertices.end(),
+    std::sort(vertices, vertices + outputSize,
               [](const ProjectedVertex &left,
                  const ProjectedVertex &right)
               {
@@ -885,19 +999,20 @@ void Scattering::SetConvexOutputPolygon(const Point3f *outputPoints,
                       || (left.x == right.x && left.y < right.y);
               });
 
-    const double lengthTolerance = geometry_length_tolerance(m_geometryScale);
-    std::vector<ProjectedVertex> unique;
-    unique.reserve(vertices.size());
-    for (const ProjectedVertex &vertex : vertices)
+    const double lengthTolerance = m_geometryLengthTolerance;
+    ProjectedVertex unique[MAX_VERTEX_NUM];
+    int uniqueSize = 0;
+    for (int i = 0; i < outputSize; ++i)
     {
-        if (unique.empty()
-            || std::fabs(vertex.x - unique.back().x) > lengthTolerance
-            || std::fabs(vertex.y - unique.back().y) > lengthTolerance)
+        const ProjectedVertex &vertex = vertices[i];
+        if (uniqueSize == 0
+            || std::fabs(vertex.x - unique[uniqueSize - 1].x) > lengthTolerance
+            || std::fabs(vertex.y - unique[uniqueSize - 1].y) > lengthTolerance)
         {
-            unique.push_back(vertex);
+            unique[uniqueSize++] = vertex;
         }
     }
-    if (unique.size() < MIN_VERTEX_NUM)
+    if (uniqueSize < MIN_VERTEX_NUM)
         return;
 
     const auto cross = [](const ProjectedVertex &origin,
@@ -907,40 +1022,41 @@ void Scattering::SetConvexOutputPolygon(const Point3f *outputPoints,
         return (first.x - origin.x)*(second.y - origin.y)
              - (first.y - origin.y)*(second.x - origin.x);
     };
-    const double crossTolerance = geometry_area_tolerance(m_geometryScale);
-    std::vector<ProjectedVertex> hull;
-    hull.reserve(unique.size() + 1);
-    for (const ProjectedVertex &vertex : unique)
-    {
-        while (hull.size() >= 2
-               && cross(hull[hull.size()-2], hull.back(), vertex)
-                      <= crossTolerance)
-        {
-            hull.pop_back();
-        }
-        hull.push_back(vertex);
-    }
-    const size_t lowerSize = hull.size();
-    for (int i = static_cast<int>(unique.size()) - 2; i >= 0; --i)
+    const double crossTolerance = m_geometryAreaTolerance;
+    ProjectedVertex hull[MAX_VERTEX_NUM + 1];
+    int hullSize = 0;
+    for (int i = 0; i < uniqueSize; ++i)
     {
         const ProjectedVertex &vertex = unique[i];
-        while (hull.size() > lowerSize
-               && cross(hull[hull.size()-2], hull.back(), vertex)
+        while (hullSize >= 2
+               && cross(hull[hullSize - 2], hull[hullSize - 1], vertex)
                       <= crossTolerance)
         {
-            hull.pop_back();
+            --hullSize;
         }
-        hull.push_back(vertex);
+        hull[hullSize++] = vertex;
     }
-    if (hull.size() > 1)
-        hull.pop_back();
-    if (hull.size() < MIN_VERTEX_NUM)
+    const int lowerSize = hullSize;
+    for (int i = uniqueSize - 2; i >= 0; --i)
+    {
+        const ProjectedVertex &vertex = unique[i];
+        while (hullSize > lowerSize
+               && cross(hull[hullSize - 2], hull[hullSize - 1], vertex)
+                      <= crossTolerance)
+        {
+            --hullSize;
+        }
+        hull[hullSize++] = vertex;
+    }
+    if (hullSize > 1)
+        --hullSize;
+    if (hullSize < MIN_VERTEX_NUM)
         return;
 
     Point3f hullPoints[MAX_VERTEX_NUM];
-    for (size_t i = 0; i < hull.size(); ++i)
+    for (int i = 0; i < hullSize; ++i)
         hullPoints[i] = hull[i].point;
-    SetOutputPolygon(hullPoints, static_cast<int>(hull.size()), polygon);
+    SetOutputPolygon(hullPoints, hullSize, polygon);
     if (polygon.nVertices >= MIN_VERTEX_NUM
         && DotProduct(polygon.Normal(), normal) < 0.0)
     {
@@ -987,14 +1103,33 @@ double Scattering::ComputeInternalOpticalPath(const Beam &beam,
         dir = splitting.ChangeBeamDirection(dir, exNormal, loc, nextLoc);
 
         Point3f &inNormal = m_facets[track[i-1]].in_normal;
-        if (!ProjectPointToPlane(p1, dir, inNormal, p2))
+        double dirNorm2 = 1.0;
+        double productScale = 1.0;
+        if (!m_unitFacetNormals)
+        {
+            dirNorm2 = Norm(dir);
+            productScale = std::sqrt(dirNorm2*Norm(inNormal));
+        }
+        const double denominator = DotProduct(dir, inNormal);
+        if (productScale <= DBL_MIN
+            || std::fabs(denominator)
+               <= geometry_parallel_tolerance(productScale))
         {
             // A valid traced segment cannot be parallel to the previous
             // interface.  Stop the absorption-path reconstruction instead of
             // injecting an infinite point and NaNs into every Mueller element.
             return path;
         }
-        double len = Length(p2 - p1);
+        const double rayParameter =
+            (DotProduct(p1, inNormal) + inNormal.d_param)/denominator;
+        const double x = static_cast<double>(p1.cx) - dir.cx*rayParameter;
+        const double y = static_cast<double>(p1.cy) - dir.cy*rayParameter;
+        const double z = static_cast<double>(p1.cz) - dir.cz*rayParameter;
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+            return path;
+        p2 = Point3f(x, y, z);
+        const double len = std::fabs(rayParameter)
+            * (m_unitFacetNormals ? 1.0 : std::sqrt(dirNorm2));
 
         // Natalia_PO uses the geometric internal segment length here. The
         // effective-index scaling was tested, but it changes the back cone

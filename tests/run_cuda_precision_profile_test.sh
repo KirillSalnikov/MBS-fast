@@ -22,8 +22,9 @@ root_dry_run() {
 
 dry_run fp64 0 >"$TMP/fp64"
 grep -Fq -- '-DMBS_GPU_FP64' "$TMP/fp64"
-grep -Fq -- 'build/fp64_sm70/obj' "$TMP/fp64"
+grep -Fq -- 'build/fp64_lto_sm70/obj' "$TMP/fp64"
 grep -Fq -- 'bin/mbs_po_gpu_double' "$TMP/fp64"
+grep -Fq -- '-flto=auto' "$TMP/fp64"
 if grep -Fq -- '-DMBS_GPU_FLOAT' "$TMP/fp64"; then
     echo 'FP64 profile unexpectedly defines the FP32 compatibility macro' >&2
     exit 1
@@ -35,7 +36,7 @@ fi
 
 dry_run fp32 0 >"$TMP/fp32"
 grep -Fq -- '-DMBS_GPU_FP32 -DMBS_GPU_FLOAT' "$TMP/fp32"
-grep -Fq -- 'build/fp32_sm70/obj' "$TMP/fp32"
+grep -Fq -- 'build/fp32_lto_sm70/obj' "$TMP/fp32"
 grep -Fq -- 'bin/mbs_po_gpu_float' "$TMP/fp32"
 if grep -Fq -- '--use_fast_math' "$TMP/fp32"; then
     echo 'Precise FP32 profile unexpectedly enables CUDA fast math' >&2
@@ -44,7 +45,7 @@ fi
 
 dry_run fp32 1 >"$TMP/fp32_fast"
 grep -Fq -- '--use_fast_math' "$TMP/fp32_fast"
-grep -Fq -- 'build/fp32_fast_sm70/obj' "$TMP/fp32_fast"
+grep -Fq -- 'build/fp32_fast_lto_sm70/obj' "$TMP/fp32_fast"
 grep -Fq -- 'bin/mbs_po_gpu_float_fast' "$TMP/fp32_fast"
 
 root_dry_run fp64 0 >"$TMP/root_fp64"
@@ -81,6 +82,19 @@ fi
 if make -s -n -C "$ROOT/gpu" GPU_FAST_MATH=2 clean \
         >"$TMP/invalid_fast_math" 2>&1; then
     echo 'Invalid GPU_FAST_MATH was accepted' >&2
+    exit 1
+fi
+if make -s -n -C "$ROOT/gpu" GPU_LTO=2 clean \
+        >"$TMP/invalid_lto" 2>&1; then
+    echo 'Invalid GPU_LTO was accepted' >&2
+    exit 1
+fi
+
+make -s -n -C "$ROOT/gpu" GPU_ARCH=70 GPU_PRECISION=fp64 \
+    GPU_FAST_MATH=0 GPU_LTO=0 all >"$TMP/fp64_no_lto"
+grep -Fq -- 'build/fp64_sm70/obj' "$TMP/fp64_no_lto"
+if grep -Fq -- '-flto=auto' "$TMP/fp64_no_lto"; then
+    echo 'GPU_LTO=0 unexpectedly enables link-time optimization' >&2
     exit 1
 fi
 

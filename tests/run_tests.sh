@@ -104,6 +104,17 @@ echo "MBS-fast Regression Test Suite"
 echo "=============================================="
 echo ""
 
+# --- Exact trajectory-ID arithmetic ---
+echo "=== Unit test: trajectory-ID multiply-add ==="
+if bash "$SCRIPT_DIR/run_big_integer_multiply_add_test.sh" \
+    > "$WORK_DIR/big_integer_multiply_add.log" 2>&1; then
+    pass_test "Trajectory-ID multiply-add matches generic bigint arithmetic"
+else
+    cat "$WORK_DIR/big_integer_multiply_add.log"
+    fail_test "Trajectory-ID multiply-add" "BigInteger unit test failed"
+fi
+echo ""
+
 # --- Build ---
 echo "=== Building MBS-fast CPU target ==="
 cd "$PROJECT_DIR"

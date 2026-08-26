@@ -87,7 +87,7 @@ make -C gpu fp64_fast -j   # gpu/bin/mbs_po_gpu_double_fast
 |---|---|---:|---:|---|
 | `make -C gpu` или `make -C gpu fp64` | `gpu/bin/mbs_po_gpu_double` | FP64 | нет | Контрольный и основной режим |
 | `make -C gpu fp32` | `gpu/bin/mbs_po_gpu_float` | FP32 | нет | FP32 после проверки ошибки |
-| `make -C gpu fp32_fast` | `gpu/bin/mbs_po_gpu_float_fast` | FP32 | да | Максимальная скорость после проверки |
+| `make -C gpu fp32_fast` | `gpu/bin/mbs_po_gpu_float_fast` | FP32 | да | Экспериментальный fast math; сначала измерить и проверить |
 | `make -C gpu fp64_fast` | `gpu/bin/mbs_po_gpu_double_fast` | FP64 | да | Ускоренный FP64 после проверки |
 | `make -C gpu double_debug` | `gpu/bin/mbs_po_gpu_double_debug` | FP64 | да | `--help-debug` и диагностика |
 
@@ -97,13 +97,29 @@ FP32 применяется к хранению геометрии дифрак�
 фазы остаются FP64. Команда `--version` выводит фактический профиль хранения,
 фазы, математических функций и архитектуры GPU.
 
+На RTX 3080 Ti выполнен контрольный тест невыпуклой поглощающей частицы:
+`k_eq=20`, 64 ориентации в редуцированном SO(3), `N_phi=720`, `N_theta=360`.
+Медианы времени по трём запускам:
+
+| Профиль | Время | Ускорение относительно FP64 | Глобальная взвешенная L2-ошибка Мюллера | Взвешенная L2-ошибка M11 |
+|---|---:|---:|---:|---:|
+| Точный FP64 | 4,92 с | 1,00 раза | эталон | эталон |
+| Точный смешанный FP32 | 3,45 с | 1,43 раза | `1,00e-6` | `9,99e-7` |
+| FP32 с fast math | 3,63 с | 1,36 раза | `1,02e-6` | `1,01e-6` |
+
+Поэтому для потребительских Ampere разумный начальный профиль скорости —
+точный смешанный FP32. Fast math автоматически не выбирается: в этом тесте он
+оказался медленнее и сильнее зависит от узкой интерференционной структуры.
+FP64 остаётся режимом по умолчанию и обязательным эталоном при смене частицы,
+показателя преломления, размера или сетки.
+
 В split GPU build CUDA backend включен по умолчанию. Флаг `--gpu` можно писать, но он не обязателен. Флаг `--cpu` принудительно запускает CPU backend внутри GPU-capable бинарника.
 
 Архитектура GPU определяется через `nvidia-smi`. При необходимости задавайте вручную:
 
 ```bash
-make -C gpu double_fast -j GPU_ARCH=86   # Ampere
-make -C gpu float_fast  -j GPU_ARCH=89   # Ada
+make -C gpu fp32 -j GPU_ARCH=86   # Ampere: точный смешанный FP32
+make -C gpu fp32 -j GPU_ARCH=89   # Ada: начать с точного смешанного FP32
 ```
 
 ### EPYC Zen5, AVX-512 и AVX2
@@ -537,7 +553,7 @@ gpu/bin/mbs_po_gpu_double --po -p 1 100 70 --ri 1.3116 0 -w 0.532 \
 
 | Операция | CPU path | GPU path | Гранулярность |
 |---|---|---|---|
-| Трассировка через грани | OpenMP по ориентациям/gamma blocks | В основном CPU; `--gpu_trace` только prefilter кандидатов | Orientation/chunk |
+| Трассировка через грани | OpenMP по ориентациям/gamma blocks | `--gpu-trace-prefilter` переносит в CUDA упорядочивание граней и грубый отбор кандидатов; точные пересечения и разделение пучков остаются на CPU | Orientation/chunk |
 | Packing пучков | CPU | CPU готовит `GpuBeam` buffers и копирует на device | Beam records |
 | Edge diffraction | CPU loops | CUDA kernels | Beam x theta x phi x orientation |
 | Когерентная Jones сумма | CPU complex arrays | Atomic или no-atomic device kernels | Grid cell/orientation |
@@ -559,7 +575,7 @@ Nwork ~= Norient * Nbeams_per_orientation * Ntheta * Nphi
 |---|---|---|---|
 | Atomic Jones | `diffraction_kernel` | Thread считает вклад beam/grid и делает `atomicAdd` в complex Jones buffer. Потом `mueller_batch_kernel` делает Mueller. | General fallback, включая часть diagnostic/no-shadow режимов. |
 | No-atomic grid | `diffraction_grid_kernel` | Thread владеет output cell и сам проходит по пучкам, без конкуренции writers. | Full-only output, когда подходит layout. |
-| Fused Mueller | `diffraction_grid_mueller_kernel`, `*_full_kernel`, `*_full8_kernel`, `*_mixed8_kernel` | Kernel считает Jones локально и сразу переводит/добавляет Mueller. | Быстрый production путь. |
+| Fused Mueller | `diffraction_grid_mueller_kernel`, `*_full_kernel`, `*_full8_kernel`, `*_mixed8_kernel` | Warp делит пучки одного направления между 32 потоками, сводит Jones через shuffle и сразу добавляет Mueller. | Быстрый production путь. |
 | Staged orientation Mueller | `diffraction_grid_mueller_orient_kernel` + `reduce_mueller_orient_kernel` | Сначала per-orientation Mueller, затем редукция. | Большие batches, меньше contention. |
 | Multi-`k_eq` fused | `diffraction_grid_mueller_multik_kernel` | Несколько близких `k_eq` из одного packed beam batch. | Shared-batch scans. |
 
@@ -581,8 +597,10 @@ J10.re, J10.im, J11.re, J11.im
 | `MBS_GPU_FUSED_MUELLER=1` | Предпочитать fused diffraction-to-Mueller kernels. |
 | `MBS_GPU_STAGE_MUELLER=1` | Включить staged per-orientation Mueller reduction. |
 | `MBS_GPU_COMPACT_BEAMS=0` | Отключить компактную упаковку пучков с не более чем 8 вершинами и использовать общий формат для диагностики. |
+| `MBS_GPU_WARP_BEAMS=0` | Отключить стандартное warp-разбиение пучков и вернуть последовательный обход одним CUDA-потоком для диагностики. |
+| `MBS_GPU_WARP_GRID_3D=0` | Отключить стандартную специализацию warp-пути для трёхмерной сетки, сохранив общий warp-режим. |
 | `MBS_GPU_TIMING=1` | Печатать breakdown count/pack/copy/kernels/d2h/add. |
-| `MBS_GPU_BLOCK=N` | Override CUDA block size. |
+| `MBS_GPU_BLOCK=N` | Переопределить размер блока CUDA: 64 (по умолчанию), 128 или 256. |
 | `MBS_ORIENTATION_TIMING=1` | Печатать суммарное CPU-время поворота, трассировки и подготовки пучков. |
 
 Для отдельного сравнения FP64-поворота вектора кватернионом и готовой
@@ -596,6 +614,40 @@ CUDA_VISIBLE_DEVICES=0 ./bin/gpu_quaternion_rotation_probe 65536 64 50
 Пробник не выполняет расчет рассеяния и не заменяет профиль полной задачи.
 Кватернионы задают равномерные ориентации на SO(3), но сами по себе не
 ускоряют CPU-трассировку или CUDA-дифракцию.
+
+Пакетная CUDA-трассировка автоматически включается для метода физической оптики
+с CUDA-бэкендом. Явный `--gpu-trace-prefilter` включает тот же режим, а
+`--no-gpu-trace-prefilter` отключает его для контрольного сравнения. В
+проверенном автоматическом профиле используются полное топологическое
+упорядочивание, кэш точной сортировки, консервативные флаги пропуска больших
+списков, 64 потока большого ядра и обычный синхронный поток CUDA. Точные
+пересечения многоугольников и разделение пучков остаются на CPU.
+
+Несколько OpenMP-потоков поддерживаются автоматически. Общий бюджет около
+512 пучков делится между ними: при `--threads 8` один поток передаёт не более
+64 пучков. Ограничение необходимо из-за скрытой памяти стека CUDA-ядер.
+Нельзя назначать большой пакет только по показанию свободной видеопамяти:
+восемь одновременных пакетов по 2048 пучков способны исчерпать 12 ГиБ. Если
+начальный пакет всё же исчерпывает стек CUDA, он рекурсивно делится, а найденный
+уменьшенный предел запоминается для всех следующих пакетов и ориентаций.
+
+Экспертные переопределения требуют `--allow-experimental-environment`:
+
+| Переменная | По умолчанию | Действие |
+|---|---:|---|
+| `MBS_GPU_TRACE_OPENMP=0/1` | `1` | Отключить или включить CUDA-трассировку из нескольких OpenMP-потоков. |
+| `MBS_GPU_TRACE_BATCH_BEAMS=N` | начальный `ceil(512/threads)`, минимум 64 | Размер пакета одного потока; после OOM уменьшается автоматически, переопределять только после измерений. |
+| `MBS_GPU_TRACE_FULL_SORT=0/1` | `1` | Полное топологическое упорядочивание граней на CUDA. |
+| `MBS_GPU_TRACE_SORT_CACHE=0/1` | `1` | Повторное использование точной сортировки для одинаковых ключей. |
+| `MBS_GPU_TRACE_LARGE_SKIP_FLAGS=0/1` | `1` | Консервативные флаги пропуска для списков из 25--256 граней. |
+| `MBS_GPU_TRACE_LARGE_THREADS=N` | `64` | Размер блока большого ядра: 64, 128 или 256. |
+| `MBS_GPU_TRACE_CACHE_FACETS=0/1` | `1` | Сохранять упакованную геометрию граней в CUDA workspace потока. |
+| `MBS_GPU_TRACE_MIN_CANDIDATES=N` | `1024` | Минимальное общее число кандидатов для отправки пакета на GPU. |
+| `MBS_GPU_TRACE_NONBLOCKING_STREAM=0/1` | `0` | Отдельный неблокирующий поток CUDA; увеличивает одновременный расход ресурсов. |
+| `MBS_GPU_TRACE_PREFILTER_FIRST=0/1` | `0` | Диагностический грубый отбор перед сортировкой. |
+| `MBS_GPU_TRACE_MARGIN=X` | автоматически | Переопределить консервативный запас проекционных границ. |
+| `MBS_GPU_TRACE_TIMING=1` | `0` | Печатать времена H2D, малых и больших ядер и D2H. |
+| `MBS_GPU_TRACE_VERIFY_SORT=1` | `0` | Сравнивать CUDA-сортировку с точным CPU-результатом. |
 
 ### Multi-size и multi-GPU
 
@@ -782,7 +834,8 @@ budget или делить задачу на меньшие независимы
 | `--trace_cutoff_area` | `EPS` | Trace prune by area. |
 | `--trace_cutoff_importance` | `EPS` | Trace prune by `|J|^2*area`. |
 | `--trace_max_beams` | `N` | Аварийно завершить расчёт после `N` узлов дерева в одной ориентации; `0` отключает предел. |
-| `--gpu_trace` | none | Experimental CUDA candidate prefilter. |
+| `--gpu-trace-prefilter` | none | Явно включить автоматический пакетный профиль CUDA-трассировки. |
+| `--no-gpu-trace-prefilter` | none | Отключить автоматическое CUDA-упорядочивание и отбор кандидатов. |
 | `--trace_prefilter` | none | Enable CPU projected-AABB prefilter. |
 | `--no_trace_prefilter` | none | Disable CPU prefilter. |
 | `--trace_prefilter_margin` | `M` | AABB prefilter margin. |
@@ -853,8 +906,19 @@ budget или делить задачу на меньшие независимы
 | `MBS_GPU_STAGE_MUELLER` | Staged per-orientation Mueller reduction. |
 | `MBS_GPU_NO_VERTEX_CACHE` | Отключить cached/packed vertex path. |
 | `MBS_GPU_COMPACT_BEAMS=0` | Отключить компактную упаковку пучков с не более чем 8 вершинами. |
+| `MBS_GPU_WARP_BEAMS=0` | Вернуть последовательный CUDA-обход пучков одним потоком для диагностики. |
+| `MBS_GPU_WARP_GRID_3D=0` | Отключить только специализацию warp-пути для трёхмерной сетки. |
 | `MBS_GPU_TIMING` | Печатать CUDA timing breakdown. |
-| `MBS_GPU_BLOCK` | Override CUDA block size. |
+| `MBS_GPU_BLOCK` | Размер блока CUDA: 64 (по умолчанию), 128 или 256. |
+| `MBS_GPU_TRACE_OPENMP=0/1` | Автоматическая CUDA-трассировка с несколькими OpenMP-потоками; по умолчанию `1`. |
+| `MBS_GPU_TRACE_BATCH_BEAMS=N` | Переопределить пакет `ceil(512/threads)` на поток; большие значения могут исчерпать стек CUDA. |
+| `MBS_GPU_TRACE_FULL_SORT=0/1` | Точное топологическое упорядочивание CUDA; по умолчанию `1`. |
+| `MBS_GPU_TRACE_SORT_CACHE=0/1` | Кэш точной сортировки; по умолчанию `1`. |
+| `MBS_GPU_TRACE_LARGE_SKIP_FLAGS=0/1` | Консервативные флаги пропуска больших списков; по умолчанию `1`. |
+| `MBS_GPU_TRACE_LARGE_THREADS=N` | Размер блока большого ядра; по умолчанию `64`, допустимо 64/128/256. |
+| `MBS_GPU_TRACE_NONBLOCKING_STREAM=0/1` | Неблокирующие потоки workers; по умолчанию `0`, только для профилирования. |
+| `MBS_GPU_TRACE_TIMING=1` | Печатать времена передачи и ядер CUDA-трассировки. |
+| `MBS_GPU_TRACE_VERIFY_SORT=1` | Сверять CUDA-упорядочивание с CPU. |
 | `MBS_ORIENTATION_TIMING` | Печатать разбиение CPU-времени поворота, трассировки и подготовки пучков. |
 | `MBS_HOST_MEM_FRACTION` | Доля текущей доступной ОЗУ для измеряемых блоков подготовленных ориентаций. |
 | `MBS_HOST_MEM_RESERVE_MB` | Резерв host RAM в MB. |

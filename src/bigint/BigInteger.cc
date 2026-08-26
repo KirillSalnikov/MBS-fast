@@ -255,6 +255,13 @@ void BigInteger::multiply(const BigInteger &a, const BigInteger &b) {
 	mag.multiply(a.mag, b.mag);
 }
 
+void BigInteger::multiplyAddNonnegative(Blk multiplier, Blk addend) {
+	if (sign == negative)
+		throw "BigInteger::multiplyAddNonnegative: negative input";
+	mag.multiplyAdd(multiplier, addend);
+	sign = mag.isZero() ? zero : positive;
+}
+
 /*
  * DIVISION WITH REMAINDER
  * Please read the comments before the definition of
@@ -402,4 +409,3 @@ void BigInteger::operator --() {
 void BigInteger::operator --(int) {
 	operator --();
 }
-

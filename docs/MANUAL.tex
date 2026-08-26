@@ -212,7 +212,7 @@ Target & Binary & CUDA precision & Fast math & Typical use \\
 \texttt{make\ -C\ gpu\ fp32} & \nolinkurl{gpu/bin/mbs_po_gpu_float} &
 FP32 & no & Calibrated FP32 throughput \\
 \texttt{make\ -C\ gpu\ fp32\_fast} &
-\nolinkurl{gpu/bin/mbs_po_gpu_float_fast} & FP32 & yes & Maximum throughput after validation \\
+\nolinkurl{gpu/bin/mbs_po_gpu_float_fast} & FP32 & yes & Experimental profile; benchmark after validation \\
 \texttt{make\ -C\ gpu\ fp64\_fast} &
 \nolinkurl{gpu/bin/mbs_po_gpu_double_fast} & FP64 & yes & FP64 throughput after validation \\
 \texttt{make\ -C\ gpu\ double\_debug} &
@@ -226,6 +226,28 @@ polygon moments, and critical phase trigonometry remain FP64.
 \texttt{-/-version} reports the storage, critical-phase, math, and target
 architecture profile.
 
+On an RTX 3080 Ti, a representative absorbing nonconvex test
+($k_{\mathrm{eq}}=20$, 64 SO(3) orientations,
+$N_\phi=720$, $N_\theta=360$) gave the following medians:
+
+\begin{longtable}[]{@{}L{0.28\linewidth}L{0.18\linewidth}L{0.18\linewidth}L{0.24\linewidth}@{}}
+\toprule\noalign{}
+Profile & Time & Speedup over FP64 & Mueller error against FP64 \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+Precise FP64 & 4.92 s & 1.00 & reference \\
+Precise mixed FP32 & 3.45 s & 1.43 & global $L_2=1.00\times10^{-6}$ \\
+FP32 with fast math & 3.63 s & 1.36 & global $L_2=1.02\times10^{-6}$ \\
+\end{longtable}
+
+The precise mixed-FP32 binary is therefore the recommended consumer-GPU
+profile after validation on the target particle and size range. Fast math is
+not enabled automatically: in this measured case it was slightly slower and
+did not improve accuracy. Final reference points and numerically sensitive
+absorbing or deep nonconvex cases should still be checked in FP64.
+
 The GPU split build enables CUDA diffraction by default.
 \texttt{-\/-gpu} is accepted but optional. Use \texttt{-\/-cpu} only
 when you deliberately want the CPU diffraction backend from a
@@ -237,10 +259,10 @@ The Makefile detects the GPU compute capability with
 \begin{Shaded}
 \begin{Highlighting}[]
 \CommentTok{\# Ampere, e.g. RTX 3080 Ti}
-\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu double\_fast }\AttributeTok{{-}j}\NormalTok{ GPU\_ARCH=86}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu fp32 }\AttributeTok{{-}j}\NormalTok{ GPU\_ARCH=86}
 
 \CommentTok{\# Ada, e.g. RTX 4070}
-\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu float\_fast }\AttributeTok{{-}j}\NormalTok{ GPU\_ARCH=89}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu fp32 }\AttributeTok{{-}j}\NormalTok{ GPU\_ARCH=89}
 \end{Highlighting}
 \end{Shaded}
 
@@ -1272,8 +1294,8 @@ Work item & CPU path & GPU path & Parallel granularity \\
 \bottomrule\noalign{}
 \endlastfoot
 Ray tracing through facets & OpenMP over orientations/gamma blocks &
-Mostly still CPU-side; \texttt{-\/-gpu\_trace} is only a candidate
-prefilter & Orientation/chunk level \\
+Automatic CUDA ordering and conservative candidate filtering; exact
+intersections and beam splitting remain CPU-side & Orientation/chunk level \\
 Beam packing & CPU host code & CPU prepares \texttt{GpuBeam}/packed beam
 buffers and copies to device & Beam records \\
 Edge diffraction & Scalar/vector CPU loops & CUDA kernels in
@@ -1387,16 +1409,69 @@ plus reduction where supported. \\
 path for debugging. \\
 \texttt{MBS\_GPU\_COMPACT\_BEAMS=0} & Disable compact packing for beams
 with at most 8 vertices and use the general layout for diagnostics. \\
+\texttt{MBS\_GPU\_WARP\_BEAMS=0} & Restore the serial per-thread beam loop
+instead of the default warp-per-output reduction. \\
+\texttt{MBS\_GPU\_WARP\_GRID\_3D=0} & Disable only the default 3D-grid warp
+specialization. \\
 \texttt{MBS\_GPU\_TIMING=1} & Print GPU timing breakdown for
 count/pack/copy/kernels/d2h/add. \\
 \texttt{MBS\_GPU\_BLOCK=N} & Override CUDA block size for kernel
 tuning. \\
 \end{longtable}
 
-Do not confuse this with full GPU ray tracing. The production GPU
-backend is primarily a diffraction and Mueller-accumulation accelerator.
-\texttt{-\/-gpu\_trace} only prefilters nonconvex tracing candidates;
-exact intersections remain CPU-side.
+\subsection{Automatic CUDA tracing profile}
+
+The CUDA PO backend automatically enables batched facet ordering and
+conservative projected candidate filtering. The same mode can be requested
+explicitly with \nolinkurl{--gpu-trace-prefilter}; use
+\nolinkurl{--no-gpu-trace-prefilter} for an A/B reference. This is not an
+approximate beam tracer: exact intersection polygons, topology decisions,
+Fresnel splitting, and child-beam construction remain on the CPU.
+
+The validated automatic profile uses exact CUDA topological ordering, an
+ordering cache, conservative skip flags for 25--256 candidates, cached facet
+geometry, 64 threads for the large-list kernel, and blocking per-worker CUDA
+streams. The per-worker batch is
+\(
+  \max(64,\lceil512/N_{\mathrm{workers}}\rceil)
+\),
+which avoids the CUDA-stack exhaustion observed with oversized fixed batches.
+If this initial batch still exhausts kernel-stack backing, the code recursively
+splits it and remembers the reduced process-wide limit for all later batches
+and orientations.
+On a deeply nonconvex production orientation this reduced wall time from
+7.93 s to 0.98 s (8.09 times); on a smaller representative case the gain was
+about 1.08 times. The benefit therefore depends strongly on trace complexity.
+
+Expert controls are provided for reproducible profiling; their defaults form
+the automatic profile:
+
+\begin{longtable}[]{@{}L{0.38\linewidth}L{0.18\linewidth}L{0.36\linewidth}@{}}
+\toprule\noalign{}
+Variable & Default & Meaning \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\nolinkurl{MBS_GPU_TRACE_OPENMP} & 1 & Allow CUDA tracing from OpenMP workers. \\
+\nolinkurl{MBS_GPU_TRACE_BATCH_BEAMS} & automatic & Override the initial per-worker batch; after OOM the process lowers and remembers the limit. \\
+\nolinkurl{MBS_GPU_TRACE_FULL_SORT} & 1 & Exact CUDA topological ordering. \\
+\nolinkurl{MBS_GPU_TRACE_SORT_CACHE} & 1 & Reuse exact ordering for identical keys. \\
+\nolinkurl{MBS_GPU_TRACE_LARGE_SKIP_FLAGS} & 1 & Conservative projected skip flags. \\
+\nolinkurl{MBS_GPU_TRACE_LARGE_THREADS} & 64 & Large-list block size (64, 128, or 256). \\
+\nolinkurl{MBS_GPU_TRACE_CACHE_FACETS} & 1 & Retain packed facet geometry per worker. \\
+\nolinkurl{MBS_GPU_TRACE_MIN_CANDIDATES} & 1024 & Minimum batch candidate count sent to CUDA. \\
+\nolinkurl{MBS_GPU_TRACE_NONBLOCKING_STREAM} & 0 & Per-worker nonblocking streams; profiling only. \\
+\nolinkurl{MBS_GPU_TRACE_PREFILTER_FIRST} & 0 & Diagnostic projected filtering before sorting. \\
+\nolinkurl{MBS_GPU_TRACE_MARGIN} & automatic & Override the conservative projection margin. \\
+\nolinkurl{MBS_GPU_TRACE_TIMING} & 0 & Print transfer and kernel timings. \\
+\nolinkurl{MBS_GPU_TRACE_VERIFY_SORT} & 0 & Compare CUDA ordering and skip flags with CPU. \\
+\end{longtable}
+
+The verification mode reported zero ordering and skip-flag mismatches in the
+production regression. Because a different but equivalent facet traversal can
+change floating-point summation order, validate sensitive runs against
+\nolinkurl{--no-gpu-trace-prefilter}; the release gate performs this A/B check.
 
 For a variable latitude-phi grid, \texttt{MBS\_GPU\_GROUPS=1} enables a
 dedicated exact scheduler. Independent theta-row work groups are assigned
@@ -1631,8 +1706,10 @@ relative area. \\
 by relative Jones intensity times area. \\
 \texttt{-\/-trace-max-beams} & \texttt{N} & Hard per-orientation beam-tree
 cap; \texttt{0} disables it and reaching it aborts the calculation. \\
-\texttt{-\/-gpu\_trace} & none & Experimental CUDA prefilter for
-nonconvex tracing candidates. \\
+\nolinkurl{--gpu-trace-prefilter} & none & Explicitly enable the automatic
+batched CUDA ordering and candidate-filtering profile. \\
+\nolinkurl{--no-gpu-trace-prefilter} & none & Disable automatic CUDA tracing
+for a reference comparison. \\
 \texttt{-\/-trace\_prefilter} & none & Enable CPU projected-AABB
 prefilter. \\
 \texttt{-\/-no\_trace\_prefilter} & none & Disable CPU projected-AABB
@@ -1728,8 +1805,32 @@ Mueller reduction when supported. \\
 for debugging. \\
 \texttt{MBS\_GPU\_COMPACT\_BEAMS=0} & Disable compact packing for beams
 with at most 8 vertices. \\
+\texttt{MBS\_GPU\_WARP\_BEAMS=0} & Restore the serial per-thread beam loop
+for diagnostics. \\
+\texttt{MBS\_GPU\_WARP\_GRID\_3D=0} & Disable only the default 3D-grid warp
+specialization. \\
 \texttt{MBS\_GPU\_TIMING} & Print CUDA timing breakdowns. \\
 \texttt{MBS\_GPU\_BLOCK} & Override CUDA kernel block size. \\
+\nolinkurl{MBS_GPU_TRACE_OPENMP} & Enable automatic CUDA tracing from
+OpenMP workers; default \texttt{1}. \\
+\nolinkurl{MBS_GPU_TRACE_BATCH_BEAMS} & Override the automatic per-worker
+batch $\max(64,\lceil512/N_{\mathrm{workers}}\rceil)$. \\
+\nolinkurl{MBS_GPU_TRACE_FULL_SORT} & Exact CUDA topological ordering;
+default \texttt{1}. \\
+\nolinkurl{MBS_GPU_TRACE_SORT_CACHE} & Cache exact CUDA ordering; default
+\texttt{1}. \\
+\nolinkurl{MBS_GPU_TRACE_LARGE_SKIP_FLAGS} & Conservative projected skip
+flags for large candidate lists; default \texttt{1}. \\
+\nolinkurl{MBS_GPU_TRACE_LARGE_THREADS} & Large-list CUDA block size;
+default \texttt{64}. \\
+\nolinkurl{MBS_GPU_TRACE_CACHE_FACETS} & Cache packed facet geometry;
+default \texttt{1}. \\
+\nolinkurl{MBS_GPU_TRACE_MIN_CANDIDATES} & Minimum candidates per submitted
+batch; default \texttt{1024}. \\
+\nolinkurl{MBS_GPU_TRACE_NONBLOCKING_STREAM} & Per-worker nonblocking streams;
+default \texttt{0}, profiling only. \\
+\nolinkurl{MBS_GPU_TRACE_TIMING} & Print CUDA tracing timing breakdown. \\
+\nolinkurl{MBS_GPU_TRACE_VERIFY_SORT} & Verify CUDA ordering against CPU. \\
 \texttt{MBS\_ORIENTATION\_TIMING} & Print summed CPU time for rotation,
 tracing, and prepared-beam construction. \\
 \texttt{MBS\_HOST\_MEM\_FRACTION} & Fraction of current available host

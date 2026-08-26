@@ -608,6 +608,36 @@ void ValidateClosedOrientedSurface(
     }
 }
 
+double MaximumPairDistance(std::vector<Point3f> &vertices)
+{
+    if (vertices.size() < 2)
+        return 0.0;
+
+    std::sort(vertices.begin(), vertices.end(),
+        [](const Point3f &a, const Point3f &b) {
+            if (a.cx != b.cx)
+                return a.cx < b.cx;
+            if (a.cy != b.cy)
+                return a.cy < b.cy;
+            return a.cz < b.cz;
+        });
+    vertices.erase(std::unique(vertices.begin(), vertices.end(),
+        [](const Point3f &a, const Point3f &b) {
+            return a.cx == b.cx && a.cy == b.cy && a.cz == b.cz;
+        }), vertices.end());
+
+    double maximumSquared = 0.0;
+    for (size_t i = 0; i < vertices.size(); ++i)
+    {
+        for (size_t j = i + 1; j < vertices.size(); ++j)
+        {
+            const Point3f delta = vertices[j] - vertices[i];
+            maximumSquared = std::max(maximumSquared, Norm(delta));
+        }
+    }
+    return std::sqrt(maximumSquared);
+}
+
 } // namespace
 
 Particle::Particle()
@@ -1318,10 +1348,11 @@ double Particle::LongRadius() const
 
 double Particle::MaximalDimention() const
 {
-    double Dmax = 0;
-    double newDmax;
-
     std::vector<Point3f> vertices;
+    size_t vertexCount = 0;
+    for (int i = 0; i < nFacets; ++i)
+        vertexCount += defaultFacets[i].nVertices;
+    vertices.reserve(vertexCount);
 
     for (int i = 0; i < nFacets; ++i)
     {
@@ -1330,51 +1361,23 @@ double Particle::MaximalDimention() const
             vertices.push_back(defaultFacets[i].arr[j]);
         }
     }
-
-    for (size_t i = 0; i < vertices.size(); ++i)
-    {
-        for (size_t j = 0; j < vertices.size(); ++j)
-        {
-            newDmax = Length(vertices[j] - vertices[i]);
-
-            if (newDmax > Dmax)
-            {
-                Dmax = newDmax;
-            }
-        }
-    }
-
-    return Dmax;
+    return MaximumPairDistance(vertices);
 }
 
 double Particle::MaximalDimentionPart() const
 {
-    double Dmax = 0;
-    double newDmax;
-
     std::vector<Point3f> vertices;
-    vertices.reserve(static_cast<size_t>(nFacetsInPart) * 6);
+    size_t vertexCount = 0;
+    for (int i = 0; i < nFacetsInPart; ++i)
+        vertexCount += defaultFacets[i].nVertices;
+    vertices.reserve(vertexCount);
 
     for (int i = 0; i < nFacetsInPart; ++i)
     {
         for (int j = 0; j < defaultFacets[i].nVertices; ++j)
             vertices.push_back(defaultFacets[i].arr[j]);
     }
-
-    for (size_t i = 0; i < vertices.size(); ++i)
-    {
-        for (size_t j = 0; j < vertices.size(); ++j)
-        {
-            newDmax = Length(vertices[j] - vertices[i]);
-
-            if (newDmax > Dmax)
-            {
-                Dmax = newDmax;
-            }
-        }
-    }
-
-    return Dmax;
+    return MaximumPairDistance(vertices);
 }
 
 double Particle::MaximumEdgeLength() const

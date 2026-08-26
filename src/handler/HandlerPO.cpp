@@ -821,7 +821,8 @@ void HandlerPO::AddToMueller()
     }
 }
 
-BeamInfo HandlerPO::ComputeBeamInfo(Beam &beam)
+BeamInfo HandlerPO::ComputeBeamInfo(Beam &beam,
+                                    const std::vector<int> *track)
 {
     BeamInfo info;
     info.normal = beam.Normal();
@@ -846,7 +847,7 @@ BeamInfo HandlerPO::ComputeBeamInfo(Beam &beam)
 
     if (m_hasAbsorption && HasInternalOpticalPath(beam))
     {
-        ComputeOpticalLengths(beam, info);
+        ComputeOpticalLengths(beam, info, track);
         ComputeLengthIndices(beam, info);
     }
 
@@ -1072,15 +1073,20 @@ void HandlerPO::SetScatteringSphere(const ScatteringRange &grid)
     m_transverseBasis = transverseBasis;
 }
 
-void HandlerPO::ComputeOpticalLengths(const Beam &beam, BeamInfo &info)
+void HandlerPO::ComputeOpticalLengths(const Beam &beam, BeamInfo &info,
+                                      const std::vector<int> *track)
 {
-    std::vector<int> tr;
-    Tracks::RecoverTrack(beam, m_particle->nFacets, tr);
+    std::vector<int> recoveredTrack;
+    if (!track)
+    {
+        Tracks::RecoverTrack(beam, m_particle->nFacets, recoveredTrack);
+        track = &recoveredTrack;
+    }
 
     for (int i = 0; i < 3; ++i)
     {
         info.opticalLengths[i] = m_scattering->ComputeInternalOpticalPath(
-                    beam, beam.arr[i], tr);
+                    beam, beam.arr[i], *track);
     }
 
 //#ifdef _DEBUG // DEB
@@ -1101,6 +1107,7 @@ void HandlerPO::ComputeOpticalLengths(const Beam &beam, BeamInfo &info)
 
 void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
 {
+    m_geometryScale = m_particle->MaximalDimention();
     auto hb_start = std::chrono::high_resolution_clock::now();
     ++g_handleBeams_calls;
 
@@ -1625,6 +1632,10 @@ void HandlerPO::SetTracks(Tracks *tracks)
 void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
                               PreparedOrientation &out)
 {
+    // Particle size is invariant during this call but can change between
+    // calls in multi-size workflows.  Cache the O(V^2) diameter once rather
+    // than recomputing it for every beam edge.
+    m_geometryScale = m_particle->MaximalDimention();
     out.beams.clear();
     out.beams.reserve(beams.size());
     out.sinZenith = sinZenith;
@@ -1675,23 +1686,30 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
                     -m_incidentLight->direction,
                     m_incidentLight->polarizationBasis);
 
-        BeamInfo info = ComputeBeamInfo(beam);
+        const bool hasInternalPath =
+            m_hasAbsorption && HasInternalOpticalPath(beam);
+        std::vector<int> track;
+        if (hasInternalPath)
+            Tracks::RecoverTrack(beam, m_particle->nFacets, track);
+
+        BeamInfo info = ComputeBeamInfo(
+            beam, hasInternalPath ? &track : nullptr);
 
         if (info.isBad)
             continue;
 
-        Beam originalBeam = beam;
+        const Matrix2x2c unabsorbedJ = beam.J;
+        const double unabsorbedCrossSection =
+            beam.lastFacetId != __INT_MAX__ ? BeamCrossSection(beam) : 0.0;
+        const double unabsorbedMueller00 =
+            beam.lastFacetId != __INT_MAX__ ? Mueller(unabsorbedJ)[0][0] : 0.0;
         std::vector<double> absorptionPaths;
-        const bool hasInternalPath =
-            m_hasAbsorption && HasInternalOpticalPath(beam);
         if (hasInternalPath)
         {
-            std::vector<int> tr;
-            Tracks::RecoverTrack(beam, m_particle->nFacets, tr);
             auto addPathAt = [&](const Point3f &point)
             {
                 absorptionPaths.push_back(
-                    m_scattering->ComputeInternalOpticalPath(beam, point, tr));
+                    m_scattering->ComputeInternalOpticalPath(beam, point, track));
             };
             if (m_absorptionPointCount == 1 || beam.nVertices <= 0)
             {
@@ -1713,7 +1731,13 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         // Apply absorption only to beams with an internal path. nActs == 0 is
         // the primary external reflection, which never enters the particle.
         if (hasInternalPath)
-            ApplyAbsorption(beam);
+        {
+            double absorption = 0.0;
+            for (double path : absorptionPaths)
+                absorption += (path > DBL_EPSILON) ? exp(m_cAbs*path) : 1.0;
+            if (!absorptionPaths.empty())
+                beam.J *= absorption / absorptionPaths.size();
+        }
 
         if (beam.lastFacetId != __INT_MAX__)
         {
@@ -1739,20 +1763,21 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
                 }
             }
         }
-
-        PreparedBeam pb;
-        pb.info = info;
-        pb.absorptionPaths = absorptionPaths;
+        out.beams.emplace_back();
+        PreparedBeam &pb = out.beams.back();
+        pb.absorptionPaths = std::move(absorptionPaths);
         if (beam.lastFacetId != __INT_MAX__)
         {
-            pb.outputCrossSection = BeamCrossSection(originalBeam);
-            matrix unabsorbedM = Mueller(originalBeam.J);
-            pb.outputMueller00 = unabsorbedM[0][0];
+            pb.outputCrossSection = unabsorbedCrossSection;
+            pb.outputMueller00 = unabsorbedMueller00;
         }
 
         // Precompute edge and pol data
-        PrecomputeEdgeData(info, beam, pb.edgeData);
-        PrecomputePolData(beam, info, pb.polData);
+        BeamEdgeData edgeData;
+        PrecomputeEdgeData(info, beam, edgeData);
+        pb.edgeData.Assign(edgeData);
+        BeamPolData polData;
+        PrecomputePolData(beam, info, polData);
 
         pb.isExternal = (beam.lastFacetId == __INT_MAX__);
         matrixC J_phased = pb.isExternal
@@ -1766,15 +1791,14 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         // Extract scalars
         pb.horAx = info.horAxis.x; pb.horAy = info.horAxis.y; pb.horAz = info.horAxis.z;
         pb.verAx = info.verAxis.x; pb.verAy = info.verAxis.y; pb.verAz = info.verAxis.z;
-        pb.normx = info.normald.x; pb.normy = info.normald.y; pb.normz = info.normald.z;
         Point3d beamDirD(beam.direction.cx, beam.direction.cy, beam.direction.cz);
         pb.bdx = beamDirD.x; pb.bdy = beamDirD.y; pb.bdz = beamDirD.z;
         pb.cenx = info.center.x; pb.ceny = info.center.y; pb.cenz = info.center.z;
         pb.beam_area = info.area;
-        pb.pNTx = pb.polData.NTd.x; pb.pNTy = pb.polData.NTd.y; pb.pNTz = pb.polData.NTd.z;
-        pb.pNPx = pb.polData.NPd.x; pb.pNPy = pb.polData.NPd.y; pb.pNPz = pb.polData.NPd.z;
-        pb.pnxDTx = pb.polData.nxDT.x; pb.pnxDTy = pb.polData.nxDT.y; pb.pnxDTz = pb.polData.nxDT.z;
-        pb.pnxDPx = pb.polData.nxDP.x; pb.pnxDPy = pb.polData.nxDP.y; pb.pnxDPz = pb.polData.nxDP.z;
+        pb.pNTx = polData.NTd.x; pb.pNTy = polData.NTd.y; pb.pNTz = polData.NTd.z;
+        pb.pNPx = polData.NPd.x; pb.pNPy = polData.NPd.y; pb.pNPz = polData.NPd.z;
+        pb.pnxDTx = polData.nxDT.x; pb.pnxDTy = polData.nxDT.y; pb.pnxDTz = polData.nxDT.z;
+        pb.pnxDPx = polData.nxDP.x; pb.pnxDPy = polData.nxDP.y; pb.pnxDPz = polData.nxDP.z;
 
         complex jp00 = J_phased[0][0], jp01 = J_phased[0][1];
         complex jp10 = J_phased[1][0], jp11 = J_phased[1][1];
@@ -1783,11 +1807,17 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         pb.jp10r = real(jp10); pb.jp10i = imag(jp10);
         pb.jp11r = real(jp11); pb.jp11i = imag(jp11);
 
-        // Store the unabsorbed beam.  Multikeq/multigrid rescaling reapplies
-        // absorption for each target size from pb.absorptionPaths.
-        pb.origBeam = originalBeam;
-
-        out.beams.push_back(pb);
+        // Store only the source fields used by CUDA and multikeq rescaling.
+        // The full polygon is retained only for the rare legacy fallback.
+        pb.rawJ = unabsorbedJ;
+        pb.opticalPath = beam.opticalPath;
+        pb.projLength = info.projLenght;
+        pb.nActs = beam.nActs;
+        if (!pb.edgeData.valid)
+        {
+            pb.fallback = std::make_shared<PreparedBeamFallback>(beam, info);
+            pb.fallback->beam.J = unabsorbedJ;
+        }
     }
 
     out.extinctionOt = ComputeForwardExtinctionOt(out);
@@ -1933,7 +1963,7 @@ double HandlerPO::ComputeForwardExtinctionOt(
             continue;
 
         double phaseReference = pb.isExternal
-            ? pb.origBeam.opticalPath
+            ? pb.opticalPath
             : m_otFarReferencePath;
 
         double dpr = 1.0, dpi = 0.0;
@@ -2041,7 +2071,7 @@ double HandlerPO::ComputeForwardExtinctionOtScaled(
             || pb.edgeData.nVertices >= BeamEdgeData::MAX_EDGES)
             continue;
 
-        BeamEdgeData edge = pb.edgeData;
+        PreparedEdgeData edge = pb.edgeData;
         for (int e = 0; e < edge.nVertices; ++e)
         {
             edge.x[e] *= scale;
@@ -2147,7 +2177,7 @@ double HandlerPO::ComputeForwardExtinctionOtScaled(
             continue;
 
         double phaseReference = pb.isExternal
-            ? pb.origBeam.opticalPath * scale
+            ? pb.opticalPath * scale
             : m_otFarReferencePath;
 
         double dpr = 1.0, dpi = 0.0;
@@ -2172,14 +2202,14 @@ double HandlerPO::ComputeForwardExtinctionOtScaled(
             r00, r01, r10, r11);
 
         double path = pb.isExternal
-            ? pb.origBeam.opticalPath * scale
-            : pb.info.projLenght * scale;
+            ? pb.opticalPath * scale
+            : pb.projLength * scale;
         double sn = 0.0, cs = 1.0;
         fast_sincos(scaledWaveIndex * path, sn, cs);
         double sign = 1.0;
         if (pb.isExternal)
             sign = -sign;
-        if (!pb.isExternal && (pb.origBeam.nActs & 1))
+        if (!pb.isExternal && (pb.nActs & 1))
             sign = -sign;
 
         double absorption = 1.0;
@@ -2207,10 +2237,10 @@ double HandlerPO::ComputeForwardExtinctionOtScaled(
         };
         double jp00r, jp00i, jp01r, jp01i;
         double jp10r, jp10i, jp11r, jp11i;
-        phased(pb.origBeam.J.m11, jp00r, jp00i);
-        phased(pb.origBeam.J.m12, jp01r, jp01i);
-        phased(pb.origBeam.J.m21, jp10r, jp10i);
-        phased(pb.origBeam.J.m22, jp11r, jp11i);
+        phased(pb.rawJ.m11, jp00r, jp00i);
+        phased(pb.rawJ.m12, jp01r, jp01i);
+        phased(pb.rawJ.m21, jp10r, jp10i);
+        phased(pb.rawJ.m22, jp11r, jp11i);
 
         const double fr = real(fresnel);
         const double fi = imag(fresnel);
@@ -2273,7 +2303,7 @@ void HandlerPO::DiffractControlPoints(const PreparedOrientation &prepared,
 
     for (const PreparedBeam &pb : prepared.beams)
     {
-        const BeamEdgeData &edgeData = pb.edgeData;
+        const PreparedEdgeData &edgeData = pb.edgeData;
         if (!edgeData.valid) continue;
 
         double bdx = pb.bdx, bdy = pb.bdy, bdz = pb.bdz;
@@ -2430,7 +2460,7 @@ void HandlerPO::DiffractAtThetas(const PreparedOrientation &prepared,
 
     for (const PreparedBeam &pb : prepared.beams)
     {
-        const BeamEdgeData &edgeData = pb.edgeData;
+        const PreparedEdgeData &edgeData = pb.edgeData;
         if (!edgeData.valid) continue;
 
         double bdx=pb.bdx,bdy=pb.bdy,bdz=pb.bdz;
@@ -2581,7 +2611,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
 
     for (const PreparedBeam &pb : prepared.beams)
     {
-        const BeamEdgeData &edgeData = pb.edgeData;
+        const PreparedEdgeData &edgeData = pb.edgeData;
         double bdx = pb.bdx, bdy = pb.bdy, bdz = pb.bdz;
         double horAx = pb.horAx, horAy = pb.horAy, horAz = pb.horAz;
         double verAx = pb.verAx, verAy = pb.verAy, verAz = pb.verAz;
@@ -2772,7 +2802,10 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                     // Fallback path for beams without valid edge data
                     Point3d &dir = m_sphere.directions[i][j];
                     Point3d &vf = m_sphere.vf[i][j];
-                    matrixC tmp = ApplyDiffraction(pb.origBeam, pb.info, dir, vf, false);
+                    if (!pb.fallback)
+                        continue;
+                    matrixC tmp = ApplyDiffraction(
+                        pb.fallback->beam, pb.fallback->info, dir, vf, false);
                     d00 = tmp[0][0]; d01 = tmp[0][1];
                     d10 = tmp[1][0]; d11 = tmp[1][1];
                 }
@@ -2926,6 +2959,7 @@ void HandlerPO::CacheBeams(std::vector<Beam> &beams, double weight,
                             double D_ref, double incomingEnergy,
                             OrientationBeams &out)
 {
+    m_geometryScale = m_particle->MaximalDimention();
     out.beams.clear();
     out.weight = weight;
     out.incomingEnergy = incomingEnergy;

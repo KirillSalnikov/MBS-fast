@@ -11,8 +11,8 @@
 class Light
 {
 public:
-    Point3f direction;
-    Point3f polarizationBasis;
+    Point3f direction{};
+    Point3f polarizationBasis{};
 };
 
 class Track

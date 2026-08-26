@@ -57,7 +57,7 @@ public:
 	Point3f ChangeBeamDirection(const Vector3f &oldDir, const Vector3f &normal,
 								Location oldLoc, Location loc);
 private:
-	Point3f r; // tangential component of the incident direction
+	Point3f r{}; // tangential component of the incident direction
 	double reRiEff;
 	double s;
 //	double cosA;

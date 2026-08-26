@@ -104,7 +104,8 @@ bool ProjectPointToPlane(const Point3f &point, const Vector3f &direction,
 {
 	double tmp = DotProduct(point, planeNormal);
 	double dp  = DotProduct(direction, planeNormal);
-	const double scale = Length(direction)*Length(planeNormal);
+	const double scale = sqrt(
+		DotProduct(direction, direction) * DotProduct(planeNormal, planeNormal));
 	if (scale <= DBL_MIN
 		|| std::fabs(dp) <= geometry_parallel_tolerance(scale))
 		return false;

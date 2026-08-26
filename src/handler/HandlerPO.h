@@ -5,7 +5,201 @@
 #include "CutoffStatistics.h"
 #include "FftStatistics.h"
 #include <memory>
+#include <utility>
 #include <vector>
+
+/// Edge data stored with the prepared beam. Most traced polygons have at most
+/// eight vertices, so keeping 32 entries inline wastes both RAM and cache.
+/// Larger valid polygons retain the full representation transparently.
+struct PreparedEdgeData
+{
+    static const int INLINE_EDGES = 8;
+
+    PreparedEdgeData()
+    {
+        BindInline();
+    }
+
+    PreparedEdgeData(const PreparedEdgeData &other)
+    {
+        CopyFrom(other);
+    }
+
+    PreparedEdgeData &operator=(const PreparedEdgeData &other)
+    {
+        if (this != &other)
+            CopyFrom(other);
+        return *this;
+    }
+
+    PreparedEdgeData(PreparedEdgeData &&other) noexcept
+    {
+        MoveFrom(std::move(other));
+    }
+
+    PreparedEdgeData &operator=(PreparedEdgeData &&other) noexcept
+    {
+        if (this != &other)
+            MoveFrom(std::move(other));
+        return *this;
+    }
+
+    void Assign(const BeamEdgeData &source)
+    {
+        nVertices = source.nVertices;
+        valid = source.valid;
+        overflow.reset();
+        if (!valid)
+        {
+            nVertices = 0;
+            BindInline();
+            return;
+        }
+        if (valid && nVertices > INLINE_EDGES)
+        {
+            overflow = std::make_shared<BeamEdgeData>(source);
+            BindOverflow();
+            return;
+        }
+
+        BindInline();
+        for (int i = 0; i < nVertices; ++i)
+        {
+            x[i] = source.x[i];
+            y[i] = source.y[i];
+            slope_yx[i] = source.slope_yx[i];
+            slope_xy[i] = source.slope_xy[i];
+            intercept_y[i] = source.intercept_y[i];
+            intercept_x[i] = source.intercept_x[i];
+            edge_valid_x[i] = source.edge_valid_x[i];
+            edge_valid_y[i] = source.edge_valid_y[i];
+        }
+    }
+
+    bool HasOverflow() const
+    {
+        return static_cast<bool>(overflow);
+    }
+
+    double *x;
+    double *y;
+    double *slope_yx;
+    double *slope_xy;
+    double *intercept_y;
+    double *intercept_x;
+    bool *edge_valid_x;
+    bool *edge_valid_y;
+    int nVertices = 0;
+    bool valid = false;
+
+private:
+    void BindInline()
+    {
+        x = inlineX;
+        y = inlineY;
+        slope_yx = inlineSlopeYx;
+        slope_xy = inlineSlopeXy;
+        intercept_y = inlineInterceptY;
+        intercept_x = inlineInterceptX;
+        edge_valid_x = inlineValidX;
+        edge_valid_y = inlineValidY;
+    }
+
+    void BindOverflow()
+    {
+        x = overflow->x;
+        y = overflow->y;
+        slope_yx = overflow->slope_yx;
+        slope_xy = overflow->slope_xy;
+        intercept_y = overflow->intercept_y;
+        intercept_x = overflow->intercept_x;
+        edge_valid_x = overflow->edge_valid_x;
+        edge_valid_y = overflow->edge_valid_y;
+    }
+
+    void CopyFrom(const PreparedEdgeData &other)
+    {
+        nVertices = other.nVertices;
+        valid = other.valid;
+        if (other.overflow)
+        {
+            overflow = std::make_shared<BeamEdgeData>(*other.overflow);
+            BindOverflow();
+            return;
+        }
+
+        overflow.reset();
+        BindInline();
+        for (int i = 0; i < nVertices; ++i)
+        {
+            x[i] = other.x[i];
+            y[i] = other.y[i];
+            slope_yx[i] = other.slope_yx[i];
+            slope_xy[i] = other.slope_xy[i];
+            intercept_y[i] = other.intercept_y[i];
+            intercept_x[i] = other.intercept_x[i];
+            edge_valid_x[i] = other.edge_valid_x[i];
+            edge_valid_y[i] = other.edge_valid_y[i];
+        }
+    }
+
+    void ResetMovedFrom(PreparedEdgeData &other)
+    {
+        other.nVertices = 0;
+        other.valid = false;
+        other.overflow.reset();
+        other.BindInline();
+    }
+
+    void MoveFrom(PreparedEdgeData &&other)
+    {
+        nVertices = other.nVertices;
+        valid = other.valid;
+        if (other.overflow)
+        {
+            overflow = std::move(other.overflow);
+            BindOverflow();
+            ResetMovedFrom(other);
+            return;
+        }
+
+        overflow.reset();
+        BindInline();
+        for (int i = 0; i < nVertices; ++i)
+        {
+            x[i] = other.x[i];
+            y[i] = other.y[i];
+            slope_yx[i] = other.slope_yx[i];
+            slope_xy[i] = other.slope_xy[i];
+            intercept_y[i] = other.intercept_y[i];
+            intercept_x[i] = other.intercept_x[i];
+            edge_valid_x[i] = other.edge_valid_x[i];
+            edge_valid_y[i] = other.edge_valid_y[i];
+        }
+        ResetMovedFrom(other);
+    }
+
+    double inlineX[INLINE_EDGES];
+    double inlineY[INLINE_EDGES];
+    double inlineSlopeYx[INLINE_EDGES];
+    double inlineSlopeXy[INLINE_EDGES];
+    double inlineInterceptY[INLINE_EDGES];
+    double inlineInterceptX[INLINE_EDGES];
+    bool inlineValidX[INLINE_EDGES];
+    bool inlineValidY[INLINE_EDGES];
+    std::shared_ptr<BeamEdgeData> overflow;
+};
+
+struct PreparedBeamFallback
+{
+    PreparedBeamFallback(const Beam &sourceBeam, const BeamInfo &sourceInfo)
+        : beam(sourceBeam), info(sourceInfo)
+    {
+    }
+
+    Beam beam;
+    BeamInfo info;
+};
 
 /// Preprocessed beam data for parallel direction-loop processing.
 /// Contains all scalar data extracted from a beam after sequential preprocessing
@@ -13,16 +207,18 @@
 /// The direction loop can run on this without touching any Handler member state.
 struct PreparedBeam
 {
-    BeamEdgeData edgeData;
-    BeamPolData  polData;
-    BeamInfo     info;
+    // The preprocessing path overwrites every field it consumes.  A
+    // user-provided constructor prevents value-initialization from clearing
+    // the large fixed edge arrays before they are immediately filled.
+    PreparedBeam() {}
+
+    PreparedEdgeData edgeData;
 
     // Beam direction (double precision copy)
     double bdx, bdy, bdz;
     // Aperture axes
     double horAx, horAy, horAz;
     double verAx, verAy, verAz;
-    double normx, normy, normz;
     // Center
     double cenx, ceny, cenz;
     double beam_area;
@@ -36,8 +232,14 @@ struct PreparedBeam
     double jp10r, jp10i, jp11r, jp11i;
     bool isExternal;
 
-    // Original beam data needed for fallback path (non-valid edgeData)
-    Beam   origBeam;
+    // Compact source data used by scaling and CUDA packing.  Keeping a full
+    // Beam here costs more than 2 KiB per output beam, mostly unused polygon
+    // storage.  Only invalid edge data needs the legacy diffraction fallback.
+    Matrix2x2c rawJ;
+    double opticalPath;
+    double projLength;
+    int nActs;
+    std::shared_ptr<PreparedBeamFallback> fallback;
 
     // Internal optical path samples used to reapply absorption when a
     // prepared reference-size beam is rescaled in multikeq/multigrid.
@@ -212,7 +414,8 @@ protected:
     static bool IsParticleBeam(const Beam &beam);
     static bool HasInternalOpticalPath(const Beam &beam);
 
-    void ComputeOpticalLengths(const Beam &beam, BeamInfo &info);
+    void ComputeOpticalLengths(const Beam &beam, BeamInfo &info,
+                               const std::vector<int> *track = nullptr);
 
     virtual void RotateJones(const Beam &beam, const BeamInfo &info,
                      const Vector3d &vf, const Vector3d &direction,
@@ -249,7 +452,8 @@ protected:
                                   bool isExternal,
                                   const Vector3d &direction, const Vector3d &vf);
 
-    BeamInfo ComputeBeamInfo(Beam &beam);
+    BeamInfo ComputeBeamInfo(Beam &beam,
+                             const std::vector<int> *track = nullptr);
 
 
 

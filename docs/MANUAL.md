@@ -80,7 +80,7 @@ compiler; changing the system-wide GCC alternative is not required.
 |---|---|---:|---:|---|
 | `make -C gpu` or `make -C gpu fp64` | `gpu/bin/mbs_po_gpu_double` | FP64 | no | Numerical reference and production default |
 | `make -C gpu fp32` | `gpu/bin/mbs_po_gpu_float` | FP32 | no | Calibrated FP32 throughput |
-| `make -C gpu fp32_fast` | `gpu/bin/mbs_po_gpu_float_fast` | FP32 | yes | Maximum throughput after validation |
+| `make -C gpu fp32_fast` | `gpu/bin/mbs_po_gpu_float_fast` | FP32 | yes | Experimental fast math; benchmark and validate first |
 | `make -C gpu fp64_fast` | `gpu/bin/mbs_po_gpu_double_fast` | FP64 | yes | FP64 throughput after validation |
 | `make -C gpu double_debug` | `gpu/bin/mbs_po_gpu_double_debug` | FP64 | yes | Debug help and diagnostics |
 
@@ -89,16 +89,33 @@ Visibility/topology tracing, optical paths, absorption, cancellation-prone
 polygon moments, and critical phase trigonometry remain FP64. `--version`
 reports the storage, critical-phase, math, and target-architecture profile.
 
+On an RTX 3080 Ti, a representative non-convex test (`k_eq=20`, absorbing
+material, 64 symmetry-reduced SO(3) samples, `N_phi=720`, `N_theta=360`) gave
+the following median wall times over three runs:
+
+| Profile | Median time | Speed relative to FP64 | Global Mueller weighted L2 vs FP64 | M11 weighted L2 vs FP64 |
+|---|---:|---:|---:|---:|
+| Precise FP64 | 4.92 s | 1.00x | reference | reference |
+| Precise mixed FP32 | 3.45 s | 1.43x | `1.00e-6` | `9.99e-7` |
+| FP32 fast math | 3.63 s | 1.36x | `1.02e-6` | `1.01e-6` |
+
+Thus precise mixed FP32 is the preferred starting profile on consumer Ampere
+hardware when this error is acceptable. Fast math is not selected
+automatically because it was slower in this check and has a larger
+problem-dependent risk for narrow interference structure. FP64 remains the
+default and the required reference for a new particle, refractive index, size,
+or sampling regime.
+
 The GPU split build enables CUDA diffraction by default. `--gpu` is accepted but optional. Use `--cpu` only when you deliberately want the CPU diffraction backend from a GPU-capable binary.
 
 The Makefile detects the GPU compute capability with `nvidia-smi`. Override when needed:
 
 ```bash
-# Ampere, e.g. RTX 3080 Ti
-make -C gpu double_fast -j GPU_ARCH=86
+# Ampere, e.g. RTX 3080 Ti: calibrated mixed FP32
+make -C gpu fp32 -j GPU_ARCH=86
 
-# Ada, e.g. RTX 4070
-make -C gpu float_fast -j GPU_ARCH=89
+# Ada, e.g. RTX 4070: start with precise mixed FP32
+make -C gpu fp32 -j GPU_ARCH=89
 ```
 
 ### EPYC Zen5, AVX-512, and AVX2
@@ -571,7 +588,7 @@ The expensive PO part is the repeated evaluation of the same beam aperture integ
 
 | Work item | CPU path | GPU path | Parallel granularity |
 |---|---|---|---|
-| Ray tracing through facets | OpenMP over orientations/gamma blocks | Mostly still CPU-side; `--gpu_trace` is only a candidate prefilter | Orientation/chunk level |
+| Ray tracing through facets | OpenMP over orientations/gamma blocks | `--gpu-trace-prefilter` moves facet ordering and projected candidate filtering to CUDA; exact intersections and beam splitting remain CPU-side | Orientation/chunk level |
 | Beam packing | CPU host code | CPU prepares `GpuBeam`/packed beam buffers and copies to device | Beam records |
 | Edge diffraction | Scalar/vector CPU loops | CUDA kernels in `GpuDiffraction.cu` | Beam x theta x phi x orientation |
 | Jones coherent sum | CPU arrays of complex 2x2 matrices | Atomic or no-atomic device kernels | Grid cell and orientation |
@@ -620,8 +637,10 @@ Useful controls:
 | `MBS_GPU_STAGE_MUELLER=1` | Use staged per-orientation Mueller plus reduction where supported. |
 | `MBS_GPU_NO_VERTEX_CACHE=1` | Disable cached/packed vertex path for debugging. |
 | `MBS_GPU_COMPACT_BEAMS=0` | Disable compact packing for beams with at most 8 vertices and use the general layout for diagnostics. |
+| `MBS_GPU_WARP_BEAMS=0` | Disable the default warp-per-output beam reduction and restore the serial per-thread loop for diagnostics. |
+| `MBS_GPU_WARP_GRID_3D=0` | Disable the default 3D-grid warp specialization while retaining the general warp reduction. |
 | `MBS_GPU_TIMING=1` | Print GPU timing breakdown for count/pack/copy/kernels/d2h/add. |
-| `MBS_GPU_BLOCK=N` | Override CUDA block size for kernel tuning. |
+| `MBS_GPU_BLOCK=N` | Override CUDA block size: 64 (default), 128, or 256. |
 | `MBS_ORIENTATION_TIMING=1` | Print summed CPU time for rotation, tracing, and prepared-beam construction. |
 
 The diagnostic target below compares FP64 direct quaternion-vector rotation
@@ -638,7 +657,44 @@ audit mode; by themselves they do not accelerate CPU tracing or CUDA
 diffraction. The production `--so3-quaternion` speedup comes from symmetry and
 from replacing alpha retracing by the scattering-phi integral.
 
-Do not confuse this with full GPU ray tracing. The production GPU backend is primarily a diffraction and Mueller-accumulation accelerator. `--gpu_trace` only prefilters nonconvex tracing candidates; exact intersections remain CPU-side.
+Do not confuse this with full GPU ray tracing. The production GPU backend is
+primarily a diffraction and Mueller-accumulation accelerator. Its automatic
+tracing profile also performs topological facet ordering and conservative
+projected filtering on CUDA in batches; exact polygon intersections and beam
+splitting remain CPU-side. Unsupported candidate counts and polygons use the
+exact CPU path.
+
+The profile is enabled automatically for PO with the CUDA backend. The
+explicit `--gpu-trace-prefilter` flag requests the same mode, while
+`--no-gpu-trace-prefilter` disables it for an A/B reference. The validated
+automatic settings are full topological sorting, sort-result caching,
+conservative skip flags for large lists, 64 threads in the large-list kernel,
+and synchronous CUDA streams. Multiple OpenMP workers are supported. A total
+budget of approximately 512 beams is divided among them: with `--threads 8`,
+each worker submits at most 64 beams. This bound is important because each
+concurrent CUDA grid reserves kernel-stack backing. Do not set a large
+per-worker batch merely because free VRAM appears available: eight batches of
+2048 beams can exhaust a 12 GiB consumer GPU. If the initial batch still
+exhausts CUDA stack backing, it is split recursively and the reduced limit is
+remembered process-wide for all later batches and orientations.
+
+Expert overrides require `--allow-experimental-environment`:
+
+| Variable | Default | Effect |
+|---|---:|---|
+| `MBS_GPU_TRACE_OPENMP=0/1` | `1` | Disable or enable GPU tracing from multiple OpenMP workers. |
+| `MBS_GPU_TRACE_BATCH_BEAMS=N` | initial `ceil(512/threads)`, minimum 64 | Per-worker beam batch; reduced automatically after OOM, use an override only for measured tuning. |
+| `MBS_GPU_TRACE_FULL_SORT=0/1` | `1` | Disable or enable exact CUDA topological facet ordering. |
+| `MBS_GPU_TRACE_SORT_CACHE=0/1` | `1` | Reuse exact ordering for identical direction/candidate keys. |
+| `MBS_GPU_TRACE_LARGE_SKIP_FLAGS=0/1` | `1` | Emit conservative projected skip flags for lists of 25--256 facets. |
+| `MBS_GPU_TRACE_LARGE_THREADS=N` | `64` | Large-list block size: 64, 128, or 256. |
+| `MBS_GPU_TRACE_CACHE_FACETS=0/1` | `1` | Retain packed facet geometry in the per-worker CUDA workspace. |
+| `MBS_GPU_TRACE_MIN_CANDIDATES=N` | `1024` | Minimum total candidate count before submitting a GPU batch. |
+| `MBS_GPU_TRACE_NONBLOCKING_STREAM=0/1` | `0` | Use a separate nonblocking stream per worker; increases concurrent resource pressure. |
+| `MBS_GPU_TRACE_PREFILTER_FIRST=0/1` | `0` | Diagnostic projected prefilter before sorting. |
+| `MBS_GPU_TRACE_MARGIN=X` | automatic | Override conservative projected-bound margin. |
+| `MBS_GPU_TRACE_TIMING=1` | `0` | Print H2D, small-kernel, large-kernel, and D2H timings. |
+| `MBS_GPU_TRACE_VERIFY_SORT=1` | `0` | Compare CUDA ordering with the exact CPU result. |
 
 ### Multi-size and multi-GPU scans
 
@@ -824,7 +880,8 @@ Common scheduler controls:
 | `--trace_cutoff_area` | `EPS` | Prune trace tree by relative area. |
 | `--trace_cutoff_importance` | `EPS` | Prune trace tree by `|J|^2*area`. |
 | `--trace_max_beams` | `N` | Abort the calculation after `N` beam nodes in one orientation; `0` disables. |
-| `--gpu_trace` | none | Experimental CUDA prefilter for nonconvex tracing candidates. |
+| `--gpu-trace-prefilter` | none | Explicitly enable the automatic batched CUDA tracing profile. |
+| `--no-gpu-trace-prefilter` | none | Disable automatic CUDA facet ordering and candidate filtering. |
 | `--trace_prefilter` | none | Enable CPU projected-AABB prefilter. |
 | `--no_trace_prefilter` | none | Disable CPU projected-AABB prefilter. |
 | `--trace_prefilter_margin` | `M` | AABB prefilter margin. |
@@ -897,8 +954,19 @@ Production-use variables:
 | `MBS_GPU_STAGE_MUELLER` | Enable staged per-orientation Mueller reduction when supported. |
 | `MBS_GPU_NO_VERTEX_CACHE` | Disable cached/packed vertex path for debugging. |
 | `MBS_GPU_COMPACT_BEAMS=0` | Disable compact packing for beams with at most 8 vertices. |
+| `MBS_GPU_WARP_BEAMS=0` | Restore the serial per-thread beam loop for diagnostics. |
+| `MBS_GPU_WARP_GRID_3D=0` | Disable only the default 3D-grid warp specialization for diagnostics. |
 | `MBS_GPU_TIMING` | Print CUDA timing breakdowns. |
-| `MBS_GPU_BLOCK` | Override CUDA kernel block size. |
+| `MBS_GPU_BLOCK` | CUDA block size: 64 (default), 128, or 256. |
+| `MBS_GPU_TRACE_OPENMP=0/1` | Disable or enable automatic CUDA tracing with multiple OpenMP workers; default `1`. |
+| `MBS_GPU_TRACE_BATCH_BEAMS=N` | Override the automatic per-worker batch `ceil(512/threads)`; large values may exhaust CUDA stack memory. |
+| `MBS_GPU_TRACE_FULL_SORT=0/1` | Exact CUDA topological ordering; default `1`. |
+| `MBS_GPU_TRACE_SORT_CACHE=0/1` | Exact ordering cache; default `1`. |
+| `MBS_GPU_TRACE_LARGE_SKIP_FLAGS=0/1` | Conservative skip flags for large candidate lists; default `1`. |
+| `MBS_GPU_TRACE_LARGE_THREADS=N` | Large-list CUDA block size; default `64`, supported 64/128/256. |
+| `MBS_GPU_TRACE_NONBLOCKING_STREAM=0/1` | Per-worker nonblocking streams; default `0`, profiling only. |
+| `MBS_GPU_TRACE_TIMING=1` | Print CUDA tracing transfer and kernel timings. |
+| `MBS_GPU_TRACE_VERIFY_SORT=1` | Verify CUDA facet ordering against CPU. |
 | `MBS_ORIENTATION_TIMING` | Print CPU-time breakdown for rotation, tracing, and prepared-beam construction. |
 | `MBS_HOST_MEM_FRACTION` | Fraction of current available host RAM for measured prepared-orientation chunking. |
 | `MBS_HOST_MEM_RESERVE_MB` | Host memory reserve in MB. |

@@ -1,5 +1,6 @@
 #include "Tracks.h"
 
+#include <climits>
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
@@ -152,8 +153,50 @@ void Tracks::ImportTracks(int nFacets, const std::string &filename)
 void Tracks::RecoverTrack(const Beam &beam, int facetNum,
 						  std::vector<int> &track)
 {
-	int coef = facetNum + 1;
-	std::vector<int> tmp_track;
+	const int coef = facetNum + 1;
+	const size_t oldSize = track.size();
+	const size_t trackLength = static_cast<size_t>(beam.nActs + 1);
+	track.resize(oldSize + trackLength);
+
+#ifndef _DEBUG
+	// Most practical trajectories fit in at most two BigInteger blocks. Decode
+	// those with native integer arithmetic instead of repeated arbitrary-
+	// precision quotient/remainder operations in the diffraction hot path.
+#if defined(__SIZEOF_INT128__)
+	__extension__ typedef unsigned __int128 NativeTrackId;
+	const BigInteger::Index nativeBlockLimit = 2;
+#else
+	using NativeTrackId = unsigned long;
+	const BigInteger::Index nativeBlockLimit = 1;
+#endif
+	if (beam.id.getSign() != BigInteger::negative
+		&& beam.id.getLength() <= nativeBlockLimit)
+	{
+		NativeTrackId tmpId = beam.id.isZero()
+			? NativeTrackId(0) : NativeTrackId(beam.id.getBlock(0));
+#if defined(__SIZEOF_INT128__)
+		if (beam.id.getLength() == 2)
+		{
+			tmpId |= NativeTrackId(beam.id.getBlock(1))
+				<< (sizeof(unsigned long) * CHAR_BIT);
+		}
+#endif
+		tmpId /= static_cast<NativeTrackId>(coef);
+		for (int i = 0; i <= beam.nActs; ++i)
+		{
+			const int tmp = static_cast<int>(
+				tmpId % static_cast<NativeTrackId>(coef));
+			tmpId /= static_cast<NativeTrackId>(coef);
+			if (tmp < 1 || tmp > facetNum)
+				throw std::runtime_error(
+					"beam trajectory ID cannot be decoded for the loaded particle.\n"
+					"Fix: unset MBS_DISABLE_TRACK_IDS when using absorption or "
+					"--trajectories; if it is already unset, report this command as a bug.");
+			track[oldSize + trackLength - 1 - static_cast<size_t>(i)] = tmp - 1;
+		}
+		return;
+	}
+#endif
 
 	auto tmpId = beam.id/coef;
 
@@ -171,11 +214,6 @@ void Tracks::RecoverTrack(const Beam &beam, int facetNum,
 				"beam trajectory ID cannot be decoded for the loaded particle.\n"
 				"Fix: unset MBS_DISABLE_TRACK_IDS when using absorption or "
 				"--trajectories; if it is already unset, report this command as a bug.");
-		tmp_track.push_back(tmp - 1);
-	}
-
-	for (int i = tmp_track.size()-1; i >= 0; --i)
-	{
-		track.push_back(tmp_track.at(i));
+		track[oldSize + trackLength - 1 - static_cast<size_t>(i)] = tmp - 1;
 	}
 }

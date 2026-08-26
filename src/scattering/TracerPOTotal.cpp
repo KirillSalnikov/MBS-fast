@@ -614,7 +614,7 @@ static double PreparedBeamImportance(const PreparedBeam &beam)
 {
     if (beam.isExternal)
         return std::numeric_limits<double>::infinity();
-    const double jn = beam.origBeam.J.Norm();
+    const double jn = beam.rawJ.Norm();
     const double importance = jn * beam.beam_area;
     return std::isfinite(importance) && importance > 0.0 ? importance : 0.0;
 }
@@ -665,10 +665,16 @@ static long long PreparedBeamStorageBytes(const PreparedBeam &beam)
     long long bytes = (long long)sizeof(PreparedBeam);
     bytes += (long long)beam.absorptionPaths.capacity()
         * (long long)sizeof(double);
+    if (beam.fallback)
+    {
+        bytes += (long long)sizeof(PreparedBeamFallback);
 #ifndef _DEBUG
-    bytes += (long long)beam.origBeam.id.getCapacity()
-        * (long long)sizeof(BigInteger::Blk);
+        bytes += (long long)beam.fallback->beam.id.getCapacity()
+            * (long long)sizeof(BigInteger::Blk);
 #endif
+    }
+    if (beam.edgeData.HasOverflow())
+        bytes += (long long)sizeof(BeamEdgeData);
     return bytes;
 }
 
@@ -2688,6 +2694,10 @@ static PreparedOrientation ScalePreparedOrientation(const PreparedOrientation &s
     const double scale2 = scale * scale;
     for (PreparedBeam &pb : dst.beams)
     {
+        if (pb.fallback)
+        {
+            pb.fallback = std::make_shared<PreparedBeamFallback>(*pb.fallback);
+        }
         for (int e = 0; e < pb.edgeData.nVertices; ++e)
         {
             pb.edgeData.x[e] *= scale;
@@ -2696,22 +2706,27 @@ static PreparedOrientation ScalePreparedOrientation(const PreparedOrientation &s
             pb.edgeData.intercept_y[e] *= scale;
         }
 
-        pb.info.area *= scale2;
-        pb.info.projLenght *= scale;
-        pb.info.center.x *= scale;
-        pb.info.center.y *= scale;
-        pb.info.center.z *= scale;
-        pb.info.projectedCenter.x *= scale;
-        pb.info.projectedCenter.y *= scale;
-        pb.info.projectedCenter.z *= scale;
-        for (double &v : pb.info.opticalLengths)
-            v *= scale;
-
         pb.cenx *= scale;
         pb.ceny *= scale;
         pb.cenz *= scale;
         pb.beam_area *= scale2;
-        pb.origBeam.opticalPath *= scale;
+        pb.opticalPath *= scale;
+        pb.projLength *= scale;
+        if (pb.fallback)
+        {
+            BeamInfo &info = pb.fallback->info;
+            info.area *= scale2;
+            info.projLenght *= scale;
+            info.center.x *= scale;
+            info.center.y *= scale;
+            info.center.z *= scale;
+            info.projectedCenter.x *= scale;
+            info.projectedCenter.y *= scale;
+            info.projectedCenter.z *= scale;
+            for (double &v : info.opticalLengths)
+                v *= scale;
+            pb.fallback->beam.opticalPath *= scale;
+        }
 
         ::complex absorption(1.0, 0.0);
         if (!pb.absorptionPaths.empty())
@@ -2727,13 +2742,13 @@ static PreparedOrientation ScalePreparedOrientation(const PreparedOrientation &s
                 absorption = sum / count;
         }
 
-        matrixC J_base = pb.origBeam.J * absorption;
+        matrixC J_base = pb.rawJ * absorption;
         matrixC J_phased = pb.isExternal
-            ? pb.origBeam.J * exp_im(waveIndex * pb.origBeam.opticalPath)
-            : J_base * exp_im(waveIndex * pb.info.projLenght);
+            ? pb.rawJ * exp_im(waveIndex * pb.opticalPath)
+            : J_base * exp_im(waveIndex * pb.projLength);
         if (pb.isExternal)
             J_phased *= -1.0;
-        if (!pb.isExternal && (pb.origBeam.nActs & 1))
+        if (!pb.isExternal && (pb.nActs & 1))
             J_phased *= -1.0;
 
         ::complex jp00 = J_phased[0][0], jp01 = J_phased[0][1];

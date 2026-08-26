@@ -107,6 +107,7 @@ public:
 	void add     (const BigInteger &a, const BigInteger &b);
 	void subtract(const BigInteger &a, const BigInteger &b);
 	void multiply(const BigInteger &a, const BigInteger &b);
+	void multiplyAddNonnegative(Blk multiplier, Blk addend);
 	/* See the comment on BigUnsigned::divideWithRemainder.  Semantics
 	 * differ from those of primitive integers when negatives and/or zeros
 	 * are involved. */

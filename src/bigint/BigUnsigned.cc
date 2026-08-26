@@ -368,6 +368,41 @@ void BigUnsigned::multiply(const BigUnsigned &a, const BigUnsigned &b) {
 		len--;
 }
 
+void BigUnsigned::multiplyAdd(Blk multiplier, Blk addend) {
+#if defined(__SIZEOF_INT128__)
+	__extension__ typedef unsigned __int128 DoubleBlk;
+	if (multiplier == 0) {
+		if (addend == 0) {
+			len = 0;
+		} else {
+			allocate(1);
+			blk[0] = addend;
+			len = 1;
+		}
+		return;
+	}
+
+	const Index oldLen = len;
+	allocateAndCopy(oldLen + 1);
+	DoubleBlk carry = addend;
+	for (Index i = 0; i < oldLen; ++i) {
+		const DoubleBlk value =
+			static_cast<DoubleBlk>(blk[i]) * multiplier + carry;
+		blk[i] = static_cast<Blk>(value);
+		carry = value >> N;
+	}
+	len = oldLen;
+	if (carry != 0)
+		blk[len++] = static_cast<Blk>(carry);
+#else
+	const BigUnsigned multiplierValue(multiplier);
+	const BigUnsigned addendValue(addend);
+	BigUnsigned product;
+	product.multiply(*this, multiplierValue);
+	add(product, addendValue);
+#endif
+}
+
 /*
  * DIVISION WITH REMAINDER
  * This monstrous function mods *this by the given divisor b while storing the
@@ -419,6 +454,41 @@ void BigUnsigned::divideWithRemainder(const BigUnsigned &b, BigUnsigned &q) {
 	}
 
 	// At this point we know (*this).len >= b.len > 0.  (Whew!)
+
+#if defined(__SIZEOF_INT128__)
+	/*
+	 * Division by a single block is common when trajectory IDs are decoded.
+	 * The original bit-at-a-time algorithm below is unnecessarily expensive
+	 * for that case.  Process one dividend block per step using a double-width
+	 * intermediate, preserving the exact quotient and remainder semantics.
+	 */
+	if (b.len == 1) {
+		__extension__ typedef unsigned __int128 DoubleBlk;
+		const Blk divisor = b.blk[0];
+		Blk remainder = 0;
+
+		q.len = len;
+		q.allocate(q.len);
+		Index i = len;
+		while (i > 0) {
+			--i;
+			const DoubleBlk dividend =
+				(DoubleBlk(remainder) << N) | DoubleBlk(blk[i]);
+			q.blk[i] = Blk(dividend / divisor);
+			remainder = Blk(dividend % divisor);
+		}
+		q.zapLeadingZeros();
+
+		if (remainder == 0) {
+			len = 0;
+		} else {
+			allocate(1);
+			blk[0] = remainder;
+			len = 1;
+		}
+		return;
+	}
+#endif
 
 	/*
 	 * Overall method:

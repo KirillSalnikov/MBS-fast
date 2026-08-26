@@ -175,7 +175,8 @@ void ApplyFftOptions(const RunConfig &config, HandlerPO *handler)
     handler->SetFftTolerance(config.fftTolerance);
 }
 
-void ApplyTraceCutoffOptions(const ArgPP &args, Scattering *scattering)
+void ApplyTraceCutoffOptions(const ArgPP &args, Scattering *scattering,
+                             bool useGpu)
 {
     const std::string profile = args.IsCatched("cutoff_profile")
         ? args.GetStringValue("cutoff_profile", 0)
@@ -235,8 +236,11 @@ void ApplyTraceCutoffOptions(const ArgPP &args, Scattering *scattering)
     if (args.IsCatched("trace_retry_factor"))
         scattering->m_traceRetryFactor = args.GetDoubleValue(
             "trace_retry_factor", 0);
+    scattering->m_gpuTracePrefilter = useGpu;
     if (args.IsCatched("gpu_trace"))
         scattering->m_gpuTracePrefilter = true;
+    if (args.IsCatched("no_gpu_trace"))
+        scattering->m_gpuTracePrefilter = false;
     if (args.IsCatched("trace_prefilter"))
         scattering->m_traceCpuProjectedPrefilter = true;
     if (args.IsCatched("no_trace_prefilter"))
@@ -1649,6 +1653,12 @@ int main(int argc, const char* argv[])
                   << (defaultGpu && config.backend == RunBackend::Auto ? " (default)" : "")
                   << std::endl;
         additionalSummary += "GPU backend: " + FormatGpuInfo(gpuInfo) + "\n";
+        const bool gpuTraceEnabled = !args.IsCatched("no_gpu_trace");
+        const std::string gpuTraceMode = gpuTraceEnabled
+            ? "automatic (CUDA ordering/prefilter, exact splitting on CPU)"
+            : "disabled";
+        std::cout << "GPU trace profile: " << gpuTraceMode << std::endl;
+        additionalSummary += "GPU trace profile: " + gpuTraceMode + "\n";
     }
     additionalSummary += FormatRuntimeResourceReport("startup", useGpu);
 
@@ -2008,7 +2018,7 @@ int main(int argc, const char* argv[])
 
             TracerPO tracer(particle, reflNum, dirName);
             tracer.m_summary = additionalSummary;
-            ApplyTraceCutoffOptions(args, tracer.m_scattering);
+            ApplyTraceCutoffOptions(args, tracer.m_scattering, useGpu);
 
             HandlerPO *handler = new HandlerPO(particle, &tracer.m_incidentLight,
                                                nTheta, wave);
@@ -2229,7 +2239,7 @@ int main(int argc, const char* argv[])
             std::unique_ptr<TracerPOTotal> tracerOwner(tracer);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
             tracer->m_scattering->m_wave = wave;
-            ApplyTraceCutoffOptions(args, tracer->m_scattering);
+            ApplyTraceCutoffOptions(args, tracer->m_scattering, useGpu);
             tracer->shadowOff = args.IsCatched("shadow_off");
             trackGroups.push_back(TrackGroup());
             HandlerPOTotal *handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
@@ -2419,7 +2429,7 @@ int main(int argc, const char* argv[])
                     tracerOwner.reset(tracer);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
                     tracer->m_scattering->m_wave = wave;
-            ApplyTraceCutoffOptions(args, tracer->m_scattering);
+            ApplyTraceCutoffOptions(args, tracer->m_scattering, useGpu);
                     if (args.IsCatched("r"))
                     {
                         tracer->m_scattering->restriction = args.GetDoubleValue("r", 0);
@@ -2444,7 +2454,7 @@ int main(int argc, const char* argv[])
                     tracerOwner.reset(tracer);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
                     tracer->m_scattering->m_wave = wave;
-            ApplyTraceCutoffOptions(args, tracer->m_scattering);
+            ApplyTraceCutoffOptions(args, tracer->m_scattering, useGpu);
                     tracer->shadowOff = args.IsCatched("shadow_off");
                     if (args.IsCatched("r"))
                     {
@@ -2566,7 +2576,7 @@ int main(int argc, const char* argv[])
             std::unique_ptr<TracerPOTotal> tracerOwner(tracer);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
             tracer->m_scattering->m_wave = wave;
-            ApplyTraceCutoffOptions(args, tracer->m_scattering);
+            ApplyTraceCutoffOptions(args, tracer->m_scattering, useGpu);
             tracer->shadowOff = args.IsCatched("shadow_off");
             if (args.IsCatched("r"))
                 tracer->m_scattering->restriction = args.GetDoubleValue("r", 0);
@@ -2613,7 +2623,7 @@ int main(int argc, const char* argv[])
             std::unique_ptr<TracerPOTotal> tracerOwner(tracer);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
             tracer->m_scattering->m_wave = wave;
-            ApplyTraceCutoffOptions(args, tracer->m_scattering);
+            ApplyTraceCutoffOptions(args, tracer->m_scattering, useGpu);
             tracer->shadowOff = args.IsCatched("shadow_off");
             trackGroups.push_back(TrackGroup());
             HandlerPOTotal *handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
@@ -2806,7 +2816,7 @@ int main(int argc, const char* argv[])
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
             tracer->m_adaptiveLimits = config.adaptive;
             tracer->m_scattering->m_wave = wave;
-            ApplyTraceCutoffOptions(args, tracer->m_scattering);
+            ApplyTraceCutoffOptions(args, tracer->m_scattering, useGpu);
             tracer->shadowOff = args.IsCatched("shadow_off");
             trackGroups.push_back(TrackGroup());
             HandlerPOTotal *handler = new HandlerPOTotal(particle, &tracer->m_incidentLight,
@@ -3392,7 +3402,7 @@ int main(int argc, const char* argv[])
 
         TracerGO tracer(particle, reflNum, dirName);
         tracer.m_scattering->m_wave = wave;
-        ApplyTraceCutoffOptions(args, tracer.m_scattering);
+        ApplyTraceCutoffOptions(args, tracer.m_scattering, false);
         if (args.IsCatched("r"))
         {
             tracer.m_scattering->restriction = args.GetDoubleValue("r", 0);

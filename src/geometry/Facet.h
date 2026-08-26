@@ -7,8 +7,8 @@ class Facet : public Polygon
 public:
 	Facet() = default;
 	Facet(const Facet &) = default;
-	Point3f normal[2];	///< internal and external normals
-	Point3f center;		///< center of facet polygon (for fast access without calc)
+	Point3f normal[2]{};	///< internal and external normals
+	Point3f center{};		///< center of facet polygon (for fast access without calc)
 
 	bool isVisibleIn = true;
 	bool isVisibleOut = true;

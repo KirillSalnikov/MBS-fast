@@ -24,15 +24,18 @@ private:
     bool CutBeamByFacet(const Polygon &intersection, int facetId, Beam &beam,
                         Polygon &reachedIntersection, PolygonArray &result);
 
-    void CutExternalBeam(const Beam &beam, std::vector<Beam> &scaterredBeams);
+    void CutExternalBeam(const Beam &beam, std::vector<Beam> &scaterredBeams,
+                         const IntArray *readyFacetIds = nullptr);
 
     void FindVisibleFacets(const Beam &beam, IntArray &facetIds);
     void FindVisibleFacetsForLight(IntArray &facetIDs);
     void BuildFacetVisibilityCache();
+    void BuildFacetNormalCache();
     void BuildFacetProjectionCache();
     void CopyVisibilityCacheFrom(const ScatteringNonConvex &source);
 
     void SelectVisibleFacets(const Beam &beam, IntArray &facetIDs);
+    void SortVisibleFacets(const Beam &beam, IntArray &facetIDs);
     void SelectVisibleFacetsForLight(IntArray &facetIDs);
 
     bool SetOpticalBeamParams(const Facet &facet, const Beam &incidentBeam,
@@ -83,8 +86,12 @@ private:
     PolygonArray m_polygonResultBuffer;
     int m_visibleFacetCache[2][MAX_FACET_NUM][MAX_FACET_NUM];
     size_t m_visibleFacetCacheSize[2][MAX_FACET_NUM];
+    double m_facetNormalComponents[2][MAX_FACET_NUM][3];
     double m_facetProjectionBounds[3][MAX_FACET_NUM][4];
     int m_facetProjectionDrop[2][MAX_FACET_NUM];
+    size_t m_traceSortCalls = 0;
+    size_t m_traceSortCandidates = 0;
+    size_t m_traceSortOverlapCalls = 0;
     const ScatteringNonConvex *m_visibilityCacheOwner = nullptr;
     bool m_visibilityCacheBuilt = false;
 };

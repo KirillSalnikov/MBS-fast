@@ -9,8 +9,9 @@
 struct GpuTraceBeamFacets
 {
     const Beam *beam;
-    const IntArray *facetIds;
+    IntArray *facetIds;
     std::vector<unsigned char> *mayIntersect;
+    bool *sortedOnGpu;
 };
 
 bool GpuTracePrefilterBeamFacets(const Beam &beam,
@@ -18,8 +19,14 @@ bool GpuTracePrefilterBeamFacets(const Beam &beam,
                                  const IntArray &facetIds,
                                  std::vector<unsigned char> &mayIntersect);
 
-bool GpuTracePrefilterBeamFacetBatch(const Facet *facets,
-                                     double geometryScale,
-                                     const std::vector<GpuTraceBeamFacets> &items);
+bool GpuTracePrepareBeamFacetBatch(const Facet *facets,
+                                   double geometryScale,
+                                   const std::vector<GpuTraceBeamFacets> &items);
+
+// Reports whether the immediately preceding batch preparation on this host
+// thread failed because CUDA could not reserve device memory (including
+// kernel stack backing). Other unsupported cases must keep using the CPU
+// fallback instead of retrying smaller batches.
+bool GpuTraceLastFailureWasOutOfMemory();
 
 void GpuTraceInvalidateFacetCache();

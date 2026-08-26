@@ -1491,7 +1491,15 @@ RunConfig RunConfig::FromCommandLine(const ArgPP &args,
     if (args.IsCatched("gpu_trace") && !cudaCompiled)
         Fail("--gpu-trace-prefilter requires a CUDA-enabled binary.",
              "run a gpu/bin/mbs_po_gpu_* binary or remove this experimental option.");
+    if (args.IsCatched("gpu_trace") && !config.useGpu)
+        Fail("--gpu-trace-prefilter requires the CUDA PO backend.",
+             "select --method po --backend cuda, or remove this option.");
+    if (args.IsCatched("no_gpu_trace") && !cudaCompiled)
+        Fail("--no-gpu-trace-prefilter applies only to a CUDA-enabled binary.",
+             "remove this option from a CPU-only run.");
 
+    RejectTogether(args, "gpu_trace", "no_gpu_trace",
+                   "keep one CUDA tracing setting or remove both to use the automatic profile.");
     RejectTogether(args, "trace_prefilter", "no_trace_prefilter",
                    "keep one prefilter setting or remove both to use the default.");
     RejectTogether(args, "full_only", "noshadow_output",

@@ -74,7 +74,7 @@ cd MBS-fast
 make -C cpu -j
 
 # CUDA variants
-make -C gpu -j                 # FP64, precise math; default/reference
+make -C gpu -j                 # FP64, precise math + LTO; default/reference
 make -C gpu fp32 -j            # FP32 storage, precise math
 make -C gpu fp32_fast -j       # FP32 storage + --use_fast_math
 make -C gpu fp64_fast -j       # FP64 storage + --use_fast_math
@@ -101,13 +101,34 @@ The resulting binaries are independent:
 | CUDA double fast | `gpu/bin/mbs_po_gpu_double_fast` |
 
 The default CUDA target is FP64 without `--use_fast_math`; it is the numerical
-reference build. The `fp32`, `fp64`, `fp32_fast`, and `fp64_fast` Make targets
+reference build. Link-time optimization is enabled by default because it
+reduces production runtime without changing CUDA arithmetic. Set `GPU_LTO=0`
+to disable it; LTO and non-LTO objects use separate build directories. The
+`fp32`, `fp64`, `fp32_fast`, and `fp64_fast` Make targets
 select explicit profiles. FP32 stores diffraction-beam geometry and accumulated
 optical quantities in FP32. Visibility/topology tracing, optical paths,
 absorption, cancellation-prone polygon moments, and critical phase
 trigonometry remain FP64. Validate throughput profiles against CPU double and
 CUDA FP64 on representative convex, non-convex, fixed-orientation, and
 orientation-averaged cases before production use. Record `--version` output.
+
+For scientific reference and final archive calculations, use
+`mbs_po_gpu_double`. On consumer GPUs with weak FP64 hardware, start with
+`mbs_po_gpu_float`: it keeps visibility, topology, optical paths, absorption,
+polygon moments, and phase-sensitive operations in FP64 while using FP32 for
+the large diffraction storage and accumulation path. Use
+`mbs_po_gpu_float_fast` only after an application-specific FP64 comparison;
+fast transcendental approximations can change narrow interference features.
+
+A representative RTX 3080 Ti check (concave hexagonal particle, `k_eq=20`,
+64 SO(3) samples, `N_phi=720`, `N_theta=360`) measured median wall times of
+4.92 s for precise FP64, 3.45 s for precise mixed FP32, and 3.63 s for FP32
+fast math. Mixed FP32 was 1.43x faster with global Mueller and M11 weighted-L2
+errors near `1e-6` relative to FP64. This is a selection example, not a
+universal tolerance guarantee; repeat it for the production particle and grid.
+The CUDA diffraction path also enables warp-per-output beam reduction and its
+3D-grid specialization by default. Set `MBS_GPU_WARP_BEAMS=0` or
+`MBS_GPU_WARP_GRID_3D=0` only for diagnostic A/B runs.
 
 For a double CUDA build without fast math:
 
@@ -136,7 +157,7 @@ make -C cpu \
 The GPU Makefile detects compute capability through `nvidia-smi`; if detection
 is unavailable it defaults to `sm_86`. Set the architecture explicitly when
 building elsewhere, for example `make -C gpu GPU_ARCH=89 -j`. Object
-directories are separated by architecture, precision, fast-math, and MPI
+directories are separated by architecture, precision, fast-math, LTO, and MPI
 settings. Run `make -C gpu clean` when changing the CUDA toolkit or host
 compiler.
 
@@ -168,6 +189,15 @@ gpu/bin/mbs_po_gpu_double --method po --backend cuda \
     --scattering-grid 0 180 600 180 --threads 16 \
     --output results/po_gpu --close
 ```
+
+CUDA PO builds automatically enable the validated batched GPU tracing profile
+for non-convex particles. It performs projected facet ordering and conservative
+candidate filtering on the GPU while retaining exact polygon intersections and
+beam splitting on the CPU. Use `--no-gpu-trace-prefilter` for a reference run
+without this stage; `--gpu-trace-prefilter` explicitly requests it and is
+mainly useful in reproducibility scripts. The initial per-worker batch is
+derived from the OpenMP worker count; if CUDA reports stack-related OOM, the
+process remembers a smaller successful limit for all subsequent orientations.
 
 GO is a CPU method, including when invoked from a CUDA-capable binary:
 

@@ -185,8 +185,8 @@ GPU-версия двойной точности собирается отдел
 использовать для проверки точек $0^\circ$ и $180^\circ$ и для сравнения с CPU:
 
 \begin{lstlisting}[language=bash]
-make gpu_double_fast -j
-gpu/bin/mbs_po_gpu_double_fast --version
+make -C gpu fp64 -j
+gpu/bin/mbs_po_gpu_double --version
 \end{lstlisting}
 
 \subsection{Первый расчёт}
@@ -198,7 +198,7 @@ gpu/bin/mbs_po_gpu_double_fast --version
 
 \begin{lstlisting}[language=bash]
 CUDA_VISIBLE_DEVICES=0 \
-gpu/bin/mbs_po_gpu_double_fast \
+gpu/bin/mbs_po_gpu_double \
   --method po \
   --particle 1 100 70 \
   --refractive-index 1.3116 0 \
@@ -1077,10 +1077,10 @@ x0 y0 z0      # следующая грань
 цикла «запись--чтение»:
 
 \begin{lstlisting}
-gpu/bin/mbs_po_gpu_double_fast --method po \
+gpu/bin/mbs_po_gpu_double --method po \
   --particle 10 20 12 15 \
   --save-geometry concave.particle ...
-gpu/bin/mbs_po_gpu_double_fast --method po \
+gpu/bin/mbs_po_gpu_double --method po \
   --particle-file concave.particle ...
 \end{lstlisting}
 
@@ -1606,7 +1606,7 @@ $l_{\max}$ и сетка пересчитывались заново.
 \begin{lstlisting}[language=bash]
 CUDA_VISIBLE_DEVICES=0,1,2,3 \
 MBS_GPU_GROUPS=1 MBS_GPU_MULTI_MAX=4 \
-gpu/bin/mbs_po_gpu_double_fast --method po \
+gpu/bin/mbs_po_gpu_double --method po \
   --particle 1 100 70 --refractive-index 1.3116 0 \
   --wavelength-um 0.532 --max-reflections 8 \
   --diffraction-sampling 2 \
@@ -1769,6 +1769,64 @@ $N_\phi$.
 \code{--fft-tolerance EPS}. Алгоритм, цена дополнительной проверки и смысл
 оценки ошибки разобраны в разделе~\ref{fft-phi-ru}.
 
+\subsection{Автоматический профиль трассировки на GPU}
+
+В CUDA-сборке метода физической оптики пакетное упорядочивание граней и
+консервативный отбор кандидатов включаются автоматически. Явный параметр
+\code{--gpu-trace-prefilter} включает тот же режим, а
+\code{--no-gpu-trace-prefilter} отключает его для контрольного сравнения.
+Это не приближённая трассировка: точные многоугольники пересечения,
+топологические решения, коэффициенты Френеля и построение дочерних пучков
+остаются на CPU.
+
+Проверенный автоматический профиль включает точную топологическую сортировку
+на CUDA, кэш одинаковых сортировок, консервативные флаги пропуска для списков
+из 25--256 граней, кэш геометрии граней и блок из 64 потоков для больших
+списков. Размер пакета одного рабочего потока выбирается как
+\[
+  B=\max\!\left(64,
+      \left\lceil\frac{512}{N_{\mathrm{workers}}}\right\rceil\right).
+\]
+Такая формула предотвращает исчерпание стека CUDA, наблюдавшееся при
+завышенном фиксированном пакете. Если и начальный пакет исчерпывает стек CUDA,
+он рекурсивно делится, а уменьшенный предел запоминается для всех следующих
+пакетов и ориентаций процесса. На сложной ориентации глубоко вогнутой
+частицы время уменьшилось с 7,93 до 0,98 с, то есть в 8,09 раза; на более
+лёгком контрольном случае выигрыш составил около 1,08 раза. Эффект зависит от
+сложности дерева трассировки.
+
+\begin{longtable}{L{0.45\linewidth} L{0.18\linewidth} L{0.27\linewidth}}
+\caption{Параметры автоматической CUDA-трассировки.}\\
+\toprule
+Переменная & По умолчанию & Смысл \\
+\midrule
+\endfirsthead
+\toprule
+Переменная & По умолчанию & Смысл \\
+\midrule
+\endhead
+\nolinkurl{MBS_GPU_TRACE_OPENMP} & 1 & Вызывать CUDA-трассировку из рабочих потоков OpenMP. \\
+\nolinkurl{MBS_GPU_TRACE_BATCH_BEAMS} & авто & Переопределить начальный пакет; после OOM предел уменьшается и запоминается. \\
+\nolinkurl{MBS_GPU_TRACE_FULL_SORT} & 1 & Точная топологическая сортировка на CUDA. \\
+\nolinkurl{MBS_GPU_TRACE_SORT_CACHE} & 1 & Повторно использовать сортировку одинаковых ключей. \\
+\nolinkurl{MBS_GPU_TRACE_LARGE_SKIP_FLAGS} & 1 & Консервативные флаги пропуска для больших списков. \\
+\nolinkurl{MBS_GPU_TRACE_LARGE_THREADS} & 64 & Размер блока: 64, 128 или 256. \\
+\nolinkurl{MBS_GPU_TRACE_CACHE_FACETS} & 1 & Хранить упакованную геометрию граней в рабочей области. \\
+\nolinkurl{MBS_GPU_TRACE_MIN_CANDIDATES} & 1024 & Минимум кандидатов для отправки пакета на GPU. \\
+\nolinkurl{MBS_GPU_TRACE_NONBLOCKING_STREAM} & 0 & Неблокирующий поток CUDA для каждого worker; только для профилирования. \\
+\nolinkurl{MBS_GPU_TRACE_PREFILTER_FIRST} & 0 & Диагностический грубый отбор перед сортировкой. \\
+\nolinkurl{MBS_GPU_TRACE_MARGIN} & авто & Переопределить консервативный запас проекционных границ. \\
+\nolinkurl{MBS_GPU_TRACE_TIMING} & 0 & Печатать времена передачи и ядер. \\
+\nolinkurl{MBS_GPU_TRACE_VERIFY_SORT} & 0 & Сверять сортировку и флаги пропуска с CPU. \\
+\bottomrule
+\end{longtable}
+
+В проверке производственной частицы расхождений сортировки и ошибочных
+пропусков не обнаружено. Однако эквивалентный порядок обхода граней может
+немного изменить порядок сложения чисел с плавающей точкой. Поэтому для
+чувствительных расчётов выполняют выборочный контроль с
+\code{--no-gpu-trace-prefilter}; такой контроль входит в проверку релиза.
+
 \subsection{Работа на нескольких GPU}
 
 При работе на нескольких GPU независимыми единицами распределения служат
@@ -1818,6 +1876,19 @@ $\theta$ остаются в полном времени.
 \code{MBS_GPU_FUSED_MUELLER=1} & Предпочитать совмещённое ядро дифракции и преобразования Мюллера. \\
 \code{MBS_GPU_STAGE_MUELLER=1} & Включить поэтапное накопление по ориентациям. \\
 \code{MBS_GPU_COMPACT_BEAMS=0} & Отключить компактную упаковку пучков с не более чем 8 вершинами. \\
+\code{MBS_GPU_WARP_BEAMS=0} & Вернуть последовательный обход пучков одним CUDA-потоком вместо стандартной warp-редукции. \\
+\code{MBS_GPU_WARP_GRID_3D=0} & Отключить только специализацию warp-пути для трёхмерной сетки. \\
+\nolinkurl{MBS_GPU_TRACE_OPENMP=0/1} & Включить или отключить автоматическую CUDA-трассировку из потоков OpenMP. \\
+\nolinkurl{MBS_GPU_TRACE_BATCH_BEAMS=N} & Переопределить автоматический размер пакета одного потока. \\
+\nolinkurl{MBS_GPU_TRACE_FULL_SORT=0/1} & Точная топологическая сортировка CUDA; по умолчанию 1. \\
+\nolinkurl{MBS_GPU_TRACE_SORT_CACHE=0/1} & Кэш точной сортировки; по умолчанию 1. \\
+\nolinkurl{MBS_GPU_TRACE_LARGE_SKIP_FLAGS=0/1} & Консервативные флаги пропуска больших списков; по умолчанию 1. \\
+\nolinkurl{MBS_GPU_TRACE_LARGE_THREADS=N} & Размер блока большого ядра; по умолчанию 64. \\
+\nolinkurl{MBS_GPU_TRACE_CACHE_FACETS=0/1} & Кэшировать упакованную геометрию граней; по умолчанию 1. \\
+\nolinkurl{MBS_GPU_TRACE_MIN_CANDIDATES=N} & Минимум кандидатов в отправляемом пакете; по умолчанию 1024. \\
+\nolinkurl{MBS_GPU_TRACE_NONBLOCKING_STREAM=0/1} & Неблокирующие потоки CUDA; по умолчанию 0, только для профилирования. \\
+\nolinkurl{MBS_GPU_TRACE_TIMING=1} & Печатать времена CUDA-трассировки. \\
+\nolinkurl{MBS_GPU_TRACE_VERIFY_SORT=1} & Сверять CUDA-сортировку с CPU. \\
 \code{MBS_GPU_MULTI=0} & Отключить автоматическое распределение блоков ориентаций. \\
 \code{MBS_GPU_MULTI_MAX=N} & Ограничить число исполнителей GPU. \\
 \code{MBS_GPU_GROUPS=1} & Распределить группы $\theta$ широтной сетки по видимым GPU. \\
@@ -1878,7 +1949,7 @@ make gpu_double_fast_mpi -j
 \endhead
 \code{gpu_fp64} & \code{gpu/bin/mbs_po_gpu_double} & Контрольный и основной FP64 без \code{--use_fast_math}. \\
 \code{gpu_fp32} & \code{gpu/bin/mbs_po_gpu_float} & FP32 без \code{--use_fast_math}; требует проверки ошибки. \\
-\code{gpu_fp32_fast} & \code{gpu/bin/mbs_po_gpu_float_fast} & Наибольшая пропускная способность после проверки ошибки. \\
+\code{gpu_fp32_fast} & \code{gpu/bin/mbs_po_gpu_float_fast} & Экспериментальный профиль; применять после проверки ошибки и времени. \\
 \code{gpu_fp64_fast} & \code{gpu/bin/mbs_po_gpu_double_fast} & FP64 с CUDA \code{--use_fast_math}; требует проверки ошибки. \\
 \code{gpu_double_fast_mpi} & \nolinkurl{gpu/bin/mbs_po_gpu_mpi_double_fast} & FP64 с MPI и CUDA для распределённого запуска. \\
 \bottomrule
@@ -1889,6 +1960,32 @@ FP32 применяется к хранению геометрии дифрак�
 поглощение, чувствительные к сокращению моменты многоугольников и вычисление
 фазы остаются FP64. Команда \code{--version} выводит фактический профиль
 хранения, фазы, математических функций и архитектуры GPU.
+
+На RTX 3080 Ti для характерного поглощающего вогнутого теста
+($k_{\mathrm{eq}}=20$, 64 ориентации SO(3), $N_\phi=720$,
+$N_\theta=360$) получены следующие медианные времена:
+
+\begin{longtable}{L{0.29\linewidth} L{0.15\linewidth} L{0.17\linewidth} L{0.25\linewidth}}
+\caption{Измеренное сравнение профилей точности.}\\
+\toprule
+Профиль & Время & Ускорение & Ошибка Мюллера относительно FP64 \\
+\midrule
+\endfirsthead
+\toprule
+Профиль & Время & Ускорение & Ошибка Мюллера относительно FP64 \\
+\midrule
+\endhead
+Точный FP64 & 4,92 с & 1,00 & контрольный результат \\
+Точный смешанный FP32 & 3,45 с & 1,43 & общая $L_2=1{,}00\cdot10^{-6}$ \\
+FP32 с быстрыми функциями & 3,63 с & 1,36 & общая $L_2=1{,}02\cdot10^{-6}$ \\
+\bottomrule
+\end{longtable}
+
+Поэтому для потребительской GPU рекомендуется точный смешанный FP32 после
+проверки на целевом классе частиц и диапазоне размеров. Быстрые функции не
+включаются автоматически: в этом тесте они оказались немного медленнее и не
+дали выигрыша в точности. Контрольные точки, сильное поглощение и глубокие
+вогнутые траектории следует выборочно пересчитывать в FP64.
 
 Слово \code{fast} относится к параметру компилятора CUDA, а не к разрядности.
 По умолчанию \code{make -C gpu} собирает контрольный FP64-бинарный файл без
@@ -1909,7 +2006,7 @@ make -C gpu fp64 -j
 
 \begin{lstlisting}[language=bash]
 CUDA_VISIBLE_DEVICES=0 \
-gpu/bin/mbs_po_gpu_double_fast \
+gpu/bin/mbs_po_gpu_float \
   --method po --particle 1 125.9 78.09 \
   --refractive-index 1.3116 0 --wavelength-um 0.532 \
   --max-reflections 12 --orientation-diffraction-sampling 2 \
@@ -1921,7 +2018,7 @@ gpu/bin/mbs_po_gpu_double_fast \
 \subsection{Контроль CPU в том же GPU-бинарном файле}
 
 \begin{lstlisting}[language=bash]
-gpu/bin/mbs_po_gpu_double_fast \
+gpu/bin/mbs_po_gpu_double \
   --method po --particle 1 125.9 78.09 \
   --refractive-index 1.3116 0 --wavelength-um 0.532 \
   --max-reflections 12 --orientation-diffraction-sampling 2 \
@@ -1937,7 +2034,7 @@ gpu/bin/mbs_po_gpu_double_fast \
 \subsection{Проверка направлений \texorpdfstring{$0^\circ$ и $180^\circ$}{0 и 180 градусов}}
 
 \begin{lstlisting}[language=bash]
-gpu/bin/mbs_po_gpu_double_fast \
+gpu/bin/mbs_po_gpu_double \
   --method po --particle 1 125.9 78.09 \
   --refractive-index 1.3116 0 --wavelength-um 0.532 \
   --max-reflections 1 --orientation-diffraction-sampling 2 --pole \
@@ -2060,6 +2157,8 @@ gpu/bin/mbs_po_gpu_double_fast \
 \code{--trace-cutoff-importance} & \code{EPS} & Отсечение внутренней ветви по величине $|J|^2A$. \\
 \code{--beam-area-ratio} & \code{R} & Порог удаления малых фрагментов; профиль \code{off} отключает старое значение 100. \\
 \code{--trace-max-beams} & \code{N} & Аварийно завершить расчёт после $N$ узлов дерева; 0 отключает предел. \\
+\code{--gpu-trace-prefilter} & нет & Явно включить автоматическое пакетное упорядочивание и отбор кандидатов на CUDA. \\
+\code{--no-gpu-trace-prefilter} & нет & Отключить автоматическую CUDA-трассировку для контрольного сравнения. \\
 \code{--dmax-grid} & \code{DMIN DMAX N} & Логарифмическая серия по $D_{\max}$. \\
 \code{--k-eq-grid} & \code{KMIN KMAX N} & Логарифмическая серия по $k_{\mathrm{eq}}$. \\
 \code{--k-eq-list} & \code{FILE} & Точный список значений $k_{\mathrm{eq}}$. \\
@@ -2947,7 +3046,7 @@ GPU фиксируют
 \midrule
 \endhead
 Код & \code{MBS-fast, commit abcdef0}. \\
-Платформа & \code{gpu/bin/mbs_po_gpu_double_fast}. \\
+Платформа & \code{gpu/bin/mbs_po_gpu_double}. \\
 Частица & \code{--particle 1 125.9 78.09} или \code{--particle-file particle.dat}. \\
 Оптика & \code{--refractive-index 1.3116 0 --wavelength-um 0.532 --max-reflections 12}. \\
 Ориентации & \code{--orientation-diffraction-sampling 2 --pole}. \\

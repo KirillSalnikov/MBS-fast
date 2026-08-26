@@ -1,5 +1,20 @@
 #include "Handler.h"
 #include "HandlerPO_fast.h"
+
+namespace
+{
+bool HasRequestedTrackIds(const Tracks *tracks)
+{
+    if (!tracks)
+        return false;
+    for (const TrackGroup &group : *tracks)
+    {
+        if (group.size != 0)
+            return true;
+    }
+    return false;
+}
+}
 #include "Intersection.h"
 
 #include "Mueller.hpp"
@@ -105,6 +120,7 @@ Handler::Handler(Particle *particle, Light *incidentLight, int nTheta,
       nTheta(nTheta),
       m_sphere(0.0, 0.0, 0, 0),
       m_particle(particle),
+      m_geometryScale(particle->MaximalDimention()),
       m_wavelength(wavelength),
       m_hasAbsorption(false),
       m_normIndex(1)
@@ -140,7 +156,7 @@ void Handler::SetTracks(Tracks *tracks)
     m_tracks = tracks;
     if (m_scattering)
         m_scattering->SetTrackIdsRequired(
-            m_hasAbsorption || (m_tracks && !m_tracks->empty()));
+            m_hasAbsorption || HasRequestedTrackIds(m_tracks));
 }
 
 void Handler::WriteMatricesToFile(string &/*destName*/, double /*nrg*/)
@@ -167,7 +183,7 @@ void Handler::SetAbsorptionAccounting(bool value)
     m_hasAbsorption = value;
     if (m_scattering)
         m_scattering->SetTrackIdsRequired(
-            m_hasAbsorption || (m_tracks && !m_tracks->empty()));
+            m_hasAbsorption || HasRequestedTrackIds(m_tracks));
     m_ri = m_particle->GetRefractiveIndex();
     m_riIm = imag(m_ri);
     m_cAbs = -m_riIm*m_waveIndex;
@@ -189,7 +205,7 @@ void Handler::SetScattering(Scattering *scattering)
     m_scattering = scattering;
     if (m_scattering)
         m_scattering->SetTrackIdsRequired(
-            m_hasAbsorption || (m_tracks && !m_tracks->empty()));
+            m_hasAbsorption || HasRequestedTrackIds(m_tracks));
 }
 
 void Handler::ExtropolateOpticalLenght(Beam &beam, const std::vector<int> &tr)
@@ -559,7 +575,7 @@ double Handler::BeamCrossSection(const Beam &beam) const
     Point3d p2;
 
     const double edgeTolerance = geometry_length_tolerance(
-        m_particle->MaximalDimention());
+        m_geometryScale);
     if (absB > absA)
     {
         for (int i = startIndex; i != endIndex; i = /*info.order ? i-1 :*/ i+1)
@@ -666,7 +682,7 @@ void Handler::PrecomputeEdgeData(const BeamInfo &info, const Beam &beam,
     // Precompute per-edge data (slopes, intercepts). Edge validity is a
     // geometric decision and therefore scales with the particle.
     const double edgeTolerance = geometry_length_tolerance(
-        m_particle->MaximalDimention());
+        m_geometryScale);
     for (int i = 0; i < nv; ++i)
     {
         int inext = (i + 1) % nv;
@@ -727,7 +743,7 @@ void Handler::PrecomputeEdgeData(const BeamInfo &info, const Beam &beam,
 
     // Use precomputed 2D vertices - no ChangeCoordinateSystem calls.
     const double edgeTolerance = geometry_length_tolerance(
-        m_particle->MaximalDimention());
+        m_geometryScale);
     if (absB > absA)
     {
         double p1x = ed.x[0], p1y = ed.y[0];

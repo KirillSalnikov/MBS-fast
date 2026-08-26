@@ -9,8 +9,11 @@
 #include <cmath>
 #include <chrono>
 #include <cstring>
+#include <cstdint>
+#include <utility>
 #include <vector>
 #include <iomanip>
+#include <map>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -26,31 +29,132 @@
 
 #ifdef USE_CUDA
 namespace {
+std::atomic<int> &GpuTraceBatchBeamLimitState()
+{
+    static std::atomic<int> limit([]() {
+        const char *value = std::getenv("MBS_GPU_TRACE_BATCH_BEAMS");
+        if (value && *value)
+        {
+            char *end = nullptr;
+            const long parsed = std::strtol(value, &end, 10);
+            if (end && *end == '\0' && parsed >= 1)
+                return static_cast<int>(std::min<long>(parsed, 16384));
+        }
+
+        int workers = 1;
+#ifdef _OPENMP
+        const char *openmp = std::getenv("MBS_GPU_TRACE_OPENMP");
+        if (openmp && openmp[0] == '1' && openmp[1] == '\0')
+            workers = std::max(1, omp_get_max_threads());
+#endif
+        // Each CUDA grid reserves per-thread stack backing. Keep the total
+        // number of simultaneously submitted blocks bounded when tracing
+        // orientations from several OpenMP workers. Complex non-convex
+        // particles can exhaust CUDA kernel-stack backing well before global
+        // VRAM looks full. A 512-beam process-wide budget remained stable on
+        // a 12 GiB consumer GPU with eight concurrent tracing workers.
+        return std::max(64, (512 + workers - 1) / workers);
+    }());
+    return limit;
+}
+
 int GpuTraceBatchBeamLimit()
 {
-    const char *value = std::getenv("MBS_GPU_TRACE_BATCH_BEAMS");
-    if (!value || !*value)
-        return 1024;
-    char *end = nullptr;
-    long parsed = std::strtol(value, &end, 10);
-    if (!end || *end != '\0' || parsed < 1)
-        return 1024;
-    if (parsed > 4096)
-        return 4096;
-    return (int)parsed;
+    return GpuTraceBatchBeamLimitState().load(std::memory_order_relaxed);
+}
+
+int GpuTraceReduceBatchBeamLimit(size_t failedBatchSize)
+{
+    const int reduced = static_cast<int>(
+        std::max<size_t>(32, failedBatchSize / 2));
+    std::atomic<int> &limit = GpuTraceBatchBeamLimitState();
+    int current = limit.load(std::memory_order_relaxed);
+    while (reduced < current
+           && !limit.compare_exchange_weak(current, reduced,
+                                           std::memory_order_relaxed))
+    {
+    }
+    return limit.load(std::memory_order_relaxed);
+}
+
+bool GpuTracePrepareBeamFacetBatchAdaptive(
+    const Facet *facets,
+    double geometryScale,
+    const std::vector<GpuTraceBeamFacets> &items)
+{
+    if (GpuTracePrepareBeamFacetBatch(facets, geometryScale, items))
+        return true;
+    if (!GpuTraceLastFailureWasOutOfMemory() || items.size() <= 32)
+        return false;
+
+    const int reducedLimit = GpuTraceReduceBatchBeamLimit(items.size());
+    static std::atomic<int> lastWarnedLimit(0);
+    const int previousWarning = lastWarnedLimit.exchange(
+        reducedLimit, std::memory_order_relaxed);
+    if (previousWarning != reducedLimit)
+    {
+        std::cerr
+            << "WARNING: CUDA trace batch exhausted device memory; "
+            << "retrying in smaller pieces and reducing subsequent batches to "
+            << reducedLimit << " beams."
+            << std::endl;
+    }
+
+    const size_t middle = items.size() / 2;
+    const std::vector<GpuTraceBeamFacets> first(
+        items.begin(), items.begin() + middle);
+    const std::vector<GpuTraceBeamFacets> second(
+        items.begin() + middle, items.end());
+    const bool firstPrepared = GpuTracePrepareBeamFacetBatchAdaptive(
+        facets, geometryScale, first);
+    const bool secondPrepared = GpuTracePrepareBeamFacetBatchAdaptive(
+        facets, geometryScale, second);
+    return firstPrepared && secondPrepared;
 }
 
 bool GpuTraceAllowOpenMP()
 {
     const char *value = std::getenv("MBS_GPU_TRACE_OPENMP");
+    return !(value && value[0] == '0' && value[1] == '\0');
+}
+
+bool GpuTraceVerifySort()
+{
+    const char *value = std::getenv("MBS_GPU_TRACE_VERIFY_SORT");
     return value && value[0] == '1' && value[1] == '\0';
+}
+
+bool GpuTraceFullSortEnabled()
+{
+    const char *value = std::getenv("MBS_GPU_TRACE_FULL_SORT");
+    return !(value && value[0] == '0' && value[1] == '\0');
+}
+
+bool GpuTraceSortCacheEnabled()
+{
+    const char *value = std::getenv("MBS_GPU_TRACE_SORT_CACHE");
+    return GpuTraceFullSortEnabled()
+        && !(value && value[0] == '0' && value[1] == '\0');
 }
 
 bool GpuTraceRuntimeEnabled()
 {
 #ifdef _OPENMP
     if (omp_get_max_threads() > 1 && !GpuTraceAllowOpenMP())
+    {
+        static std::atomic<bool> warned(false);
+        if (!warned.exchange(true, std::memory_order_relaxed))
+        {
+            std::cerr
+                << "WARNING: --gpu-trace-prefilter is disabled with "
+                << "--threads > 1. Use --threads 1, or set "
+                << "MBS_GPU_TRACE_OPENMP=1 with "
+                << "--allow-experimental-environment after validating "
+                << "GPU memory use."
+                << std::endl;
+        }
         return false;
+    }
 #endif
     return true;
 }
@@ -198,20 +302,45 @@ ScatteringNonConvex::ScatteringNonConvex(Particle *particle, Light *incidentLigh
 bool ScatteringNonConvex::ScatterLight(double /*beta*/, double /*gamma*/,
                                        std::vector<Beam> &scaterredBeams)
 {
+    const auto traceStarted = std::chrono::high_resolution_clock::now();
     // m_particle->Rotate(beta, gamma, 0);
     scaterredBeams.reserve(scaterredBeams.size()
                            + std::max(8192, 4 * m_particle->nFacets));
+    m_traceSortCalls = 0;
+    m_traceSortCandidates = 0;
+    m_traceSortOverlapCalls = 0;
     if (!m_visibilityCacheBuilt)
         BuildFacetVisibilityCache();
+    BuildFacetNormalCache();
     if (m_traceCpuProjectedPrefilter)
         BuildFacetProjectionCache();
 #ifdef USE_CUDA
     if (m_gpuTracePrefilter)
         GpuTraceInvalidateFacetCache();
 #endif
+    const auto initialStarted = std::chrono::high_resolution_clock::now();
     if (!SplitLightToBeams())
         return false;
-    return SplitBeams(scaterredBeams);
+    const auto splitStarted = std::chrono::high_resolution_clock::now();
+    const bool ok = SplitBeams(scaterredBeams);
+    if (m_tracePrefilterStats)
+    {
+        const auto finished = std::chrono::high_resolution_clock::now();
+        std::cout << "Trace phase stats: setup="
+                  << std::chrono::duration<double>(initialStarted
+                                                    - traceStarted).count()
+                  << " initial="
+                  << std::chrono::duration<double>(splitStarted
+                                                    - initialStarted).count()
+                  << " recursive="
+                  << std::chrono::duration<double>(finished
+                                                    - splitStarted).count()
+                  << " scatter_total="
+                  << std::chrono::duration<double>(finished
+                                                    - traceStarted).count()
+                  << std::endl;
+    }
+    return ok;
 }
 
 bool ScatteringNonConvex::PushBeamsToTree(int facetId,
@@ -363,7 +492,12 @@ void ScatteringNonConvex::IntersectWithFacet(const IntArray &facetIds, int prevF
 void ScatteringNonConvex::SelectVisibleFacets(const Beam &beam, IntArray &facetIDs)
 {
     FindVisibleFacets(beam, facetIDs);
+    SortVisibleFacets(beam, facetIDs);
+}
 
+void ScatteringNonConvex::SortVisibleFacets(const Beam &beam,
+                                             IntArray &facetIDs)
+{
     Point3f dir = beam.direction;
     dir.d_param = m_facets[beam.lastFacetId].in_normal.d_param;
     SortFacets_faster(dir, facetIDs);
@@ -581,7 +715,8 @@ void ScatteringNonConvex::CutPolygonByFacets(const Polygon &pol,
 }
 
 void ScatteringNonConvex::CutExternalBeam(const Beam &beam,
-                                          std::vector<Beam> &scaterredBeams)
+                                          std::vector<Beam> &scaterredBeams,
+                                          const IntArray *readyFacetIds)
 {
     const Point3f &n1 = m_facets[beam.lastFacetId].ex_normal;
     const Point3f &n2 = m_facets[beam.lastFacetId].in_normal;
@@ -591,15 +726,20 @@ void ScatteringNonConvex::CutExternalBeam(const Beam &beam,
     }();
     const double sourceArea = debugCut ? beam.Area() : 0.0;
 
-    IntArray facetIds;
-    SelectVisibleFacets(beam, facetIds);
+    IntArray localFacetIds;
+    const IntArray *facetIds = readyFacetIds;
+    if (facetIds == nullptr)
+    {
+        SelectVisibleFacets(beam, localFacetIds);
+        facetIds = &localFacetIds;
+    }
 
 #ifdef _DEBUG // DEB
     if (beam.id == 66557)
         int fff = 0;
 #endif
     m_polygonResultBuffer.Clear();
-    CutPolygonByFacets(beam, facetIds, facetIds.size, n1, n2,
+    CutPolygonByFacets(beam, *facetIds, facetIds->size, n1, n2,
                        -beam.direction, m_polygonResultBuffer);
 
     Beam tmp = beam;
@@ -623,7 +763,7 @@ void ScatteringNonConvex::CutExternalBeam(const Beam &beam,
                   << " loc=" << (beam.location == Location::Out ? "Out" : "In")
                   << " sourceArea=" << sourceArea
                   << " cutArea=" << cutArea
-                  << " candidates=" << facetIds.size
+                  << " candidates=" << facetIds->size
                   << " pieces=" << m_polygonResultBuffer.size
                   << std::endl;
     }
@@ -632,6 +772,11 @@ void ScatteringNonConvex::CutExternalBeam(const Beam &beam,
 void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
                                              IntArray &facetIDs)
 {
+    if (m_tracePrefilterStats)
+    {
+        ++m_traceSortCalls;
+        m_traceSortCandidates += facetIDs.size;
+    }
     if (facetIDs.size < 2)
         return;
 
@@ -641,8 +786,7 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
         double depth;
         double maximumDepth;
     };
-    std::vector<FacetDepth> ordered;
-    ordered.reserve(facetIDs.size);
+    FacetDepth ordered[MAX_FACET_NUM];
     for (size_t i = 0; i < facetIDs.size; ++i)
     {
         const int id = facetIDs.arr[i];
@@ -663,18 +807,26 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
             if (projection > maximumKey)
                 maximumKey = projection;
         }
-        ordered.push_back({id, key, maximumKey});
+        ordered[i] = {id, key, maximumKey};
     }
 
-    // Exact double ordering is scale invariant.  The previous quicksort used
-    // absolute FLT_EPSILON comparisons on dimensional depths, so a uniform
-    // particle resize could change the clipping order and the beam topology.
-    std::stable_sort(ordered.begin(), ordered.end(),
-        [](const FacetDepth &a, const FacetDepth &b) {
-            if (a.depth != b.depth)
-                return a.depth < b.depth;
-            return a.facetId < b.facetId;
-        });
+    // Candidate lists are short in normal tracing. Insertion sort avoids a
+    // heap allocation and has lower overhead than a generic stable sort here.
+    // Exact double ordering remains scale invariant.
+    for (size_t i = 1; i < facetIDs.size; ++i)
+    {
+        const FacetDepth value = ordered[i];
+        size_t position = i;
+        while (position > 0
+               && (value.depth < ordered[position - 1].depth
+                   || (value.depth == ordered[position - 1].depth
+                       && value.facetId < ordered[position - 1].facetId)))
+        {
+            ordered[position] = ordered[position - 1];
+            --position;
+        }
+        ordered[position] = value;
+    }
 
     // Floating-point rotations perturb theoretically coplanar facets by a few ulps.
     // Give every such group a deterministic order because subtraction of
@@ -683,13 +835,13 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
     // of their serialization order.
     const double depthTolerance = geometry_length_tolerance(
         m_geometryScale);
-    for (size_t begin = 0; begin < ordered.size();)
+    for (size_t begin = 0; begin < facetIDs.size;)
     {
         size_t end = begin + 1;
-        while (end < ordered.size()
+        while (end < facetIDs.size
                && ordered[end].depth - ordered[begin].depth <= depthTolerance)
             ++end;
-        std::sort(ordered.begin() + begin, ordered.begin() + end,
+        std::sort(ordered + begin, ordered + end,
             [](const FacetDepth &a, const FacetDepth &b) {
                 return a.facetId < b.facetId;
             });
@@ -697,10 +849,10 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
     }
 
     bool hasOverlappingDepthIntervals = false;
-    for (size_t first = 0; first < ordered.size() && !hasOverlappingDepthIntervals;
+    for (size_t first = 0; first < facetIDs.size && !hasOverlappingDepthIntervals;
          ++first)
     {
-        if (first + 1 < ordered.size()
+        if (first + 1 < facetIDs.size
             && ordered[first + 1].depth
                <= ordered[first].maximumDepth + depthTolerance)
             hasOverlappingDepthIntervals = true;
@@ -711,6 +863,8 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
             facetIDs.arr[i] = ordered[i].facetId;
         return;
     }
+    if (m_tracePrefilterStats)
+        ++m_traceSortOverlapCalls;
 
     Point3f direction(beamDir.cx, beamDir.cy, beamDir.cz);
     const double directionLength = Length(direction);
@@ -737,7 +891,7 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
     Point3f axisV = CrossProduct(direction, axisU);
     Normalize(axisV);
 
-    const size_t count = ordered.size();
+    const size_t count = facetIDs.size;
     std::vector<std::vector<Point2f> > projected(count);
     for (size_t index = 0; index < count; ++index)
     {
@@ -913,11 +1067,62 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
     size_t traceGpuPrefilterSkipped = 0;
     size_t traceCpuPrefilterSkipped = 0;
     size_t traceIntersectCalls = 0;
+    size_t traceGpuSortCalls = 0;
+    size_t traceCpuSortFallbacks = 0;
+    size_t traceBatchCalls = 0;
+    size_t traceBatchItems = 0;
+    size_t traceGpuCandidateItems = 0;
+    size_t traceGpuCandidates = 0;
+    size_t traceGpuSingleCandidateItems = 0;
+    size_t traceGpuComplexCandidateItems = 0;
+    size_t traceGpuCandidatesLe24 = 0;
+    size_t traceGpuCandidates25To32 = 0;
+    size_t traceGpuCandidates33To64 = 0;
+    size_t traceGpuCandidates65To128 = 0;
+    size_t traceGpuCandidates129To256 = 0;
+    size_t traceGpuCandidatesGt256 = 0;
+    size_t traceGpuBeamVertices3 = 0;
+    size_t traceGpuBeamVertices4 = 0;
+    size_t traceGpuBeamVertices5To8 = 0;
+    size_t traceGpuBeamVertices9To16 = 0;
+    size_t traceGpuBeamVerticesGt16 = 0;
+    size_t traceGpuFallbackCandidateLimit = 0;
+    size_t traceGpuFallbackBeamLimit = 0;
+    size_t traceGpuFallbackFacetLimit = 0;
+    size_t traceGpuFallbackUnexplained = 0;
+#ifdef USE_CUDA
+    size_t traceGpuVerifiedSorts = 0;
+    size_t traceGpuSortMismatches = 0;
+    size_t traceGpuSkipFlagsVerified = 0;
+    size_t traceGpuSkipFalseNegatives = 0;
+    size_t traceGpuPrefilterGpuOnly = 0;
+    size_t traceGpuPrefilterCpuOnly = 0;
+    size_t traceSortCacheGlobalHits = 0;
+    size_t traceSortCacheBatchHits = 0;
+    size_t traceSortCacheCandidatesSaved = 0;
+#endif
     double traceSelectTime = 0.0;
+    size_t traceSelectTimingCalls = 0;
+    size_t traceSelectTimingSamples = 0;
     double traceAabbTime = 0.0;
+    size_t traceAabbTimingCalls = 0;
+    size_t traceAabbTimingSamples = 0;
     double traceIntersectTime = 0.0;
+    size_t traceIntersectTimingCalls = 0;
+    size_t traceIntersectTimingSamples = 0;
     double traceSplitTime = 0.0;
+    size_t traceSplitTimingCalls = 0;
+    size_t traceSplitTimingSamples = 0;
     double traceOutgoingTime = 0.0;
+    size_t traceOutgoingTimingCalls = 0;
+    size_t traceOutgoingTimingSamples = 0;
+    double traceBatchCollectTime = 0.0;
+    double traceVisibleTime = 0.0;
+    size_t traceVisibleTimingCalls = 0;
+    size_t traceVisibleTimingSamples = 0;
+    double traceGpuPrepareTime = 0.0;
+    double traceFallbackSortTime = 0.0;
+    double tracePreparedProcessTime = 0.0;
     const auto traceNow = []() {
         return std::chrono::high_resolution_clock::now();
     };
@@ -925,20 +1130,38 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
                                  const std::chrono::high_resolution_clock::time_point &b) {
         return std::chrono::duration<double>(b - a).count();
     };
+    const auto traceTimingSample = [](size_t &calls, size_t &samples) {
+        const bool sample = (calls++ & 63u) == 0;
+        if (sample)
+            ++samples;
+        return sample;
+    };
     auto processBeam = [this, &scaterredBeams, &ok,
                         &traceCandidateTests,
                         &traceGpuPrefilterSkipped,
                         &traceCpuPrefilterSkipped,
                         &traceIntersectCalls,
                         &traceSelectTime,
+                        &traceSelectTimingCalls,
+                        &traceSelectTimingSamples,
                         &traceAabbTime,
+                        &traceAabbTimingCalls,
+                        &traceAabbTimingSamples,
                         &traceIntersectTime,
+                        &traceIntersectTimingCalls,
+                        &traceIntersectTimingSamples,
                         &traceSplitTime,
+                        &traceSplitTimingCalls,
+                        &traceSplitTimingSamples,
                         &traceOutgoingTime,
+                        &traceOutgoingTimingCalls,
+                        &traceOutgoingTimingSamples,
                         &traceNow,
-                        &traceSeconds](Beam &beam,
-                                               const IntArray *readyFacetIds,
-                                               const std::vector<unsigned char> *mayIntersect) -> bool
+                        &traceSeconds,
+                        &traceTimingSample](Beam &beam,
+                                      const IntArray *readyFacetIds,
+                                      const std::vector<unsigned char> *mayIntersect,
+                                      bool gpuPrefiltered) -> bool
     {
         if (!IsTerminalAct(beam)) // REF, OPT: перенести проверку во все места, где пучок закидывается в дерево, чтобы пучки заранее не закидывались в него
         {
@@ -946,7 +1169,9 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
             const IntArray *facetIds = readyFacetIds;
             if (facetIds == nullptr)
             {
-                if (m_tracePrefilterStats)
+                if (m_tracePrefilterStats
+                    && traceTimingSample(traceSelectTimingCalls,
+                                         traceSelectTimingSamples))
                 {
                     auto t0 = traceNow();
                     SelectVisibleFacets(beam, localFacetIds);
@@ -972,15 +1197,26 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
                     continue;
                 }
                 int facetId = facetIds->arr[i];
-                if (m_traceCpuProjectedPrefilter
-                    )
+                if (m_traceCpuProjectedPrefilter && !gpuPrefiltered)
                 {
                     bool mayIntersectProjected;
                     if (m_tracePrefilterStats)
                     {
-                        auto t0 = traceNow();
-                        mayIntersectProjected = MayBeamIntersectFacetProjected(beam, facetId);
-                        traceAabbTime += traceSeconds(t0, traceNow());
+                        const bool sampleTiming =
+                            (traceAabbTimingCalls++ & 63u) == 0;
+                        if (sampleTiming)
+                        {
+                            auto t0 = traceNow();
+                            mayIntersectProjected =
+                                MayBeamIntersectFacetProjected(beam, facetId);
+                            traceAabbTime += traceSeconds(t0, traceNow());
+                            ++traceAabbTimingSamples;
+                        }
+                        else
+                        {
+                            mayIntersectProjected =
+                                MayBeamIntersectFacetProjected(beam, facetId);
+                        }
                     }
                     else
                     {
@@ -997,7 +1233,9 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
                 Polygon intersection;
                 if (m_tracePrefilterStats)
                     ++traceIntersectCalls;
-                if (m_tracePrefilterStats)
+                if (m_tracePrefilterStats
+                    && traceTimingSample(traceIntersectTimingCalls,
+                                         traceIntersectTimingSamples))
                 {
                     auto tIntersect0 = traceNow();
                     Intersect(facetId, beam, intersection);
@@ -1010,7 +1248,9 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
 
                 if (intersection.nVertices >= MIN_VERTEX_NUM)
                 {
-                    if (m_tracePrefilterStats)
+                    if (m_tracePrefilterStats
+                        && traceTimingSample(traceSplitTimingCalls,
+                                             traceSplitTimingSamples))
                     {
                         auto tSplit0 = traceNow();
                         isDivided = SplitBeamByFacet(intersection, facetId, beam, ok);
@@ -1036,7 +1276,9 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
             if (IsOutgoingBeam(beam))
             {	// посылаем обрезанный всеми гранями внешний пучок на сферу
                 double path;
-                if (m_tracePrefilterStats)
+                if (m_tracePrefilterStats
+                    && traceTimingSample(traceOutgoingTimingCalls,
+                                         traceOutgoingTimingSamples))
                 {
                     auto tOut0 = traceNow();
                     path = splitting.ComputeOutgoingOpticalPath(beam); // добираем оптический путь
@@ -1057,19 +1299,115 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
         }
         else if (beam.location == Location::Out)
         {
-            if (m_tracePrefilterStats)
+            if (m_tracePrefilterStats
+                && traceTimingSample(traceOutgoingTimingCalls,
+                                     traceOutgoingTimingSamples))
             {
                 auto tOut0 = traceNow();
-                CutExternalBeam(beam, scaterredBeams);
+                CutExternalBeam(beam, scaterredBeams, readyFacetIds);
                 traceOutgoingTime += traceSeconds(tOut0, traceNow());
             }
             else
             {
-                CutExternalBeam(beam, scaterredBeams);
+                CutExternalBeam(beam, scaterredBeams, readyFacetIds);
             }
         }
         return true;
     };
+#ifdef USE_CUDA
+    struct TraceSortKey
+    {
+        int lastFacetId;
+        int location;
+        uint64_t direction[3];
+        uint64_t candidateHash;
+        size_t candidateCount;
+
+        bool operator<(const TraceSortKey &other) const
+        {
+            if (lastFacetId != other.lastFacetId)
+                return lastFacetId < other.lastFacetId;
+            if (location != other.location)
+                return location < other.location;
+            for (int coordinate = 0; coordinate < 3; ++coordinate)
+            {
+                if (direction[coordinate] != other.direction[coordinate])
+                    return direction[coordinate]
+                         < other.direction[coordinate];
+            }
+            if (candidateHash != other.candidateHash)
+                return candidateHash < other.candidateHash;
+            return candidateCount < other.candidateCount;
+        }
+
+    };
+    struct TraceSortCacheEntry
+    {
+        std::vector<int> original;
+        std::vector<int> sorted;
+    };
+    struct TraceSortRepresentatives
+    {
+        size_t first = static_cast<size_t>(-1);
+        std::vector<size_t> collisions;
+    };
+    struct TraceBatchItem
+    {
+        Beam beam;
+        IntArray facetIds;
+        std::vector<unsigned char> mayIntersect;
+        bool hasFacetIds = false;
+        bool sortedOnGpu = false;
+        bool sortedFromCache = false;
+        bool prefilteredOnGpu = false;
+        size_t originalFacetCount = 0;
+        size_t sortRepresentative = static_cast<size_t>(-1);
+    };
+    const bool traceSortCacheEnabled = GpuTraceSortCacheEnabled();
+    const auto makeTraceSortKey = [](const Beam &beam,
+                                     const IntArray &facetIds) {
+        TraceSortKey key;
+        key.lastFacetId = beam.lastFacetId;
+        key.location = beam.location == Location::In ? 0 : 1;
+        for (int coordinate = 0; coordinate < 3; ++coordinate)
+        {
+            std::memcpy(&key.direction[coordinate],
+                        &beam.direction.coordinates[coordinate],
+                        sizeof(uint64_t));
+        }
+        uint64_t hash = 1469598103934665603ULL;
+        for (size_t index = 0; index < facetIds.size; ++index)
+        {
+            hash ^= static_cast<uint32_t>(facetIds.arr[index]);
+            hash *= 1099511628211ULL;
+        }
+        key.candidateHash = hash;
+        key.candidateCount = facetIds.size;
+        return key;
+    };
+    const auto equalsCandidateList = [](const IntArray &facetIds,
+                                        const std::vector<int> &values) {
+        if (facetIds.size != values.size())
+            return false;
+        for (size_t index = 0; index < facetIds.size; ++index)
+            if (facetIds.arr[index] != values[index])
+                return false;
+        return true;
+    };
+    const auto assignCandidateList = [](IntArray &facetIds,
+                                        const std::vector<int> &values) {
+        facetIds.size = values.size();
+        for (size_t index = 0; index < values.size(); ++index)
+            facetIds.arr[index] = values[index];
+    };
+    std::vector<TraceBatchItem> traceBatch;
+    std::vector<GpuTraceBeamFacets> traceGpuItems;
+    std::vector<size_t> traceGpuBatchIndices;
+    std::vector<IntArray> traceGpuOriginalFacetIds;
+    std::map<TraceSortKey, std::vector<TraceSortCacheEntry>> traceSortCache;
+    std::map<TraceSortKey, TraceSortRepresentatives>
+        traceBatchSortRepresentatives;
+#endif
 //#ifdef _DEBUG // DEB
 //    ofstream logfile("logscat.txt", ios::out);
 //    int count = 0;
@@ -1079,17 +1417,17 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
 #ifdef USE_CUDA
         if (m_gpuTracePrefilter && GpuTraceRuntimeEnabled())
         {
-            struct TraceBatchItem
+            std::chrono::high_resolution_clock::time_point batchCollectStarted;
+            if (m_tracePrefilterStats)
+                batchCollectStarted = traceNow();
+            const size_t batchLimit = (size_t)GpuTraceBatchBeamLimit();
+            if (traceBatch.empty())
             {
-                Beam beam;
-                IntArray facetIds;
-                std::vector<unsigned char> mayIntersect;
-                bool hasFacetIds = false;
-            };
-
-            std::vector<TraceBatchItem> batch;
-            batch.reserve(GpuTraceBatchBeamLimit());
-            while (m_treeSize != 0 && (int)batch.size() < GpuTraceBatchBeamLimit())
+                traceBatch.resize(batchLimit);
+                traceGpuItems.reserve(batchLimit);
+            }
+            size_t batchSize = 0;
+            while (m_treeSize != 0 && batchSize < batchLimit)
             {
                 if (m_traceMaxBeams > 0 && ++processedBeams > m_traceMaxBeams)
                 {
@@ -1100,42 +1438,459 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
                         + std::to_string(m_traceMaxBeams)
                         + " branches; raise the limit or use 0 to disable it");
                 }
-                TraceBatchItem item;
-                item.beam = m_beamTree.back();
+                TraceBatchItem &item = traceBatch[batchSize++];
+                item.facetIds.size = 0;
+                item.mayIntersect.clear();
+                item.hasFacetIds = false;
+                item.sortedOnGpu = false;
+                item.sortedFromCache = false;
+                item.prefilteredOnGpu = false;
+                item.originalFacetCount = 0;
+                item.sortRepresentative = static_cast<size_t>(-1);
+                item.beam = std::move(m_beamTree.back());
                 m_beamTree.pop_back();
                 m_treeSize = (int)m_beamTree.size();
-                if (!IsTerminalAct(item.beam))
+                if (!IsTerminalAct(item.beam)
+                    || item.beam.location == Location::Out)
                 {
-                    SelectVisibleFacets(item.beam, item.facetIds);
+                    if (m_tracePrefilterStats
+                        && traceTimingSample(traceVisibleTimingCalls,
+                                             traceVisibleTimingSamples))
+                    {
+                        const auto visibleStarted = traceNow();
+                        FindVisibleFacets(item.beam, item.facetIds);
+                        traceVisibleTime += traceSeconds(
+                            visibleStarted, traceNow());
+                    }
+                    else
+                    {
+                        FindVisibleFacets(item.beam, item.facetIds);
+                    }
                     item.hasFacetIds = true;
+                    item.originalFacetCount = item.facetIds.size;
                 }
-                batch.push_back(item);
+            }
+            if (m_tracePrefilterStats)
+            {
+                ++traceBatchCalls;
+                traceBatchItems += batchSize;
+                traceBatchCollectTime += traceSeconds(
+                    batchCollectStarted, traceNow());
             }
 
-            std::vector<GpuTraceBeamFacets> gpuItems;
-            gpuItems.reserve(batch.size());
-            for (size_t i = 0; i < batch.size(); ++i)
+            traceGpuItems.clear();
+            traceGpuBatchIndices.clear();
+            traceGpuOriginalFacetIds.clear();
+            traceBatchSortRepresentatives.clear();
+            for (size_t i = 0; i < batchSize; ++i)
             {
-                if (batch[i].hasFacetIds && batch[i].facetIds.size != 0)
+                TraceBatchItem &batchItem = traceBatch[i];
+                if (batchItem.hasFacetIds && batchItem.facetIds.size != 0)
                 {
+                    if (m_tracePrefilterStats)
+                    {
+                        ++traceGpuCandidateItems;
+                        traceGpuCandidates += batchItem.facetIds.size;
+                        if (batchItem.facetIds.size == 1)
+                            ++traceGpuSingleCandidateItems;
+                        else
+                            ++traceGpuComplexCandidateItems;
+                        if (batchItem.facetIds.size <= 24)
+                            ++traceGpuCandidatesLe24;
+                        else if (batchItem.facetIds.size <= 32)
+                            ++traceGpuCandidates25To32;
+                        else if (batchItem.facetIds.size <= 64)
+                            ++traceGpuCandidates33To64;
+                        else if (batchItem.facetIds.size <= 128)
+                            ++traceGpuCandidates65To128;
+                        else if (batchItem.facetIds.size <= 256)
+                            ++traceGpuCandidates129To256;
+                        else
+                            ++traceGpuCandidatesGt256;
+                        if (batchItem.beam.nVertices == 3)
+                            ++traceGpuBeamVertices3;
+                        else if (batchItem.beam.nVertices == 4)
+                            ++traceGpuBeamVertices4;
+                        else if (batchItem.beam.nVertices <= 8)
+                            ++traceGpuBeamVertices5To8;
+                        else if (batchItem.beam.nVertices <= 16)
+                            ++traceGpuBeamVertices9To16;
+                        else
+                            ++traceGpuBeamVerticesGt16;
+                    }
+                    bool sortHandled = false;
+                    if (traceSortCacheEnabled && batchItem.facetIds.size > 24)
+                    {
+                        const TraceSortKey key = makeTraceSortKey(
+                            batchItem.beam, batchItem.facetIds);
+                        const auto cached = traceSortCache.find(key);
+                        if (cached != traceSortCache.end())
+                        {
+                            for (const TraceSortCacheEntry &entry
+                                 : cached->second)
+                            {
+                                if (!equalsCandidateList(batchItem.facetIds,
+                                                         entry.original))
+                                    continue;
+                                assignCandidateList(batchItem.facetIds,
+                                                    entry.sorted);
+                                batchItem.sortedOnGpu = true;
+                                batchItem.sortedFromCache = true;
+                                ++traceSortCacheGlobalHits;
+                                traceSortCacheCandidatesSaved +=
+                                    batchItem.originalFacetCount;
+                                sortHandled = true;
+                                break;
+                            }
+                        }
+                        if (!sortHandled)
+                        {
+                            TraceSortRepresentatives &representatives =
+                                traceBatchSortRepresentatives[key];
+                            if (representatives.first
+                                != static_cast<size_t>(-1))
+                            {
+                                const size_t representative =
+                                    representatives.first;
+                                if (batchItem.facetIds.size
+                                    == traceBatch[representative].facetIds.size)
+                                {
+                                    bool same = true;
+                                    for (size_t index = 0;
+                                         index < batchItem.facetIds.size;
+                                         ++index)
+                                    {
+                                        if (batchItem.facetIds.arr[index]
+                                            != traceBatch[representative]
+                                                   .facetIds.arr[index])
+                                        {
+                                            same = false;
+                                            break;
+                                        }
+                                    }
+                                    if (same)
+                                    {
+                                        batchItem.sortRepresentative =
+                                            representative;
+                                        sortHandled = true;
+                                    }
+                                }
+                            }
+                            for (size_t collisionIndex = 0;
+                                 !sortHandled
+                                 && collisionIndex
+                                    < representatives.collisions.size();
+                                 ++collisionIndex)
+                            {
+                                const size_t representative =
+                                    representatives.collisions[collisionIndex];
+                                if (batchItem.facetIds.size
+                                    != traceBatch[representative].facetIds.size)
+                                    continue;
+                                bool same = true;
+                                for (size_t index = 0;
+                                     index < batchItem.facetIds.size; ++index)
+                                {
+                                    if (batchItem.facetIds.arr[index]
+                                        != traceBatch[representative]
+                                               .facetIds.arr[index])
+                                    {
+                                        same = false;
+                                        break;
+                                    }
+                                }
+                                if (same)
+                                {
+                                    batchItem.sortRepresentative =
+                                        representative;
+                                    sortHandled = true;
+                                }
+                            }
+                            if (!sortHandled)
+                            {
+                                if (representatives.first
+                                    == static_cast<size_t>(-1))
+                                    representatives.first = i;
+                                else
+                                    representatives.collisions.push_back(i);
+                            }
+                        }
+                    }
+                    if (sortHandled)
+                        continue;
+
                     GpuTraceBeamFacets item;
-                    item.beam = &batch[i].beam;
-                    item.facetIds = &batch[i].facetIds;
-                    item.mayIntersect = &batch[i].mayIntersect;
-                    gpuItems.push_back(item);
+                    item.beam = &batchItem.beam;
+                    item.facetIds = &batchItem.facetIds;
+                    item.mayIntersect = &batchItem.mayIntersect;
+                    item.sortedOnGpu = &batchItem.sortedOnGpu;
+                    traceGpuItems.push_back(item);
+                    traceGpuBatchIndices.push_back(i);
+                    if (traceSortCacheEnabled || GpuTraceVerifySort())
+                        traceGpuOriginalFacetIds.push_back(
+                            batchItem.facetIds);
                 }
             }
-            if (!gpuItems.empty())
-                GpuTracePrefilterBeamFacetBatch(
-                    m_facets, m_geometryScale, gpuItems);
 
-            for (size_t i = 0; i < batch.size(); ++i)
+            if (!traceGpuItems.empty())
             {
-                if (!processBeam(batch[i].beam,
-                                 batch[i].hasFacetIds ? &batch[i].facetIds : nullptr,
-                                 batch[i].mayIntersect.empty() ? nullptr : &batch[i].mayIntersect))
+                if (m_tracePrefilterStats)
+                {
+                    const auto gpuPrepareStarted = traceNow();
+                    GpuTracePrepareBeamFacetBatchAdaptive(
+                        m_facets, m_geometryScale, traceGpuItems);
+                    traceGpuPrepareTime += traceSeconds(
+                        gpuPrepareStarted, traceNow());
+                }
+                else
+                {
+                    GpuTracePrepareBeamFacetBatchAdaptive(
+                        m_facets, m_geometryScale, traceGpuItems);
+                }
+            }
+
+            if (traceSortCacheEnabled)
+            {
+                for (size_t gpuIndex = 0;
+                     gpuIndex < traceGpuItems.size(); ++gpuIndex)
+                {
+                    TraceBatchItem &batchItem =
+                        traceBatch[traceGpuBatchIndices[gpuIndex]];
+                    if (!batchItem.sortedOnGpu
+                        || batchItem.originalFacetCount <= 24)
+                        continue;
+                    const IntArray &original =
+                        traceGpuOriginalFacetIds[gpuIndex];
+                    TraceSortCacheEntry entry;
+                    entry.original.assign(original.arr,
+                                          original.arr + original.size);
+                    entry.sorted.assign(batchItem.facetIds.arr,
+                                        batchItem.facetIds.arr
+                                            + batchItem.facetIds.size);
+                    traceSortCache[makeTraceSortKey(batchItem.beam, original)]
+                        .push_back(std::move(entry));
+                }
+                for (size_t i = 0; i < batchSize; ++i)
+                {
+                    TraceBatchItem &batchItem = traceBatch[i];
+                    if (batchItem.sortRepresentative
+                        == static_cast<size_t>(-1))
+                        continue;
+                    const TraceBatchItem &representative =
+                        traceBatch[batchItem.sortRepresentative];
+                    if (!representative.sortedOnGpu)
+                        continue;
+                    batchItem.facetIds = representative.facetIds;
+                    batchItem.sortedOnGpu = true;
+                    batchItem.sortedFromCache = true;
+                    ++traceSortCacheBatchHits;
+                    traceSortCacheCandidatesSaved +=
+                        batchItem.originalFacetCount;
+                }
+            }
+
+            if (GpuTraceVerifySort())
+            {
+                for (size_t itemIndex = 0;
+                     itemIndex < traceGpuItems.size(); ++itemIndex)
+                {
+                    GpuTraceBeamFacets &gpuItem = traceGpuItems[itemIndex];
+                    if (gpuItem.sortedOnGpu == nullptr
+                        || !*gpuItem.sortedOnGpu)
+                        continue;
+                    ++traceGpuVerifiedSorts;
+
+                    if (gpuItem.mayIntersect != nullptr
+                        && gpuItem.mayIntersect->size()
+                           == gpuItem.facetIds->size)
+                    {
+                        for (size_t candidate = 0;
+                             candidate < gpuItem.facetIds->size; ++candidate)
+                        {
+                            if ((*gpuItem.mayIntersect)[candidate] != 0)
+                                continue;
+                            ++traceGpuSkipFlagsVerified;
+                            const int facetId =
+                                gpuItem.facetIds->arr[candidate];
+                            if (MayBeamIntersectFacetProjected(
+                                    *gpuItem.beam, facetId))
+                            {
+                                ++traceGpuSkipFalseNegatives;
+                                if (traceGpuSkipFalseNegatives <= 8)
+                                {
+                                    std::cout
+                                        << "Trace GPU skip false negative: facet="
+                                        << facetId << " candidates="
+                                        << gpuItem.facetIds->size << std::endl;
+                                }
+                            }
+                        }
+                    }
+
+                    IntArray expected = traceGpuOriginalFacetIds[itemIndex];
+                    SortVisibleFacets(*gpuItem.beam, expected);
+                    bool retained[MAX_FACET_NUM] = {};
+                    for (size_t index = 0; index < gpuItem.facetIds->size;
+                         ++index)
+                    {
+                        const int facetId = gpuItem.facetIds->arr[index];
+                        if (facetId >= 0 && facetId < MAX_FACET_NUM)
+                            retained[facetId] = true;
+                    }
+                    const bool gpuPrefiltered =
+                        !GpuTraceFullSortEnabled()
+                        || traceGpuOriginalFacetIds[itemIndex].size <= 24;
+                    for (size_t index = 0;
+                         gpuPrefiltered
+                         && index < traceGpuOriginalFacetIds[itemIndex].size;
+                         ++index)
+                    {
+                        const int facetId =
+                            traceGpuOriginalFacetIds[itemIndex].arr[index];
+                        const bool gpuKeeps = facetId >= 0
+                            && facetId < MAX_FACET_NUM
+                            && retained[facetId];
+                        const bool cpuKeeps =
+                            MayBeamIntersectFacetProjected(
+                                *gpuItem.beam, facetId);
+                        if (gpuKeeps && !cpuKeeps)
+                        {
+                            ++traceGpuPrefilterGpuOnly;
+                            if (traceGpuPrefilterGpuOnly <= 4)
+                            {
+                                std::cout
+                                    << "Trace GPU prefilter GPU-only: facet="
+                                    << facetId << " original="
+                                    << traceGpuOriginalFacetIds[itemIndex].size
+                                    << std::endl;
+                            }
+                        }
+                        else if (!gpuKeeps && cpuKeeps)
+                        {
+                            ++traceGpuPrefilterCpuOnly;
+                            if (traceGpuPrefilterCpuOnly <= 4)
+                            {
+                                std::cout
+                                    << "Trace GPU prefilter CPU-only: facet="
+                                    << facetId << " original="
+                                    << traceGpuOriginalFacetIds[itemIndex].size
+                                    << std::endl;
+                            }
+                        }
+                    }
+                    IntArray filteredExpected;
+                    for (size_t index = 0; index < expected.size; ++index)
+                    {
+                        const int facetId = expected.arr[index];
+                        if (facetId >= 0 && facetId < MAX_FACET_NUM
+                            && retained[facetId])
+                            filteredExpected.Add(facetId);
+                    }
+
+                    bool same = filteredExpected.size
+                             == gpuItem.facetIds->size;
+                    size_t firstMismatch = 0;
+                    while (same && firstMismatch < filteredExpected.size)
+                    {
+                        if (filteredExpected.arr[firstMismatch]
+                            != gpuItem.facetIds->arr[firstMismatch])
+                            same = false;
+                        else
+                            ++firstMismatch;
+                    }
+                    if (!same)
+                    {
+                        ++traceGpuSortMismatches;
+                        if (traceGpuSortMismatches <= 8)
+                        {
+                            std::cout
+                                << "Trace GPU sort mismatch: original="
+                                << traceGpuOriginalFacetIds[itemIndex].size
+                                << " kept=" << gpuItem.facetIds->size
+                                << " first=" << firstMismatch
+                                << " cpu="
+                                << (firstMismatch < filteredExpected.size
+                                    ? filteredExpected.arr[firstMismatch] : -1)
+                                << " gpu="
+                                << (firstMismatch < gpuItem.facetIds->size
+                                    ? gpuItem.facetIds->arr[firstMismatch] : -1)
+                                << std::endl;
+                        }
+                    }
+                }
+            }
+
+            std::chrono::high_resolution_clock::time_point preparedProcessStarted;
+            if (m_tracePrefilterStats)
+                preparedProcessStarted = traceNow();
+            for (size_t i = 0; i < batchSize; ++i)
+            {
+                TraceBatchItem &batchItem = traceBatch[i];
+                batchItem.prefilteredOnGpu = batchItem.sortedOnGpu
+                    && (!GpuTraceFullSortEnabled()
+                        || batchItem.originalFacetCount <= 24);
+                if (batchItem.hasFacetIds && batchItem.facetIds.size != 0)
+                {
+                    if (batchItem.sortedOnGpu)
+                    {
+                        if (!batchItem.sortedFromCache)
+                            ++traceGpuSortCalls;
+                    }
+                    else
+                    {
+                        ++traceCpuSortFallbacks;
+                        if (m_tracePrefilterStats)
+                        {
+                            if (batchItem.facetIds.size > 24)
+                            {
+                                ++traceGpuFallbackCandidateLimit;
+                            }
+                            else if (batchItem.beam.nVertices <= 0
+                                     || batchItem.beam.nVertices > 8)
+                            {
+                                ++traceGpuFallbackBeamLimit;
+                            }
+                            else
+                            {
+                                bool oversizedFacet = false;
+                                for (size_t facetIndex = 0;
+                                     facetIndex < batchItem.facetIds.size;
+                                     ++facetIndex)
+                                {
+                                    const int facetId =
+                                        batchItem.facetIds.arr[facetIndex];
+                                    if (m_facets[facetId].nVertices < 3
+                                        || m_facets[facetId].nVertices > 8)
+                                    {
+                                        oversizedFacet = true;
+                                        break;
+                                    }
+                                }
+                                if (oversizedFacet)
+                                    ++traceGpuFallbackFacetLimit;
+                                else
+                                    ++traceGpuFallbackUnexplained;
+                            }
+                            const auto fallbackStarted = traceNow();
+                            SortVisibleFacets(batchItem.beam, batchItem.facetIds);
+                            traceFallbackSortTime += traceSeconds(
+                                fallbackStarted, traceNow());
+                        }
+                        else
+                        {
+                            SortVisibleFacets(batchItem.beam, batchItem.facetIds);
+                        }
+                    }
+                }
+                if (!processBeam(batchItem.beam,
+                                 batchItem.hasFacetIds ? &batchItem.facetIds : nullptr,
+                                 batchItem.mayIntersect.empty() ? nullptr : &batchItem.mayIntersect,
+                                 batchItem.prefilteredOnGpu))
                     return false;
             }
+            if (m_tracePrefilterStats)
+                tracePreparedProcessTime += traceSeconds(
+                    preparedProcessStarted, traceNow());
             continue;
         }
 #endif
@@ -1158,23 +1913,127 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
         if (beam.id == 171)
             int ffgf = 0;
 #endif
-        if (!processBeam(beam, nullptr, nullptr))
+        if (!processBeam(beam, nullptr, nullptr, false))
             return false;
     }
 
     if (m_tracePrefilterStats)
     {
+        const auto traceEstimatedTime = [](double sampledTime,
+                                           size_t calls,
+                                           size_t samples) {
+            return samples == 0 ? 0.0 : sampledTime
+                * static_cast<double>(calls)
+                / static_cast<double>(samples);
+        };
+        const double traceSelectEstimatedTime = traceEstimatedTime(
+            traceSelectTime, traceSelectTimingCalls, traceSelectTimingSamples);
+        const double traceAabbEstimatedTime = traceEstimatedTime(
+            traceAabbTime, traceAabbTimingCalls, traceAabbTimingSamples);
+        const double traceIntersectEstimatedTime = traceEstimatedTime(
+            traceIntersectTime,
+            traceIntersectTimingCalls,
+            traceIntersectTimingSamples);
+        const double traceSplitEstimatedTime = traceEstimatedTime(
+            traceSplitTime, traceSplitTimingCalls, traceSplitTimingSamples);
+        const double traceOutgoingEstimatedTime = traceEstimatedTime(
+            traceOutgoingTime,
+            traceOutgoingTimingCalls,
+            traceOutgoingTimingSamples);
+        const double traceVisibleEstimatedTime = traceEstimatedTime(
+            traceVisibleTime, traceVisibleTimingCalls, traceVisibleTimingSamples);
         std::cout << "Trace prefilter stats: candidates=" << traceCandidateTests
                   << " gpu_skip=" << traceGpuPrefilterSkipped
                   << " cpu_aabb_skip=" << traceCpuPrefilterSkipped
                   << " intersect_calls=" << traceIntersectCalls
                   << std::endl;
-        std::cout << "Trace timing stats: select_sort=" << traceSelectTime
-                  << " aabb=" << traceAabbTime
-                  << " intersect=" << traceIntersectTime
-                  << " split=" << traceSplitTime
-                  << " outgoing=" << traceOutgoingTime
+        std::cout << "Trace timing stats: select_sort=" << traceSelectEstimatedTime
+                  << " aabb=" << traceAabbEstimatedTime
+                  << " intersect=" << traceIntersectEstimatedTime
+                  << " split=" << traceSplitEstimatedTime
+                  << " outgoing=" << traceOutgoingEstimatedTime
                   << std::endl;
+        std::cout << "Trace timing samples: select_sort="
+                  << traceSelectTimingSamples << "/" << traceSelectTimingCalls
+                  << " aabb=" << traceAabbTimingSamples
+                  << "/" << traceAabbTimingCalls
+                  << " intersect=" << traceIntersectTimingSamples
+                  << "/" << traceIntersectTimingCalls
+                  << " split=" << traceSplitTimingSamples
+                  << "/" << traceSplitTimingCalls
+                  << " outgoing=" << traceOutgoingTimingSamples
+                  << "/" << traceOutgoingTimingCalls
+                  << " visible=" << traceVisibleTimingSamples
+                  << "/" << traceVisibleTimingCalls
+                  << std::endl;
+        std::cout << "Trace sort stats: calls=" << m_traceSortCalls
+                  << " candidates=" << m_traceSortCandidates
+                  << " overlap_calls=" << m_traceSortOverlapCalls
+                  << " gpu_calls=" << traceGpuSortCalls
+                  << " cpu_fallbacks=" << traceCpuSortFallbacks
+                  << std::endl;
+        std::cout << "Trace batch stats: batches=" << traceBatchCalls
+                  << " items=" << traceBatchItems
+                  << " collect=" << traceBatchCollectTime
+                  << " visible=" << traceVisibleEstimatedTime
+                  << " gpu_prepare=" << traceGpuPrepareTime
+                  << " fallback_sort=" << traceFallbackSortTime
+                  << " prepared_process=" << tracePreparedProcessTime
+                  << std::endl;
+        std::cout << "Trace GPU item stats: nonempty="
+                  << traceGpuCandidateItems
+                  << " candidates=" << traceGpuCandidates
+                  << " single=" << traceGpuSingleCandidateItems
+                  << " complex=" << traceGpuComplexCandidateItems
+                  << std::endl;
+#ifdef USE_CUDA
+        if (traceSortCacheEnabled)
+        {
+            std::cout << "Trace sort cache stats: entries="
+                      << traceSortCache.size()
+                      << " global_hits=" << traceSortCacheGlobalHits
+                      << " batch_hits=" << traceSortCacheBatchHits
+                      << " candidates_saved="
+                      << traceSortCacheCandidatesSaved
+                      << std::endl;
+        }
+#endif
+        std::cout << "Trace GPU eligibility stats: candidates<=24="
+                  << traceGpuCandidatesLe24
+                  << " candidates25-32=" << traceGpuCandidates25To32
+                  << " candidates33-64=" << traceGpuCandidates33To64
+                  << " candidates65-128=" << traceGpuCandidates65To128
+                  << " candidates129-256=" << traceGpuCandidates129To256
+                  << " candidates>256=" << traceGpuCandidatesGt256
+                  << " beam_vertices=3=" << traceGpuBeamVertices3
+                  << " beam_vertices=4=" << traceGpuBeamVertices4
+                  << " beam_vertices5-8=" << traceGpuBeamVertices5To8
+                  << " beam_vertices9-16=" << traceGpuBeamVertices9To16
+                  << " beam_vertices>16=" << traceGpuBeamVerticesGt16
+                  << std::endl;
+        std::cout << "Trace GPU fallback reasons: candidate_limit="
+                  << traceGpuFallbackCandidateLimit
+                  << " beam_limit=" << traceGpuFallbackBeamLimit
+                  << " facet_limit=" << traceGpuFallbackFacetLimit
+                  << " unexplained=" << traceGpuFallbackUnexplained
+                  << std::endl;
+#ifdef USE_CUDA
+        if (GpuTraceVerifySort())
+        {
+            std::cout << "Trace GPU sort verification: compared="
+                      << traceGpuVerifiedSorts
+                      << " mismatches=" << traceGpuSortMismatches
+                      << " prefilter_gpu_only="
+                      << traceGpuPrefilterGpuOnly
+                      << " prefilter_cpu_only="
+                      << traceGpuPrefilterCpuOnly
+                      << " skip_flags_verified="
+                      << traceGpuSkipFlagsVerified
+                      << " skip_false_negatives="
+                      << traceGpuSkipFalseNegatives
+                      << std::endl;
+        }
+#endif
     }
 
     return true;
@@ -1196,7 +2055,18 @@ bool ScatteringNonConvex::SetOpticalBeamParams(const Facet &facet, const Beam &i
     }
     else // regular incidence
     {
-        Beam incBeam = incidentBeam;
+        // The splitting routines need the incident optical state, not its
+        // aperture polygon.  Copying the complete Beam here duplicated the
+        // polygon for every facet hit in the hottest tracing path.
+        Beam incBeam;
+        incBeam.SetLight(incidentBeam);
+        incBeam.J = incidentBeam.J;
+        incBeam.front = incidentBeam.front;
+        incBeam.location = incidentBeam.location;
+        incBeam.opticalPath = incidentBeam.opticalPath;
+#ifdef _DEBUG // DEB
+        incBeam.ops = incidentBeam.ops;
+#endif
 
         if (incidentBeam.location == Location::In)
         {
@@ -1278,6 +2148,7 @@ bool ScatteringNonConvex::MayBeamIntersectFacetProjected(const Beam &beam, int f
     const double dp = DotProduct(beam.direction, normal);
     if (std::fabs(dp) < EPS_PROJECTION)
         return false;
+    const double invDp = 1.0 / dp;
 
     const int locInt = beam.location == Location::In ? 0 : 1;
     const int drop = m_facetProjectionDrop[locInt][facetId];
@@ -1290,7 +2161,7 @@ bool ScatteringNonConvex::MayBeamIntersectFacetProjected(const Beam &beam, int f
         for (int i = 0; i < beam.nVertices; ++i)
         {
             const Point3f &p = beam.arr[i];
-            const double t = (DotProduct(p, normal) + normal.d_param) / dp;
+            const double t = (DotProduct(p, normal) + normal.d_param) * invDp;
             const double u = p.cy - beam.direction.cy * t;
             const double v = p.cz - beam.direction.cz * t;
             if (u < bMinU) bMinU = u;
@@ -1304,7 +2175,7 @@ bool ScatteringNonConvex::MayBeamIntersectFacetProjected(const Beam &beam, int f
         for (int i = 0; i < beam.nVertices; ++i)
         {
             const Point3f &p = beam.arr[i];
-            const double t = (DotProduct(p, normal) + normal.d_param) / dp;
+            const double t = (DotProduct(p, normal) + normal.d_param) * invDp;
             const double u = p.cx - beam.direction.cx * t;
             const double v = p.cz - beam.direction.cz * t;
             if (u < bMinU) bMinU = u;
@@ -1318,7 +2189,7 @@ bool ScatteringNonConvex::MayBeamIntersectFacetProjected(const Beam &beam, int f
         for (int i = 0; i < beam.nVertices; ++i)
         {
             const Point3f &p = beam.arr[i];
-            const double t = (DotProduct(p, normal) + normal.d_param) / dp;
+            const double t = (DotProduct(p, normal) + normal.d_param) * invDp;
             const double u = p.cx - beam.direction.cx * t;
             const double v = p.cy - beam.direction.cy * t;
             if (u < bMinU) bMinU = u;
@@ -1372,6 +2243,22 @@ void ScatteringNonConvex::BuildFacetVisibilityCache()
         }
     }
     m_visibilityCacheBuilt = true;
+}
+
+void ScatteringNonConvex::BuildFacetNormalCache()
+{
+    for (int locInt = 0; locInt < 2; ++locInt)
+    {
+        for (int facetId = 0; facetId < m_particle->nFacets; ++facetId)
+        {
+            const Point3f &normal = (locInt == 0)
+                                  ? m_facets[facetId].in_normal
+                                  : m_facets[facetId].ex_normal;
+            m_facetNormalComponents[locInt][facetId][0] = normal.cx;
+            m_facetNormalComponents[locInt][facetId][1] = normal.cy;
+            m_facetNormalComponents[locInt][facetId][2] = normal.cz;
+        }
+    }
 }
 
 void ScatteringNonConvex::BuildFacetProjectionCache()
@@ -1448,14 +2335,18 @@ void ScatteringNonConvex::FindVisibleFacets(const Beam &beam, IntArray &facetIds
     const ScatteringNonConvex &cache =
         m_visibilityCacheOwner ? *m_visibilityCacheOwner : *this;
     const size_t count = cache.m_visibleFacetCacheSize[locInt][beam.lastFacetId];
+    const double (*facetNormals)[3] =
+        m_facetNormalComponents[beam.location == Location::In ? 1 : 0];
+    const double bx = beam.direction.cx;
+    const double by = beam.direction.cy;
+    const double bz = beam.direction.cz;
     for (size_t idx = 0; idx < count; ++idx)
     {
         int i = cache.m_visibleFacetCache[locInt][beam.lastFacetId][idx];
-
-        const Point3f &facetNormal = m_facets[i].normal[!beam.location];
-        double cosFB = beam.direction.cx * facetNormal.cx
-                     + beam.direction.cy * facetNormal.cy
-                     + beam.direction.cz * facetNormal.cz;
+        const double *facetNormal = facetNormals[i];
+        const double cosFB = bx*facetNormal[0]
+                           + by*facetNormal[1]
+                           + bz*facetNormal[2];
 
         if (cosFB >= -EPS_PROJECTION) // conservative candidate filter
         {

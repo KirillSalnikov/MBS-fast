@@ -31,6 +31,10 @@ public:
 protected:
     Facet *m_facets;
     double m_geometryScale;
+    double m_geometryLengthTolerance;
+    double m_geometryAreaTolerance;
+    double m_geometryDepthTolerance;
+    bool m_unitFacetNormals;
     Splitting splitting;
     Light *m_incidentLight;
 

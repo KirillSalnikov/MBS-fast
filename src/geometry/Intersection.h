@@ -52,8 +52,8 @@ inline bool geometry_points_distinct(const Point3f &a, const Point3f &b,
     const double dx = a.cx - b.cx;
     const double dy = a.cy - b.cy;
     const double dz = a.cz - b.cz;
-    return geometry_length3(dx, dy, dz)
-        > geometry_length_tolerance(geometryScale);
+    const double tolerance = geometry_length_tolerance(geometryScale);
+    return dx*dx + dy*dy + dz*dz > tolerance*tolerance;
 }
 
 // Clip a convex polygon by an affine scalar field sampled at its vertices.
@@ -123,18 +123,20 @@ inline int clip_polygon_by_nonnegative_scalar(const Point3f *input,
 inline int clip_polygon_by_nonpositive_projection_parameter(
     const Point3f *input, int inputSize,
     const Point3f &planeNormal, const Point3f &projectionDirection,
-    double depthTolerance, Point3f *output)
+    double depthTolerance, Point3f *output,
+    bool *inputFullyForward = nullptr)
 {
+    if (inputFullyForward != nullptr)
+        *inputFullyForward = false;
     if (inputSize <= 0)
         return 0;
     if (inputSize > MAX_VERTEX_NUM)
         throw std::runtime_error("invalid polygon size in projection-depth clipping");
 
     const double denominator = DotProduct(projectionDirection, planeNormal);
-    const double denominatorScale = geometry_length3(
-        projectionDirection.cx, projectionDirection.cy,
-        projectionDirection.cz) * geometry_length3(
-            planeNormal.cx, planeNormal.cy, planeNormal.cz);
+    const double denominatorScale = std::sqrt(
+        DotProduct(projectionDirection, projectionDirection)
+        * DotProduct(planeNormal, planeNormal));
     if (denominatorScale <= DBL_MIN
         || std::fabs(denominator)
             <= geometry_parallel_tolerance(denominatorScale))
@@ -144,12 +146,20 @@ inline int clip_polygon_by_nonpositive_projection_parameter(
 
     const double denominatorSign = denominator >= 0.0 ? 1.0 : -1.0;
     double forwardScalar[MAX_VERTEX_NUM];
+    bool fullyForward = true;
     for (int i = 0; i < inputSize; ++i)
     {
         const double planeValue = DotProduct(input[i], planeNormal)
             + planeNormal.d_param;
         // -t >= 0, without dividing by a possibly small denominator.
         forwardScalar[i] = -planeValue * denominatorSign;
+        fullyForward = fullyForward
+            && forwardScalar[i] >= -depthTolerance * std::fabs(denominator);
+    }
+    if (fullyForward && inputFullyForward != nullptr)
+    {
+        *inputFullyForward = true;
+        return inputSize;
     }
     return clip_polygon_by_nonnegative_scalar(
         input, forwardScalar, inputSize,
@@ -171,13 +181,17 @@ inline bool is_inside_i(const Point3f &x, const Point3f &p1,
     const double crossZ = ex*qy - ey*qx;
     const double side = crossX*normal.cx
         + crossY*normal.cy + crossZ*normal.cz;
-    const double edgeLength = geometry_length3(ex, ey, ez);
-    const double offsetLength = geometry_length3(qx, qy, qz);
-    const double normalLength = Length(normal);
-    const double areaScale = edgeLength
-        * std::max(edgeLength, offsetLength) * normalLength;
-    const double tolerance = GEOMETRY_RELATIVE_EPSILON * areaScale;
-    return side >= -tolerance;
+    const double edgeLengthSquared = ex*ex + ey*ey + ez*ez;
+    const double offsetLengthSquared = qx*qx + qy*qy + qz*qz;
+    const double normalLengthSquared = DotProduct(normal, normal);
+    if (side >= 0.0)
+        return true;
+    const double scaleSquared = edgeLengthSquared
+        * std::max(edgeLengthSquared, offsetLengthSquared)
+        * normalLengthSquared;
+    const double epsilonSquared = GEOMETRY_RELATIVE_EPSILON
+        * GEOMETRY_RELATIVE_EPSILON;
+    return side*side <= epsilonSquared*scaleSquared;
 }
 
 inline bool is_layOnLine_i(const Point3f &x, const Point3f &a,
@@ -202,7 +216,8 @@ inline Point3f intersect_geometry_lines(const Point3f &a1,
 {
     const Point3f transverse = CrossProduct(vb, normal);
     const double denominator = DotProduct(va, transverse);
-    const double denominatorScale = Length(va)*Length(transverse);
+    const double denominatorScale = std::sqrt(
+        DotProduct(va, va) * DotProduct(transverse, transverse));
     if (denominatorScale <= DBL_MIN
         || std::fabs(denominator)
             <= geometry_parallel_tolerance(denominatorScale))
