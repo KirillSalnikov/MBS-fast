@@ -5,7 +5,9 @@
  #include "matrix.hpp"
 #endif
 #include <cstring>
+#if !defined(__CUDACC__)
 #include <immintrin.h>
+#endif
 #include <type_traits>
 
 static_assert(std::is_trivially_copyable<complex>::value,
@@ -216,6 +218,7 @@ public:
 	{
 		complex* target = data + (static_cast<size_t>(_N) * M + _M) * 4;
 		const double* source = values[0];
+#if !defined(__CUDACC__) && defined(__AVX2__)
 		for (int block = 0; block < 8; ++block)
 		{
 			__m256d current;
@@ -225,6 +228,13 @@ public:
 			std::memcpy(static_cast<void*>(target + block * 2),
 			            &current, sizeof(current));
 		}
+#else
+		for (int cell = 0; cell < 16; ++cell)
+		{
+			real(target[cell]) += source[cell * 2];
+			imag(target[cell]) += source[cell * 2 + 1];
+		}
+#endif
 	}
 
 	/**

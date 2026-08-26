@@ -6785,7 +6785,7 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
             localMns.ClearArr();
 
             ScatteringRange savedSphere = handlerPO->m_sphere;
-            handlerPO->m_sphere = rowSphere;
+            handlerPO->SetScatteringSphere(rowSphere);
             const double weightScale =
                 (double)nOrient / (double)std::max(1, groupOrientLimit);
             double extraCutoff = 0.0;
@@ -6840,7 +6840,7 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
                     }
                     if (!ok)
                     {
-                        handlerPO->m_sphere = savedSphere;
+                        handlerPO->SetScatteringSphere(savedSphere);
                         throw std::runtime_error("variable-phi GPU diffraction failed");
                     }
                     gpuStart = gpuEnd;
@@ -6898,7 +6898,7 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
                     }
                 }
             }
-            handlerPO->m_sphere = savedSphere;
+            handlerPO->SetScatteringSphere(savedSphere);
 
             if (m_mirrorGamma)
             {

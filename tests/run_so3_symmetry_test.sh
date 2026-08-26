@@ -34,6 +34,26 @@ OMP_NUM_THREADS=2 "$MBS" "${COMMON[@]}" \
 OMP_NUM_THREADS=2 "$MBS" "${COMMON[@]}" \
     --so3-full-quaternion 12288 --output "$WORK_DIR/full" >/dev/null 2>&1
 
+LATITUDE_COMMON=(
+    --method po
+    --particle 10 1 0.7 43.4114540493
+    --refractive-index 1.3116 0.01
+    --absorption
+    --wavelength-um 0.532
+    --max-reflections 4
+    --backend cpu
+    --threads 2
+    --close
+    --so3-quaternion 64
+    --scattering-grid 0 180 24 12
+    --cutoff-profile off
+)
+OMP_NUM_THREADS=2 "$MBS" "${LATITUDE_COMMON[@]}" \
+    --output "$WORK_DIR/latitude-reference" >/dev/null 2>&1
+OMP_NUM_THREADS=2 "$MBS" "${LATITUDE_COMMON[@]}" \
+    --latitude-phi-grid \
+    --output "$WORK_DIR/latitude" >/dev/null 2>&1
+
 metrics()
 {
     local reference=$1
@@ -69,6 +89,9 @@ read -r mirror_m11 mirror_all < <(
     metrics "$WORK_DIR/full/full.dat" "$WORK_DIR/mirror/mirror.dat")
 read -r paired_mirror_m11 paired_mirror_all < <(
     metrics "$WORK_DIR/paired/paired.dat" "$WORK_DIR/mirror/mirror.dat")
+read -r latitude_m11 latitude_all < <(
+    metrics "$WORK_DIR/latitude-reference/latitude-reference.dat" \
+            "$WORK_DIR/latitude/latitude.dat")
 
 awk -v m="$full_domain_m11" -v a="$full_domain_all" 'BEGIN {
     if (m > 0.01 || a > 0.03) exit 1
@@ -102,6 +125,13 @@ awk -v m="$paired_mirror_m11" -v a="$paired_mirror_all" 'BEGIN {
         "$paired_mirror_m11" "$paired_mirror_all" >&2
     exit 1
 }
+awk -v m="$latitude_m11" -v a="$latitude_all" 'BEGIN {
+    if (m > 1e-4 || a > 1e-3) exit 1
+}' || {
+    printf 'FAIL: latitude-phi grid differs from its rectangular reference: M11=%g all/M11=%g\n' \
+        "$latitude_m11" "$latitude_all" >&2
+    exit 1
+}
 
 grep -Eq '^90 59[.]9' "$WORK_DIR/reduced-particle.dat"
 grep -q 'alpha integrated by scattering azimuth' \
@@ -113,7 +143,7 @@ grep -q 'omitted orientations restored as' "$WORK_DIR/mirror.console.log"
 grep -q 'Validate each particle class against a full-gamma' \
     "$WORK_DIR/mirror.console.log"
 
-printf 'SO(3) symmetry regression passed: full-domain M11 L2=%.4f%%, all/M11=%.4f%%; reduced M11 L2=%.4f%%, all/M11=%.4f%%; mirror-half M11 L2=%.4f%%, all/M11=%.4f%%; paired mirror M11 L2=%.4f%%, all/M11=%.4f%%\n' \
+printf 'SO(3) symmetry regression passed: full-domain M11 L2=%.4f%%, all/M11=%.4f%%; reduced M11 L2=%.4f%%, all/M11=%.4f%%; mirror-half M11 L2=%.4f%%, all/M11=%.4f%%; paired mirror M11 L2=%.4f%%, all/M11=%.4f%%; latitude-phi M11 L2=%.6f%%, all/M11=%.6f%%\n' \
     "$(awk -v x="$full_domain_m11" 'BEGIN {print 100*x}')" \
     "$(awk -v x="$full_domain_all" 'BEGIN {print 100*x}')" \
     "$(awk -v x="$reduced_m11" 'BEGIN {print 100*x}')" \
@@ -121,4 +151,6 @@ printf 'SO(3) symmetry regression passed: full-domain M11 L2=%.4f%%, all/M11=%.4
     "$(awk -v x="$mirror_m11" 'BEGIN {print 100*x}')" \
     "$(awk -v x="$mirror_all" 'BEGIN {print 100*x}')" \
     "$(awk -v x="$paired_mirror_m11" 'BEGIN {print 100*x}')" \
-    "$(awk -v x="$paired_mirror_all" 'BEGIN {print 100*x}')"
+    "$(awk -v x="$paired_mirror_all" 'BEGIN {print 100*x}')" \
+    "$(awk -v x="$latitude_m11" 'BEGIN {print 100*x}')" \
+    "$(awk -v x="$latitude_all" 'BEGIN {print 100*x}')"

@@ -7,6 +7,7 @@ gpu=${MBS_GPU:-$root/gpu/bin/mbs_po_gpu_double}
 device=${MBS_CUDA_TEST_DEVICE:-0}
 relative_tolerance=${MBS_CUDA_L2_TOLERANCE:-1e-5}
 compact_tolerance=${MBS_CUDA_COMPACT_L2_TOLERANCE:-1e-12}
+atomic_tolerance=${MBS_CUDA_ATOMIC_L2_TOLERANCE:-1e-10}
 work=$(mktemp -d /tmp/mbs-cuda-gate.XXXXXX)
 keep_work=1
 cleanup() {
@@ -51,6 +52,10 @@ MBS_GPU_SLOT="$device" "$gpu" "${common[@]}" --backend cuda \
 MBS_GPU_SLOT="$device" MBS_GPU_COMPACT_BEAMS=0 \
     "$gpu" "${common[@]}" --backend cuda \
     --output "$work/gpu_generic" >"$work/gpu_generic.log" 2>&1
+MBS_GPU_SLOT="$device" MBS_GPU_NO_ATOMICS=0 \
+    "$gpu" "${common[@]}" --backend cuda \
+    --allow-experimental-environment \
+    --output "$work/gpu_atomic" >"$work/gpu_atomic.log" 2>&1
 
 grep -q 'GPU backend: CUDA' "$work/gpu.log" || {
     echo 'ERROR: CUDA binary did not confirm use of the CUDA backend' >&2
@@ -59,7 +64,8 @@ grep -q 'GPU backend: CUDA' "$work/gpu.log" || {
 
 python3 - "$work/cpu/cpu.dat" "$work/gpu/gpu.dat" \
     "$work/gpu_generic/gpu_generic.dat" "$relative_tolerance" \
-    "$compact_tolerance" <<'PY'
+    "$compact_tolerance" "$work/gpu_atomic/gpu_atomic.dat" \
+    "$atomic_tolerance" <<'PY'
 import math
 import sys
 
@@ -101,6 +107,15 @@ print("CUDA compact/generic weighted L2: {:.3e} (limit {:.3e})".format(
 if not math.isfinite(compact_relative) or compact_relative > compact_tolerance:
     raise SystemExit("ERROR: compact/generic CUDA mismatch exceeds {:.3e}".format(
         compact_tolerance))
+
+gpu_atomic = load(sys.argv[6])
+atomic_relative = relative_l2(gpu, gpu_atomic)
+atomic_tolerance = float(sys.argv[7])
+print("CUDA fused/atomic weighted L2: {:.3e} (limit {:.3e})".format(
+    atomic_relative, atomic_tolerance))
+if not math.isfinite(atomic_relative) or atomic_relative > atomic_tolerance:
+    raise SystemExit("ERROR: fused/atomic CUDA mismatch exceeds {:.3e}".format(
+        atomic_tolerance))
 PY
 
 trace_common=(

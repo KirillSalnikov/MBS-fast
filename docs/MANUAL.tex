@@ -238,8 +238,8 @@ reports \texttt{unknown-precision} is stale or was built outside the supported
 profiles and must not be used for production calculations.
 
 On an RTX 3080 Ti, a representative absorbing nonconvex test
-($k_{\mathrm{eq}}=20$, 64 SO(3) orientations,
-$N_\phi=720$, $N_\theta=360$) gave the following medians:
+($k_{\mathrm{eq}}=20$, 192 SO(3) orientations,
+$N_\phi=288$, $N_\theta=144$) gave the following medians:
 
 \begin{longtable}[]{@{}L{0.28\linewidth}L{0.18\linewidth}L{0.18\linewidth}L{0.24\linewidth}@{}}
 \toprule\noalign{}
@@ -248,9 +248,9 @@ Profile & Time & Speedup over FP64 & Mueller error against FP64 \\
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-Precise FP64 & 4.92 s & 1.00 & reference \\
-Precise mixed FP32 & 3.45 s & 1.43 & global $L_2=1.00\times10^{-6}$ \\
-FP32 with fast math & 3.63 s & 1.36 & global $L_2=1.02\times10^{-6}$ \\
+Precise FP64 & 10.98 s & 1.00 & reference \\
+Precise mixed FP32 & 6.51 s & 1.69 & global $L_2=9.05\times10^{-8}$ \\
+FP32 with fast math & 7.01 s & 1.57 & global $L_2=9.04\times10^{-8}$ \\
 \end{longtable}
 
 The precise mixed-FP32 binary is therefore the recommended consumer-GPU
@@ -1451,15 +1451,22 @@ plus reduction where supported. \\
 path for debugging. \\
 \texttt{MBS\_GPU\_COMPACT\_BEAMS=0} & Disable compact packing for beams
 with at most 8 vertices and use the general layout for diagnostics. \\
-\texttt{MBS\_GPU\_WARP\_BEAMS=0} & Restore the serial per-thread beam loop
-instead of the default warp-per-output reduction. \\
-\texttt{MBS\_GPU\_WARP\_GRID\_3D=0} & Disable only the default 3D-grid warp
-specialization. \\
+\texttt{MBS\_GPU\_WARP\_BEAMS=0/1} & Override automatic reduction: one
+thread per output (0) or one warp per output (1). \\
+\texttt{MBS\_GPU\_WARP\_GRID\_3D=0} & Disable the 3D-grid specialization
+when warp reduction is active. \\
 \texttt{MBS\_GPU\_TIMING=1} & Print GPU timing breakdown for
 count/pack/copy/kernels/d2h/add. \\
 \texttt{MBS\_GPU\_BLOCK=N} & Override CUDA block size for kernel
 tuning. \\
 \end{longtable}
+
+By default CUDA uses its reported FP32:FP64 throughput ratio. A ratio of 16
+or greater selects one thread per output; lower ratios retain warp reduction.
+The former was 2--11\% faster on an RTX 3080 Ti across the tested convex,
+concave, FP32, FP64, and 8--20-reflection cases. V100/A100-class GPUs retain
+the warp path. \texttt{MBS\_GPU\_TIMING=1} reports
+\texttt{reduction=thread} or \texttt{reduction=warp}.
 
 \subsection{Automatic CUDA tracing profile}
 
@@ -1861,10 +1868,10 @@ Mueller reduction when supported. \\
 for debugging. \\
 \texttt{MBS\_GPU\_COMPACT\_BEAMS=0} & Disable compact packing for beams
 with at most 8 vertices. \\
-\texttt{MBS\_GPU\_WARP\_BEAMS=0} & Restore the serial per-thread beam loop
-for diagnostics. \\
-\texttt{MBS\_GPU\_WARP\_GRID\_3D=0} & Disable only the default 3D-grid warp
-specialization. \\
+\texttt{MBS\_GPU\_WARP\_BEAMS=0/1} & Override the automatic thread-per-output
+or warp-per-output reduction choice. \\
+\texttt{MBS\_GPU\_WARP\_GRID\_3D=0} & Disable the 3D-grid specialization when
+warp reduction is active. \\
 \texttt{MBS\_GPU\_TIMING} & Print CUDA timing breakdowns. \\
 \texttt{MBS\_GPU\_BLOCK} & Override CUDA kernel block size. \\
 \nolinkurl{MBS_GPU_TRACE_OPENMP} & Enable automatic CUDA tracing from

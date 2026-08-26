@@ -129,15 +129,19 @@ the large diffraction storage and accumulation path. Use
 `mbs_po_gpu_float_fast` only after an application-specific FP64 comparison;
 fast transcendental approximations can change narrow interference features.
 
-A representative RTX 3080 Ti check (concave hexagonal particle, `k_eq=20`,
-64 SO(3) samples, `N_phi=720`, `N_theta=360`) measured median wall times of
-4.92 s for precise FP64, 3.45 s for precise mixed FP32, and 3.63 s for FP32
-fast math. Mixed FP32 was 1.43x faster with global Mueller and M11 weighted-L2
-errors near `1e-6` relative to FP64. This is a selection example, not a
-universal tolerance guarantee; repeat it for the production particle and grid.
-The CUDA diffraction path also enables warp-per-output beam reduction and its
-3D-grid specialization by default. Set `MBS_GPU_WARP_BEAMS=0` or
-`MBS_GPU_WARP_GRID_3D=0` only for diagnostic A/B runs.
+A representative RTX 3080 Ti check (concave absorbing hexagonal particle,
+`k_eq=20`, 192 SO(3) samples, `N_phi=288`, `N_theta=144`) measured median wall
+times of 10.98 s for precise FP64, 6.51 s for precise mixed FP32, and 7.01 s
+for FP32 fast math. Precise mixed FP32 was 1.69x faster, with global Mueller
+and M11 weighted-L2 errors of `9.05e-8` and `4.61e-8` relative to FP64. This is
+a selection example, not a universal tolerance guarantee; repeat it for the
+production particle and grid.
+The CUDA diffraction path selects its reduction automatically. Datacenter GPUs
+with strong FP64 hardware use warp-per-output beam reduction and its 3D-grid
+specialization. Consumer GPUs with a large FP32:FP64 throughput ratio use the
+faster compact thread-per-output kernel. Set `MBS_GPU_WARP_BEAMS=0` or `1` only
+for diagnostic A/B runs; `MBS_GPU_WARP_GRID_3D=0` disables only the 3D warp
+specialization.
 
 For a double CUDA build without fast math:
 

@@ -100,14 +100,14 @@ reports `unknown-precision` is stale or was built outside the supported build
 profiles and must not be used for production calculations.
 
 On an RTX 3080 Ti, a representative non-convex test (`k_eq=20`, absorbing
-material, 64 symmetry-reduced SO(3) samples, `N_phi=720`, `N_theta=360`) gave
+material, 192 symmetry-reduced SO(3) samples, `N_phi=288`, `N_theta=144`) gave
 the following median wall times over three runs:
 
 | Profile | Median time | Speed relative to FP64 | Global Mueller weighted L2 vs FP64 | M11 weighted L2 vs FP64 |
 |---|---:|---:|---:|---:|
-| Precise FP64 | 4.92 s | 1.00x | reference | reference |
-| Precise mixed FP32 | 3.45 s | 1.43x | `1.00e-6` | `9.99e-7` |
-| FP32 fast math | 3.63 s | 1.36x | `1.02e-6` | `1.01e-6` |
+| Precise FP64 | 10.98 s | 1.00x | reference | reference |
+| Precise mixed FP32 | 6.51 s | 1.69x | `9.05e-8` | `4.61e-8` |
+| FP32 fast math | 7.01 s | 1.57x | `9.04e-8` | `4.58e-8` |
 
 Thus precise mixed FP32 is the preferred starting profile on consumer Ampere
 hardware when this error is acceptable. Fast math is not selected
@@ -676,11 +676,18 @@ Useful controls:
 | `MBS_GPU_STAGE_MUELLER=1` | Use staged per-orientation Mueller plus reduction where supported. |
 | `MBS_GPU_NO_VERTEX_CACHE=1` | Disable cached/packed vertex path for debugging. |
 | `MBS_GPU_COMPACT_BEAMS=0` | Disable compact packing for beams with at most 8 vertices and use the general layout for diagnostics. |
-| `MBS_GPU_WARP_BEAMS=0` | Disable the default warp-per-output beam reduction and restore the serial per-thread loop for diagnostics. |
-| `MBS_GPU_WARP_GRID_3D=0` | Disable the default 3D-grid warp specialization while retaining the general warp reduction. |
+| `MBS_GPU_WARP_BEAMS=0/1` | Override automatic beam reduction: one thread per output (`0`) or one warp per output (`1`). By default consumer GPUs use the thread path and datacenter GPUs with strong FP64 hardware use the warp path. |
+| `MBS_GPU_WARP_GRID_3D=0` | Disable the 3D-grid specialization when warp reduction is active. |
 | `MBS_GPU_TIMING=1` | Print GPU timing breakdown for count/pack/copy/kernels/d2h/add. |
 | `MBS_GPU_BLOCK=N` | Override CUDA block size: 64 (default), 128, or 256. |
 | `MBS_ORIENTATION_TIMING=1` | Print summed CPU time for rotation, tracing, and prepared-beam construction. |
+
+The automatic reduction decision uses CUDA's reported FP32:FP64 throughput
+ratio. A ratio of 16 or greater selects the compact thread-per-output kernel.
+On an RTX 3080 Ti this reduced wall time by 2-11% across convex, concave, FP32,
+FP64, and 8-20-reflection probes. V100/A100-class GPUs retain warp reduction.
+`MBS_GPU_TIMING=1` reports the selected mode as `reduction=thread` or
+`reduction=warp`.
 
 The diagnostic target below compares FP64 direct quaternion-vector rotation
 with a precomputed 3x3 matrix on the GPU:
@@ -1011,8 +1018,8 @@ Production-use variables:
 | `MBS_GPU_STAGE_MUELLER` | Enable staged per-orientation Mueller reduction when supported. |
 | `MBS_GPU_NO_VERTEX_CACHE` | Disable cached/packed vertex path for debugging. |
 | `MBS_GPU_COMPACT_BEAMS=0` | Disable compact packing for beams with at most 8 vertices. |
-| `MBS_GPU_WARP_BEAMS=0` | Restore the serial per-thread beam loop for diagnostics. |
-| `MBS_GPU_WARP_GRID_3D=0` | Disable only the default 3D-grid warp specialization for diagnostics. |
+| `MBS_GPU_WARP_BEAMS=0/1` | Override the automatic reduction: one thread per output (`0`) or one warp per output (`1`). |
+| `MBS_GPU_WARP_GRID_3D=0` | Disable the 3D-grid specialization when warp reduction is active. |
 | `MBS_GPU_TIMING` | Print CUDA timing breakdowns. |
 | `MBS_GPU_BLOCK` | CUDA block size: 64 (default), 128, or 256. |
 | `MBS_GPU_TRACE_OPENMP=0/1` | Disable or enable automatic CUDA tracing with multiple OpenMP workers; default `1`. |

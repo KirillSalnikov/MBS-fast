@@ -510,7 +510,21 @@ static bool gpu_compact_beams_enabled()
 static bool gpu_warp_beams_enabled()
 {
     const char *value = std::getenv("MBS_GPU_WARP_BEAMS");
-    return !(value && value[0] == '0' && value[1] == '\0');
+    if (value && value[0] == '0' && value[1] == '\0')
+        return false;
+    if (value && value[0] == '1' && value[1] == '\0')
+        return true;
+
+    int device = 0;
+    cudaDeviceProp prop;
+    if (cudaGetDevice(&device) != cudaSuccess
+        || cudaGetDeviceProperties(&prop, device) != cudaSuccess)
+        return true;
+
+    // A thread that owns one output cell outperforms the warp reduction on
+    // consumer GPUs with a large FP32:FP64 throughput ratio. Datacenter GPUs
+    // retain the warp path, which is better suited to their FP64 pipelines.
+    return prop.singleToDoublePrecisionPerfRatio < 16;
 }
 
 static bool gpu_warp_grid_3d_enabled()
@@ -4892,8 +4906,10 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     const int requestedFusedMueller = gpu_fused_mueller_mode();
     const int requestedStageMueller = gpu_stage_mueller_mode();
     const int requestedNoVertexCache = gpu_no_vertex_cache_mode();
+    const int requestedNoAtomics = gpu_no_atomics_mode();
     const bool canUseBeam8 = gpu_compact_beams_enabled()
         && !computeNoShadow
+        && requestedNoAtomics != 0
         && requestedFusedMueller != 0
         && (requestedStageMueller != 1 || allBeam8)
         && requestedNoVertexCache != 1;
@@ -5493,8 +5509,9 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     {
         tAdd = gpu_now_ms() - t0;
         std::fprintf(stderr,
-                     "GPU timing diffract path=%s block=%d orient=%d beams=%zu nAz=%d nZen=%d count=%.3fms pack=%.3fms ensure=%.3fms grid=%.3fms copy=%.3fms kernels=%.3fms d2h=%.3fms add=%.3fms total=%.3fms\n",
+                     "GPU timing diffract path=%s reduction=%s block=%d orient=%d beams=%zu nAz=%d nZen=%d count=%.3fms pack=%.3fms ensure=%.3fms grid=%.3fms copy=%.3fms kernels=%.3fms d2h=%.3fms add=%.3fms total=%.3fms\n",
                      useBeam8 ? "beam8" : (useMixedBeam8 ? "mixed-beam8" : "generic"),
+                     useWarpBeams ? "warp" : "thread",
                      block, nOrient, nBeams, nAz, nZen, tCount, tPack, tEnsure,
                      tGrid, tCopy, tKernel, tD2h, tAdd, gpu_now_ms() - tStart);
     }
