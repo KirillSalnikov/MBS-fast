@@ -1871,7 +1871,7 @@ double HandlerPO::ComputeForwardExtinctionOt(
             || pb.edgeData.nVertices >= BeamEdgeData::MAX_EDGES)
             continue;
 
-        ThetaCoeffs tc = {};
+        ThetaCoeffs tc;
         precompute_theta_coeffs(
             pb.edgeData.x, pb.edgeData.y, pb.edgeData.nVertices,
             pb.horAx, pb.horAy, pb.horAz,
@@ -2085,7 +2085,7 @@ double HandlerPO::ComputeForwardExtinctionOtScaled(
             edge.y[e] *= scale;
         }
 
-        ThetaCoeffs tc = {};
+        ThetaCoeffs tc;
         precompute_theta_coeffs(
             edge.x, edge.y, edge.nVertices,
             pb.horAx, pb.horAy, pb.horAz,
@@ -2333,7 +2333,7 @@ void HandlerPO::DiffractControlPoints(const PreparedOrientation &prepared,
             double cp = cos(iPhi * m_sphere.azinuthStep);
             double sp = sin(iPhi * m_sphere.azinuthStep);
 
-            ThetaCoeffs tc = {};
+            ThetaCoeffs tc;
             precompute_theta_coeffs(
                 edgeData.x, edgeData.y, nv,
                 horAx, horAy, horAz, verAx, verAy, verAz,
@@ -2486,7 +2486,7 @@ void HandlerPO::DiffractAtThetas(const PreparedOrientation &prepared,
         {
             double cp = cosPhi[iPhi], sp = sinPhi[iPhi];
 
-            ThetaCoeffs tc = {};
+            ThetaCoeffs tc;
             precompute_theta_coeffs(
                 edgeData.x, edgeData.y, nv,
                 horAx,horAy,horAz,verAx,verAy,verAz,
@@ -2693,7 +2693,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
         {
             double cp = cosPhi[i], sp = sinPhi[i];
 
-            ThetaCoeffs tc = {};
+            ThetaCoeffs tc;
             if (edgeData.valid) {
                 precompute_theta_coeffs(
                     edgeData.x, edgeData.y, edgeData.nVertices,

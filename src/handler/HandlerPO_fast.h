@@ -582,16 +582,6 @@ struct ThetaCoeffs {
     double psin[32], pcos[32], p0[32];
     // dirPhase arg: -k*(sin(θ)*dp_sin + cos(θ)*dp_cos)
     double dp_sin, dp_cos;
-    // RotateJones cpT,cpP decomposition:
-    // cpT(θ) = sin(θ)*cpT_sin + cos(θ)*cpT_cos + cpT_0 (3 components each)
-    double cpTx_sin, cpTy_sin, cpTz_sin;
-    double cpTx_cos, cpTy_cos, cpTz_cos;
-    double cpTx_0,   cpTy_0,   cpTz_0;
-    double cpPx_sin, cpPy_sin, cpPz_sin;
-    double cpPx_cos, cpPy_cos, cpPz_cos;
-    double cpPx_0,   cpPy_0,   cpPz_0;
-    // vf components (constant for this phi)
-    double vfx_base, vfy_base, vfz_base;
     int nv;
 };
 
@@ -640,17 +630,6 @@ inline void precompute_theta_coeffs(
     tc.dp_sin = cos_phi*cenx + sin_phi*ceny;
     tc.dp_cos = -cenz;
 
-    // RotateJones decomposition:
-    // dir = (sin(t)*cp, sin(t)*sp, cos(t))
-    // dir×NT = (sin(t)*sp*NTz - cos(t)*NTy, cos(t)*NTx - sin(t)*cp*NTz, sin(t)*cp*NTy - sin(t)*sp*NTx)
-    // This is: sin(t) * (...) + cos(t) * (...)
-    //
-    // cpT = dir×NT + nxDT - dir*(dir·nxDT)
-    // dir·nxDT = sin(t)*(cp*nxDTx + sp*nxDTy) + cos(t)*nxDTz = sin(t)*dndt_sin + cos(t)*dndt_cos
-    //
-    // This gets complicated. For now, store the vf components and compute inline.
-    // The main win is A,B,phase precomputation.
-    tc.vfx_base = 0; tc.vfy_base = 0; tc.vfz_base = 0; // filled per theta from sphere.vf
 }
 
 #ifdef __AVX512F__
