@@ -272,7 +272,8 @@ inline void add_stable_edge_quotient(double phaseReal,
 // Vectorized regular edge integral for four theta directions.  The caller
 // keeps the small-phase and near-singular cases on the scalar stable path.
 inline bool diffract_theta_4_regular(
-    const double *allVc, const double *allVs, int thetaBase, int nv,
+    const double *allVc, const double *allVs, int thetaBase,
+    int thetaStride, int nv,
     const double *aValues, const double *bValues,
     const double *slopeYx, const bool *validX,
     const double *slopeXy, const bool *validY,
@@ -325,16 +326,12 @@ inline bool diffract_theta_4_regular(
         const __m256d safeDenominator = _mm256_blendv_pd(
             one, denominator, validMask);
         const __m256d inverse = _mm256_div_pd(one, safeDenominator);
-        const __m256d deltaReal = _mm256_set_pd(
-            allVc[(thetaBase + 3)*nv + next] - allVc[(thetaBase + 3)*nv + edge],
-            allVc[(thetaBase + 2)*nv + next] - allVc[(thetaBase + 2)*nv + edge],
-            allVc[(thetaBase + 1)*nv + next] - allVc[(thetaBase + 1)*nv + edge],
-            allVc[ thetaBase     *nv + next] - allVc[ thetaBase     *nv + edge]);
-        const __m256d deltaImag = _mm256_set_pd(
-            allVs[(thetaBase + 3)*nv + next] - allVs[(thetaBase + 3)*nv + edge],
-            allVs[(thetaBase + 2)*nv + next] - allVs[(thetaBase + 2)*nv + edge],
-            allVs[(thetaBase + 1)*nv + next] - allVs[(thetaBase + 1)*nv + edge],
-            allVs[ thetaBase     *nv + next] - allVs[ thetaBase     *nv + edge]);
+        const __m256d deltaReal = _mm256_sub_pd(
+            _mm256_loadu_pd(allVc + next*thetaStride + thetaBase),
+            _mm256_loadu_pd(allVc + edge*thetaStride + thetaBase));
+        const __m256d deltaImag = _mm256_sub_pd(
+            _mm256_loadu_pd(allVs + next*thetaStride + thetaBase),
+            _mm256_loadu_pd(allVs + edge*thetaStride + thetaBase));
         sumReal = _mm256_add_pd(sumReal, _mm256_and_pd(
             _mm256_mul_pd(deltaReal, inverse), validMask));
         sumImag = _mm256_add_pd(sumImag, _mm256_and_pd(

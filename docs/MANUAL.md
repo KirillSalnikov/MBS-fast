@@ -607,7 +607,13 @@ directions together with AVX2. The implementation preserves the edge
 accumulation order in every lane. A small phase or an active near-singular
 denominator selects the original stable scalar formula for that group. The
 selection is automatic, introduces no tolerance visible to the command line,
-and is active in the standard CPU build.
+and is active in the standard CPU build. The temporary phase and sine/cosine
+arrays use a vertex-major, theta-contiguous layout. Consequently, each AVX2
+edge update loads four adjacent theta values directly instead of gathering
+them from four rows. In the representative absorbing concave benchmark this
+layout changed the median time from 12.76 s to 11.37 s (1.12x) relative to the
+preceding vectorized implementation, while the written Mueller table remained
+bit-identical.
 
 GPU runtime errors are fatal in the split GPU build. For debugging only:
 

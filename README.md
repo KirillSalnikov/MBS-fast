@@ -192,7 +192,12 @@ The CPU PO diffraction loop also batches four regular theta directions in one
 AVX2 edge-integral pass. Small-phase polygons and near-singular edge
 denominators automatically retain the stable scalar formulas. This path is
 enabled by the normal CPU build and has no runtime flag or approximation
-tolerance.
+tolerance. Temporary phase and sine/cosine buffers are stored vertex-major with
+adjacent theta directions contiguous, so the four-lane edge pass uses direct
+SIMD loads instead of scalar gathers. On the representative absorbing concave
+case used for profiling, this layout reduced the median time from 12.76 s to
+11.37 s (1.12x) relative to the preceding vectorized implementation, with
+bit-identical Mueller output.
 
 CUDA PO calculation:
 

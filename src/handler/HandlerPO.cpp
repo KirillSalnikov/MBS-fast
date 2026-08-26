@@ -2680,27 +2680,31 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
             // Pre-batch vertex sincos for ALL thetas at once (AVX-512/AVX2)
             int nv = edgeData.valid ? tc.nv : 0;
             if (edgeData.valid && nv > 0) {
-                int total = 0;
-                for (int j = 0; j <= nZen; ++j) {
-                    double sin_t = sin_theta_arr[j], cos_t = cos_theta_arr[j];
-                    int base = j * nv;
-                    double maxPhase = 0.0;
-                    for (int v = 0; v < nv; ++v) {
+                const int thetaStride = nZen + 1;
+                std::fill(max_phases.begin(),
+                          max_phases.begin() + thetaStride, 0.0);
+                for (int v = 0; v < nv; ++v) {
+                    const int base = v * thetaStride;
+                    for (int j = 0; j < thetaStride; ++j) {
+                        const double sin_t = sin_theta_arr[j];
+                        const double cos_t = cos_theta_arr[j];
                         const double phase = sin_t * tc.psin[v]
                                            + cos_t * tc.pcos[v] + tc.p0[v];
-                        all_phases[base + v] = phase;
-                        maxPhase = std::max(maxPhase, std::fabs(phase));
+                        all_phases[base + j] = phase;
+                        max_phases[j] = std::max(
+                            max_phases[j], std::fabs(phase));
                     }
-                    max_phases[j] = maxPhase;
-                    total = base + nv;
+                    int j = 0;
+                    for (; j + 7 < thetaStride; j += 8)
+                        fast_sincos_8x(&all_phases[base + j],
+                                      &all_vs[base + j], &all_vc[base + j]);
+                    for (; j + 3 < thetaStride; j += 4)
+                        fast_sincos_4x(&all_phases[base + j],
+                                      &all_vs[base + j], &all_vc[base + j]);
+                    for (; j < thetaStride; ++j)
+                        fast_sincos(all_phases[base + j],
+                                    all_vs[base + j], all_vc[base + j]);
                 }
-                int pp = 0;
-                for (; pp + 7 < total; pp += 8)
-                    fast_sincos_8x(&all_phases[pp], &all_vs[pp], &all_vc[pp]);
-                for (; pp + 3 < total; pp += 4)
-                    fast_sincos_4x(&all_phases[pp], &all_vs[pp], &all_vc[pp]);
-                for (; pp < total; ++pp)
-                    fast_sincos(all_phases[pp], all_vs[pp], all_vc[pp]);
                 if (!isExternal) {
                     for (int j = 0; j <= nZen; ++j)
                         dp_phases[j] = -m_waveIndex*(sin_theta_arr[j]*tc.dp_sin + cos_theta_arr[j]*tc.dp_cos);
@@ -2729,7 +2733,8 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                         || max_phases[j + 2] <= 1e-3 || max_phases[j + 3] <= 1e-3)
                         continue;
                     if (diffract_theta_4_regular(
-                            all_vc.data(), all_vs.data(), j, nv,
+                            all_vc.data(), all_vs.data(), j,
+                            nZen + 1, nv,
                             a_values.data(), b_values.data(),
                             edgeData.slope_yx, edgeData.edge_valid_x,
                             edgeData.slope_xy, edgeData.edge_valid_y,
@@ -2777,9 +2782,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                     }
                     else
                     {
-                        int base = j * nv;
-                        double *vc = &all_vc[base];
-                        double *vs = &all_vs[base];
+                        const int thetaStride = nZen + 1;
 
                         double sr = 0, si = 0;
                         if (absB > absA)
@@ -2791,11 +2794,13 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                                 double Ci = A + edgeData.slope_yx[e] * B;
                                 double absCi = fabs(Ci);
                                 double inv_Ci = (absCi > m_eps1) ? (1.0 / Ci) : 0.0;
-                                sr += (vc[enext] - vc[e]) * inv_Ci;
-                                si += (vs[enext] - vs[e]) * inv_Ci;
+                                const int edgeIndex = e*thetaStride + j;
+                                const int nextIndex = enext*thetaStride + j;
+                                sr += (all_vc[nextIndex] - all_vc[edgeIndex]) * inv_Ci;
+                                si += (all_vs[nextIndex] - all_vs[edgeIndex]) * inv_Ci;
                                 if (__builtin_expect(absCi <= m_eps1, 0)) {
                                     add_stable_edge_quotient(
-                                        vc[e], vs[e],
+                                        all_vc[edgeIndex], all_vs[edgeIndex],
                                         edgeData.x[enext]-edgeData.x[e],
                                         Ci, m_waveIndex, sr, si);
                                 }
@@ -2812,11 +2817,13 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                                 double Ei = A * edgeData.slope_xy[e] + B;
                                 double absEi = fabs(Ei);
                                 double inv_Ei = (absEi > m_eps1) ? (1.0 / Ei) : 0.0;
-                                sr += (vc[enext] - vc[e]) * inv_Ei;
-                                si += (vs[enext] - vs[e]) * inv_Ei;
+                                const int edgeIndex = e*thetaStride + j;
+                                const int nextIndex = enext*thetaStride + j;
+                                sr += (all_vc[nextIndex] - all_vc[edgeIndex]) * inv_Ei;
+                                si += (all_vs[nextIndex] - all_vs[edgeIndex]) * inv_Ei;
                                 if (__builtin_expect(absEi <= m_eps1, 0)) {
                                     add_stable_edge_quotient(
-                                        vc[e], vs[e],
+                                        all_vc[edgeIndex], all_vs[edgeIndex],
                                         edgeData.y[enext]-edgeData.y[e],
                                         Ei, m_waveIndex, sr, si);
                                 }
