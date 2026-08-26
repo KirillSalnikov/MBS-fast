@@ -954,8 +954,10 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
                                     + axisV*overlapPoint.y;
             const Polygon &firstFacet = m_facets[ordered[first].facetId];
             const Polygon &secondFacet = m_facets[ordered[second].facetId];
-            const Point3f firstNormal = firstFacet.Normal();
-            const Point3f secondNormal = secondFacet.Normal();
+            const Point3f &firstNormal =
+                m_facets[ordered[first].facetId].ex_normal;
+            const Point3f &secondNormal =
+                m_facets[ordered[second].facetId].ex_normal;
             const double firstDenominator = DotProduct(direction, firstNormal);
             const double secondDenominator = DotProduct(direction, secondNormal);
             if (std::fabs(firstDenominator) <= EPS_PROJECTION
