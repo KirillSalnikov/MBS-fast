@@ -161,16 +161,22 @@ inline complex fast_exp_im(double x) {
 inline bool small_phase_polygon_factor(
     const double *vx, const double *vy, int nv,
     double A, double B, double waveIndex,
-    double &factorReal, double &factorImag)
+    double &factorReal, double &factorImag,
+    double knownMaxPhase = -1.0)
 {
     if (nv < 3)
         return false;
 
     const double qx = waveIndex * A;
     const double qy = waveIndex * B;
-    double maxPhase = 0.0;
-    for (int i = 0; i < nv; ++i)
-        maxPhase = std::max(maxPhase, std::fabs(qx * vx[i] + qy * vy[i]));
+    double maxPhase = knownMaxPhase;
+    if (maxPhase < 0.0)
+    {
+        maxPhase = 0.0;
+        for (int i = 0; i < nv; ++i)
+            maxPhase = std::max(maxPhase,
+                                std::fabs(qx * vx[i] + qy * vy[i]));
+    }
     if (maxPhase > 1e-3)
         return false;
 

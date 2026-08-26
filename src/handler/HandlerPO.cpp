@@ -2630,6 +2630,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
         int maxPhaseCount = edgeData.valid ? (nZen + 1) * edgeData.nVertices : 0;
         std::vector<double> all_vc(maxPhaseCount), all_vs(maxPhaseCount);
         std::vector<double> all_phases(maxPhaseCount);
+        std::vector<double> max_phases(nZen + 1, 0.0);
         std::vector<double> dir_dpr(nZen + 1), dir_dpi(nZen + 1);
         std::vector<double> dp_phases(nZen + 1);
 
@@ -2656,8 +2657,14 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                 for (int j = 0; j <= nZen; ++j) {
                     double sin_t = sin_theta_arr[j], cos_t = cos_theta_arr[j];
                     int base = j * nv;
-                    for (int v = 0; v < nv; ++v)
-                        all_phases[base + v] = sin_t * tc.psin[v] + cos_t * tc.pcos[v] + tc.p0[v];
+                    double maxPhase = 0.0;
+                    for (int v = 0; v < nv; ++v) {
+                        const double phase = sin_t * tc.psin[v]
+                                           + cos_t * tc.pcos[v] + tc.p0[v];
+                        all_phases[base + v] = phase;
+                        maxPhase = std::max(maxPhase, std::fabs(phase));
+                    }
+                    max_phases[j] = maxPhase;
                     total = base + nv;
                 }
                 int pp = 0;
@@ -2708,7 +2715,8 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                     double smallPhaseReal = 0.0, smallPhaseImag = 0.0;
                     if (small_phase_polygon_factor(
                             edgeData.x, edgeData.y, edgeData.nVertices,
-                            A, B, m_waveIndex, smallPhaseReal, smallPhaseImag))
+                            A, B, m_waveIndex, smallPhaseReal, smallPhaseImag,
+                            max_phases[j]))
                     {
                         const complex areaLimit =
                             (m_legacySign ? m_invComplWave : -m_invComplWave) * beam_area;
