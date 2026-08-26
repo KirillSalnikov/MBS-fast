@@ -2779,10 +2779,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                 if (edgeData.valid && j + 3 <= nZen
                     && fresnelReady[j] && fresnelReady[j + 1]
                     && fresnelReady[j + 2] && fresnelReady[j + 3]
-                    && !std::isnan(fresnelReal[j])
-                    && !std::isnan(fresnelReal[j + 1])
-                    && !std::isnan(fresnelReal[j + 2])
-                    && !std::isnan(fresnelReal[j + 3]))
+                    && all_not_nan_4(fresnelReal + j))
                 {
                     const int basisIndex = i * m_transverseThetaStride + j;
                     __m256d r00v, r01v, r10v, r11v;

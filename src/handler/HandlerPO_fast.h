@@ -352,6 +352,13 @@ inline bool diffract_theta_4_regular(
     return true;
 }
 
+inline bool all_not_nan_4(const double *values)
+{
+    const __m256d lanes = _mm256_loadu_pd(values);
+    return _mm256_movemask_pd(_mm256_cmp_pd(
+        lanes, lanes, _CMP_ORD_Q)) == 0xf;
+}
+
 // Diffraction integral using precomputed edge data and trigonometric form
 // Uses GOAD-style approach: one sincos per edge instead of two exp_im
 inline complex diffract_inline(
