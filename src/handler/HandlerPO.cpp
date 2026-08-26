@@ -2782,21 +2782,21 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                     for (int lane = 0; lane < 4; ++lane)
                     {
                         const int theta = j + lane;
-                        const complex d00(batch.d00r[lane], batch.d00i[lane]);
-                        const complex d01(batch.d01r[lane], batch.d01i[lane]);
-                        const complex d10(batch.d10r[lane], batch.d10i[lane]);
-                        const complex d11(batch.d11r[lane], batch.d11i[lane]);
                         if (!isCoh)
                         {
+                            const complex d00(batch.cell[lane][0], batch.cell[lane][1]);
+                            const complex d01(batch.cell[lane][2], batch.cell[lane][3]);
+                            const complex d10(batch.cell[lane][4], batch.cell[lane][5]);
+                            const complex d11(batch.cell[lane][6], batch.cell[lane][7]);
                             AddMuellerFromJones(localM.RawCell(i, theta),
                                                 d00, d01, d10, d11, sinZenith);
                         }
                         else
                         {
-                            localJ[0].insert_2x2(i, theta, d00, d01, d10, d11);
+                            localJ[0].insert_2x2_packed(i, theta, batch.cell[lane]);
                             if (localJ_noshadow && !isExternal)
-                                (*localJ_noshadow)[0].insert_2x2(
-                                    i, theta, d00, d01, d10, d11);
+                                (*localJ_noshadow)[0].insert_2x2_packed(
+                                    i, theta, batch.cell[lane]);
                         }
                     }
                     j += 3;

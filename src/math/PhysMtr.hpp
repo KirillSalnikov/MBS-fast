@@ -192,6 +192,17 @@ public:
 		pt[0] += a00; pt[1] += a01; pt[2] += a10; pt[3] += a11;
 	}
 
+	/// Adds four complex values stored as interleaved real/imaginary doubles.
+	inline void insert_2x2_packed(unsigned int _N, unsigned int _M,
+	                              const double *values)
+	{
+		complex* pt = ptr[_N][_M];
+		real(pt[0]) += values[0]; imag(pt[0]) += values[1];
+		real(pt[1]) += values[2]; imag(pt[1]) += values[3];
+		real(pt[2]) += values[4]; imag(pt[2]) += values[5];
+		real(pt[3]) += values[6]; imag(pt[3]) += values[7];
+	}
+
 	/**
 	@brief The function replaces existing matrix, located in the array by address (_N,_M), by the matrix mt
 	@param _N,_M: number of a cell in the array
