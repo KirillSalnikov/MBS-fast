@@ -763,3 +763,72 @@ inline void rotate_jones_precomputed_inline(
         vfx, vfy, vfz, vtx, vty, vtz,
         r00, r01, r10, r11);
 }
+
+struct JonesBatch4
+{
+    alignas(32) double d00r[4], d00i[4];
+    alignas(32) double d01r[4], d01i[4];
+    alignas(32) double d10r[4], d10i[4];
+    alignas(32) double d11r[4], d11i[4];
+};
+
+inline void compose_jones_4_regular(
+    const double *fresnelReal, const double *fresnelImag,
+    const double *directionReal, const double *directionImag,
+    const double *r00, const double *r01,
+    const double *r10, const double *r11,
+    double jp00r, double jp00i, double jp01r, double jp01i,
+    double jp10r, double jp10i, double jp11r, double jp11i,
+    JonesBatch4 &out)
+{
+    const __m256d fr = _mm256_loadu_pd(fresnelReal);
+    const __m256d fi = _mm256_loadu_pd(fresnelImag);
+    const __m256d dpr = _mm256_loadu_pd(directionReal);
+    const __m256d dpi = _mm256_loadu_pd(directionImag);
+    const __m256d cpr = _mm256_sub_pd(
+        _mm256_mul_pd(fr, dpr), _mm256_mul_pd(fi, dpi));
+    const __m256d cpi = _mm256_add_pd(
+        _mm256_mul_pd(fr, dpi), _mm256_mul_pd(fi, dpr));
+
+    const __m256d vr00 = _mm256_load_pd(r00);
+    const __m256d vr01 = _mm256_load_pd(r01);
+    const __m256d vr10 = _mm256_load_pd(r10);
+    const __m256d vr11 = _mm256_load_pd(r11);
+    const __m256d sr00r = _mm256_mul_pd(cpr, vr00);
+    const __m256d sr00i = _mm256_mul_pd(cpi, vr00);
+    const __m256d sr01r = _mm256_mul_pd(cpr, vr01);
+    const __m256d sr01i = _mm256_mul_pd(cpi, vr01);
+    const __m256d sr10r = _mm256_mul_pd(cpr, vr10);
+    const __m256d sr10i = _mm256_mul_pd(cpi, vr10);
+    const __m256d sr11r = _mm256_mul_pd(cpr, vr11);
+    const __m256d sr11i = _mm256_mul_pd(cpi, vr11);
+
+#define MBS_COMPOSE_JONES_4(R0R, R0I, R1R, R1I, J0R, J0I, J1R, J1I, OR, OI) \
+    do { \
+        const __m256d j0r = _mm256_set1_pd(J0R); \
+        const __m256d j0i = _mm256_set1_pd(J0I); \
+        const __m256d j1r = _mm256_set1_pd(J1R); \
+        const __m256d j1i = _mm256_set1_pd(J1I); \
+        const __m256d real0 = _mm256_sub_pd( \
+            _mm256_mul_pd(R0R, j0r), _mm256_mul_pd(R0I, j0i)); \
+        const __m256d real1 = _mm256_sub_pd( \
+            _mm256_mul_pd(R1R, j1r), _mm256_mul_pd(R1I, j1i)); \
+        const __m256d imag0 = _mm256_add_pd( \
+            _mm256_mul_pd(R0R, j0i), _mm256_mul_pd(R0I, j0r)); \
+        const __m256d imag1 = _mm256_add_pd( \
+            _mm256_mul_pd(R1R, j1i), _mm256_mul_pd(R1I, j1r)); \
+        _mm256_store_pd(OR, _mm256_add_pd(real0, real1)); \
+        _mm256_store_pd(OI, _mm256_add_pd(imag0, imag1)); \
+    } while (false)
+
+    MBS_COMPOSE_JONES_4(sr00r, sr00i, sr01r, sr01i,
+                        jp00r, jp00i, jp10r, jp10i, out.d00r, out.d00i);
+    MBS_COMPOSE_JONES_4(sr00r, sr00i, sr01r, sr01i,
+                        jp01r, jp01i, jp11r, jp11i, out.d01r, out.d01i);
+    MBS_COMPOSE_JONES_4(sr10r, sr10i, sr11r, sr11i,
+                        jp00r, jp00i, jp10r, jp10i, out.d10r, out.d10i);
+    MBS_COMPOSE_JONES_4(sr10r, sr10i, sr11r, sr11i,
+                        jp01r, jp01i, jp11r, jp11i, out.d11r, out.d11i);
+
+#undef MBS_COMPOSE_JONES_4
+}

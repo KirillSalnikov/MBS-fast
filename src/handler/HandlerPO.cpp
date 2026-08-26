@@ -2749,6 +2749,60 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
 
             for (int j = 0; j <= nZen; ++j)
             {
+                if (edgeData.valid && j + 3 <= nZen
+                    && fresnel_ready[j] && fresnel_ready[j + 1]
+                    && fresnel_ready[j + 2] && fresnel_ready[j + 3]
+                    && !std::isnan(fresnel_real[j])
+                    && !std::isnan(fresnel_real[j + 1])
+                    && !std::isnan(fresnel_real[j + 2])
+                    && !std::isnan(fresnel_real[j + 3]))
+                {
+                    alignas(32) double r00v[4], r01v[4], r10v[4], r11v[4];
+                    for (int lane = 0; lane < 4; ++lane)
+                    {
+                        Point3d &vf = m_sphere.vf[i][j + lane];
+                        const Point3d &vt = (*m_transverseBasis)[
+                            i * m_transverseThetaStride + j + lane];
+                        rotate_jones_precomputed_inline(
+                            pNTx, pNTy, pNTz, pNPx, pNPy, pNPz,
+                            pnxDTx, pnxDTy, pnxDTz,
+                            pnxDPx, pnxDPy, pnxDPz,
+                            vf.x, vf.y, vf.z, vt.x, vt.y, vt.z,
+                            r00v[lane], r01v[lane], r10v[lane], r11v[lane]);
+                    }
+
+                    JonesBatch4 batch;
+                    compose_jones_4_regular(
+                        fresnel_real.data() + j, fresnel_imag.data() + j,
+                        dir_dpr.data() + j, dir_dpi.data() + j,
+                        r00v, r01v, r10v, r11v,
+                        jp00r, jp00i, jp01r, jp01i,
+                        jp10r, jp10i, jp11r, jp11i, batch);
+
+                    for (int lane = 0; lane < 4; ++lane)
+                    {
+                        const int theta = j + lane;
+                        const complex d00(batch.d00r[lane], batch.d00i[lane]);
+                        const complex d01(batch.d01r[lane], batch.d01i[lane]);
+                        const complex d10(batch.d10r[lane], batch.d10i[lane]);
+                        const complex d11(batch.d11r[lane], batch.d11i[lane]);
+                        if (!isCoh)
+                        {
+                            AddMuellerFromJones(localM.RawCell(i, theta),
+                                                d00, d01, d10, d11, sinZenith);
+                        }
+                        else
+                        {
+                            localJ[0].insert_2x2(i, theta, d00, d01, d10, d11);
+                            if (localJ_noshadow && !isExternal)
+                                (*localJ_noshadow)[0].insert_2x2(
+                                    i, theta, d00, d01, d10, d11);
+                        }
+                    }
+                    j += 3;
+                    continue;
+                }
+
                 complex d00(0,0), d01(0,0), d10(0,0), d11(0,0);
 
                 if (edgeData.valid)
