@@ -115,6 +115,17 @@ else
 fi
 echo ""
 
+# --- Learned trace-limit retry level ---
+echo "=== Unit test: learned trace retry level ==="
+if MBS_BIN="$MBS" bash "$SCRIPT_DIR/run_trace_retry_learning_test.sh" \
+    > "$WORK_DIR/trace_retry_learning.log" 2>&1; then
+    pass_test "Trace retry level is reused without changing the retry ceiling"
+else
+    cat "$WORK_DIR/trace_retry_learning.log"
+    fail_test "Trace retry learning" "Learned retry regression test failed"
+fi
+echo ""
+
 # --- Build ---
 echo "=== Building MBS-fast CPU target ==="
 cd "$PROJECT_DIR"

@@ -669,7 +669,8 @@ explicit `--gpu-trace-prefilter` flag requests the same mode, while
 `--no-gpu-trace-prefilter` disables it for an A/B reference. The validated
 automatic settings are full topological sorting, sort-result caching,
 conservative skip flags for large lists, 64 threads in the large-list kernel,
-and synchronous CUDA streams. Multiple OpenMP workers are supported. A total
+and one nonblocking CUDA stream per OpenMP worker. Multiple workers are
+supported. A total
 budget of approximately 512 beams is divided among them: with `--threads 8`,
 each worker submits at most 64 beams. This bound is important because each
 concurrent CUDA grid reserves kernel-stack backing. Do not set a large
@@ -677,6 +678,22 @@ per-worker batch merely because free VRAM appears available: eight batches of
 2048 beams can exhaust a 12 GiB consumer GPU. If the initial batch still
 exhausts CUDA stack backing, it is split recursively and the reduced limit is
 remembered process-wide for all later batches and orientations.
+
+If `--trace-limit-retries` is enabled, the largest successful enlarged beam
+limit is also shared by all worker copies. Later orientations start at that
+already allowed retry level instead of repeating a known-insufficient pass. The code
+still counts the consumed retry levels from the original `--trace-max-beams`,
+so it never raises the configured retry ceiling. On a 32-orientation
+non-convex test this reduced median wall time from 11.12 to 8.00 s and reduced
+full retry attempts from 30 to 7. Per-worker nonblocking streams reduced a
+256-orientation run from 61.39 to 42.26 s; output tables and integral files
+were byte-identical in both A/B checks.
+
+Independent processes using the same physical GPU serialize only their heavy
+trace-batch region through a PCI-addressed file lock. OpenMP workers within one
+process retain their separate streams and overlap as before. This default
+prevents the combined CUDA kernel-stack reservations of concurrent programs
+from exhausting device memory. It does not serialize diffraction kernels.
 
 Expert overrides require `--allow-experimental-environment`:
 
@@ -690,7 +707,8 @@ Expert overrides require `--allow-experimental-environment`:
 | `MBS_GPU_TRACE_LARGE_THREADS=N` | `64` | Large-list block size: 64, 128, or 256. |
 | `MBS_GPU_TRACE_CACHE_FACETS=0/1` | `1` | Retain packed facet geometry in the per-worker CUDA workspace. |
 | `MBS_GPU_TRACE_MIN_CANDIDATES=N` | `1024` | Minimum total candidate count before submitting a GPU batch. |
-| `MBS_GPU_TRACE_NONBLOCKING_STREAM=0/1` | `0` | Use a separate nonblocking stream per worker; increases concurrent resource pressure. |
+| `MBS_GPU_TRACE_NONBLOCKING_STREAM=0/1` | `1` | Use a separate nonblocking stream per worker; set `0` only for serialization diagnostics. |
+| `MBS_GPU_TRACE_PROCESS_LOCK=0/1` | `1` | Serialize heavy trace batches across independent processes on the same physical GPU; set `0` only for controlled diagnostics. |
 | `MBS_GPU_TRACE_PREFILTER_FIRST=0/1` | `0` | Diagnostic projected prefilter before sorting. |
 | `MBS_GPU_TRACE_MARGIN=X` | automatic | Override conservative projected-bound margin. |
 | `MBS_GPU_TRACE_TIMING=1` | `0` | Print H2D, small-kernel, large-kernel, and D2H timings. |
@@ -964,7 +982,8 @@ Production-use variables:
 | `MBS_GPU_TRACE_SORT_CACHE=0/1` | Exact ordering cache; default `1`. |
 | `MBS_GPU_TRACE_LARGE_SKIP_FLAGS=0/1` | Conservative skip flags for large candidate lists; default `1`. |
 | `MBS_GPU_TRACE_LARGE_THREADS=N` | Large-list CUDA block size; default `64`, supported 64/128/256. |
-| `MBS_GPU_TRACE_NONBLOCKING_STREAM=0/1` | Per-worker nonblocking streams; default `0`, profiling only. |
+| `MBS_GPU_TRACE_NONBLOCKING_STREAM=0/1` | Per-worker nonblocking streams; default `1`; set `0` for serialization diagnostics. |
+| `MBS_GPU_TRACE_PROCESS_LOCK=0/1` | Per-physical-GPU process lock for heavy trace batches; default `1`; set `0` only for controlled diagnostics. |
 | `MBS_GPU_TRACE_TIMING=1` | Print CUDA tracing transfer and kernel timings. |
 | `MBS_GPU_TRACE_VERIFY_SORT=1` | Verify CUDA facet ordering against CPU. |
 | `MBS_ORIENTATION_TIMING` | Print CPU-time breakdown for rotation, tracing, and prepared-beam construction. |

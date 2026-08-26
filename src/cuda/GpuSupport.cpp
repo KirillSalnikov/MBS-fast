@@ -1,4 +1,5 @@
 #include "GpuSupport.h"
+#include "GpuProcessLock.h"
 
 #include <cstdlib>
 #include <sstream>
@@ -72,18 +73,20 @@ bool CheckGpuRuntime(GpuDeviceInfo &info, std::string &error)
         return false;
     }
 
+    err = cudaSetDevice(deviceId);
+    if (err != cudaSuccess)
+    {
+        error = std::string("cudaSetDevice failed: ") + cudaGetErrorString(err);
+        return false;
+    }
+
+    GpuProcessLock processLock(deviceId);
     size_t freeBytes = 0;
     size_t totalBytes = 0;
     err = cudaMemGetInfo(&freeBytes, &totalBytes);
     if (err != cudaSuccess)
     {
         error = std::string("cudaMemGetInfo failed: ") + cudaGetErrorString(err);
-        return false;
-    }
-    err = cudaSetDevice(deviceId);
-    if (err != cudaSuccess)
-    {
-        error = std::string("cudaSetDevice failed: ") + cudaGetErrorString(err);
         return false;
     }
     err = cudaFree(0);
@@ -121,6 +124,7 @@ bool QueryActiveGpuMemory(long long &freeBytes, long long &totalBytes,
     error = "CUDA support is not compiled into this binary";
     return false;
 #else
+    GpuProcessLock processLock;
     size_t freeValue = 0;
     size_t totalValue = 0;
     const cudaError_t err = cudaMemGetInfo(&freeValue, &totalValue);

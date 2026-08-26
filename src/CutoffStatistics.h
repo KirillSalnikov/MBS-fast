@@ -31,6 +31,8 @@ struct TraceCutoffStatistics
     std::atomic<long long> retryAttempts;
     std::atomic<long long> recoveredOrientations;
     std::atomic<long long> unrecoveredOrientations;
+    std::atomic<int> learnedBeamLimit;
+    std::atomic<long long> learnedLimitStarts;
 };
 
 std::string FormatBeamCutoffReport(

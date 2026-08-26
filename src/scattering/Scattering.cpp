@@ -113,15 +113,37 @@ bool Scattering::ScatterLightWithLimitRetry(
 {
     const int originalMaxBeams = m_traceMaxBeams;
     bool ok = false;
+    bool retried = false;
     int attempt = 0;
+    const auto growLimit = [this](int limit) {
+        const double grown = std::ceil(
+            static_cast<double>(limit) * m_traceRetryFactor);
+        return grown >= std::numeric_limits<int>::max()
+            ? std::numeric_limits<int>::max()
+            : std::max(limit + 1, static_cast<int>(grown));
+    };
+    if (m_traceMaxBeams > 0 && m_traceLimitRetries > 0)
+    {
+        const int learnedLimit =
+            m_traceCutoffStatistics->learnedBeamLimit.load(
+                std::memory_order_relaxed);
+        while (attempt < m_traceLimitRetries
+               && m_traceMaxBeams < learnedLimit)
+        {
+            m_traceMaxBeams = growLimit(m_traceMaxBeams);
+            ++attempt;
+        }
+        if (m_traceMaxBeams > originalMaxBeams)
+        {
+            m_traceCutoffStatistics->learnedLimitStarts.fetch_add(
+                1, std::memory_order_relaxed);
+        }
+    }
     const auto prepareRetry = [&]() {
         m_traceCutoffStatistics->retryAttempts.fetch_add(
             1, std::memory_order_relaxed);
-        const double grown = std::ceil(
-            static_cast<double>(m_traceMaxBeams) * m_traceRetryFactor);
-        m_traceMaxBeams = grown >= std::numeric_limits<int>::max()
-            ? std::numeric_limits<int>::max()
-            : std::max(m_traceMaxBeams + 1, static_cast<int>(grown));
+        m_traceMaxBeams = growLimit(m_traceMaxBeams);
+        retried = true;
         ++attempt;
     };
     try
@@ -148,7 +170,21 @@ bool Scattering::ScatterLightWithLimitRetry(
             }
             if (ok)
             {
-                if (attempt > 0)
+                if (m_traceMaxBeams > originalMaxBeams)
+                {
+                    int observed =
+                        m_traceCutoffStatistics->learnedBeamLimit.load(
+                            std::memory_order_relaxed);
+                    while (observed < m_traceMaxBeams
+                           && !m_traceCutoffStatistics->learnedBeamLimit
+                                   .compare_exchange_weak(
+                                       observed, m_traceMaxBeams,
+                                       std::memory_order_relaxed,
+                                       std::memory_order_relaxed))
+                    {
+                    }
+                }
+                if (retried)
                     m_traceCutoffStatistics->recoveredOrientations.fetch_add(
                         1, std::memory_order_relaxed);
                 break;

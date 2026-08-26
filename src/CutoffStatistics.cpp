@@ -14,7 +14,8 @@ TraceCutoffStatistics::TraceCutoffStatistics()
     : evaluated(0), rejected(0), rejectedJones(0), rejectedArea(0),
       rejectedImportance(0), smallFragmentSimplifications(0),
       configuredBeamLimitHits(0), hardBeamLimitHits(0), retryAttempts(0),
-      recoveredOrientations(0), unrecoveredOrientations(0)
+      recoveredOrientations(0), unrecoveredOrientations(0),
+      learnedBeamLimit(0), learnedLimitStarts(0)
 {
 }
 
@@ -82,6 +83,13 @@ std::string FormatTraceCutoffReport(
         out << "Small-fragment area ratio: disabled\n";
     out << "Maximum traced beams: "
         << (maximumBeams > 0 ? std::to_string(maximumBeams) : "disabled") << "\n";
+    const int learnedBeamLimit = statistics.learnedBeamLimit.load();
+    if (learnedBeamLimit > maximumBeams)
+    {
+        out << "Learned retry start limit: " << learnedBeamLimit << "\n";
+        out << "Orientations starting at learned limit: "
+            << statistics.learnedLimitStarts.load() << "\n";
+    }
     out << "Branches evaluated by relative cutoff: " << evaluated << "\n";
     out << "Branches rejected by relative cutoff: " << rejected;
     if (evaluated > 0)

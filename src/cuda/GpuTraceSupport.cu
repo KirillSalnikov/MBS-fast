@@ -1,4 +1,5 @@
 #include "GpuTraceSupport.h"
+#include "GpuProcessLock.h"
 
 #ifdef USE_CUDA
 
@@ -131,7 +132,7 @@ static bool gpu_trace_timing_enabled()
 static bool gpu_trace_nonblocking_stream_enabled()
 {
     const char *value = std::getenv("MBS_GPU_TRACE_NONBLOCKING_STREAM");
-    return value && value[0] == '1' && value[1] == '\0';
+    return !(value && value[0] == '0' && value[1] == '\0');
 }
 
 static bool ensure_trace_stream()
@@ -2238,6 +2239,7 @@ bool GpuTracePrepareBeamFacetBatch(const Facet *facets,
 
     if (items.empty() || total < (size_t)gpu_trace_threshold())
         return false;
+    GpuProcessLock processGuard;
     if (!ensure_trace_stream())
         return false;
     const cudaStream_t stream = trace_stream();

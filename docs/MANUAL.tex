@@ -1430,8 +1430,8 @@ Fresnel splitting, and child-beam construction remain on the CPU.
 
 The validated automatic profile uses exact CUDA topological ordering, an
 ordering cache, conservative skip flags for 25--256 candidates, cached facet
-geometry, 64 threads for the large-list kernel, and blocking per-worker CUDA
-streams. The per-worker batch is
+geometry, 64 threads for the large-list kernel, and one nonblocking CUDA stream
+per OpenMP worker. The per-worker batch is
 \(
   \max(64,\lceil512/N_{\mathrm{workers}}\rceil)
 \),
@@ -1439,6 +1439,19 @@ which avoids the CUDA-stack exhaustion observed with oversized fixed batches.
 If this initial batch still exhausts kernel-stack backing, the code recursively
 splits it and remembers the reduced process-wide limit for all later batches
 and orientations.
+When trace-limit retries are enabled, worker copies also share the largest
+successful retry beam limit. Later orientations skip the known-insufficient
+first pass, but retry levels are still counted from the original configured
+limit, so the retry ceiling is unchanged. On a 32-orientation nonconvex test,
+this changed 11.12 s to 8.00 s and reduced full retries from 30 to 7.
+Nonblocking per-worker streams changed a 256-orientation run from 61.39 s to
+42.26 s. Output tables and integral files were byte-identical in both A/B
+checks.
+Independent processes on the same physical GPU serialize only the heavy trace
+batch through a lock keyed by the PCI address. OpenMP workers within one
+process retain independent streams and overlap. This default prevents combined
+CUDA kernel-stack reservations from exhausting device memory and does not
+serialize diffraction kernels.
 On a deeply nonconvex production orientation this reduced wall time from
 7.93 s to 0.98 s (8.09 times); on a smaller representative case the gain was
 about 1.08 times. The benefit therefore depends strongly on trace complexity.
@@ -1461,7 +1474,8 @@ Variable & Default & Meaning \\
 \nolinkurl{MBS_GPU_TRACE_LARGE_THREADS} & 64 & Large-list block size (64, 128, or 256). \\
 \nolinkurl{MBS_GPU_TRACE_CACHE_FACETS} & 1 & Retain packed facet geometry per worker. \\
 \nolinkurl{MBS_GPU_TRACE_MIN_CANDIDATES} & 1024 & Minimum batch candidate count sent to CUDA. \\
-\nolinkurl{MBS_GPU_TRACE_NONBLOCKING_STREAM} & 0 & Per-worker nonblocking streams; profiling only. \\
+\nolinkurl{MBS_GPU_TRACE_NONBLOCKING_STREAM} & 1 & Per-worker nonblocking streams; set 0 only for serialization diagnostics. \\
+\nolinkurl{MBS_GPU_TRACE_PROCESS_LOCK} & 1 & Serialize heavy trace batches across independent processes on one physical GPU. \\
 \nolinkurl{MBS_GPU_TRACE_PREFILTER_FIRST} & 0 & Diagnostic projected filtering before sorting. \\
 \nolinkurl{MBS_GPU_TRACE_MARGIN} & automatic & Override the conservative projection margin. \\
 \nolinkurl{MBS_GPU_TRACE_TIMING} & 0 & Print transfer and kernel timings. \\
@@ -1828,7 +1842,9 @@ default \texttt{1}. \\
 \nolinkurl{MBS_GPU_TRACE_MIN_CANDIDATES} & Minimum candidates per submitted
 batch; default \texttt{1024}. \\
 \nolinkurl{MBS_GPU_TRACE_NONBLOCKING_STREAM} & Per-worker nonblocking streams;
-default \texttt{0}, profiling only. \\
+default \texttt{1}; set 0 for serialization diagnostics. \\
+\nolinkurl{MBS_GPU_TRACE_PROCESS_LOCK} & Per-physical-GPU process lock for
+heavy trace batches; default \texttt{1}; set 0 only for diagnostics. \\
 \nolinkurl{MBS_GPU_TRACE_TIMING} & Print CUDA tracing timing breakdown. \\
 \nolinkurl{MBS_GPU_TRACE_VERIFY_SORT} & Verify CUDA ordering against CPU. \\
 \texttt{MBS\_ORIENTATION\_TIMING} & Print summed CPU time for rotation,

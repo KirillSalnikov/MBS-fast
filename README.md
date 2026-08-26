@@ -198,6 +198,13 @@ without this stage; `--gpu-trace-prefilter` explicitly requests it and is
 mainly useful in reproducibility scripts. The initial per-worker batch is
 derived from the OpenMP worker count; if CUDA reports stack-related OOM, the
 process remembers a smaller successful limit for all subsequent orientations.
+Each worker uses its own nonblocking CUDA stream. When trace-limit retries are
+enabled, the process also remembers the largest successful retry beam limit,
+so later orientations do not repeat a known-insufficient first pass; the
+configured retry ceiling and all physical cutoffs remain unchanged. Heavy
+trace batches are locked per physical GPU across independent processes, while
+workers inside one process still overlap. This prevents CUDA stack-memory OOM
+when two calculations happen to trace on the same card at once.
 
 GO is a CPU method, including when invoked from a CUDA-capable binary:
 
