@@ -213,6 +213,10 @@ struct ProjectedPolygon
 {
     Point2f vertices[2*MAX_VERTEX_NUM];
     size_t size = 0;
+    double minX = 0.0;
+    double maxX = 0.0;
+    double minY = 0.0;
+    double maxY = 0.0;
 
     void Clear()
     {
@@ -225,6 +229,23 @@ struct ProjectedPolygon
             throw std::runtime_error(
                 "projected facet intersection exceeds geometry limit");
         vertices[size++] = point;
+    }
+
+    void PushWithBounds(const Point2f &point)
+    {
+        if (size == 0)
+        {
+            minX = maxX = point.x;
+            minY = maxY = point.y;
+        }
+        else
+        {
+            minX = std::min(minX, point.x);
+            maxX = std::max(maxX, point.x);
+            minY = std::min(minY, point.y);
+            maxY = std::max(maxY, point.y);
+        }
+        Push(point);
     }
 
     void Assign(const ProjectedPolygon &other)
@@ -254,9 +275,8 @@ void IntersectProjectedFacets(const ProjectedPolygon &subject,
 {
     ProjectedPolygon first;
     ProjectedPolygon second;
-    first.Assign(subject);
-    ProjectedPolygon *input = &first;
-    ProjectedPolygon *result = &second;
+    const ProjectedPolygon *input = &subject;
+    ProjectedPolygon *result = &first;
     const double orientation = ProjectedSignedArea(clip) >= 0.0 ? 1.0 : -1.0;
     for (size_t edge = 0; edge < clip.size && input->size != 0; ++edge)
     {
@@ -288,7 +308,8 @@ void IntersectProjectedFacets(const ProjectedPolygon &subject,
             previousSide = currentSide;
             previousInside = currentInside;
         }
-        std::swap(input, result);
+        input = result;
+        result = result == &first ? &second : &first;
     }
     overlap.Assign(*input);
 }
@@ -298,6 +319,10 @@ bool ProjectedOverlapPoint(const ProjectedPolygon &first,
                            double areaTolerance,
                            Point2f &point)
 {
+    if (first.maxX < second.minX || second.maxX < first.minX
+        || first.maxY < second.minY || second.maxY < first.minY)
+        return false;
+
     ProjectedPolygon overlap;
     IntersectProjectedFacets(first, second, areaTolerance, overlap);
     if (overlap.size < 3
@@ -934,7 +959,7 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
         projected[index].Clear();
         const Polygon &facet = m_facets[ordered[index].facetId];
         for (int vertex = 0; vertex < facet.nVertices; ++vertex)
-            projected[index].Push(Point2f(
+            projected[index].PushWithBounds(Point2f(
                 DotProduct(facet.arr[vertex], axisU),
                 DotProduct(facet.arr[vertex], axisV)));
     }
