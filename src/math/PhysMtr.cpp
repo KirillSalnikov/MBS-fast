@@ -144,11 +144,15 @@ Arr2D Arr2D::operator*(double x)
 // members of "Arr2DC"
 void Arr2DC::AllocMem(complex*** _ptr)
 {
+	const size_t nm = static_cast<size_t>(this->n) * this->m;
+	const size_t total = static_cast<size_t>(this->N) * this->M * nm;
+	this->data = new complex[total];
 	this->ptr = new complex**[this->N];
-	for(unsigned int i=0, nm = this->n*this->m; i<this->N; i++){
+	for(unsigned int i=0; i<this->N; i++){
 		this->ptr[i] = new complex*[this->M];
 		for(unsigned int j=0; j<this->M; j++){
-			this->ptr[i][j] = new complex[nm];
+			this->ptr[i][j] = this->data
+				+ (static_cast<size_t>(i) * this->M + j) * nm;
 			for(unsigned int k=0; k<nm; k++)
 				this->ptr[i][j][k] = (_ptr == NULL ? complex(0.0) : _ptr[i][j][k]);
 		}
@@ -158,10 +162,10 @@ void Arr2DC::AllocMem(complex*** _ptr)
 void Arr2DC::FreeMem(void)
 {
 	for(unsigned int i=0; i<this->N; i++){
-		for(unsigned int j=0; j<this->M; j++) delete[] this->ptr[i][j];
-			delete[] this->ptr[i];
+		delete[] this->ptr[i];
 	}
 	delete[] this->ptr;
+	delete[] this->data;
 }
 
  Arr2DC::Arr2DC(const Arr2DC& Arr)
@@ -263,4 +267,3 @@ Arr2DC Arr2DC::operator/=(double x)
 	return *this;
 }
 //------------------------------------------------------------------------------
-

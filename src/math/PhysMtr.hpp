@@ -4,6 +4,12 @@
 #ifndef MATRIX_HPP
  #include "matrix.hpp"
 #endif
+#include <cstring>
+#include <immintrin.h>
+#include <type_traits>
+
+static_assert(std::is_trivially_copyable<complex>::value,
+	          "packed matrix accumulation requires a trivial complex type");
 //==============================================================================
 
 /** @defgroup Auxiliary_classes Auxiliary classes
@@ -141,9 +147,10 @@ public:
  */
 class Arr2DC {
 	unsigned int 
-		N, M,	///< N,M - Dimensions of array
-		n, m;	///< n,m - Dimensions of matrixes
+			N, M,	///< N,M - Dimensions of array
+			n, m;	///< n,m - Dimensions of matrixes
 	complex*** ptr;	///< Pointer to the array
+	complex* data;	///< Contiguous storage backing ptr-compatible indexing
 	void AllocMem(complex*** = NULL);
 	void FreeMem(void);
 public:
@@ -194,13 +201,30 @@ public:
 
 	/// Adds four complex values stored as interleaved real/imaginary doubles.
 	inline void insert_2x2_packed(unsigned int _N, unsigned int _M,
-	                              const double *values)
+		                              const double *values)
 	{
 		complex* pt = ptr[_N][_M];
 		real(pt[0]) += values[0]; imag(pt[0]) += values[1];
 		real(pt[1]) += values[2]; imag(pt[1]) += values[3];
 		real(pt[2]) += values[4]; imag(pt[2]) += values[5];
 		real(pt[3]) += values[6]; imag(pt[3]) += values[7];
+	}
+
+	/// Adds four adjacent 2x2 matrices from interleaved real/imaginary values.
+	inline void insert_2x2_packed4(unsigned int _N, unsigned int _M,
+		                               const double values[4][8])
+	{
+		complex* target = data + (static_cast<size_t>(_N) * M + _M) * 4;
+		const double* source = values[0];
+		for (int block = 0; block < 8; ++block)
+		{
+			__m256d current;
+			std::memcpy(&current, target + block * 2, sizeof(current));
+			current = _mm256_add_pd(current,
+			                        _mm256_loadu_pd(source + block * 4));
+			std::memcpy(static_cast<void*>(target + block * 2),
+			            &current, sizeof(current));
+		}
 	}
 
 	/**

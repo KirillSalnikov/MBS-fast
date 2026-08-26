@@ -38,8 +38,7 @@ public:
 		complex(double r = 0, double i = 0) : re(r), im(i) {}
 		complex(const complex&) = default;
 	// members
-	complex&  operator=(const complex& b)
-		{ this->re = b.re; this->im = b.im; return *this; }
+	complex& operator=(const complex&) = default;
 //	complex  operator+()         const { return *this; }
 	complex  operator+(double x) const
 		{ return complex(this->re+x, this->im); }
