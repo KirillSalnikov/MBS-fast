@@ -2712,8 +2712,28 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
             int nv = edgeData.valid ? tc.nv : 0;
             if (edgeData.valid && nv > 0) {
                 const int thetaStride = nZen + 1;
-                std::fill(maxPhases, maxPhases + thetaStride, 0.0);
-                for (int v = 0; v < nv; ++v) {
+                {
+                    const int base = 0;
+                    for (int j = 0; j < thetaStride; ++j) {
+                        const double sin_t = sinTheta[j];
+                        const double cos_t = cosTheta[j];
+                        const double phase = sin_t * tc.psin[0]
+                                           + cos_t * tc.pcos[0] + tc.p0[0];
+                        allPhases[base + j] = phase;
+                        maxPhases[j] = std::fabs(phase);
+                    }
+                    int j = 0;
+                    for (; j + 7 < thetaStride; j += 8)
+                        fast_sincos_8x(&allPhases[base + j],
+                                      &allVs[base + j], &allVc[base + j]);
+                    for (; j + 3 < thetaStride; j += 4)
+                        fast_sincos_4x(&allPhases[base + j],
+                                      &allVs[base + j], &allVc[base + j]);
+                    for (; j < thetaStride; ++j)
+                        fast_sincos(allPhases[base + j],
+                                    allVs[base + j], allVc[base + j]);
+                }
+                for (int v = 1; v < nv; ++v) {
                     const int base = v * thetaStride;
                     for (int j = 0; j < thetaStride; ++j) {
                         const double sin_t = sinTheta[j];
