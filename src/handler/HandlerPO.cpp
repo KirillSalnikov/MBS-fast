@@ -2598,6 +2598,9 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                                     std::vector<Arr2DC> &localJ,
                                     std::vector<Arr2DC> *localJ_noshadow)
 {
+    if (!ComputeNoShadow())
+        localJ_noshadow = nullptr;
+
     double sinZenith = prepared.sinZenith;
     int nAz_global = m_sphere.nAzimuth;
     int nZen_global = m_sphere.nZenith;
