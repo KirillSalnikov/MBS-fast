@@ -232,17 +232,19 @@ with FP32 storage, has a separate object directory, and does not enable
 
 FP32 applies to diffraction-beam storage, Jones sums, and Mueller output.
 Visibility/topology tracing, optical paths, absorption, cancellation-prone
-polygon moments, and phase construction remain FP64. The precise FP32 binary
-also evaluates phase trigonometry in FP64. The consumer binary casts only the
-completed phase to FP32 for \texttt{sincosf}. \texttt{-{}-version} reports
-both phase precisions, the math profile, and target architecture.
+polygon moments, and the common beam-centre phase remain FP64. The precise
+FP32 binary constructs and evaluates vertex phases in FP64. The consumer
+binary forms their coordinate-dependent part in FP32 and uses
+\texttt{sincosf}, while adding the FP64 centre phase only in the final
+argument. \texttt{-{}-version} reports both phase precisions, the math profile,
+and target architecture.
 
 Verify every rebuilt binary before starting a queue:
 
 \begin{verbatim}
 gpu/bin/mbs_po_gpu_double --version  # fp64-diffraction-storage ... precise-math
 gpu/bin/mbs_po_gpu_float --version   # fp32-diffraction-storage ... precise-math
-gpu/bin/mbs_po_gpu_float_consumer --version  # phase-build-fp64 phase-trig-fp32
+gpu/bin/mbs_po_gpu_float_consumer --version  # phase-build-mixed phase-trig-fp32
 \end{verbatim}
 
 CUDA host compilation requires exactly one FP32/FP64 profile. A binary that
@@ -272,6 +274,16 @@ reflection probes, the largest side/back M11 L2 error was $8.4\times10^{-5}$;
 one weak off-diagonal element reached $5.3\times10^{-3}$. Whole-kernel fast
 math was about 9\% slower than the consumer profile. Final reference points
 and numerically sensitive cases should still be checked in FP64.
+
+The mixed phase-build optimization was checked separately on an RTX 3080 Ti
+with hexagonal, concave, aggregate, and bullet-rosette particles up to
+$L=1000\ \mu\mathrm{m}$. Relative to FP64 phase construction with the same
+consumer \texttt{sincosf}, diffraction-kernel time decreased by 4.6--8.3\%
+and complete GPU diffraction time by 4.4--7.9\%. The largest global Mueller
+change was $4.3\times10^{-8}$; the largest relative change exactly at
+$180^\circ$ was $3.7\times10^{-5}$. Complete FP32 phase construction was
+faster but was rejected because its exact-backscatter error reached 0.68\%
+for the bullet rosette.
 
 The GPU split build enables CUDA diffraction by default.
 \texttt{-\/-gpu} is accepted but optional. Use \texttt{-\/-cpu} only

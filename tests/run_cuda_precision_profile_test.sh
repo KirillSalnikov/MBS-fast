@@ -51,6 +51,7 @@ make -s -n -C "$ROOT/gpu" GPU_ARCH=70 fp32_consumer >"$TMP/fp32_consumer"
 grep -Fq -- '-DMBS_GPU_PHASE_FP32' "$TMP/fp32_consumer"
 grep -F -- '../src/main.cpp' "$TMP/fp32_consumer" \
     | grep -Fq -- '-DMBS_GPU_PHASE_FP32'
+grep -Fq -- 'phase-build-mixed phase-trig-fp32' "$ROOT/src/main.cpp"
 grep -Fq -- 'build/fp32_consumer_lto_sm70/obj' "$TMP/fp32_consumer"
 grep -Fq -- 'bin/mbs_po_gpu_float_consumer' "$TMP/fp32_consumer"
 if grep -Fq -- '--use_fast_math' "$TMP/fp32_consumer"; then

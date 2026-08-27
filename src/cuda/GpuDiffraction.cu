@@ -52,6 +52,14 @@ static inline cufftResult gpu_cufft_exec(cufftHandle plan, GpuComplex *in,
 }
 #endif
 
+#ifdef MBS_GPU_PHASE_FP32
+using GpuVertexPhaseReal = float;
+static_assert(sizeof(GpuVertexPhaseReal) == 4,
+              "Consumer vertex-phase arithmetic must use FP32");
+#else
+using GpuVertexPhaseReal = double;
+#endif
+
 __device__ inline void gpu_sincos(GpuReal x, GpuReal *s, GpuReal *c)
 {
 #ifdef MBS_GPU_FLOAT
@@ -65,8 +73,8 @@ __device__ inline void gpu_sincos_phase(double x, GpuReal *s, GpuReal *c)
 {
 #ifdef MBS_GPU_FLOAT
 #ifdef MBS_GPU_PHASE_FP32
-    // The consumer profile keeps phase construction in FP64 but evaluates
-    // its final trigonometric pair on the much faster FP32 units.
+    // The consumer profile retains the common beam-centre phase in FP64,
+    // then evaluates the completed phase on the much faster FP32 units.
     sincosf((GpuReal)x, s, c);
 #else
     double sd, cd;
@@ -1097,14 +1105,14 @@ __device__ inline bool compute_beam_integral_cached_gpu(const BeamT &b,
     }
 
     GpuReal vc[MaxVertices], vs[MaxVertices];
-    const double qx = UnitWave ? (double)A
-                               : (double)waveIndex * (double)A;
-    const double qy = UnitWave ? (double)B
-                               : (double)waveIndex * (double)B;
+    const GpuVertexPhaseReal qx = UnitWave ? (GpuVertexPhaseReal)A
+        : (GpuVertexPhaseReal)waveIndex * (GpuVertexPhaseReal)A;
+    const GpuVertexPhaseReal qy = UnitWave ? (GpuVertexPhaseReal)B
+        : (GpuVertexPhaseReal)waveIndex * (GpuVertexPhaseReal)B;
     for (int v = 0; v < nv; ++v)
     {
-        const double x = (double)b.x[v];
-        const double y = (double)b.y[v];
+        const GpuVertexPhaseReal x = (GpuVertexPhaseReal)b.x[v];
+        const GpuVertexPhaseReal y = (GpuVertexPhaseReal)b.y[v];
         gpu_sincos_phase(qx * x + qy * y + commonPhase, &vs[v], &vc[v]);
     }
 
@@ -1564,12 +1572,16 @@ __device__ inline void beam_vertex_sincos_gpu(const GpuBeam &b,
                                               GpuReal *vs,
                                               GpuReal *vc)
 {
-    const double x = (double)b.x[v];
-    const double y = (double)b.y[v];
-    const double psin = (double)waveIndex * ((double)a_sin * x + (double)b_sin * y);
-    const double pcos = (double)waveIndex * ((double)a_cos * x + (double)b_cos * y);
-    const double p0 = (double)waveIndex * ((double)a0 * x + (double)b0 * y);
-    gpu_sincos_phase((double)sin_t * psin + (double)cos_t * pcos + p0, vs, vc);
+    const GpuVertexPhaseReal x = (GpuVertexPhaseReal)b.x[v];
+    const GpuVertexPhaseReal y = (GpuVertexPhaseReal)b.y[v];
+    const GpuVertexPhaseReal psin = (GpuVertexPhaseReal)waveIndex
+        * ((GpuVertexPhaseReal)a_sin * x + (GpuVertexPhaseReal)b_sin * y);
+    const GpuVertexPhaseReal pcos = (GpuVertexPhaseReal)waveIndex
+        * ((GpuVertexPhaseReal)a_cos * x + (GpuVertexPhaseReal)b_cos * y);
+    const GpuVertexPhaseReal p0 = (GpuVertexPhaseReal)waveIndex
+        * ((GpuVertexPhaseReal)a0 * x + (GpuVertexPhaseReal)b0 * y);
+    gpu_sincos_phase((GpuVertexPhaseReal)sin_t * psin
+        + (GpuVertexPhaseReal)cos_t * pcos + p0, vs, vc);
 }
 
 __device__ inline bool compute_beam_jones_nocache_gpu(const GpuBeam &b,
@@ -1992,12 +2004,19 @@ __global__ void diffraction_kernel(const GpuBeam *__restrict__ beams, int nBeams
         GpuReal vc[32], vs[32];
         for (int v = 0; v < nv; ++v)
         {
-            const double x = (double)b.x[v];
-            const double y = (double)b.y[v];
-            const double psin = (double)waveIndex * ((double)a_sin * x + (double)b_sin * y);
-            const double pcos = (double)waveIndex * ((double)a_cos * x + (double)b_cos * y);
-            const double p0 = (double)waveIndex * ((double)a0 * x + (double)b0 * y);
-            gpu_sincos_phase((double)sin_t * psin + (double)cos_t * pcos + p0, &vs[v], &vc[v]);
+            const GpuVertexPhaseReal x = (GpuVertexPhaseReal)b.x[v];
+            const GpuVertexPhaseReal y = (GpuVertexPhaseReal)b.y[v];
+            const GpuVertexPhaseReal psin = (GpuVertexPhaseReal)waveIndex
+                * ((GpuVertexPhaseReal)a_sin * x
+                    + (GpuVertexPhaseReal)b_sin * y);
+            const GpuVertexPhaseReal pcos = (GpuVertexPhaseReal)waveIndex
+                * ((GpuVertexPhaseReal)a_cos * x
+                    + (GpuVertexPhaseReal)b_cos * y);
+            const GpuVertexPhaseReal p0 = (GpuVertexPhaseReal)waveIndex
+                * ((GpuVertexPhaseReal)a0 * x
+                    + (GpuVertexPhaseReal)b0 * y);
+            gpu_sincos_phase((GpuVertexPhaseReal)sin_t * psin
+                + (GpuVertexPhaseReal)cos_t * pcos + p0, &vs[v], &vc[v]);
         }
 
         GpuReal sr = 0.0, si = 0.0;

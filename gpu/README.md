@@ -49,8 +49,10 @@ different arithmetic type. The default is the FP64 reference build without
 `--use_fast_math`; the `_fast` targets enable that CUDA option explicitly.
 FP32 stores diffraction-beam geometry, Jones sums, and Mueller output in FP32.
 Visibility/topology tracing, optical paths, absorption, cancellation-prone
-polygon moments, and critical phase trigonometry remain FP64. The binary
-reports these choices in `--version`.
+polygon moments, and the common beam-centre phase remain FP64. The precise FP32
+profile also constructs and evaluates vertex phases in FP64; the consumer
+profile uses FP32 vertex-phase arithmetic and `sincosf`. The binary reports
+these choices in `--version`.
 
 Verify the host-side profile after each rebuild:
 
@@ -89,8 +91,10 @@ each worker's device workspace while its theta groups are processed.
 For diffraction-kernel profiling, `MBS_GPU_TIMING=1` reports the selected path
 and stage timings.
 
-The direct-diffraction hot path keeps phase trigonometry in FP64.  For the
-normal polygon branch, the internal-beam centre phase is folded into the
+The precise direct-diffraction path keeps phase construction and trigonometry
+in FP64. The consumer profile keeps the internal-beam centre phase in FP64 but
+forms the coordinate-dependent part of each vertex phase in FP32. For the
+normal polygon branch, the centre phase is folded into the
 already required vertex phasors, so it does not require a separate `sincos`.
 The vertex phase also reuses the previously formed diffraction coefficients
 `A` and `B` as `k*A*x + k*B*y`.  Both transformations are algebraically exact;

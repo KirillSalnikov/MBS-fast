@@ -94,16 +94,17 @@ packaging and CI. Run `make test_cuda_consumer` on the target GPU after build.
 
 FP32 applies to diffraction-beam storage, Jones sums, and Mueller output.
 Visibility/topology tracing, optical paths, absorption, cancellation-prone
-polygon moments, and phase construction remain FP64. The precise FP32 binary
-also evaluates phase trigonometry in FP64. The consumer binary casts only the
-completed phase to FP32 for `sincosf`. `--version` reports both the phase-build
+polygon moments, and the common beam-centre phase remain FP64. The precise
+FP32 binary constructs and evaluates vertex phases in FP64. The consumer
+binary forms their coordinate-dependent part in FP32 and uses `sincosf`, while
+adding the FP64 centre phase only at the final argument. `--version` reports both the phase-build
 and phase-trigonometry precision, the math profile, and target architecture.
 Verify every rebuilt binary before starting a queue:
 
 ```bash
 gpu/bin/mbs_po_gpu_double --version  # fp64-diffraction-storage ... precise-math
 gpu/bin/mbs_po_gpu_float --version   # fp32-diffraction-storage ... precise-math
-gpu/bin/mbs_po_gpu_float_consumer --version  # phase-build-fp64 phase-trig-fp32
+gpu/bin/mbs_po_gpu_float_consumer --version  # phase-build-mixed phase-trig-fp32
 ```
 
 CUDA host compilation requires exactly one FP32/FP64 profile. A binary that
@@ -129,6 +130,15 @@ it was about 9% slower than the consumer profile in this check and has a larger
 problem-dependent risk for narrow interference structure. FP64 remains the
 default and required reference for a new particle, refractive index, size, or
 sampling regime.
+
+The mixed phase-build optimization was also checked independently on an RTX
+3080 Ti with hexagonal, concave, aggregate, and bullet-rosette particles up to
+`L=1000 um`. It reduced diffraction-kernel time by 4.6--8.3% and complete GPU
+diffraction time by 4.4--7.9% relative to FP64 phase construction with the same
+consumer `sincosf`. The largest global Mueller change was `4.3e-8`; the largest
+relative change at exactly 180 degrees was `3.7e-5`. Building the complete
+phase in FP32 was faster, but was rejected because its 180-degree error reached
+0.68% for the bullet rosette.
 
 The GPU split build enables CUDA diffraction by default. `--gpu` is accepted but optional. Use `--cpu` only when you deliberately want the CPU diffraction backend from a GPU-capable binary.
 

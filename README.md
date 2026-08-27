@@ -114,9 +114,10 @@ to disable it; LTO and non-LTO objects use separate build directories. The
 `fp32`, `fp32_consumer`, `fp64`, `fp32_fast`, and `fp64_fast` Make targets
 select explicit profiles. FP32 stores diffraction-beam geometry and accumulated
 optical quantities in FP32. Visibility/topology tracing, optical paths,
-absorption, cancellation-prone polygon moments, and phase construction remain
-FP64. The consumer profile evaluates only the final phase `sincos` pair in
-FP32; the precise FP32 profile evaluates it in FP64. Validate throughput
+absorption, cancellation-prone polygon moments, and the common beam-centre
+phase remain FP64. The consumer profile forms the per-vertex coordinate phase
+and evaluates its final `sincos` pair in FP32; the precise FP32 profile keeps
+both operations in FP64. Validate throughput
 profiles against CPU double and CUDA FP64 on representative convex,
 non-convex, fixed-orientation, and orientation-averaged cases before production
 use. Record `--version` output.
@@ -125,7 +126,7 @@ After building, verify the selected host and CUDA profiles explicitly:
 ```bash
 gpu/bin/mbs_po_gpu_double --version  # must report fp64-diffraction-storage
 gpu/bin/mbs_po_gpu_float --version   # must report fp32-diffraction-storage
-gpu/bin/mbs_po_gpu_float_consumer --version  # phase-build-fp64 phase-trig-fp32
+gpu/bin/mbs_po_gpu_float_consumer --version  # phase-build-mixed phase-trig-fp32
 ```
 
 The build now rejects CUDA host code without exactly one precision profile;
@@ -135,8 +136,8 @@ For scientific reference and final archive calculations, use
 `mbs_po_gpu_double`. On consumer GPUs with weak FP64 hardware, use
 `mbs_po_gpu_float` when phase trigonometry must remain FP64. Use
 `mbs_po_gpu_float_consumer` for calibrated production throughput: it retains
-FP64 geometry and phase construction but casts the completed phase to FP32 for
-`sincosf`. Keep `mbs_po_gpu_float_fast` as an experimental whole-kernel
+the common beam-centre phase in FP64, while using FP32 for the coordinate phase
+of each vertex and `sincosf`. Keep `mbs_po_gpu_float_fast` as an experimental whole-kernel
 fast-math comparison; on the measured RTX 3080 Ti it was slower than the
 consumer profile.
 
