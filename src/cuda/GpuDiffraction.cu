@@ -3065,7 +3065,11 @@ __global__ void diffraction_grid_mueller_full8_warp_stage_kernel(
         weight, &mOrient[out], lane, mask);
 }
 
-__global__ void diffraction_grid_mueller_mixed8_kernel(const GpuBeam8 *__restrict__ beams8,
+template <bool Split4, bool Fixed34>
+__global__ void diffraction_grid_mueller_mixed8_kernel(const GpuBeam4 *__restrict__ beams4,
+                                                       const int *__restrict__ beamOffsets4,
+                                                       const int *__restrict__ beamOffsets4Quad,
+                                                       const GpuBeam8 *__restrict__ beams8,
                                                        const int *__restrict__ beamOffsets8,
                                                        const GpuBeam *__restrict__ beams,
                                                        const int *__restrict__ beamOffsets,
@@ -3112,6 +3116,40 @@ __global__ void diffraction_grid_mueller_mixed8_kernel(const GpuBeam8 *__restric
     GpuReal j01r = 0.0, j01i = 0.0;
     GpuReal j10r = 0.0, j10i = 0.0;
     GpuReal j11r = 0.0, j11i = 0.0;
+
+    if (Split4)
+    {
+        const int begin4 = beamOffsets4[orient];
+        const int end4 = beamOffsets4[orient + 1];
+        if (Fixed34)
+        {
+            const int beginQuad = beamOffsets4Quad[orient];
+            for (int bi = begin4; bi < beginQuad; ++bi)
+                accumulate_compact_beam_jones_gpu<GpuBeam4, 4, 3>(
+                    beams4[bi], cp, sp, sin_t, cos_t, dx, dy, dz,
+                    vfx, vfy, vfz, vtx, vty, vtz,
+                    waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+                    invComplWaveR, invComplWaveI, legacySign,
+                    j00r, j00i, j01r, j01i, j10r, j10i, j11r, j11i);
+            for (int bi = beginQuad; bi < end4; ++bi)
+                accumulate_compact_beam_jones_gpu<GpuBeam4, 4, 4>(
+                    beams4[bi], cp, sp, sin_t, cos_t, dx, dy, dz,
+                    vfx, vfy, vfz, vtx, vty, vtz,
+                    waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+                    invComplWaveR, invComplWaveI, legacySign,
+                    j00r, j00i, j01r, j01i, j10r, j10i, j11r, j11i);
+        }
+        else
+        {
+            for (int bi = begin4; bi < end4; ++bi)
+                accumulate_compact_beam_jones_gpu<GpuBeam4, 4>(
+                    beams4[bi], cp, sp, sin_t, cos_t, dx, dy, dz,
+                    vfx, vfy, vfz, vtx, vty, vtz,
+                    waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+                    invComplWaveR, invComplWaveI, legacySign,
+                    j00r, j00i, j01r, j01i, j10r, j10i, j11r, j11i);
+        }
+    }
 
     for (int bi = beamOffsets8[orient]; bi < beamOffsets8[orient + 1]; ++bi)
     {
@@ -5132,7 +5170,8 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     const bool packMixedBeam8 = !allBeam8 && canUseBeam8
                              && requestedStageMueller != 1
                              && nBeams8 > 0 && nBeamsLarge > 0;
-    const bool splitBeam4 = packBeam8 && gpu_compact_beam4_split_enabled()
+    const bool splitBeam4 = (packBeam8 || packMixedBeam8)
+                         && gpu_compact_beam4_split_enabled()
                          && requestedStageMueller != 1
                          && !gpu_warp_beams_enabled() && nBeams4 > 0;
     const bool fixedBeam34 = splitBeam4 && compactAllAtLeast3;
@@ -5146,16 +5185,15 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     std::vector<int> &hBeamOffsets8 = ws.hBeamOffsets8;
     if (!reusePacked)
     {
-        if (packBeam8)
+        if (splitBeam4)
         {
-            if (splitBeam4)
-            {
-                hBeams4.resize(nBeams4);
-                hBeams8.resize(nBeams8 - nBeams4);
-            }
-            else
-                hBeams8.resize(nBeams);
+            hBeams4.resize(nBeams4);
+            hBeams8.resize(nBeams8 - nBeams4);
+            if (packMixedBeam8)
+                hBeams.resize(nBeamsLarge);
         }
+        else if (packBeam8)
+            hBeams8.resize(nBeams);
         else if (packMixedBeam8)
         {
             hBeams8.resize(nBeams8);
@@ -5227,10 +5265,19 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                 &compactVertexCounts[(size_t)oi * 9];
             if (splitBeam4)
             {
+                size_t compactCount = 0;
                 for (int nv = 1; nv <= 4; ++nv)
+                {
                     bi4 += vertexCounts[nv];
+                    compactCount += vertexCounts[nv];
+                }
                 for (int nv = 5; nv <= 8; ++nv)
+                {
                     bi8 += vertexCounts[nv];
+                    compactCount += vertexCounts[nv];
+                }
+                if (packMixedBeam8)
+                    biLarge += po.beams.size() - compactCount;
             }
             else if (packMixedBeam8)
             {
@@ -5276,11 +5323,16 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                             pb, oi, scale, scale2, scaleOnPack, waveIndex,
                             packedPhaseScale, AbsorptionCoefficient(),
                             hBeams4[cursor[nv]++]);
-                    else
+                    else if (nv <= 8)
                         pack_prepared_gpu_compact_beam(
                             pb, oi, scale, scale2, scaleOnPack, waveIndex,
                             packedPhaseScale, AbsorptionCoefficient(),
                             hBeams8[cursor[nv]++]);
+                    else
+                        pack_prepared_gpu_beam<GpuBeam, 32>(
+                            pb, oi, scale, scale2, scaleOnPack, waveIndex,
+                            packedPhaseScale, AbsorptionCoefficient(),
+                            hBeams[out++]);
                 }
             }
             else if (packBeam8 || packMixedBeam8)
@@ -5370,6 +5422,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                 (splitBeam4
                     ? nBeams4 * sizeof(GpuBeam4)
                         + (nBeams8 - nBeams4) * sizeof(GpuBeam8)
+                        + nBeamsLarge * sizeof(GpuBeam)
                     : packMixedBeam8
                     ? nBeams8 * sizeof(GpuBeam8) + nBeamsLarge * sizeof(GpuBeam)
                     : nBeams * (packBeam8 ? sizeof(GpuBeam8) : sizeof(GpuBeam)))
@@ -5419,7 +5472,12 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     }
     else if (useMixedBeam8)
     {
-        if (!ensure_device_capacity(ws.beams8, ws.beam8Cap, nBeams8)) return failDirect("alloc-beams8");
+        if (splitBeam4)
+        {
+            if (!ensure_device_capacity(ws.beams4, ws.beam4Cap, nBeams4)) return failDirect("alloc-beams4");
+            if (!ensure_device_capacity(ws.beams8, ws.beam8Cap, nBeams8 - nBeams4)) return failDirect("alloc-beams8");
+        }
+        else if (!ensure_device_capacity(ws.beams8, ws.beam8Cap, nBeams8)) return failDirect("alloc-beams8");
         if (!ensure_device_capacity(ws.beams, ws.beamCap, nBeamsLarge)) return failDirect("alloc-beams");
     }
     else if (!ensure_device_capacity(ws.beams, ws.beamCap, nBeams)) return failDirect("alloc-beams");
@@ -5499,7 +5557,16 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         }
         else if (useMixedBeam8)
         {
-            if (cudaMemcpy(ws.beams8, hBeams8.data(), hBeams8.size() * sizeof(GpuBeam8), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+            if (splitBeam4)
+            {
+                if (cudaMemcpy(ws.beams4, hBeams4.data(), hBeams4.size() * sizeof(GpuBeam4), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+                if (!hBeams8.empty()
+                    && cudaMemcpy(ws.beams8, hBeams8.data(),
+                                  hBeams8.size() * sizeof(GpuBeam8),
+                                  cudaMemcpyHostToDevice) != cudaSuccess)
+                    return false;
+            }
+            else if (cudaMemcpy(ws.beams8, hBeams8.data(), hBeams8.size() * sizeof(GpuBeam8), cudaMemcpyHostToDevice) != cudaSuccess) return false;
             if (cudaMemcpy(ws.beams, hBeams.data(), hBeams.size() * sizeof(GpuBeam), cudaMemcpyHostToDevice) != cudaSuccess) return false;
         }
         else if (cudaMemcpy(ws.beams, hBeams.data(), hBeams.size() * sizeof(GpuBeam), cudaMemcpyHostToDevice) != cudaSuccess) return false;
@@ -5779,15 +5846,45 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                 }
                 else
                 {
-                    diffraction_grid_mueller_mixed8_kernel<<<diffractionGrid, block>>>(
-                        ws.beams8, ws.beamOffsets8, ws.beams, ws.beamOffsets,
-                        ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
-                        ws.vf, ws.weights, nAz, nZen, nOrient,
-                        diffractionWaveIndex, diffractionWi2,
-                        gpu_effective_eps1(m_eps1), m_eps2,
-                        real(m_complWave), imag(m_complWave),
-                        real(m_invComplWave), imag(m_invComplWave),
-                        m_legacySign ? 1 : 0, ws.m);
+                    if (splitBeam4)
+                    {
+                        if (fixedBeam34)
+                            diffraction_grid_mueller_mixed8_kernel<true, true><<<diffractionGrid, block>>>(
+                                ws.beams4, ws.beamOffsets4, ws.beamOffsets4Quad,
+                                ws.beams8, ws.beamOffsets8,
+                                ws.beams, ws.beamOffsets,
+                                ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                                ws.vf, ws.weights, nAz, nZen, nOrient,
+                                diffractionWaveIndex, diffractionWi2,
+                                gpu_effective_eps1(m_eps1), m_eps2,
+                                real(m_complWave), imag(m_complWave),
+                                real(m_invComplWave), imag(m_invComplWave),
+                                m_legacySign ? 1 : 0, ws.m);
+                        else
+                            diffraction_grid_mueller_mixed8_kernel<true, false><<<diffractionGrid, block>>>(
+                                ws.beams4, ws.beamOffsets4, nullptr,
+                                ws.beams8, ws.beamOffsets8,
+                                ws.beams, ws.beamOffsets,
+                                ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                                ws.vf, ws.weights, nAz, nZen, nOrient,
+                                diffractionWaveIndex, diffractionWi2,
+                                gpu_effective_eps1(m_eps1), m_eps2,
+                                real(m_complWave), imag(m_complWave),
+                                real(m_invComplWave), imag(m_invComplWave),
+                                m_legacySign ? 1 : 0, ws.m);
+                    }
+                    else
+                        diffraction_grid_mueller_mixed8_kernel<false, false><<<diffractionGrid, block>>>(
+                            nullptr, nullptr, nullptr,
+                            ws.beams8, ws.beamOffsets8,
+                            ws.beams, ws.beamOffsets,
+                            ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                            ws.vf, ws.weights, nAz, nZen, nOrient,
+                            diffractionWaveIndex, diffractionWi2,
+                            gpu_effective_eps1(m_eps1), m_eps2,
+                            real(m_complWave), imag(m_complWave),
+                            real(m_invComplWave), imag(m_invComplWave),
+                            m_legacySign ? 1 : 0, ws.m);
                 }
             }
             else if (noVertexCache)
@@ -5910,7 +6007,8 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         tAdd = gpu_now_ms() - t0;
         std::fprintf(stderr,
                      "GPU timing diffract path=%s reduction=%s layout=%s block=%d orient=%d beams=%zu nAz=%d nZen=%d count=%.3fms pack=%.3fms ensure=%.3fms grid=%.3fms copy=%.3fms kernels=%.3fms d2h=%.3fms add=%.3fms total=%.3fms\n",
-                     splitBeam4 ? "beam4+8"
+                     splitBeam4 ? (useMixedBeam8
+                             ? "beam4+8+generic" : "beam4+8")
                          : (useBeam8 ? "beam8"
                              : (useMixedBeam8 ? "mixed-beam8" : "generic")),
                      useWarpBeams ? "warp" : "thread",

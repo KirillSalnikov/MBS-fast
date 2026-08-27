@@ -1492,16 +1492,19 @@ changed wall time by 0--11\% in validation. \texttt{MBS\_GPU\_TIMING=1}
 reports \texttt{reduction=thread|warp} and \texttt{layout=3d|flat}.
 
 For the compact thread path, automatic packing separates polygons with at most
-four vertices from polygons with five to eight vertices. Triangles and
-quadrilaterals use compile-time loop lengths when every compact polygon has at
-least three vertices. Packing uses one stable bucket pass instead of scanning
-the beam list once per vertex count. On the RTX 3080 Ti concave absorbing probe
-this reduced summed FP32 CUDA-kernel time by about 4\% and complete GPU
-diffraction time by about 3\%; the short end-to-end run improved by about
-2--3\% because CPU tracing was unchanged. FP64 was neutral in the kernel and
-still benefited from reduced packing and transfer work. The release gate
-compares this path with \texttt{MBS\_GPU\_COMPACT\_BEAM4\_SPLIT=0} in both
-precision profiles.
+four vertices from polygons with five to eight vertices. Larger polygons remain
+in the general 32-vertex layout; one fused kernel consumes all three layouts.
+Triangles and quadrilaterals use compile-time loop lengths when every compact
+polygon has at least three vertices. Packing uses one stable bucket pass instead
+of scanning the beam list once per vertex count. This is automatic in GPU builds.
+
+On the RTX 3080 Ti concave absorbing probe this reduced summed FP32 CUDA-kernel
+time by about 4\% and complete GPU diffraction time by about 3\%. For an
+aggregate containing 3--10-vertex output polygons, FP32 kernel and complete GPU
+diffraction time fell by 13\% and 14\%; the corresponding FP64 reductions were
+4\% and 6\%. End-to-end gains are smaller when unchanged CPU tracing dominates.
+The release gate compares all-compact and mixed paths with
+\texttt{MBS\_GPU\_COMPACT\_BEAM4\_SPLIT=0} in both precision profiles.
 
 \subsection{Automatic CUDA tracing profile}
 

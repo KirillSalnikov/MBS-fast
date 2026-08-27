@@ -709,15 +709,20 @@ wall time by 0-11% in the validation set. `MBS_GPU_TIMING=1` reports both the
 reduction and layout as `reduction=thread|warp` and `layout=3d|flat`.
 
 For the compact thread path, automatic packing separates polygons with at most
-four vertices from polygons with five to eight vertices. Triangles and
-quadrilaterals use compile-time loop lengths when every compact polygon has at
-least three vertices. Packing uses one stable bucket pass instead of scanning
-the beam list once per vertex count. On the RTX 3080 Ti concave absorbing
-probe this reduced summed FP32 CUDA-kernel time by about 4% and complete GPU
-diffraction time by about 3%; the short end-to-end run improved by about 2--3%
-because CPU tracing was unchanged. FP64 was neutral in the kernel and still
-benefited from reduced packing and transfer work. The release gate compares
-this path with `MBS_GPU_COMPACT_BEAM4_SPLIT=0` in both precision profiles.
+four vertices from polygons with five to eight vertices. If a calculation also
+contains larger polygons, they remain in the general 32-vertex layout; all
+three layouts are consumed by one fused kernel. Triangles and quadrilaterals
+use compile-time loop lengths when every compact polygon has at least three
+vertices. Packing uses one stable bucket pass instead of scanning the beam list
+once per vertex count. No option is required: this is the default GPU path.
+
+On the RTX 3080 Ti concave absorbing probe, the compact split reduced summed
+FP32 CUDA-kernel time by about 4% and complete GPU diffraction time by about
+3%. On an aggregate containing 3--10-vertex output polygons, it reduced FP32
+kernel time by 13% and complete GPU diffraction time by 14%; the corresponding
+FP64 reductions were 4% and 6%. End-to-end gains are smaller when unchanged CPU
+tracing dominates. The release gate compares both the all-compact and mixed
+paths with `MBS_GPU_COMPACT_BEAM4_SPLIT=0` in both precision profiles.
 
 The diagnostic target below compares FP64 direct quaternion-vector rotation
 with a precomputed 3x3 matrix on the GPU:

@@ -70,12 +70,39 @@ MBS_GPU_SLOT="$device" MBS_GPU_THREAD_GRID_3D=1 \
     --allow-experimental-environment \
     --output "$work/gpu_grid3d" >"$work/gpu_grid3d.log" 2>&1
 
+mixed_common=(
+    --method po
+    --particle 12 1.0 0.7 2
+    --refractive-index 1.3116 0
+    --wavelength-um 0.532
+    --max-reflections 4
+    --so3-quaternion 64
+    --scattering-grid 0 180 24 12
+    --latitude-phi-grid
+    --cutoff-profile off
+    --threads 2
+    --close
+)
+
+MBS_GPU_SLOT="$device" MBS_GPU_WARP_BEAMS=0 \
+    MBS_GPU_COMPACT_BEAM4_SPLIT=0 \
+    "$gpu" "${mixed_common[@]}" --backend cuda \
+    --output "$work/gpu_mixed8" >"$work/gpu_mixed8.log" 2>&1
+MBS_GPU_SLOT="$device" MBS_GPU_WARP_BEAMS=0 \
+    MBS_GPU_COMPACT_BEAM4_SPLIT=1 MBS_GPU_TIMING=1 \
+    "$gpu" "${mixed_common[@]}" --backend cuda \
+    --output "$work/gpu_mixed4" >"$work/gpu_mixed4.log" 2>&1
+
 grep -q 'GPU backend: CUDA' "$work/gpu.log" || {
     echo 'ERROR: CUDA binary did not confirm use of the CUDA backend' >&2
     exit 1
 }
 grep -q 'path=beam4+8' "$work/gpu_beam4.log" || {
     echo 'ERROR: CUDA Beam4 release gate did not use the Beam4+Beam8 path' >&2
+    exit 1
+}
+grep -q 'path=beam4+8+generic' "$work/gpu_mixed4.log" || {
+    echo 'ERROR: CUDA mixed Beam4 release gate did not use all three beam layouts' >&2
     exit 1
 }
 
@@ -153,6 +180,41 @@ print("CUDA Beam8/Beam4+8 weighted L2: {:.3e} (limit {:.3e})".format(
 if not math.isfinite(beam4_relative) or beam4_relative > beam4_tolerance:
     raise SystemExit("ERROR: Beam4+8 CUDA mismatch exceeds {:.3e}".format(
         beam4_tolerance))
+PY
+
+python3 - "$work/gpu_mixed8/gpu_mixed8.dat" \
+    "$work/gpu_mixed4/gpu_mixed4.dat" "$beam4_tolerance" <<'PY'
+import math
+import sys
+
+def load(path):
+    with open(path, encoding="utf-8") as stream:
+        next(stream)
+        return [[float(value) for value in line.split()]
+                for line in stream if line.strip()]
+
+reference = load(sys.argv[1])
+candidate = load(sys.argv[2])
+if len(reference) != len(candidate) or not reference:
+    raise SystemExit("ERROR: mixed Beam4 output grids have different sizes")
+num = 0.0
+den = 0.0
+for reference_row, candidate_row in zip(reference, candidate):
+    if (abs(reference_row[0] - candidate_row[0]) > 1e-10 or
+            abs(reference_row[1] - candidate_row[1]) > 1e-10):
+        raise SystemExit("ERROR: mixed Beam4 output grids differ")
+    weight = reference_row[1]
+    for index in range(2, 18):
+        delta = candidate_row[index] - reference_row[index]
+        num += weight * delta * delta
+        den += weight * reference_row[index] * reference_row[index]
+relative = math.sqrt(num / max(den, 1e-300))
+tolerance = float(sys.argv[3])
+print("CUDA mixed Beam8/Beam4+8+generic weighted L2: {:.3e} (limit {:.3e})".format(
+    relative, tolerance))
+if not math.isfinite(relative) or relative > tolerance:
+    raise SystemExit("ERROR: mixed Beam4 CUDA mismatch exceeds {:.3e}".format(
+        tolerance))
 PY
 
 trace_common=(
