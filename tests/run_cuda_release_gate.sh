@@ -56,6 +56,10 @@ MBS_GPU_SLOT="$device" MBS_GPU_NO_ATOMICS=0 \
     "$gpu" "${common[@]}" --backend cuda \
     --allow-experimental-environment \
     --output "$work/gpu_atomic" >"$work/gpu_atomic.log" 2>&1
+MBS_GPU_SLOT="$device" MBS_GPU_THREAD_GRID_3D=1 \
+    "$gpu" "${common[@]}" --backend cuda \
+    --allow-experimental-environment \
+    --output "$work/gpu_grid3d" >"$work/gpu_grid3d.log" 2>&1
 
 grep -q 'GPU backend: CUDA' "$work/gpu.log" || {
     echo 'ERROR: CUDA binary did not confirm use of the CUDA backend' >&2
@@ -65,7 +69,7 @@ grep -q 'GPU backend: CUDA' "$work/gpu.log" || {
 python3 - "$work/cpu/cpu.dat" "$work/gpu/gpu.dat" \
     "$work/gpu_generic/gpu_generic.dat" "$relative_tolerance" \
     "$compact_tolerance" "$work/gpu_atomic/gpu_atomic.dat" \
-    "$atomic_tolerance" <<'PY'
+    "$atomic_tolerance" "$work/gpu_grid3d/gpu_grid3d.dat" <<'PY'
 import math
 import sys
 
@@ -115,6 +119,14 @@ print("CUDA fused/atomic weighted L2: {:.3e} (limit {:.3e})".format(
     atomic_relative, atomic_tolerance))
 if not math.isfinite(atomic_relative) or atomic_relative > atomic_tolerance:
     raise SystemExit("ERROR: fused/atomic CUDA mismatch exceeds {:.3e}".format(
+        atomic_tolerance))
+
+gpu_grid3d = load(sys.argv[8])
+grid3d_relative = relative_l2(gpu, gpu_grid3d)
+print("CUDA flat/tiled-3D weighted L2: {:.3e} (limit {:.3e})".format(
+    grid3d_relative, atomic_tolerance))
+if not math.isfinite(grid3d_relative) or grid3d_relative > atomic_tolerance:
+    raise SystemExit("ERROR: tiled 3D CUDA mismatch exceeds {:.3e}".format(
         atomic_tolerance))
 PY
 

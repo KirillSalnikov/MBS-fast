@@ -1469,6 +1469,9 @@ with at most 8 vertices and use the general layout for diagnostics. \\
 thread per output (0) or one warp per output (1). \\
 \texttt{MBS\_GPU\_WARP\_GRID\_3D=0} & Disable the 3D-grid specialization
 when warp reduction is active. \\
+\texttt{MBS\_GPU\_THREAD\_GRID\_3D=0/1} & Override the tiled 3D-grid
+layout for the consumer thread path. Automatic mode uses it with a
+64-thread block when edge padding is at most 15\%. \\
 \texttt{MBS\_GPU\_TIMING=1} & Print GPU timing breakdown for
 count/pack/copy/kernels/d2h/add. \\
 \texttt{MBS\_GPU\_BLOCK=N} & Override CUDA block size for kernel
@@ -1479,8 +1482,11 @@ By default CUDA uses its reported FP32:FP64 throughput ratio. A ratio of 16
 or greater selects one thread per output; lower ratios retain warp reduction.
 The former was 2--11\% faster on an RTX 3080 Ti across the tested convex,
 concave, FP32, FP64, and 8--20-reflection cases. V100/A100-class GPUs retain
-the warp path. \texttt{MBS\_GPU\_TIMING=1} reports
-\texttt{reduction=thread} or \texttt{reduction=warp}.
+the warp path. With the default 64-thread block the consumer path also uses
+a $16\,\theta\times4\,\phi$ tiled grid when incomplete edge tiles add no more
+than 15\% work. This removed two integer divisions per output thread and
+changed wall time by 0--11\% in validation. \texttt{MBS\_GPU\_TIMING=1}
+reports \texttt{reduction=thread|warp} and \texttt{layout=3d|flat}.
 
 \subsection{Automatic CUDA tracing profile}
 
@@ -1886,6 +1892,8 @@ with at most 8 vertices. \\
 or warp-per-output reduction choice. \\
 \texttt{MBS\_GPU\_WARP\_GRID\_3D=0} & Disable the 3D-grid specialization when
 warp reduction is active. \\
+\texttt{MBS\_GPU\_THREAD\_GRID\_3D=0/1} & Override the automatically selected
+tiled 3D grid for the consumer thread path. \\
 \texttt{MBS\_GPU\_TIMING} & Print CUDA timing breakdowns. \\
 \texttt{MBS\_GPU\_BLOCK} & Override CUDA kernel block size. \\
 \nolinkurl{MBS_GPU_TRACE_OPENMP} & Enable automatic CUDA tracing from

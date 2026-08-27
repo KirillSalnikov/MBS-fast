@@ -692,6 +692,7 @@ Useful controls:
 | `MBS_GPU_COMPACT_BEAMS=0` | Disable compact packing for beams with at most 8 vertices and use the general layout for diagnostics. |
 | `MBS_GPU_WARP_BEAMS=0/1` | Override automatic beam reduction: one thread per output (`0`) or one warp per output (`1`). By default consumer GPUs use the thread path and datacenter GPUs with strong FP64 hardware use the warp path. |
 | `MBS_GPU_WARP_GRID_3D=0` | Disable the 3D-grid specialization when warp reduction is active. |
+| `MBS_GPU_THREAD_GRID_3D=0/1` | Override the tiled 3D-grid layout for the consumer thread path. Automatic mode uses it with a 64-thread block when edge padding is at most 15%. |
 | `MBS_GPU_TIMING=1` | Print GPU timing breakdown for count/pack/copy/kernels/d2h/add. |
 | `MBS_GPU_BLOCK=N` | Override CUDA block size: 64 (default), 128, or 256. |
 | `MBS_ORIENTATION_TIMING=1` | Print summed CPU time for rotation, tracing, and prepared-beam construction. |
@@ -700,8 +701,11 @@ The automatic reduction decision uses CUDA's reported FP32:FP64 throughput
 ratio. A ratio of 16 or greater selects the compact thread-per-output kernel.
 On an RTX 3080 Ti this reduced wall time by 2-11% across convex, concave, FP32,
 FP64, and 8-20-reflection probes. V100/A100-class GPUs retain warp reduction.
-`MBS_GPU_TIMING=1` reports the selected mode as `reduction=thread` or
-`reduction=warp`.
+With the default 64-thread block, the consumer path also uses a `16 theta x 4
+phi` tiled CUDA grid when padding incomplete edge tiles adds no more than 15%
+work. It removes two integer divisions from each output thread and changed
+wall time by 0-11% in the validation set. `MBS_GPU_TIMING=1` reports both the
+reduction and layout as `reduction=thread|warp` and `layout=3d|flat`.
 
 The diagnostic target below compares FP64 direct quaternion-vector rotation
 with a precomputed 3x3 matrix on the GPU:
@@ -1034,6 +1038,7 @@ Production-use variables:
 | `MBS_GPU_COMPACT_BEAMS=0` | Disable compact packing for beams with at most 8 vertices. |
 | `MBS_GPU_WARP_BEAMS=0/1` | Override the automatic reduction: one thread per output (`0`) or one warp per output (`1`). |
 | `MBS_GPU_WARP_GRID_3D=0` | Disable the 3D-grid specialization when warp reduction is active. |
+| `MBS_GPU_THREAD_GRID_3D=0/1` | Override the automatically selected tiled 3D grid for the consumer thread path. |
 | `MBS_GPU_TIMING` | Print CUDA timing breakdowns. |
 | `MBS_GPU_BLOCK` | CUDA block size: 64 (default), 128, or 256. |
 | `MBS_GPU_TRACE_OPENMP=0/1` | Disable or enable automatic CUDA tracing with multiple OpenMP workers; default `1`. |

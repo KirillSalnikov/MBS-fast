@@ -155,7 +155,11 @@ with strong FP64 hardware use warp-per-output beam reduction and its 3D-grid
 specialization. Consumer GPUs with a large FP32:FP64 throughput ratio use the
 faster compact thread-per-output kernel. Set `MBS_GPU_WARP_BEAMS=0` or `1` only
 for diagnostic A/B runs; `MBS_GPU_WARP_GRID_3D=0` disables only the 3D warp
-specialization.
+specialization. With the default 64-thread block, the consumer thread path
+also selects a tiled `(theta, phi, orientation)` CUDA grid when edge padding
+adds no more than 15% work. This removes per-output integer division and gave
+0-11% wall-time improvement across the validation cases. Set
+`MBS_GPU_THREAD_GRID_3D=0` or `1` only to compare the flat and tiled layouts.
 
 For a double CUDA build without fast math:
 

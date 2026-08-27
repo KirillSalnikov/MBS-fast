@@ -383,6 +383,9 @@ bool ScatteringNonConvex::ScatterLight(double /*beta*/, double /*gamma*/,
     if (m_tracePrefilterStats)
     {
         const auto finished = std::chrono::high_resolution_clock::now();
+        const std::ios::fmtflags savedFlags = std::cout.flags();
+        const std::streamsize savedPrecision = std::cout.precision();
+        std::cout << std::defaultfloat << std::setprecision(6);
         std::cout << "Trace phase stats: setup="
                   << std::chrono::duration<double>(initialStarted
                                                     - traceStarted).count()
@@ -396,6 +399,8 @@ bool ScatteringNonConvex::ScatterLight(double /*beta*/, double /*gamma*/,
                   << std::chrono::duration<double>(finished
                                                     - traceStarted).count()
                   << std::endl;
+        std::cout.flags(savedFlags);
+        std::cout.precision(savedPrecision);
     }
     return ok;
 }
@@ -2002,6 +2007,9 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
 
     if (m_tracePrefilterStats)
     {
+        const std::ios::fmtflags savedFlags = std::cout.flags();
+        const std::streamsize savedPrecision = std::cout.precision();
+        std::cout << std::defaultfloat << std::setprecision(6);
         const auto traceEstimatedTime = [](double sampledTime,
                                            size_t calls,
                                            size_t samples) {
@@ -2117,6 +2125,8 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
                       << std::endl;
         }
 #endif
+        std::cout.flags(savedFlags);
+        std::cout.precision(savedPrecision);
     }
 
     return true;

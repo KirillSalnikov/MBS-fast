@@ -542,6 +542,16 @@ static bool gpu_warp_grid_3d_enabled()
     return !(value && value[0] == '0' && value[1] == '\0');
 }
 
+static int gpu_thread_grid_3d_mode()
+{
+    const char *value = std::getenv("MBS_GPU_THREAD_GRID_3D");
+    if (value && value[0] == '0' && value[1] == '\0')
+        return 0;
+    if (value && value[0] == '1' && value[1] == '\0')
+        return 1;
+    return -1;
+}
+
 static bool gpu_beam_stats_enabled()
 {
     const char *value = std::getenv("MBS_GPU_BEAM_STATS");
@@ -2562,6 +2572,7 @@ __global__ void diffraction_grid_mueller_multik_kernel(const GpuBeam *__restrict
                              &mFull[((size_t)sizeIdx * gridCount + grid) * 16]);
 }
 
+template <bool Grid3D>
 __global__ void diffraction_grid_mueller_full8_kernel(const GpuBeam8 *__restrict__ beams,
                                                       const int *__restrict__ beamOffsets,
                                                       const GpuReal *__restrict__ sinTheta,
@@ -2584,16 +2595,32 @@ __global__ void diffraction_grid_mueller_full8_kernel(const GpuBeam8 *__restrict
                                                       GpuReal *__restrict__ mFull)
 {
     const int gridCount = nAz * (nZen + 1);
-    const long long total = (long long)nOrient * gridCount;
-    const long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= total) return;
-
-    const int orient = (int)(idx / gridCount);
-    const int grid = (int)(idx - (long long)orient * gridCount);
+    int orient;
+    int grid;
+    int p;
+    int t;
+    if (Grid3D)
+    {
+        orient = (int)blockIdx.z;
+        p = (int)blockIdx.y * (int)blockDim.y + (int)threadIdx.y;
+        t = (int)blockIdx.x * (int)blockDim.x + (int)threadIdx.x;
+        if (orient >= nOrient || p >= nAz || t > nZen)
+            return;
+        grid = p * (nZen + 1) + t;
+    }
+    else
+    {
+        const long long total = (long long)nOrient * gridCount;
+        const long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+        if (idx >= total)
+            return;
+        orient = (int)(idx / gridCount);
+        grid = (int)(idx - (long long)orient * gridCount);
+        p = grid / (nZen + 1);
+        t = grid - p * (nZen + 1);
+    }
     const int begin = beamOffsets[orient];
     const int end = beamOffsets[orient + 1];
-    const int p = grid / (nZen + 1);
-    const int t = grid - p * (nZen + 1);
     const GpuReal cp = cosPhi[p], sp = sinPhi[p];
     const GpuReal sin_t = sinTheta[t], cos_t = cosTheta[t];
     const GpuReal dx = sin_t * cp;
@@ -5236,9 +5263,33 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     const int warpsPerBlock = block / 32;
     const bool useWarpGrid3D = useWarpBeams && gpu_warp_grid_3d_enabled()
         && nOrient <= 65535 && nAz <= 65535;
+    const int threadThetaTile = 16;
+    const int threadPhiTile = std::max(1, block / threadThetaTile);
+    const long long threadGridActual =
+        (long long)(nZen + 1) * nAz;
+    const long long threadGridPadded =
+        (long long)((nZen + threadThetaTile) / threadThetaTile)
+        * threadThetaTile
+        * ((nAz + threadPhiTile - 1) / threadPhiTile)
+        * threadPhiTile;
+    const int threadGrid3DMode = gpu_thread_grid_3d_mode();
+    const bool threadGridPaddingOk =
+        threadGridPadded * 100 <= threadGridActual * 115;
+    const bool useThreadGrid3D = useBeam8 && !useWarpBeams && !stageMueller
+        && (threadGrid3DMode == 1
+            || (threadGrid3DMode < 0 && block == 64
+                && threadGridPaddingOk))
+        && nOrient <= 65535 && nAz <= 65535;
     const dim3 warpGrid3D(
         (unsigned int)((nZen + warpsPerBlock) / warpsPerBlock),
         (unsigned int)nAz, (unsigned int)nOrient);
+    const dim3 threadBlock3D(
+        (unsigned int)threadThetaTile,
+        (unsigned int)threadPhiTile, 1u);
+    const dim3 threadGrid3D(
+        (unsigned int)((nZen + threadThetaTile) / threadThetaTile),
+        (unsigned int)((nAz + threadPhiTile - 1) / threadPhiTile),
+        (unsigned int)nOrient);
     long long diffractionTotal = (long long)(noAtomics ? nOrient : (int)nBeams) * gridCount;
     int diffractionGrid = (int)((diffractionTotal + block - 1) / block);
     if (fusedMueller)
@@ -5342,15 +5393,30 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                 }
                 else
                 {
-                    diffraction_grid_mueller_full8_kernel<<<diffractionGrid, block>>>(
-                        ws.beams8, ws.beamOffsets,
-                        ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
-                        ws.vf, ws.weights, nAz, nZen, nOrient,
-                        diffractionWaveIndex, diffractionWi2,
-                        gpu_effective_eps1(m_eps1), m_eps2,
-                        real(m_complWave), imag(m_complWave),
-                        real(m_invComplWave), imag(m_invComplWave),
-                        m_legacySign ? 1 : 0, ws.m);
+                    if (useThreadGrid3D)
+                    {
+                        diffraction_grid_mueller_full8_kernel<true><<<threadGrid3D, threadBlock3D>>>(
+                            ws.beams8, ws.beamOffsets,
+                            ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                            ws.vf, ws.weights, nAz, nZen, nOrient,
+                            diffractionWaveIndex, diffractionWi2,
+                            gpu_effective_eps1(m_eps1), m_eps2,
+                            real(m_complWave), imag(m_complWave),
+                            real(m_invComplWave), imag(m_invComplWave),
+                            m_legacySign ? 1 : 0, ws.m);
+                    }
+                    else
+                    {
+                        diffraction_grid_mueller_full8_kernel<false><<<diffractionGrid, block>>>(
+                            ws.beams8, ws.beamOffsets,
+                            ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                            ws.vf, ws.weights, nAz, nZen, nOrient,
+                            diffractionWaveIndex, diffractionWi2,
+                            gpu_effective_eps1(m_eps1), m_eps2,
+                            real(m_complWave), imag(m_complWave),
+                            real(m_invComplWave), imag(m_invComplWave),
+                            m_legacySign ? 1 : 0, ws.m);
+                    }
                 }
             }
             else if (useMixedBeam8)
@@ -5518,9 +5584,10 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     {
         tAdd = gpu_now_ms() - t0;
         std::fprintf(stderr,
-                     "GPU timing diffract path=%s reduction=%s block=%d orient=%d beams=%zu nAz=%d nZen=%d count=%.3fms pack=%.3fms ensure=%.3fms grid=%.3fms copy=%.3fms kernels=%.3fms d2h=%.3fms add=%.3fms total=%.3fms\n",
+                     "GPU timing diffract path=%s reduction=%s layout=%s block=%d orient=%d beams=%zu nAz=%d nZen=%d count=%.3fms pack=%.3fms ensure=%.3fms grid=%.3fms copy=%.3fms kernels=%.3fms d2h=%.3fms add=%.3fms total=%.3fms\n",
                      useBeam8 ? "beam8" : (useMixedBeam8 ? "mixed-beam8" : "generic"),
                      useWarpBeams ? "warp" : "thread",
+                     (useWarpGrid3D || useThreadGrid3D) ? "3d" : "flat",
                      block, nOrient, nBeams, nAz, nZen, tCount, tPack, tEnsure,
                      tGrid, tCopy, tKernel, tD2h, tAdd, gpu_now_ms() - tStart);
     }
