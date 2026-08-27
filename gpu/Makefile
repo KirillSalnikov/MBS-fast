@@ -14,6 +14,7 @@ endif
 USE_MPI ?= 0
 GPU_PRECISION ?= double
 GPU_FAST_MATH ?= 0
+GPU_PHASE_TRIG ?= precise
 GPU_LTO ?= 1
 
 ifeq ($(filter float fp32 double fp64,$(GPU_PRECISION)),)
@@ -21,6 +22,9 @@ $(error GPU_PRECISION must be one of: fp32, float, fp64, double)
 endif
 ifneq ($(filter 0 1,$(GPU_FAST_MATH)),$(GPU_FAST_MATH))
 $(error GPU_FAST_MATH must be 0 or 1)
+endif
+ifeq ($(filter precise consumer,$(GPU_PHASE_TRIG)),)
+$(error GPU_PHASE_TRIG must be one of: precise, consumer)
 endif
 ifneq ($(filter 0 1,$(GPU_LTO)),$(GPU_LTO))
 $(error GPU_LTO must be 0 or 1)
@@ -38,14 +42,24 @@ GPU_PRECISION_CANON := double
 GPU_PRECISION_LABEL := fp64
 GPU_PRECISION_DEFINES := -DMBS_GPU_FP64
 endif
+ifeq ($(GPU_PHASE_TRIG),consumer)
+ifneq ($(GPU_PRECISION_CANON),float)
+$(error GPU_PHASE_TRIG=consumer requires GPU_PRECISION=fp32 or float)
+endif
+GPU_PHASE_DEFINES := -DMBS_GPU_PHASE_FP32
+GPU_PHASE_SUFFIX := _consumer
+else
+GPU_PHASE_DEFINES :=
+GPU_PHASE_SUFFIX :=
+endif
 
 FAST_SUFFIX := $(if $(filter 1,$(GPU_FAST_MATH)),_fast,)
 MPI_SUFFIX := $(if $(filter 1,$(USE_MPI)),_mpi,)
 LTO_SUFFIX := $(if $(filter 1,$(GPU_LTO)),_lto,)
-TARGET ?= bin/mbs_po_gpu$(MPI_SUFFIX)_$(GPU_PRECISION_CANON)$(FAST_SUFFIX)
+TARGET ?= bin/mbs_po_gpu$(MPI_SUFFIX)_$(GPU_PRECISION_CANON)$(GPU_PHASE_SUFFIX)$(FAST_SUFFIX)
 GPU_ARCH ?= $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.' | sed 's/[^0-9].*//')
 GPU_ARCH := $(if $(GPU_ARCH),$(GPU_ARCH),86)
-OBJDIR ?= build/$(GPU_PRECISION_LABEL)$(FAST_SUFFIX)$(MPI_SUFFIX)$(LTO_SUFFIX)_sm$(GPU_ARCH)/obj
+OBJDIR ?= build/$(GPU_PRECISION_LABEL)$(GPU_PHASE_SUFFIX)$(FAST_SUFFIX)$(MPI_SUFFIX)$(LTO_SUFFIX)_sm$(GPU_ARCH)/obj
 
 ifeq ($(USE_MPI),1)
 CXX := mpicxx
@@ -76,6 +90,8 @@ override NVCCFLAGS += -ccbin $(CUDA_HOST_CXX) -include $(CUDA_HOST_COMPAT)
 override NVCCFLAGS += -Xcompiler -fopenmp
 override NVCCFLAGS += $(GPU_PRECISION_DEFINES)
 override CXXFLAGS += $(GPU_PRECISION_DEFINES)
+override NVCCFLAGS += $(GPU_PHASE_DEFINES)
+override CXXFLAGS += $(GPU_PHASE_DEFINES)
 ifeq ($(GPU_FAST_MATH),1)
 override NVCCFLAGS += --use_fast_math
 override CXXFLAGS += -DMBS_GPU_FAST_MATH
@@ -121,7 +137,7 @@ $(TARGET): $(OBJECTS)
 	@echo "CXX: $(CXX)"
 	@echo "CUDA_HOST_CXX: $(CUDA_HOST_CXX)"
 	@echo "GPU_PRECISION: $(GPU_PRECISION_LABEL) ($(GPU_PRECISION_CANON) storage)"
-	@echo "GPU_CRITICAL_PHASE: fp64"
+	@echo "GPU_PHASE_TRIG: $(GPU_PHASE_TRIG)"
 	@echo "GPU_FAST_MATH: $(GPU_FAST_MATH)"
 	@echo "GPU_LTO: $(GPU_LTO)"
 	@echo "USE_MPI: $(USE_MPI)"
@@ -143,18 +159,23 @@ $(OBJDIR)/%.o: $(ROOT)/%.cu
 	$(NVCC) $(NVCCFLAGS) -DUSE_CUDA -I$(CUDA_PATH)/include $(INCLUDES) -c $< -o $@
 
 float:
-	$(MAKE) GPU_PRECISION=float GPU_FAST_MATH=0 TARGET=bin/mbs_po_gpu_float all
+	$(MAKE) GPU_PRECISION=float GPU_PHASE_TRIG=precise GPU_FAST_MATH=0 TARGET=bin/mbs_po_gpu_float all
+
+float_consumer:
+	$(MAKE) GPU_PRECISION=float GPU_PHASE_TRIG=consumer GPU_FAST_MATH=0 TARGET=bin/mbs_po_gpu_float_consumer all
 
 double:
 	$(MAKE) GPU_PRECISION=double GPU_FAST_MATH=0 TARGET=bin/mbs_po_gpu_double all
 
 float_fast:
-	$(MAKE) GPU_PRECISION=float GPU_FAST_MATH=1 TARGET=bin/mbs_po_gpu_float_fast all
+	$(MAKE) GPU_PRECISION=float GPU_PHASE_TRIG=precise GPU_FAST_MATH=1 TARGET=bin/mbs_po_gpu_float_fast all
 
 double_fast:
 	$(MAKE) GPU_PRECISION=double GPU_FAST_MATH=1 TARGET=bin/mbs_po_gpu_double_fast all
 
 fp32: float
+
+fp32_consumer: float_consumer
 
 fp64: double
 
@@ -162,7 +183,7 @@ fp32_fast: float_fast
 
 fp64_fast: double_fast
 
-precision_matrix: float double float_fast double_fast
+precision_matrix: float float_consumer double float_fast double_fast
 
 double_fast_mpi:
 	$(MAKE) USE_MPI=1 GPU_PRECISION=double GPU_FAST_MATH=1 TARGET=bin/mbs_po_gpu_mpi_double_fast all
@@ -182,7 +203,7 @@ double_debug:
 clean:
 	rm -rf build bin
 
-.PHONY: all cuda_check float double float_fast double_fast fp32 fp64 fp32_fast fp64_fast \
+.PHONY: all cuda_check float float_consumer double float_fast double_fast fp32 fp32_consumer fp64 fp32_fast fp64_fast \
 	precision_matrix double_fast_mpi float_debug double_debug clean
 
 -include $(DEPS)

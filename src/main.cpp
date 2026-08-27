@@ -335,9 +335,14 @@ void PrintVersion()
     std::cout << " sm_" << MBS_GPU_BUILD_ARCH;
 #endif
 #if defined(MBS_GPU_FP32) || defined(MBS_GPU_FLOAT)
-    std::cout << " fp32-diffraction-storage trace-geometry-fp64 critical-phase-fp64";
+    std::cout << " fp32-diffraction-storage trace-geometry-fp64 phase-build-fp64";
+#ifdef MBS_GPU_PHASE_FP32
+    std::cout << " phase-trig-fp32";
+#else
+    std::cout << " phase-trig-fp64";
+#endif
 #elif defined(MBS_GPU_FP64)
-    std::cout << " fp64-diffraction-storage trace-geometry-fp64 critical-phase-fp64";
+    std::cout << " fp64-diffraction-storage trace-geometry-fp64 phase-build-fp64 phase-trig-fp64";
 #else
     std::cout << " unknown-precision";
 #endif

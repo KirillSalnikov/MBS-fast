@@ -194,6 +194,7 @@ Debug help build:
 
 \CommentTok{\# Explicit variants}
 \FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu fp32      }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_float}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu fp32\_consumer }\AttributeTok{{-}j} \CommentTok{\# gpu/bin/mbs\_po\_gpu\_float\_consumer}
 \FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu fp64      }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_double}
 \FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu fp32\_fast }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_float\_fast}
 \FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu fp64\_fast }\AttributeTok{{-}j}   \CommentTok{\# gpu/bin/mbs\_po\_gpu\_double\_fast}
@@ -211,6 +212,8 @@ Target & Binary & CUDA precision & Fast math & Typical use \\
 \nolinkurl{gpu/bin/mbs_po_gpu_double} & FP64 & no & Numerical reference and production default \\
 \texttt{make\ -C\ gpu\ fp32} & \nolinkurl{gpu/bin/mbs_po_gpu_float} &
 FP32 & no & Calibrated FP32 throughput \\
+\texttt{make\ -C\ gpu\ fp32\_consumer} &
+\nolinkurl{gpu/bin/mbs_po_gpu_float_consumer} & FP32 & no & Consumer GPU throughput with FP32 phase trigonometry \\
 \texttt{make\ -C\ gpu\ fp32\_fast} &
 \nolinkurl{gpu/bin/mbs_po_gpu_float_fast} & FP32 & yes & Experimental profile; benchmark after validation \\
 \texttt{make\ -C\ gpu\ fp64\_fast} &
@@ -220,17 +223,26 @@ FP32 & no & Calibrated FP32 throughput \\
 and diagnostics \\
 \end{longtable}
 
+The low-level build variable is
+\texttt{GPU\_PHASE\_TRIG=precise|consumer}. The consumer value is valid only
+with FP32 storage, has a separate object directory, and does not enable
+\texttt{-{}-use\_fast\_math}. The supported shortcut is
+\texttt{make -C gpu fp32\_consumer -j}. Run
+\texttt{make test\_cuda\_consumer} on the target GPU after building.
+
 FP32 applies to diffraction-beam storage, Jones sums, and Mueller output.
 Visibility/topology tracing, optical paths, absorption, cancellation-prone
-polygon moments, and critical phase trigonometry remain FP64.
-\texttt{-/-version} reports the storage, critical-phase, math, and target
-architecture profile.
+polygon moments, and phase construction remain FP64. The precise FP32 binary
+also evaluates phase trigonometry in FP64. The consumer binary casts only the
+completed phase to FP32 for \texttt{sincosf}. \texttt{-{}-version} reports
+both phase precisions, the math profile, and target architecture.
 
 Verify every rebuilt binary before starting a queue:
 
 \begin{verbatim}
 gpu/bin/mbs_po_gpu_double --version  # fp64-diffraction-storage ... precise-math
 gpu/bin/mbs_po_gpu_float --version   # fp32-diffraction-storage ... precise-math
+gpu/bin/mbs_po_gpu_float_consumer --version  # phase-build-fp64 phase-trig-fp32
 \end{verbatim}
 
 CUDA host compilation requires exactly one FP32/FP64 profile. A binary that
@@ -238,7 +250,7 @@ reports \texttt{unknown-precision} is stale or was built outside the supported
 profiles and must not be used for production calculations.
 
 On an RTX 3080 Ti, a representative absorbing nonconvex test
-($k_{\mathrm{eq}}=20$, 192 SO(3) orientations,
+($L=20\ \mu\mathrm{m}$, 192 SO(3) orientations,
 $N_\phi=288$, $N_\theta=144$) gave the following medians:
 
 \begin{longtable}[]{@{}L{0.28\linewidth}L{0.18\linewidth}L{0.18\linewidth}L{0.24\linewidth}@{}}
@@ -248,16 +260,18 @@ Profile & Time & Speedup over FP64 & Mueller error against FP64 \\
 \endhead
 \bottomrule\noalign{}
 \endlastfoot
-Precise FP64 & 10.98 s & 1.00 & reference \\
-Precise mixed FP32 & 6.51 s & 1.69 & global $L_2=9.05\times10^{-8}$ \\
-FP32 with fast math & 7.01 s & 1.57 & global $L_2=9.04\times10^{-8}$ \\
+Precise FP64 & 8.56 s & 1.00 & reference \\
+Precise mixed FP32 & 5.76 s & 1.49 & global $L_2=5.68\times10^{-8}$ \\
+Consumer FP32 & 3.25 s & 2.63 & global $L_2=2.82\times10^{-7}$ \\
 \end{longtable}
 
-The precise mixed-FP32 binary is therefore the recommended consumer-GPU
-profile after validation on the target particle and size range. Fast math is
-not enabled automatically: in this measured case it was slightly slower and
-did not improve accuracy. Final reference points and numerically sensitive
-absorbing or deep nonconvex cases should still be checked in FP64.
+After calibration, the consumer FP32 binary is the recommended throughput
+profile. It was 1.77 times faster than precise mixed FP32. Across convex,
+concave, absorbing, nonabsorbing, $L=5\ldots500\ \mu\mathrm{m}$, and 8--20
+reflection probes, the largest side/back M11 L2 error was $8.4\times10^{-5}$;
+one weak off-diagonal element reached $5.3\times10^{-3}$. Whole-kernel fast
+math was about 9\% slower than the consumer profile. Final reference points
+and numerically sensitive cases should still be checked in FP64.
 
 The GPU split build enables CUDA diffraction by default.
 \texttt{-\/-gpu} is accepted but optional. Use \texttt{-\/-cpu} only
@@ -270,7 +284,7 @@ The Makefile detects the GPU compute capability with
 \begin{Shaded}
 \begin{Highlighting}[]
 \CommentTok{\# Ampere, e.g. RTX 3080 Ti}
-\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu fp32 }\AttributeTok{{-}j}\NormalTok{ GPU\_ARCH=86}
+\FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu fp32\_consumer }\AttributeTok{{-}j}\NormalTok{ GPU\_ARCH=86}
 
 \CommentTok{\# Ada, e.g. RTX 4070}
 \FunctionTok{make} \AttributeTok{{-}C}\NormalTok{ gpu fp32 }\AttributeTok{{-}j}\NormalTok{ GPU\_ARCH=89}

@@ -76,6 +76,7 @@ make -C cpu -j
 # CUDA variants
 make -C gpu -j                 # FP64, precise math + LTO; default/reference
 make -C gpu fp32 -j            # FP32 storage, precise math
+make -C gpu fp32_consumer -j   # FP32 storage + fast phase trigonometry
 make -C gpu fp32_fast -j       # FP32 storage + --use_fast_math
 make -C gpu fp64_fast -j       # FP64 storage + --use_fast_math
 
@@ -96,46 +97,59 @@ The resulting binaries are independent:
 |---|---|
 | CPU MPI/OpenMP | `cpu/bin/mbs_po_mpi` |
 | CUDA float | `gpu/bin/mbs_po_gpu_float` |
+| CUDA consumer float | `gpu/bin/mbs_po_gpu_float_consumer` |
 | CUDA float fast | `gpu/bin/mbs_po_gpu_float_fast` |
 | CUDA double | `gpu/bin/mbs_po_gpu_double` |
 | CUDA double fast | `gpu/bin/mbs_po_gpu_double_fast` |
+
+`GPU_PHASE_TRIG=precise|consumer` is the corresponding low-level build
+variable. `consumer` is valid only with FP32 storage and does not imply
+`--use_fast_math`. After building on the target GPU, run
+`make test_cuda_consumer`.
 
 The default CUDA target is FP64 without `--use_fast_math`; it is the numerical
 reference build. Link-time optimization is enabled by default because it
 reduces production runtime without changing CUDA arithmetic. Set `GPU_LTO=0`
 to disable it; LTO and non-LTO objects use separate build directories. The
-`fp32`, `fp64`, `fp32_fast`, and `fp64_fast` Make targets
+`fp32`, `fp32_consumer`, `fp64`, `fp32_fast`, and `fp64_fast` Make targets
 select explicit profiles. FP32 stores diffraction-beam geometry and accumulated
 optical quantities in FP32. Visibility/topology tracing, optical paths,
-absorption, cancellation-prone polygon moments, and critical phase
-trigonometry remain FP64. Validate throughput profiles against CPU double and
-CUDA FP64 on representative convex, non-convex, fixed-orientation, and
-orientation-averaged cases before production use. Record `--version` output.
+absorption, cancellation-prone polygon moments, and phase construction remain
+FP64. The consumer profile evaluates only the final phase `sincos` pair in
+FP32; the precise FP32 profile evaluates it in FP64. Validate throughput
+profiles against CPU double and CUDA FP64 on representative convex,
+non-convex, fixed-orientation, and orientation-averaged cases before production
+use. Record `--version` output.
 After building, verify the selected host and CUDA profiles explicitly:
 
 ```bash
 gpu/bin/mbs_po_gpu_double --version  # must report fp64-diffraction-storage
 gpu/bin/mbs_po_gpu_float --version   # must report fp32-diffraction-storage
+gpu/bin/mbs_po_gpu_float_consumer --version  # phase-build-fp64 phase-trig-fp32
 ```
 
 The build now rejects CUDA host code without exactly one precision profile;
 `unknown-precision` is not an accepted production binary.
 
 For scientific reference and final archive calculations, use
-`mbs_po_gpu_double`. On consumer GPUs with weak FP64 hardware, start with
-`mbs_po_gpu_float`: it keeps visibility, topology, optical paths, absorption,
-polygon moments, and phase-sensitive operations in FP64 while using FP32 for
-the large diffraction storage and accumulation path. Use
-`mbs_po_gpu_float_fast` only after an application-specific FP64 comparison;
-fast transcendental approximations can change narrow interference features.
+`mbs_po_gpu_double`. On consumer GPUs with weak FP64 hardware, use
+`mbs_po_gpu_float` when phase trigonometry must remain FP64. Use
+`mbs_po_gpu_float_consumer` for calibrated production throughput: it retains
+FP64 geometry and phase construction but casts the completed phase to FP32 for
+`sincosf`. Keep `mbs_po_gpu_float_fast` as an experimental whole-kernel
+fast-math comparison; on the measured RTX 3080 Ti it was slower than the
+consumer profile.
 
 A representative RTX 3080 Ti check (concave absorbing hexagonal particle,
-`k_eq=20`, 192 SO(3) samples, `N_phi=288`, `N_theta=144`) measured median wall
-times of 10.98 s for precise FP64, 6.51 s for precise mixed FP32, and 7.01 s
-for FP32 fast math. Precise mixed FP32 was 1.69x faster, with global Mueller
-and M11 weighted-L2 errors of `9.05e-8` and `4.61e-8` relative to FP64. This is
-a selection example, not a universal tolerance guarantee; repeat it for the
-production particle and grid.
+`L=20 um`, 192 SO(3) samples, `N_phi=288`, `N_theta=144`) measured warmed median
+wall times of 8.56 s for FP64, 5.76 s for precise mixed FP32, and 3.25 s for
+consumer FP32. The consumer profile was 2.63x faster than FP64 and 1.77x faster
+than precise mixed FP32. Its global Mueller and M11 weighted-L2 errors relative
+to FP64 were `2.82e-7` and `2.73e-7`. Across additional convex, concave,
+absorbing, nonabsorbing, `L=5...500 um`, and 8--20-reflection probes, the
+largest side/back M11 L2 error was `8.4e-5`; a weak off-diagonal element reached
+`5.3e-3`. This is a selection example, not a universal tolerance guarantee;
+repeat it for the production particle and grid.
 The CUDA diffraction path selects its reduction automatically. Datacenter GPUs
 with strong FP64 hardware use warp-per-output beam reduction and its 3D-grid
 specialization. Consumer GPUs with a large FP32:FP64 throughput ratio use the

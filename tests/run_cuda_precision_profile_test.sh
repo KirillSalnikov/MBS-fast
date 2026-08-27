@@ -47,6 +47,28 @@ if grep -Fq -- '--use_fast_math' "$TMP/fp32"; then
     exit 1
 fi
 
+make -s -n -C "$ROOT/gpu" GPU_ARCH=70 fp32_consumer >"$TMP/fp32_consumer"
+grep -Fq -- '-DMBS_GPU_PHASE_FP32' "$TMP/fp32_consumer"
+grep -F -- '../src/main.cpp' "$TMP/fp32_consumer" \
+    | grep -Fq -- '-DMBS_GPU_PHASE_FP32'
+grep -Fq -- 'build/fp32_consumer_lto_sm70/obj' "$TMP/fp32_consumer"
+grep -Fq -- 'bin/mbs_po_gpu_float_consumer' "$TMP/fp32_consumer"
+if grep -Fq -- '--use_fast_math' "$TMP/fp32_consumer"; then
+    echo 'Consumer FP32 profile unexpectedly enables CUDA fast math' >&2
+    exit 1
+fi
+
+make -s -n -C "$ROOT" USE_CUDA=1 GPU_ARCH=70 GPU_PRECISION=fp32 \
+    GPU_PHASE_TRIG=consumer TARGET=bin/profile_test_fp32_consumer all \
+    >"$TMP/root_fp32_consumer"
+grep -Fq -- '-DMBS_GPU_PHASE_FP32' "$TMP/root_fp32_consumer"
+grep -Fq -- 'build/root_cuda/fp32_consumer_sm70/obj' \
+    "$TMP/root_fp32_consumer"
+if grep -Fq -- 'build/root_cuda/fp32_sm70/obj' "$TMP/root_fp32_consumer"; then
+    echo 'Root consumer profile unexpectedly reuses precise FP32 objects' >&2
+    exit 1
+fi
+
 dry_run fp32 1 >"$TMP/fp32_fast"
 grep -Fq -- '--use_fast_math' "$TMP/fp32_fast"
 grep -F -- '../src/main.cpp' "$TMP/fp32_fast" \
@@ -88,6 +110,16 @@ fi
 if make -s -n -C "$ROOT/gpu" GPU_FAST_MATH=2 clean \
         >"$TMP/invalid_fast_math" 2>&1; then
     echo 'Invalid GPU_FAST_MATH was accepted' >&2
+    exit 1
+fi
+if make -s -n -C "$ROOT/gpu" GPU_PHASE_TRIG=invalid clean \
+        >"$TMP/invalid_phase" 2>&1; then
+    echo 'Invalid GPU_PHASE_TRIG was accepted' >&2
+    exit 1
+fi
+if make -s -n -C "$ROOT/gpu" GPU_PRECISION=fp64 GPU_PHASE_TRIG=consumer clean \
+        >"$TMP/fp64_consumer" 2>&1; then
+    echo 'Consumer phase profile was accepted with FP64 storage' >&2
     exit 1
 fi
 if make -s -n -C "$ROOT/gpu" GPU_LTO=2 clean \

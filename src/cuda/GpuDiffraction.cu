@@ -18,6 +18,9 @@
 #if defined(MBS_GPU_FP32) && !defined(MBS_GPU_FLOAT)
 #define MBS_GPU_FLOAT 1
 #endif
+#if defined(MBS_GPU_PHASE_FP32) && !defined(MBS_GPU_FLOAT)
+#error "MBS_GPU_PHASE_FP32 requires FP32 diffraction storage"
+#endif
 #if (defined(MBS_GPU_FP32) && defined(MBS_GPU_FP64)) || \
     (!defined(MBS_GPU_FP32) && !defined(MBS_GPU_FP64))
 #error "CUDA diffraction requires exactly one of MBS_GPU_FP32 or MBS_GPU_FP64"
@@ -61,10 +64,16 @@ __device__ inline void gpu_sincos(GpuReal x, GpuReal *s, GpuReal *c)
 __device__ inline void gpu_sincos_phase(double x, GpuReal *s, GpuReal *c)
 {
 #ifdef MBS_GPU_FLOAT
+#ifdef MBS_GPU_PHASE_FP32
+    // The consumer profile keeps phase construction in FP64 but evaluates
+    // its final trigonometric pair on the much faster FP32 units.
+    sincosf((GpuReal)x, s, c);
+#else
     double sd, cd;
     sincos(x, &sd, &cd);
     *s = (GpuReal)sd;
     *c = (GpuReal)cd;
+#endif
 #else
     sincos(x, s, c);
 #endif

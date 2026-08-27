@@ -63,6 +63,7 @@ PATH=/usr/local/cuda/bin:$PATH make -C gpu -j
 
 # Explicit variants
 make -C gpu fp32      -j   # gpu/bin/mbs_po_gpu_float
+make -C gpu fp32_consumer -j # gpu/bin/mbs_po_gpu_float_consumer
 make -C gpu fp64      -j   # gpu/bin/mbs_po_gpu_double
 make -C gpu fp32_fast -j   # gpu/bin/mbs_po_gpu_float_fast
 make -C gpu fp64_fast -j   # gpu/bin/mbs_po_gpu_double_fast
@@ -80,41 +81,54 @@ compiler; changing the system-wide GCC alternative is not required.
 |---|---|---:|---:|---|
 | `make -C gpu` or `make -C gpu fp64` | `gpu/bin/mbs_po_gpu_double` | FP64 | no | Numerical reference and production default |
 | `make -C gpu fp32` | `gpu/bin/mbs_po_gpu_float` | FP32 | no | Calibrated FP32 throughput |
+| `make -C gpu fp32_consumer` | `gpu/bin/mbs_po_gpu_float_consumer` | FP32 | no | Consumer GPU throughput with FP32 phase trigonometry |
 | `make -C gpu fp32_fast` | `gpu/bin/mbs_po_gpu_float_fast` | FP32 | yes | Experimental fast math; benchmark and validate first |
 | `make -C gpu fp64_fast` | `gpu/bin/mbs_po_gpu_double_fast` | FP64 | yes | FP64 throughput after validation |
 | `make -C gpu double_debug` | `gpu/bin/mbs_po_gpu_double_debug` | FP64 | yes | Debug help and diagnostics |
 
+`GPU_PHASE_TRIG=precise|consumer` is the underlying build variable. The
+`consumer` value is accepted only with FP32 storage, uses a separate object
+directory, and never enables `--use_fast_math` implicitly. The supported
+shortcut is `make -C gpu fp32_consumer -j`; direct variable use is intended for
+packaging and CI. Run `make test_cuda_consumer` on the target GPU after build.
+
 FP32 applies to diffraction-beam storage, Jones sums, and Mueller output.
 Visibility/topology tracing, optical paths, absorption, cancellation-prone
-polygon moments, and critical phase trigonometry remain FP64. `--version`
-reports the storage, critical-phase, math, and target-architecture profile.
+polygon moments, and phase construction remain FP64. The precise FP32 binary
+also evaluates phase trigonometry in FP64. The consumer binary casts only the
+completed phase to FP32 for `sincosf`. `--version` reports both the phase-build
+and phase-trigonometry precision, the math profile, and target architecture.
 Verify every rebuilt binary before starting a queue:
 
 ```bash
 gpu/bin/mbs_po_gpu_double --version  # fp64-diffraction-storage ... precise-math
 gpu/bin/mbs_po_gpu_float --version   # fp32-diffraction-storage ... precise-math
+gpu/bin/mbs_po_gpu_float_consumer --version  # phase-build-fp64 phase-trig-fp32
 ```
 
 CUDA host compilation requires exactly one FP32/FP64 profile. A binary that
 reports `unknown-precision` is stale or was built outside the supported build
 profiles and must not be used for production calculations.
 
-On an RTX 3080 Ti, a representative non-convex test (`k_eq=20`, absorbing
+On an RTX 3080 Ti, a representative non-convex test (`L=20 um`, absorbing
 material, 192 symmetry-reduced SO(3) samples, `N_phi=288`, `N_theta=144`) gave
 the following median wall times over three runs:
 
 | Profile | Median time | Speed relative to FP64 | Global Mueller weighted L2 vs FP64 | M11 weighted L2 vs FP64 |
 |---|---:|---:|---:|---:|
-| Precise FP64 | 10.98 s | 1.00x | reference | reference |
-| Precise mixed FP32 | 6.51 s | 1.69x | `9.05e-8` | `4.61e-8` |
-| FP32 fast math | 7.01 s | 1.57x | `9.04e-8` | `4.58e-8` |
+| Precise FP64 | 8.56 s | 1.00x | reference | reference |
+| Precise mixed FP32 | 5.76 s | 1.49x | `5.68e-8` | `4.69e-8` |
+| Consumer FP32 phase trigonometry | 3.25 s | 2.63x | `2.82e-7` | `2.73e-7` |
 
-Thus precise mixed FP32 is the preferred starting profile on consumer Ampere
-hardware when this error is acceptable. Fast math is not selected
-automatically because it was slower in this check and has a larger
+Consumer FP32 is the preferred throughput profile on consumer Ampere hardware
+after calibration. It was 1.77x faster than precise mixed FP32. Across convex,
+concave, absorbing, nonabsorbing, `L=5...500 um`, and 8--20-reflection probes,
+the largest side/back M11 L2 error was `8.4e-5`; one weak off-diagonal element
+reached `5.3e-3`. Whole-kernel fast math is not selected automatically because
+it was about 9% slower than the consumer profile in this check and has a larger
 problem-dependent risk for narrow interference structure. FP64 remains the
-default and the required reference for a new particle, refractive index, size,
-or sampling regime.
+default and required reference for a new particle, refractive index, size, or
+sampling regime.
 
 The GPU split build enables CUDA diffraction by default. `--gpu` is accepted but optional. Use `--cpu` only when you deliberately want the CPU diffraction backend from a GPU-capable binary.
 
@@ -122,7 +136,7 @@ The Makefile detects the GPU compute capability with `nvidia-smi`. Override when
 
 ```bash
 # Ampere, e.g. RTX 3080 Ti: calibrated mixed FP32
-make -C gpu fp32 -j GPU_ARCH=86
+make -C gpu fp32_consumer -j GPU_ARCH=86
 
 # Ada, e.g. RTX 4070: start with precise mixed FP32
 make -C gpu fp32 -j GPU_ARCH=89

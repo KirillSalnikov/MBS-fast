@@ -26,6 +26,8 @@ jobs:
         run: apt-get update && apt-get install -y build-essential git python3
       - name: Build precise FP64 CUDA binary
         run: make -C gpu GPU_ARCH=70 GPU_PRECISION=double GPU_FAST_MATH=0 TARGET=bin/mbs_po_gpu_double -j2
+      - name: Build consumer FP32 CUDA binary
+        run: make -C gpu GPU_ARCH=70 GPU_PRECISION=float GPU_PHASE_TRIG=consumer GPU_FAST_MATH=0 TARGET=bin/mbs_po_gpu_float_consumer -j2
 
   fp64-runtime:
     if: github.event_name == 'workflow_dispatch'

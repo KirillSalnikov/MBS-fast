@@ -50,6 +50,7 @@ NVCCFLAGS ?= -O3 -std=c++11 -U_GNU_SOURCE -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=700
 override NVCCFLAGS += -ccbin $(CUDA_HOST_CXX) -include $(CUDA_HOST_COMPAT)
 GPU_PRECISION ?= double
 GPU_FAST_MATH ?= 0
+GPU_PHASE_TRIG ?= precise
 GPU_ARCH ?= $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.' | sed 's/[^0-9].*//')
 GPU_ARCH := $(if $(GPU_ARCH),$(GPU_ARCH),86)
 ifeq ($(filter float fp32 double fp64,$(GPU_PRECISION)),)
@@ -57,6 +58,9 @@ $(error GPU_PRECISION must be one of: fp32, float, fp64, double)
 endif
 ifneq ($(filter 0 1,$(GPU_FAST_MATH)),$(GPU_FAST_MATH))
 $(error GPU_FAST_MATH must be 0 or 1)
+endif
+ifeq ($(filter precise consumer,$(GPU_PHASE_TRIG)),)
+$(error GPU_PHASE_TRIG must be one of: precise, consumer)
 endif
 ifneq ($(filter float fp32,$(GPU_PRECISION)),)
 GPU_PRECISION_CANON := float
@@ -67,8 +71,19 @@ GPU_PRECISION_CANON := double
 GPU_PRECISION_LABEL := fp64
 GPU_PRECISION_DEFINES := -DMBS_GPU_FP64
 endif
+ifeq ($(GPU_PHASE_TRIG),consumer)
+ifneq ($(GPU_PRECISION_CANON),float)
+$(error GPU_PHASE_TRIG=consumer requires GPU_PRECISION=fp32 or float)
+endif
+GPU_PHASE_DEFINES := -DMBS_GPU_PHASE_FP32
+GPU_PHASE_SUFFIX := _consumer
+else
+GPU_PHASE_DEFINES :=
+GPU_PHASE_SUFFIX :=
+endif
 override NVCCFLAGS += $(GPU_PRECISION_DEFINES)
-CXXFLAGS += $(GPU_PRECISION_DEFINES) -DMBS_GPU_BUILD_ARCH=$(GPU_ARCH)
+override NVCCFLAGS += $(GPU_PHASE_DEFINES)
+CXXFLAGS += $(GPU_PRECISION_DEFINES) $(GPU_PHASE_DEFINES) -DMBS_GPU_BUILD_ARCH=$(GPU_ARCH)
 ifeq ($(GPU_FAST_MATH),1)
 override NVCCFLAGS += --use_fast_math
 CXXFLAGS += -DMBS_GPU_FAST_MATH
@@ -79,7 +94,7 @@ endif
 ifeq ($(USE_CUDA),1)
 CUDA_FAST_SUFFIX := $(if $(filter 1,$(GPU_FAST_MATH)),_fast,)
 CUDA_MPI_SUFFIX := $(if $(filter 1,$(USE_MPI)),_mpi,)
-ROOT_CUDA_OBJDIR ?= build/root_cuda/$(GPU_PRECISION_LABEL)$(CUDA_FAST_SUFFIX)$(CUDA_MPI_SUFFIX)_sm$(GPU_ARCH)/obj
+ROOT_CUDA_OBJDIR ?= build/root_cuda/$(GPU_PRECISION_LABEL)$(GPU_PHASE_SUFFIX)$(CUDA_FAST_SUFFIX)$(CUDA_MPI_SUFFIX)_sm$(GPU_ARCH)/obj
 OBJECTS = $(addprefix $(ROOT_CUDA_OBJDIR)/,$(SOURCES))
 else
 OBJECTS = $(SOURCES)
@@ -91,6 +106,7 @@ DEPS = $(OBJECTS:.o=.d)
 
 TARGET = bin/mbs_po
 TARGET_FLOAT = bin/mbs_po_float
+TARGET_FLOAT_CONSUMER = bin/mbs_po_float_consumer
 TARGET_FLOAT_FAST = bin/mbs_po_float_fast
 TARGET_DOUBLE = bin/mbs_po_double
 TARGET_DOUBLE_FAST = bin/mbs_po_double_fast
@@ -126,6 +142,9 @@ gpu:
 gpu_float:
 	$(MAKE) -C gpu float
 
+gpu_float_consumer:
+	$(MAKE) -C gpu float_consumer
+
 gpu_float_fast:
 	$(MAKE) -C gpu float_fast
 
@@ -136,6 +155,8 @@ gpu_double_fast:
 	$(MAKE) -C gpu double_fast
 
 gpu_fp32: gpu_float
+
+gpu_fp32_consumer: gpu_float_consumer
 
 gpu_fp64: gpu_double
 
@@ -216,12 +237,24 @@ test_cuda_build:
 	$(MAKE) -C gpu GPU_PRECISION=double GPU_FAST_MATH=0 \
 		TARGET=bin/mbs_po_gpu_double all
 
+test_cuda_consumer_build:
+	$(MAKE) -C gpu GPU_PRECISION=float GPU_PHASE_TRIG=consumer GPU_FAST_MATH=0 \
+		TARGET=bin/mbs_po_gpu_float_consumer all
+
 test_cuda_profiles:
 	tests/run_cuda_precision_profile_test.sh
 
 test_cuda: test_cuda_build cpu
 	MBS_CPU=$(CURDIR)/cpu/bin/mbs_po_mpi \
 		MBS_GPU=$(CURDIR)/gpu/bin/mbs_po_gpu_double \
+		tests/run_cuda_release_gate.sh
+
+test_cuda_consumer: test_cuda_consumer_build cpu
+	MBS_CPU=$(CURDIR)/cpu/bin/mbs_po_mpi \
+		MBS_GPU=$(CURDIR)/gpu/bin/mbs_po_gpu_float_consumer \
+		MBS_CUDA_L2_TOLERANCE=1e-5 \
+		MBS_CUDA_COMPACT_L2_TOLERANCE=1e-6 \
+		MBS_CUDA_ATOMIC_L2_TOLERANCE=1e-5 \
 		tests/run_cuda_release_gate.sh
 
 test_cuda_if_available:
@@ -253,7 +286,7 @@ $(TARGET): $(OBJECTS)
 	@echo "USE_MPI: $(USE_MPI)"
 ifeq ($(USE_CUDA),1)
 	@echo "GPU_PRECISION: $(GPU_PRECISION_LABEL) ($(GPU_PRECISION_CANON) storage)"
-	@echo "GPU_CRITICAL_PHASE: fp64"
+	@echo "GPU_PHASE_TRIG: $(GPU_PHASE_TRIG)"
 	@echo "GPU_FAST_MATH: $(GPU_FAST_MATH)"
 	@echo "GPU_ARCH: sm_$(GPU_ARCH)"
 	@echo "CUDA_OBJECTS: $(ROOT_CUDA_OBJDIR)"
@@ -290,7 +323,7 @@ clean:
 	find src/bigint -name '*.o' -delete 2>/dev/null; true
 	find src/bigint -name '*.d' -delete 2>/dev/null; true
 	rm -rf build/root_cuda
-	rm -f $(TARGET) $(TARGET_FLOAT) $(TARGET_FLOAT_FAST) $(TARGET_DOUBLE) $(TARGET_DOUBLE_FAST) $(FFT_PROBE) $(GPU_TRACE_PROBE)
+	rm -f $(TARGET) $(TARGET_FLOAT) $(TARGET_FLOAT_CONSUMER) $(TARGET_FLOAT_FAST) $(TARGET_DOUBLE) $(TARGET_DOUBLE_FAST) $(FFT_PROBE) $(GPU_TRACE_PROBE)
 
 clean_cuda_objects:
 	find $(SRC_DIR)/cuda -name '*.o' -delete
@@ -298,12 +331,17 @@ clean_cuda_objects:
 
 cuda_float:
 	$(MAKE) clean_cuda_objects
-	$(MAKE) USE_CUDA=1 GPU_PRECISION=float TARGET=$(TARGET_FLOAT) all
+	$(MAKE) USE_CUDA=1 GPU_PRECISION=float GPU_PHASE_TRIG=precise TARGET=$(TARGET_FLOAT) all
+	$(MAKE) clean_cuda_objects
+
+cuda_float_consumer:
+	$(MAKE) clean_cuda_objects
+	$(MAKE) USE_CUDA=1 GPU_PRECISION=float GPU_PHASE_TRIG=consumer TARGET=$(TARGET_FLOAT_CONSUMER) all
 	$(MAKE) clean_cuda_objects
 
 cuda_float_fast:
 	$(MAKE) clean_cuda_objects
-	$(MAKE) USE_CUDA=1 GPU_PRECISION=float GPU_FAST_MATH=1 TARGET=$(TARGET_FLOAT_FAST) all
+	$(MAKE) USE_CUDA=1 GPU_PRECISION=float GPU_PHASE_TRIG=precise GPU_FAST_MATH=1 TARGET=$(TARGET_FLOAT_FAST) all
 	$(MAKE) clean_cuda_objects
 
 cuda_double:
@@ -318,6 +356,7 @@ cuda_double_fast:
 
 cuda_variants:
 	$(MAKE) cuda_float
+	$(MAKE) cuda_float_consumer
 	$(MAKE) cuda_double
 	$(MAKE) cuda_float_fast
 	$(MAKE) cuda_double_fast
@@ -350,12 +389,12 @@ gpu_quaternion_probe:
 	@false
 endif
 
-.PHONY: all cuda_check cpu gpu gpu_float gpu_float_fast gpu_double gpu_double_fast \
-	gpu_fp32 gpu_fp64 gpu_fp32_fast gpu_fp64_fast split docs \
+.PHONY: all cuda_check cpu gpu gpu_float gpu_float_consumer gpu_float_fast gpu_double gpu_double_fast \
+	gpu_fp32 gpu_fp32_consumer gpu_fp64 gpu_fp32_fast gpu_fp64_fast split docs \
 	test test_cli test_release test_adaptive test_regression test_so3 test_poles \
 	test_beam_topology test_coherence test_forward_depth test_concave_visibility test_warnings test_cuda_build test_cuda \
-	test_cuda_profiles test_cuda_if_available test_sanitize clean \
-	clean_cuda_objects cuda_float cuda_float_fast cuda_double cuda_double_fast cuda_variants \
+	test_cuda_profiles test_cuda_consumer_build test_cuda_consumer test_cuda_if_available test_sanitize clean \
+	clean_cuda_objects cuda_float cuda_float_consumer cuda_float_fast cuda_double cuda_double_fast cuda_variants \
 	fft_probe gpu_trace_probe gpu_quaternion_probe
 
 -include $(DEPS)
