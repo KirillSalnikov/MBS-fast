@@ -6,11 +6,13 @@
 #include <iostream>
 #include <cstdlib>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <cstdint>
+#include <limits>
 #include <mutex>
 #include <utility>
 #include <vector>
@@ -68,21 +70,27 @@ struct GpuTraceInflightBeamState
     size_t limit = GpuTraceConfiguredInflightBeamLimit();
 };
 
-GpuTraceInflightBeamState &GpuTraceInflightBeams()
+constexpr int GPU_TRACE_MAX_DEVICES = 64;
+
+GpuTraceInflightBeamState &GpuTraceInflightBeams(int device)
 {
-    static GpuTraceInflightBeamState state;
-    return state;
+    static std::array<GpuTraceInflightBeamState,
+                      GPU_TRACE_MAX_DEVICES> states;
+    const int index = std::max(0, std::min(device,
+                                           GPU_TRACE_MAX_DEVICES - 1));
+    return states[(size_t)index];
 }
 
 class GpuTraceInflightBeamGuard
 {
 public:
-    explicit GpuTraceInflightBeamGuard(size_t requested)
-        : m_count(0)
+    GpuTraceInflightBeamGuard(size_t requested, int device)
+        : m_state(nullptr), m_count(0)
     {
         if (requested == 0)
             return;
-        GpuTraceInflightBeamState &state = GpuTraceInflightBeams();
+        GpuTraceInflightBeamState &state = GpuTraceInflightBeams(device);
+        m_state = &state;
         std::unique_lock<std::mutex> lock(state.mutex);
         m_count = std::min(requested, state.limit);
         state.available.wait(lock, [&state, this]() {
@@ -96,7 +104,7 @@ public:
     {
         if (m_count == 0)
             return;
-        GpuTraceInflightBeamState &state = GpuTraceInflightBeams();
+        GpuTraceInflightBeamState &state = *m_state;
         {
             std::lock_guard<std::mutex> lock(state.mutex);
             state.active -= m_count;
@@ -109,12 +117,13 @@ public:
         const GpuTraceInflightBeamGuard &) = delete;
 
 private:
+    GpuTraceInflightBeamState *m_state;
     size_t m_count;
 };
 
-size_t GpuTraceReduceInflightBeamLimit()
+size_t GpuTraceReduceInflightBeamLimit(int device)
 {
-    GpuTraceInflightBeamState &state = GpuTraceInflightBeams();
+    GpuTraceInflightBeamState &state = GpuTraceInflightBeams(device);
     size_t reduced = 0;
     {
         std::lock_guard<std::mutex> lock(state.mutex);
@@ -125,43 +134,56 @@ size_t GpuTraceReduceInflightBeamLimit()
     return reduced;
 }
 
-std::atomic<int> &GpuTraceBatchBeamLimitState()
+int GpuTraceDefaultBatchBeamLimit()
 {
-    static std::atomic<int> limit([]() {
-        const char *value = std::getenv("MBS_GPU_TRACE_BATCH_BEAMS");
-        if (value && *value)
-        {
-            char *end = nullptr;
-            const long parsed = std::strtol(value, &end, 10);
-            if (end && *end == '\0' && parsed >= 1)
-                return static_cast<int>(std::min<unsigned long long>(
-                    static_cast<unsigned long long>(parsed),
-                    std::min<unsigned long long>(
-                        16384, GpuTraceConfiguredInflightBeamLimit())));
-        }
+    const char *value = std::getenv("MBS_GPU_TRACE_BATCH_BEAMS");
+    if (value && *value)
+    {
+        char *end = nullptr;
+        const long parsed = std::strtol(value, &end, 10);
+        if (end && *end == '\0' && parsed >= 1)
+            return static_cast<int>(std::min<unsigned long long>(
+                static_cast<unsigned long long>(parsed),
+                std::min<unsigned long long>(
+                    16384, GpuTraceConfiguredInflightBeamLimit())));
+    }
 
-        const int workers = GpuTraceWorkerCount();
-        // Each CUDA grid reserves per-thread stack backing. Keep the total
-        // number of simultaneously submitted blocks bounded when tracing
-        // orientations from several OpenMP workers. Complex non-convex
-        // particles can exhaust CUDA kernel-stack backing well before global
-        // VRAM looks full. A 512-beam process-wide budget remained stable on
-        // a 12 GiB consumer GPU with eight concurrent tracing workers.
-        return std::max(64, (512 + workers - 1) / workers);
-    }());
-    return limit;
+    const int devices = std::max(1, GpuTraceWorkerDeviceCount());
+    const int workers = (GpuTraceWorkerCount() + devices - 1) / devices;
+    return std::max(64, (512 + workers - 1) / workers);
+}
+
+struct GpuTraceBatchBeamLimitRegistry
+{
+    std::array<std::atomic<int>, GPU_TRACE_MAX_DEVICES> limits;
+
+    GpuTraceBatchBeamLimitRegistry()
+    {
+        const int initial = GpuTraceDefaultBatchBeamLimit();
+        for (std::atomic<int> &limit : limits)
+            limit.store(initial, std::memory_order_relaxed);
+    }
+};
+
+std::atomic<int> &GpuTraceBatchBeamLimitState(int device)
+{
+    static GpuTraceBatchBeamLimitRegistry registry;
+    const int index = std::max(0, std::min(device,
+                                           GPU_TRACE_MAX_DEVICES - 1));
+    return registry.limits[(size_t)index];
 }
 
 int GpuTraceBatchBeamLimit()
 {
-    return GpuTraceBatchBeamLimitState().load(std::memory_order_relaxed);
+    const int device = GpuTraceBindWorkerDevice();
+    return GpuTraceBatchBeamLimitState(device).load(std::memory_order_relaxed);
 }
 
-int GpuTraceReduceBatchBeamLimit(size_t failedBatchSize)
+int GpuTraceReduceBatchBeamLimit(size_t failedBatchSize, int device)
 {
     const int reduced = static_cast<int>(
         std::max<size_t>(32, failedBatchSize / 2));
-    std::atomic<int> &limit = GpuTraceBatchBeamLimitState();
+    std::atomic<int> &limit = GpuTraceBatchBeamLimitState(device);
     int current = limit.load(std::memory_order_relaxed);
     while (reduced < current
            && !limit.compare_exchange_weak(current, reduced,
@@ -176,9 +198,12 @@ bool GpuTracePrepareBeamFacetBatchAdaptive(
     double geometryScale,
     const std::vector<GpuTraceBeamFacets> &items)
 {
+    const int device = GpuTraceBindWorkerDevice();
+    if (device < 0)
+        return false;
     bool prepared = false;
     {
-        GpuTraceInflightBeamGuard inflightGuard(items.size());
+        GpuTraceInflightBeamGuard inflightGuard(items.size(), device);
         prepared = GpuTracePrepareBeamFacetBatch(
             facets, geometryScale, items);
     }
@@ -187,8 +212,9 @@ bool GpuTracePrepareBeamFacetBatchAdaptive(
     if (!GpuTraceLastFailureWasOutOfMemory())
         return false;
 
-    const int reducedLimit = GpuTraceReduceBatchBeamLimit(items.size());
-    const size_t reducedInflightLimit = GpuTraceReduceInflightBeamLimit();
+    const int reducedLimit = GpuTraceReduceBatchBeamLimit(items.size(), device);
+    const size_t reducedInflightLimit =
+        GpuTraceReduceInflightBeamLimit(device);
     static std::atomic<int> lastWarnedLimit(0);
     const int previousWarning = lastWarnedLimit.exchange(
         reducedLimit, std::memory_order_relaxed);
@@ -196,7 +222,8 @@ bool GpuTracePrepareBeamFacetBatchAdaptive(
     {
         std::cerr
             << "WARNING: CUDA trace batch exhausted device memory; "
-            << "retrying in smaller pieces and reducing subsequent batches to "
+            << "on device " << device
+            << "; retrying in smaller pieces and reducing subsequent batches to "
             << reducedLimit << " beams and the process-wide in-flight budget to "
             << reducedInflightLimit << " beams."
             << std::endl;
@@ -225,6 +252,24 @@ bool GpuTraceAllowOpenMP()
 bool GpuTraceVerifySort()
 {
     const char *value = std::getenv("MBS_GPU_TRACE_VERIFY_SORT");
+    return value && value[0] == '1' && value[1] == '\0';
+}
+
+bool GpuTraceVerifyExactHit()
+{
+    const char *value = std::getenv("MBS_GPU_TRACE_VERIFY_EXACT");
+    return value && value[0] == '1' && value[1] == '\0';
+}
+
+bool GpuTracePartitionEnabled()
+{
+    const char *value = std::getenv("MBS_GPU_TRACE_PARTITION");
+    return value && value[0] == '1' && value[1] == '\0';
+}
+
+bool GpuTraceLevelQueueEnabled()
+{
+    const char *value = std::getenv("MBS_GPU_TRACE_LEVEL_QUEUE");
     return value && value[0] == '1' && value[1] == '\0';
 }
 
@@ -1292,6 +1337,15 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
     size_t traceSortCacheGlobalHits = 0;
     size_t traceSortCacheBatchHits = 0;
     size_t traceSortCacheCandidatesSaved = 0;
+    size_t traceGpuExactEvaluated = 0;
+    size_t traceGpuExactHits = 0;
+    size_t traceGpuExactVerified = 0;
+    size_t traceGpuExactMismatches = 0;
+    size_t traceGpuPartitionsPrepared = 0;
+    size_t traceGpuPartitionOverflows = 0;
+    size_t traceGpuLevelBatches = 0;
+    size_t traceGpuLevelTransitions = 0;
+    size_t traceGpuLevelPeakWidth = 0;
 #endif
     double traceSelectTime = 0.0;
     size_t traceSelectTimingCalls = 0;
@@ -1348,12 +1402,24 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
                         &traceOutgoingTime,
                         &traceOutgoingTimingCalls,
                         &traceOutgoingTimingSamples,
+#ifdef USE_CUDA
+                        &traceGpuExactEvaluated,
+                        &traceGpuExactHits,
+                        &traceGpuExactVerified,
+                        &traceGpuExactMismatches,
+                        &traceGpuPartitionsPrepared,
+                        &traceGpuPartitionOverflows,
+#endif
                         &traceNow,
                         &traceSeconds,
                         &traceTimingSample](Beam &beam,
                                       const IntArray *readyFacetIds,
                                       const std::vector<unsigned char> *mayIntersect,
-                                      bool gpuPrefiltered) -> bool
+                                      bool gpuPrefiltered
+#ifdef USE_CUDA
+                                      , const GpuTraceExactHit *exactHit
+#endif
+                                      ) -> bool
     {
         if (!IsTerminalAct(beam)) // REF, OPT: перенести проверку во все места, где пучок закидывается в дерево, чтобы пучки заранее не закидывались в него
         {
@@ -1378,7 +1444,164 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
 
             bool isDivided = false;
 
-            for (unsigned i = 0; (i < facetIds->size) && !isDivided; ++i)// OPT: move this loop to SplitBeamByFacet
+            size_t firstCandidate = 0;
+#ifdef USE_CUDA
+            const GpuTraceExactHit *acceptedExactHit = exactHit;
+            if (acceptedExactHit != nullptr && acceptedExactHit->evaluated)
+            {
+                ++traceGpuExactEvaluated;
+                bool exactMatchesCpu = true;
+                if (GpuTraceVerifyExactHit())
+                {
+                    ++traceGpuExactVerified;
+                    int cpuFacetId = -1;
+                    Polygon cpuIntersection;
+                    for (size_t candidate = 0;
+                         candidate < facetIds->size; ++candidate)
+                    {
+                        if (mayIntersect != nullptr
+                            && !mayIntersect->empty()
+                            && !(*mayIntersect)[candidate])
+                            continue;
+                        Polygon candidateIntersection;
+                        Intersect(facetIds->arr[candidate], beam,
+                                  candidateIntersection);
+                        if (candidateIntersection.nVertices
+                            < MIN_VERTEX_NUM)
+                            continue;
+                        cpuFacetId = facetIds->arr[candidate];
+                        cpuIntersection = candidateIntersection;
+                        break;
+                    }
+                    const bool cpuHasHit = cpuFacetId >= 0;
+                    const bool gpuHasHit = acceptedExactHit->facetId >= 0;
+                    exactMatchesCpu = cpuHasHit == gpuHasHit;
+                    double exactCenterError = 0.0;
+                    double exactAreaRelativeError = 0.0;
+                    if (exactMatchesCpu && cpuHasHit)
+                    {
+                        const Polygon &gpuIntersection =
+                            acceptedExactHit->intersection;
+                        const double areaScale = std::max(
+                            std::max(cpuIntersection.Area(),
+                                     gpuIntersection.Area()),
+                            m_geometryScale*m_geometryScale*1e-30);
+                        const Point3f cpuCenter = cpuIntersection.Center();
+                        const Point3f gpuCenter = gpuIntersection.Center();
+                        const double centerError =
+                            Length(cpuCenter - gpuCenter);
+                        const double areaError = std::fabs(
+                            cpuIntersection.Area()
+                            - gpuIntersection.Area());
+                        exactCenterError = centerError;
+                        exactAreaRelativeError = areaError/areaScale;
+                        exactMatchesCpu =
+                            cpuFacetId == acceptedExactHit->facetId
+                            && acceptedExactHit->candidateIndex >= 0
+                            && acceptedExactHit->intersection.nVertices
+                               >= MIN_VERTEX_NUM
+                            && centerError
+                               <= 1e-9*std::max(m_geometryScale, 1e-30)
+                            && areaError <= std::max(
+                                   1e-9*areaScale,
+                                   1e-12*m_geometryScale*m_geometryScale);
+                    }
+                    if (!exactMatchesCpu)
+                    {
+                        ++traceGpuExactMismatches;
+                        static std::atomic<size_t> reportedMismatches(0);
+                        const size_t reportIndex = reportedMismatches.fetch_add(
+                            1, std::memory_order_relaxed);
+                        if (reportIndex < 16)
+                        {
+                            std::cout
+                                << "Trace GPU exact-hit mismatch: cpu_facet="
+                                << cpuFacetId << " gpu_facet="
+                                << acceptedExactHit->facetId
+                                << " gpu_candidate="
+                                << acceptedExactHit->candidateIndex
+                                << " cpu_vertices="
+                                << cpuIntersection.nVertices
+                                << " gpu_vertices="
+                                << acceptedExactHit->intersection.nVertices
+                                << " center_error=" << exactCenterError
+                                << " area_relative_error="
+                                << exactAreaRelativeError
+                                << std::endl;
+                        }
+                        if (reportIndex == 0)
+                        {
+                            std::cout << "Trace GPU exact-hit beam: last_facet="
+                                      << beam.lastFacetId << " location="
+                                      << static_cast<int>(beam.location)
+                                      << " direction=" << beam.direction
+                                      << " vertices=" << beam.nVertices
+                                      << std::endl;
+                            for (int vertex = 0;
+                                 vertex < beam.nVertices; ++vertex)
+                                std::cout << "  beam[" << vertex << "]="
+                                          << beam.arr[vertex] << std::endl;
+                            for (int vertex = 0;
+                                 vertex < cpuIntersection.nVertices; ++vertex)
+                                std::cout << "  cpu[" << vertex << "]="
+                                          << cpuIntersection.arr[vertex]
+                                          << std::endl;
+                            for (int vertex = 0;
+                                 vertex < acceptedExactHit->intersection.nVertices;
+                                 ++vertex)
+                                std::cout << "  gpu[" << vertex << "]="
+                                          << acceptedExactHit->intersection.arr[vertex]
+                                          << std::endl;
+                        }
+                    }
+                }
+                if (!exactMatchesCpu)
+                    acceptedExactHit = nullptr;
+            }
+
+            if (acceptedExactHit != nullptr && acceptedExactHit->evaluated)
+            {
+                firstCandidate = facetIds->size;
+                if (acceptedExactHit->facetId >= 0
+                    && acceptedExactHit->candidateIndex >= 0
+                    && static_cast<size_t>(acceptedExactHit->candidateIndex)
+                       < facetIds->size)
+                {
+                    ++traceGpuExactHits;
+                    if (acceptedExactHit->partitionEvaluated)
+                        ++traceGpuPartitionsPrepared;
+                    if (acceptedExactHit->partitionOverflow)
+                        ++traceGpuPartitionOverflows;
+                    const size_t candidate = static_cast<size_t>(
+                        acceptedExactHit->candidateIndex);
+                    firstCandidate = candidate + 1;
+                    if (m_tracePrefilterStats)
+                    {
+                        traceCandidateTests += candidate + 1;
+                        ++traceIntersectCalls;
+                    }
+                    isDivided = SplitBeamByFacet(
+                        acceptedExactHit->intersection,
+                        acceptedExactHit->facetId, beam, ok,
+                        acceptedExactHit);
+                    if (!ok)
+                        return false;
+                    if (!isDivided && beam.location == Location::In
+                        && IsTracePruned(beam))
+                    {
+                        beam.nVertices = 0;
+                        firstCandidate = facetIds->size;
+                    }
+                }
+                else if (m_tracePrefilterStats)
+                {
+                    traceCandidateTests += facetIds->size;
+                }
+            }
+#endif
+
+            for (size_t i = firstCandidate;
+                 (i < facetIds->size) && !isDivided; ++i)// OPT: move this loop to SplitBeamByFacet
             {
                 if (m_tracePrefilterStats)
                     ++traceCandidateTests;
@@ -1552,6 +1775,7 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
         bool sortedOnGpu = false;
         bool sortedFromCache = false;
         bool prefilteredOnGpu = false;
+        GpuTraceExactHit exactHit;
         size_t originalFacetCount = 0;
         size_t sortRepresentative = static_cast<size_t>(-1);
     };
@@ -1599,6 +1823,8 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
     std::map<TraceSortKey, std::vector<TraceSortCacheEntry>> traceSortCache;
     std::map<TraceSortKey, TraceSortRepresentatives>
         traceBatchSortRepresentatives;
+    const bool traceLevelQueueEnabled = GpuTraceLevelQueueEnabled();
+    int traceCurrentLevel = -1;
 #endif
 //#ifdef _DEBUG // DEB
 //    ofstream logfile("logscat.txt", ios::out);
@@ -1619,8 +1845,67 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
                 traceGpuItems.reserve(batchLimit);
             }
             size_t batchSize = 0;
+            if (traceLevelQueueEnabled)
+            {
+                auto advanceLevel = [&]() -> bool
+                {
+                    int nextLevel = std::numeric_limits<int>::max();
+                    size_t levelWidth = 0;
+                    for (const Beam &queuedBeam : m_beamTree)
+                        nextLevel = std::min(nextLevel, queuedBeam.nActs);
+                    if (nextLevel == std::numeric_limits<int>::max())
+                        return false;
+                    traceCurrentLevel = nextLevel;
+                    ++traceGpuLevelTransitions;
+                    for (const Beam &queuedBeam : m_beamTree)
+                    {
+                        if (queuedBeam.nActs == traceCurrentLevel)
+                            ++levelWidth;
+                    }
+                    traceGpuLevelPeakWidth = std::max(
+                        traceGpuLevelPeakWidth, levelWidth);
+                    return true;
+                };
+                if (traceCurrentLevel < 0)
+                    advanceLevel();
+            }
             while (m_treeSize != 0 && batchSize < batchLimit)
             {
+                size_t selectedIndex = m_beamTree.size() - 1;
+                if (traceLevelQueueEnabled)
+                {
+                    bool found = false;
+                    for (size_t index = m_beamTree.size(); index-- > 0; )
+                    {
+                        if (m_beamTree[index].nActs == traceCurrentLevel)
+                        {
+                            selectedIndex = index;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found)
+                    {
+                        if (batchSize != 0)
+                            break;
+                        int nextLevel = std::numeric_limits<int>::max();
+                        size_t levelWidth = 0;
+                        for (const Beam &queuedBeam : m_beamTree)
+                            nextLevel = std::min(nextLevel,
+                                                 queuedBeam.nActs);
+                        if (nextLevel == std::numeric_limits<int>::max()
+                            || nextLevel == traceCurrentLevel)
+                            break;
+                        traceCurrentLevel = nextLevel;
+                        ++traceGpuLevelTransitions;
+                        for (const Beam &queuedBeam : m_beamTree)
+                            if (queuedBeam.nActs == traceCurrentLevel)
+                                ++levelWidth;
+                        traceGpuLevelPeakWidth = std::max(
+                            traceGpuLevelPeakWidth, levelWidth);
+                        continue;
+                    }
+                }
                 if (m_traceMaxBeams > 0 && ++processedBeams > m_traceMaxBeams)
                 {
                     m_traceCutoffStatistics->configuredBeamLimitHits.fetch_add(
@@ -1637,9 +1922,12 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
                 item.sortedOnGpu = false;
                 item.sortedFromCache = false;
                 item.prefilteredOnGpu = false;
+                item.exactHit.Reset();
                 item.originalFacetCount = 0;
                 item.sortRepresentative = static_cast<size_t>(-1);
-                item.beam = std::move(m_beamTree.back());
+                item.beam = std::move(m_beamTree[selectedIndex]);
+                if (selectedIndex + 1 != m_beamTree.size())
+                    m_beamTree[selectedIndex] = std::move(m_beamTree.back());
                 m_beamTree.pop_back();
                 m_treeSize = (int)m_beamTree.size();
                 if (!IsTerminalAct(item.beam)
@@ -1662,6 +1950,8 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
                     item.originalFacetCount = item.facetIds.size;
                 }
             }
+            if (traceLevelQueueEnabled && batchSize != 0)
+                ++traceGpuLevelBatches;
             if (m_tracePrefilterStats)
             {
                 ++traceBatchCalls;
@@ -1816,6 +2106,7 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
                     item.facetIds = &batchItem.facetIds;
                     item.mayIntersect = &batchItem.mayIntersect;
                     item.sortedOnGpu = &batchItem.sortedOnGpu;
+                    item.exactHit = &batchItem.exactHit;
                     traceGpuItems.push_back(item);
                     traceGpuBatchIndices.push_back(i);
                     if (traceSortCacheEnabled || GpuTraceVerifySort())
@@ -2077,7 +2368,8 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
                 if (!processBeam(batchItem.beam,
                                  batchItem.hasFacetIds ? &batchItem.facetIds : nullptr,
                                  batchItem.mayIntersect.empty() ? nullptr : &batchItem.mayIntersect,
-                                 batchItem.prefilteredOnGpu))
+                                 batchItem.prefilteredOnGpu,
+                                 &batchItem.exactHit))
                     return false;
             }
             if (m_tracePrefilterStats)
@@ -2105,7 +2397,11 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
         if (beam.id == 171)
             int ffgf = 0;
 #endif
-        if (!processBeam(beam, nullptr, nullptr, false))
+        if (!processBeam(beam, nullptr, nullptr, false
+#ifdef USE_CUDA
+                         , nullptr
+#endif
+                         ))
             return false;
     }
 
@@ -2226,6 +2522,29 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
                       << traceGpuSkipFlagsVerified
                       << " skip_false_negatives="
                       << traceGpuSkipFalseNegatives
+                      << std::endl;
+        }
+        std::cout << "Trace GPU exact-hit stats: evaluated="
+                  << traceGpuExactEvaluated
+                  << " hits=" << traceGpuExactHits
+                  << " verified=" << traceGpuExactVerified
+                  << " mismatches=" << traceGpuExactMismatches
+                  << std::endl;
+        if (GpuTracePartitionEnabled())
+        {
+            std::cout << "Trace GPU partition stats: prepared="
+                      << traceGpuPartitionsPrepared
+                      << " overflow=" << traceGpuPartitionOverflows
+                      << " exact_hits_without_partition="
+                      << (traceGpuExactHits - traceGpuPartitionsPrepared)
+                      << std::endl;
+        }
+        if (traceLevelQueueEnabled)
+        {
+            std::cout << "Trace GPU level-queue stats: batches="
+                      << traceGpuLevelBatches
+                      << " transitions=" << traceGpuLevelTransitions
+                      << " peak_width=" << traceGpuLevelPeakWidth
                       << std::endl;
         }
 #endif
@@ -2587,16 +2906,189 @@ bool ScatteringNonConvex::PushBeamToTree(Beam &beam, const Beam &oldBeam,
 }
 
 bool ScatteringNonConvex::SplitBeamByFacet(const Polygon &intersection,
-                                           int facetId, Beam &beam, bool &ok)
+                                           int facetId, Beam &beam, bool &ok
+#ifdef USE_CUDA
+                                           , const GpuTraceExactHit *preparedHit
+#endif
+                                           )
 {
     auto newId = RecomputeTrackId(beam.id, facetId);
     Facet &facet = m_facets[facetId];
 
     m_polygonBuffer.Clear();
     Polygon reachedIntersection;
-    const bool cutParent = CutBeamByFacet(intersection, facetId, beam,
-                                          reachedIntersection,
-                                          m_polygonBuffer);
+    bool cutParent = false;
+#ifdef USE_CUDA
+    const bool hasPreparedPartition = preparedHit != nullptr
+        && preparedHit->partitionEvaluated
+        && !preparedHit->partitionOverflow
+        && preparedHit->facetId == facetId
+        && preparedHit->intersection.nVertices >= MIN_VERTEX_NUM
+        && preparedHit->reachedIntersection.nVertices >= MIN_VERTEX_NUM;
+    const bool usePreparedPartition = hasPreparedPartition
+        && preparedHit->remaining.size() <= 1;
+    if (hasPreparedPartition && GpuTraceVerifyExactHit())
+    {
+        const Polygon gpuReached = preparedHit->reachedIntersection;
+        std::vector<double> gpuRemainingAreas;
+        gpuRemainingAreas.reserve(preparedHit->remaining.size());
+        double gpuRemainingArea = 0.0;
+        for (const Polygon &polygon : preparedHit->remaining)
+        {
+            const double area = polygon.Area();
+            gpuRemainingAreas.push_back(area);
+            gpuRemainingArea += area;
+        }
+        const bool gpuCutParent = !(
+            beam.location == Location::In
+            && m_facets[beam.lastFacetId].isVisibleIn);
+        if (!gpuCutParent)
+        {
+            gpuRemainingAreas.clear();
+            gpuRemainingArea = 0.0;
+        }
+        cutParent = CutBeamByFacet(intersection, facetId, beam,
+                                   reachedIntersection,
+                                   m_polygonBuffer);
+
+        std::vector<double> cpuRemainingAreas;
+        cpuRemainingAreas.reserve(m_polygonBuffer.size);
+        double cpuRemainingArea = 0.0;
+        for (size_t index = 0; index < m_polygonBuffer.size; ++index)
+        {
+            const double area = m_polygonBuffer.arr[index].Area();
+            cpuRemainingAreas.push_back(area);
+            cpuRemainingArea += area;
+        }
+        std::sort(gpuRemainingAreas.begin(), gpuRemainingAreas.end());
+        std::sort(cpuRemainingAreas.begin(), cpuRemainingAreas.end());
+        const double sourceArea = beam.Area();
+        const double areaScale = std::max(
+            sourceArea, std::max(gpuRemainingArea, cpuRemainingArea));
+        const double areaTolerance = std::max(
+            1024.0*geometry_area_tolerance(m_geometryScale),
+            1.0e-9*areaScale);
+        const double centerTolerance =
+            1.0e-9*std::max(m_geometryScale, 1.0e-30);
+        const double remainingAreaError = std::fabs(
+            gpuRemainingArea - cpuRemainingArea);
+        const double reachedAreaError = std::fabs(
+            gpuReached.Area() - reachedIntersection.Area());
+        const double reachedCenterError = Length(
+            gpuReached.Center() - reachedIntersection.Center());
+        double maximumPartAreaError = 0.0;
+        bool partitionMatches = gpuCutParent == cutParent
+            && gpuRemainingAreas.size() == cpuRemainingAreas.size()
+            && remainingAreaError <= areaTolerance
+            && reachedAreaError <= areaTolerance
+            && reachedCenterError <= centerTolerance;
+        if (partitionMatches)
+        {
+            for (size_t index = 0; index < gpuRemainingAreas.size(); ++index)
+            {
+                const double partAreaError = std::fabs(
+                    gpuRemainingAreas[index] - cpuRemainingAreas[index]);
+                maximumPartAreaError = std::max(
+                    maximumPartAreaError, partAreaError);
+                if (partAreaError > areaTolerance)
+                {
+                    partitionMatches = false;
+                    break;
+                }
+            }
+        }
+        if (!partitionMatches)
+        {
+            static std::atomic<size_t> reportedPartitionMismatches(0);
+            const size_t reportIndex =
+                reportedPartitionMismatches.fetch_add(
+                    1, std::memory_order_relaxed);
+            if (reportIndex < 16)
+            {
+                std::cout
+                    << "Trace GPU partition mismatch: facet=" << facetId
+                    << " gpu_parts=" << gpuRemainingAreas.size()
+                    << " cpu_parts=" << cpuRemainingAreas.size()
+                    << " gpu_remaining_area=" << gpuRemainingArea
+                    << " cpu_remaining_area=" << cpuRemainingArea
+                    << " gpu_overlap_area="
+                    << preparedHit->partitionOverlapArea
+                    << " cpu_overlap_area="
+                    << sourceArea - cpuRemainingArea
+                    << " remaining_area_error=" << remainingAreaError
+                    << " reached_area_error=" << reachedAreaError
+                    << " reached_center_error=" << reachedCenterError
+                    << " max_part_area_error=" << maximumPartAreaError
+                    << " area_tolerance=" << areaTolerance
+                    << " center_tolerance=" << centerTolerance
+                    << std::endl;
+            }
+        }
+        // Verification deliberately keeps the independently computed CPU
+        // partition as the physical output.
+    }
+    else if (usePreparedPartition)
+    {
+        reachedIntersection = preparedHit->reachedIntersection;
+        double remainingArea = 0.0;
+        bool validPartition = std::isfinite(
+            preparedHit->partitionOverlapArea)
+            && preparedHit->partitionOverlapArea >= 0.0
+            && preparedHit->remaining.size() <= 20;
+        for (const Polygon &polygon : preparedHit->remaining)
+        {
+            if (polygon.nVertices < MIN_VERTEX_NUM
+                || polygon.nVertices > 20)
+            {
+                validPartition = false;
+                break;
+            }
+            const double area = polygon.Area();
+            if (!std::isfinite(area))
+            {
+                validPartition = false;
+                break;
+            }
+            remainingArea += area;
+        }
+        const double sourceArea = beam.Area();
+        const double relativeScale = std::max(
+            sourceArea, std::max(remainingArea,
+                                 preparedHit->partitionOverlapArea));
+        const double areaTolerance = std::max(
+            1024.0*geometry_area_tolerance(m_geometryScale),
+            1.0e-9*relativeScale);
+        validPartition = validPartition
+            && std::fabs(sourceArea - remainingArea
+                         - preparedHit->partitionOverlapArea)
+               <= areaTolerance;
+        if (validPartition)
+        {
+            for (const Polygon &polygon : preparedHit->remaining)
+                m_polygonBuffer.Push(polygon);
+            cutParent = true;
+            if (beam.location == Location::In
+                && m_facets[beam.lastFacetId].isVisibleIn)
+            {
+                m_polygonBuffer.Clear();
+                cutParent = false;
+            }
+        }
+        else
+        {
+            m_polygonBuffer.Clear();
+            cutParent = CutBeamByFacet(intersection, facetId, beam,
+                                       reachedIntersection,
+                                       m_polygonBuffer);
+        }
+    }
+    else
+#endif
+    {
+        cutParent = CutBeamByFacet(intersection, facetId, beam,
+                                   reachedIntersection,
+                                   m_polygonBuffer);
+    }
     if (reachedIntersection.nVertices >= MIN_VERTEX_NUM)
     {
         Beam inBeam, outBeam;

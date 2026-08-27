@@ -1664,9 +1664,19 @@ int main(int argc, const char* argv[])
                   << std::endl;
         additionalSummary += "GPU backend: " + FormatGpuInfo(gpuInfo) + "\n";
         const bool gpuTraceEnabled = !args.IsCatched("no_gpu_trace");
-        const std::string gpuTraceMode = gpuTraceEnabled
-            ? "automatic (CUDA ordering/prefilter, exact splitting on CPU)"
-            : "disabled";
+        const char *partitionValue = std::getenv("MBS_GPU_TRACE_PARTITION");
+        const bool gpuTracePartition = partitionValue != nullptr
+            && partitionValue[0] == '1' && partitionValue[1] == '\0';
+        const char *exactValue = std::getenv("MBS_GPU_TRACE_EXACT_HIT");
+        const bool gpuTraceExact = exactValue != nullptr
+            && exactValue[0] == '1' && exactValue[1] == '\0';
+        const std::string gpuTraceMode = !gpuTraceEnabled
+            ? "disabled"
+            : gpuTracePartition
+                ? "experimental (CUDA ordering, exact hit and polygon partition; CPU optics)"
+                : gpuTraceExact
+                    ? "experimental (CUDA ordering and exact hit; polygon splitting on CPU)"
+                    : "automatic (CUDA ordering/prefilter, exact splitting on CPU)";
         std::cout << "GPU trace profile: " << gpuTraceMode << std::endl;
         additionalSummary += "GPU trace profile: " + gpuTraceMode + "\n";
     }

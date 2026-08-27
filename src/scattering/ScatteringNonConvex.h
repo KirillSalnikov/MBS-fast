@@ -2,6 +2,10 @@
 
 #include "Scattering.h"
 
+#ifdef USE_CUDA
+struct GpuTraceExactHit;
+#endif
+
 /** NOTE: пучки выходят со случайно ориентированным порядком вершин */
 class ScatteringNonConvex : public Scattering
 {
@@ -59,7 +63,11 @@ private:
     bool SplitByFacet(const IntArray &facetIDs, int facetIndex);
 
     bool SplitBeamByFacet(const Polygon &intersection, int facetId,
-                          Beam &beam, bool &ok);
+                          Beam &beam, bool &ok
+#ifdef USE_CUDA
+                          , const GpuTraceExactHit *preparedHit = nullptr
+#endif
+                          );
 
     void CutPolygonByFacets(const Polygon &pol,
                             const IntArray &facetIds, size_t size,

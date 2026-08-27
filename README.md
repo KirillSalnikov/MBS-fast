@@ -254,6 +254,32 @@ configured retry ceiling and all physical cutoffs remain unchanged. Heavy
 trace batches are locked per physical GPU across independent processes, while
 workers inside one process still overlap. This prevents CUDA stack-memory OOM
 when two calculations happen to trace on the same card at once.
+With multiple visible devices, OpenMP tracing workers are assigned round-robin
+to the same device set selected by `MBS_GPU_MULTI`/`MBS_GPU_MULTI_MAX` for
+diffraction. Each device has an independent in-flight beam budget and workspace,
+so CUDA trace preparation and multi-GPU diffraction can use all selected cards
+without multiplying the complete host-side calculation.
+The automatic trace offload threshold is 1024 facet candidates on one GPU and
+256 candidates when several GPUs are selected. This keeps CUDA tracing active
+for low-facet particles when several devices can absorb the smaller batches.
+
+`MBS_GPU_TRACE_LEVEL_QUEUE=1` enables the experimental breadth-first trace
+scheduler. It drains all active apertures with the same reflection count before
+advancing to the next level, which forms larger homogeneous CUDA batches and
+improves cache reuse. `MBS_GPU_TRACE_EXACT_HIT=1` additionally computes the
+first exact beam/facet intersection on CUDA. `MBS_GPU_TRACE_PARTITION=1`
+also computes the reached aperture and the bounded polygon complement on CUDA;
+it requires exact-hit mode. Every prepared partition is checked for projected
+area conservation. The compact working path accepts one residual polygon;
+multi-part complements and overflowing polygons fall back to the CPU per beam.
+GPU partitioning is attempted only for levels containing at least 64 items by
+default (`MBS_GPU_TRACE_PARTITION_MIN_ITEMS`). Fresnel/Jones updates, optical
+paths, and construction of the following reflection level still run on the
+CPU. Thus this is an intermediate hybrid queue, not yet a fully device-resident
+beam tree. Use
+`MBS_GPU_TRACE_VERIFY_EXACT=1` in validation runs to recompute every accepted
+CUDA hit and partition on the CPU. The verification mode intentionally uses
+the independently recomputed CPU partition as its physical output.
 
 GO is a CPU method, including when invoked from a CUDA-capable binary:
 

@@ -12,9 +12,18 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
+#include <atomic>
 #include <vector>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 constexpr int GPU_TRACE_COMPACT_VERTICES = 8;
+constexpr int GPU_TRACE_EXACT_VERTICES = 20;
+// Slot zero stores the reached aperture and slot one a single unambiguous
+// residual.  Cases requiring more pieces use the exact CPU fallback.
+constexpr int GPU_TRACE_PARTITION_SLOTS = 2;
 constexpr int GPU_TRACE_TRIANGLE_VERTICES = 3;
 constexpr int GPU_TRACE_TRIANGLE_INTERSECTION_VERTICES = 6;
 constexpr int GPU_TRACE_SORT_CANDIDATES = 24;
@@ -34,6 +43,7 @@ struct GpuTraceBeamRecord
     int vertexOffset;
     int nVertices;
     int location;
+    int lastFacetId;
 };
 
 struct GpuTraceFacetRecord
@@ -53,6 +63,32 @@ struct GpuTraceItemRecord
     int count;
 };
 
+struct GpuTraceExactHitRecord
+{
+    double vertices[GPU_TRACE_EXACT_VERTICES][3];
+    int candidateIndex;
+    int facetId;
+    int nVertices;
+    int evaluated;
+};
+
+struct GpuTracePartitionRecord
+{
+    double overlapArea;
+    int remainingCount;
+    int evaluated;
+    int overflow;
+    int exactEvaluated;
+    int candidateIndex;
+    int facetId;
+};
+
+struct GpuTracePartitionPolygonRecord
+{
+    double vertices[GPU_TRACE_EXACT_VERTICES][3];
+    int nVertices;
+};
+
 struct GpuTraceInputLayout
 {
     size_t beams;
@@ -60,6 +96,7 @@ struct GpuTraceInputLayout
     size_t itemIndices;
     size_t vertices;
     size_t candidates;
+    size_t exactHits;
     size_t bytes;
 };
 
@@ -68,9 +105,15 @@ struct GpuTraceWorkspace
     unsigned char *input = nullptr;
     GpuTraceFacetRecord *facets = nullptr;
     unsigned char *hostInput = nullptr;
+    GpuTracePartitionRecord *partitions = nullptr;
+    GpuTracePartitionRecord *hostPartitions = nullptr;
+    GpuTracePartitionPolygonRecord *partitionPolygons = nullptr;
+    GpuTracePartitionPolygonRecord *hostPartitionPolygons = nullptr;
     size_t inputCap = 0;
     size_t facetCap = 0;
     size_t hostInputCap = 0;
+    size_t partitionCap = 0;
+    size_t hostPartitionCap = 0;
     const Facet *facetOwner = nullptr;
     int copiedMaxFacetId = -1;
     bool copiedFacetsAreTriangles = false;
@@ -80,12 +123,125 @@ struct GpuTraceWorkspace
     bool timingEventsReady = false;
     cudaStream_t stream = nullptr;
     bool streamReady = false;
+    int deviceId = -1;
 };
 
 static thread_local GpuTraceWorkspace g_traceWorkspace;
 static thread_local bool g_traceLastFailureWasOutOfMemory = false;
 
 static bool trace_cuda_ok(cudaError_t err, const char *where);
+
+static int gpu_trace_selected_device_count()
+{
+    static const int selected = []() {
+        int count = 0;
+        if (cudaGetDeviceCount(&count) != cudaSuccess || count <= 0)
+            return 0;
+
+        int requested = count;
+        if (const char *value = std::getenv("MBS_GPU_MULTI"))
+        {
+            const int parsed = std::atoi(value);
+            requested = parsed > 0 ? std::min(count, parsed) : 1;
+        }
+        if (const char *value = std::getenv("MBS_GPU_MULTI_MAX"))
+        {
+            const int parsed = std::atoi(value);
+            if (parsed > 0)
+                requested = std::min(requested, parsed);
+        }
+        return std::max(1, requested);
+    }();
+    return selected;
+}
+
+int GpuTraceWorkerDeviceCount()
+{
+    return gpu_trace_selected_device_count();
+}
+
+static int gpu_trace_host_worker_index()
+{
+#ifdef _OPENMP
+    if (omp_in_parallel())
+        return omp_get_thread_num();
+#endif
+    static std::atomic<int> nextWorker(0);
+    static thread_local const int worker =
+        nextWorker.fetch_add(1, std::memory_order_relaxed);
+    return worker;
+}
+
+static void release_trace_workspace()
+{
+    GpuTraceWorkspace &workspace = g_traceWorkspace;
+    if (workspace.deviceId < 0)
+        return;
+
+    int savedDevice = workspace.deviceId;
+    cudaGetDevice(&savedDevice);
+    if (cudaSetDevice(workspace.deviceId) != cudaSuccess)
+        return;
+
+    if (workspace.streamReady)
+        cudaStreamSynchronize(workspace.stream);
+    if (workspace.timingEventsReady)
+    {
+        cudaEventDestroy(workspace.timingStart);
+        cudaEventDestroy(workspace.timingSmallDone);
+        cudaEventDestroy(workspace.timingLargeDone);
+    }
+    if (workspace.streamReady)
+        cudaStreamDestroy(workspace.stream);
+    if (workspace.input != nullptr)
+        cudaFree(workspace.input);
+    if (workspace.facets != nullptr)
+        cudaFree(workspace.facets);
+    if (workspace.hostInput != nullptr)
+        cudaFreeHost(workspace.hostInput);
+    if (workspace.partitions != nullptr)
+        cudaFree(workspace.partitions);
+    if (workspace.hostPartitions != nullptr)
+        cudaFreeHost(workspace.hostPartitions);
+    if (workspace.partitionPolygons != nullptr)
+        cudaFree(workspace.partitionPolygons);
+    if (workspace.hostPartitionPolygons != nullptr)
+        cudaFreeHost(workspace.hostPartitionPolygons);
+
+    workspace = GpuTraceWorkspace();
+    cudaSetDevice(savedDevice);
+}
+
+int GpuTraceBindWorkerDevice()
+{
+    const int count = gpu_trace_selected_device_count();
+    if (count <= 0)
+        return -1;
+    const int device = gpu_trace_host_worker_index() % count;
+
+    if (g_traceWorkspace.deviceId >= 0
+        && g_traceWorkspace.deviceId != device)
+        release_trace_workspace();
+
+    int current = -1;
+    if (cudaGetDevice(&current) != cudaSuccess)
+        return -1;
+    if (current != device && cudaSetDevice(device) != cudaSuccess)
+        return -1;
+    g_traceWorkspace.deviceId = device;
+
+    static std::atomic<unsigned long long> announcedDevices(0);
+    const unsigned long long bit = device < 64 ? (1ULL << device) : 0;
+    const unsigned long long previous = bit == 0 ? ~0ULL
+        : announcedDevices.fetch_or(bit, std::memory_order_relaxed);
+    if (count > 1 && bit != 0 && (previous & bit) == 0)
+    {
+        std::fprintf(stderr,
+                     "CUDA trace multi-device: activated device %d of %d for a host worker.\n",
+                     device, count);
+    }
+    return device;
+}
 
 static double gpu_trace_margin_override()
 {
@@ -121,6 +277,30 @@ static bool gpu_trace_large_skip_flags()
 {
     const char *value = std::getenv("MBS_GPU_TRACE_LARGE_SKIP_FLAGS");
     return !(value && value[0] == '0' && value[1] == '\0');
+}
+
+static bool gpu_trace_exact_hit_enabled()
+{
+    const char *value = std::getenv("MBS_GPU_TRACE_EXACT_HIT");
+    return value && value[0] == '1' && value[1] == '\0';
+}
+
+static bool gpu_trace_partition_enabled()
+{
+    const char *value = std::getenv("MBS_GPU_TRACE_PARTITION");
+    return value && value[0] == '1' && value[1] == '\0';
+}
+
+static size_t gpu_trace_partition_min_items()
+{
+    const char *value = std::getenv("MBS_GPU_TRACE_PARTITION_MIN_ITEMS");
+    if (!value || !*value)
+        return 64;
+    char *end = nullptr;
+    const unsigned long parsed = std::strtoul(value, &end, 10);
+    if (!end || *end != '\0' || parsed < 1)
+        return 64;
+    return static_cast<size_t>(parsed);
 }
 
 static bool gpu_trace_timing_enabled()
@@ -214,8 +394,11 @@ static GpuTraceInputLayout trace_input_layout(size_t beamCount,
     layout.candidates = trace_align_offset(
         layout.vertices + vertexCount * 3 * sizeof(double),
         alignof(uint32_t));
-    layout.bytes = layout.candidates
-                 + candidateCount * sizeof(uint32_t);
+    layout.exactHits = trace_align_offset(
+        layout.candidates + candidateCount * sizeof(uint32_t),
+        alignof(GpuTraceExactHitRecord));
+    layout.bytes = layout.exactHits
+                 + beamCount * sizeof(GpuTraceExactHitRecord);
     return layout;
 }
 
@@ -282,6 +465,69 @@ static bool ensure_trace_facet_capacity(size_t count)
     g_traceWorkspace.facetOwner = nullptr;
     g_traceWorkspace.copiedMaxFacetId = -1;
     g_traceWorkspace.copiedFacetsAreTriangles = false;
+    return true;
+}
+
+static bool ensure_trace_partition_capacity(size_t count)
+{
+    if (count == 0)
+        return true;
+    if (g_traceWorkspace.partitionCap < count)
+    {
+        const size_t capacity = trace_growth_capacity(
+            g_traceWorkspace.partitionCap, count);
+        GpuTracePartitionRecord *partitions = nullptr;
+        GpuTracePartitionPolygonRecord *polygons = nullptr;
+        const cudaError_t status = cudaMalloc(
+            &partitions, capacity*sizeof(GpuTracePartitionRecord));
+        if (status != cudaSuccess)
+        {
+            if (status == cudaErrorMemoryAllocation)
+                g_traceLastFailureWasOutOfMemory = true;
+            return false;
+        }
+        const cudaError_t polygonStatus = cudaMalloc(
+            &polygons, capacity*GPU_TRACE_PARTITION_SLOTS
+                       *sizeof(GpuTracePartitionPolygonRecord));
+        if (polygonStatus != cudaSuccess)
+        {
+            cudaFree(partitions);
+            if (polygonStatus == cudaErrorMemoryAllocation)
+                g_traceLastFailureWasOutOfMemory = true;
+            return false;
+        }
+        cudaFree(g_traceWorkspace.partitions);
+        cudaFree(g_traceWorkspace.partitionPolygons);
+        g_traceWorkspace.partitions = partitions;
+        g_traceWorkspace.partitionPolygons = polygons;
+        g_traceWorkspace.partitionCap = capacity;
+    }
+    if (g_traceWorkspace.hostPartitionCap < count)
+    {
+        const size_t capacity = trace_growth_capacity(
+            g_traceWorkspace.hostPartitionCap, count);
+        GpuTracePartitionRecord *partitions = nullptr;
+        GpuTracePartitionPolygonRecord *polygons = nullptr;
+        if (cudaMallocHost(reinterpret_cast<void **>(&partitions),
+                           capacity*sizeof(GpuTracePartitionRecord))
+            != cudaSuccess)
+            return false;
+        if (cudaMallocHost(reinterpret_cast<void **>(&polygons),
+                           capacity*GPU_TRACE_PARTITION_SLOTS
+                           *sizeof(GpuTracePartitionPolygonRecord))
+            != cudaSuccess)
+        {
+            cudaFreeHost(partitions);
+            return false;
+        }
+        if (g_traceWorkspace.hostPartitions != nullptr)
+            cudaFreeHost(g_traceWorkspace.hostPartitions);
+        if (g_traceWorkspace.hostPartitionPolygons != nullptr)
+            cudaFreeHost(g_traceWorkspace.hostPartitionPolygons);
+        g_traceWorkspace.hostPartitions = partitions;
+        g_traceWorkspace.hostPartitionPolygons = polygons;
+        g_traceWorkspace.hostPartitionCap = capacity;
+    }
     return true;
 }
 
@@ -372,6 +618,562 @@ void GpuTraceInvalidateFacetCache()
 __device__ inline double dot3_dev_d(const double *a, const double *b)
 {
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+__device__ __forceinline__ double trace_norm3_squared(const double point[3])
+{
+    return point[0]*point[0] + point[1]*point[1]
+         + point[2]*point[2];
+}
+
+__device__ __forceinline__ double trace_distance3_squared(
+    const double first[3], const double second[3])
+{
+    const double x = first[0] - second[0];
+    const double y = first[1] - second[1];
+    const double z = first[2] - second[2];
+    return x*x + y*y + z*z;
+}
+
+__device__ __forceinline__ bool trace_exact_inside(
+    const double point[3], const double edgeStart[3],
+    const double edgeEnd[3], const double normal[3])
+{
+    const double ex = edgeEnd[0] - edgeStart[0];
+    const double ey = edgeEnd[1] - edgeStart[1];
+    const double ez = edgeEnd[2] - edgeStart[2];
+    const double qx = point[0] - edgeStart[0];
+    const double qy = point[1] - edgeStart[1];
+    const double qz = point[2] - edgeStart[2];
+    const double crossX = ey*qz - ez*qy;
+    const double crossY = ez*qx - ex*qz;
+    const double crossZ = ex*qy - ey*qx;
+    const double side = crossX*normal[0] + crossY*normal[1]
+                      + crossZ*normal[2];
+    if (side >= 0.0)
+        return true;
+    const double edgeLengthSquared = ex*ex + ey*ey + ez*ez;
+    const double offsetLengthSquared = qx*qx + qy*qy + qz*qz;
+    const double normalLengthSquared = trace_norm3_squared(normal);
+    const double scaleSquared = edgeLengthSquared
+        * fmax(edgeLengthSquared, offsetLengthSquared)
+        * normalLengthSquared;
+    constexpr double relative = 0x1p-40;
+    return side*side <= relative*relative*scaleSquared;
+}
+
+__device__ __forceinline__ bool trace_exact_edge_intersection(
+    const double segmentStart[3], const double segmentEnd[3],
+    const double edgeStart[3], const double edgeEnd[3],
+    const double normal[3], double result[3])
+{
+    const double va[3] = {
+        segmentEnd[0] - segmentStart[0],
+        segmentEnd[1] - segmentStart[1],
+        segmentEnd[2] - segmentStart[2]
+    };
+    const double vb[3] = {
+        edgeEnd[0] - edgeStart[0],
+        edgeEnd[1] - edgeStart[1],
+        edgeEnd[2] - edgeStart[2]
+    };
+    const double transverse[3] = {
+        vb[1]*normal[2] - vb[2]*normal[1],
+        vb[2]*normal[0] - vb[0]*normal[2],
+        vb[0]*normal[1] - vb[1]*normal[0]
+    };
+    const double denominator = dot3_dev_d(va, transverse);
+    const double denominatorScale = sqrt(
+        trace_norm3_squared(va) * trace_norm3_squared(transverse));
+    if (denominatorScale <= DBL_MIN
+        || fabs(denominator) <= 0x1p-40*fmax(denominatorScale, DBL_MIN))
+        return false;
+    const double offset[3] = {
+        segmentStart[0] - edgeStart[0],
+        segmentStart[1] - edgeStart[1],
+        segmentStart[2] - edgeStart[2]
+    };
+    const double parameter = dot3_dev_d(offset, transverse) / denominator;
+    for (int coordinate = 0; coordinate < 3; ++coordinate)
+        result[coordinate] = segmentStart[coordinate]
+                           - va[coordinate]*parameter;
+    return isfinite(result[0]) && isfinite(result[1])
+        && isfinite(result[2]);
+}
+
+__device__ __forceinline__ int trace_exact_scalar_clip(
+    const double input[GPU_TRACE_EXACT_VERTICES][3],
+    const double scalar[GPU_TRACE_EXACT_VERTICES], int inputSize,
+    double tolerance, double output[GPU_TRACE_EXACT_VERTICES][3])
+{
+    if (inputSize <= 0)
+        return 0;
+    int outputSize = 0;
+    double start[3] = {
+        input[inputSize - 1][0], input[inputSize - 1][1],
+        input[inputSize - 1][2]
+    };
+    double startValue = fabs(scalar[inputSize - 1]) <= tolerance
+        ? 0.0 : scalar[inputSize - 1];
+    bool startInside = startValue >= 0.0;
+    for (int index = 0; index < inputSize; ++index)
+    {
+        const double endValue = fabs(scalar[index]) <= tolerance
+            ? 0.0 : scalar[index];
+        const bool endInside = endValue >= 0.0;
+        if (startInside != endInside)
+        {
+            const double denominator = startValue - endValue;
+            if (fabs(denominator) > DBL_MIN)
+            {
+                const double fraction = fmax(0.0, fmin(1.0,
+                    startValue / denominator));
+                if (outputSize >= GPU_TRACE_EXACT_VERTICES)
+                    return -1;
+                for (int coordinate = 0; coordinate < 3; ++coordinate)
+                    output[outputSize][coordinate] = start[coordinate]
+                        + (input[index][coordinate] - start[coordinate])
+                          * fraction;
+                ++outputSize;
+            }
+        }
+        if (endInside)
+        {
+            if (outputSize >= GPU_TRACE_EXACT_VERTICES)
+                return -1;
+            for (int coordinate = 0; coordinate < 3; ++coordinate)
+                output[outputSize][coordinate] = input[index][coordinate];
+            ++outputSize;
+        }
+        for (int coordinate = 0; coordinate < 3; ++coordinate)
+            start[coordinate] = input[index][coordinate];
+        startValue = endValue;
+        startInside = endInside;
+    }
+    return outputSize;
+}
+
+__device__ __forceinline__ int trace_exact_sanitize_polygon(
+    const double input[GPU_TRACE_EXACT_VERTICES][3], int inputSize,
+    double geometryScale,
+    double output[GPU_TRACE_EXACT_VERTICES][3])
+{
+    if (inputSize < 3 || inputSize > GPU_TRACE_EXACT_VERTICES)
+        return 0;
+    const double lengthTolerance = 0x1p-40
+        * fmax(fabs(geometryScale), DBL_MIN);
+    const double pointToleranceSquared = lengthTolerance*lengthTolerance;
+    const double areaTolerance = 0x1p-40
+        * fmax(fabs(geometryScale), DBL_MIN)
+        * fmax(fabs(geometryScale), DBL_MIN);
+    int outputSize = 0;
+    double area[3] = {0.0, 0.0, 0.0};
+    double previous[3] = {0.0, 0.0, 0.0};
+    const double *last = input[inputSize - 1];
+    for (int index = 0; index < inputSize; ++index)
+    {
+        if (trace_distance3_squared(input[index], last)
+            > pointToleranceSquared)
+        {
+            if (outputSize >= GPU_TRACE_EXACT_VERTICES)
+                return 0;
+            for (int coordinate = 0; coordinate < 3; ++coordinate)
+                output[outputSize][coordinate] = input[index][coordinate];
+            if (outputSize > 0)
+            {
+                const double current[3] = {
+                    input[index][0] - output[0][0],
+                    input[index][1] - output[0][1],
+                    input[index][2] - output[0][2]
+                };
+                if (outputSize > 1)
+                {
+                    area[0] += previous[1]*current[2]
+                             - previous[2]*current[1];
+                    area[1] += previous[2]*current[0]
+                             - previous[0]*current[2];
+                    area[2] += previous[0]*current[1]
+                             - previous[1]*current[0];
+                }
+                previous[0] = current[0];
+                previous[1] = current[1];
+                previous[2] = current[2];
+            }
+            ++outputSize;
+        }
+        last = input[index];
+    }
+    const double twiceAreaSquared = trace_norm3_squared(area);
+    if (outputSize < 3
+        || twiceAreaSquared <= 4.0*areaTolerance*areaTolerance)
+        return 0;
+    return outputSize;
+}
+
+__device__ __forceinline__ void trace_exact_polygon_normal(
+    const double polygon[GPU_TRACE_EXACT_VERTICES][3], int size,
+    double normal[3])
+{
+    normal[0] = 0.0;
+    normal[1] = 0.0;
+    normal[2] = 0.0;
+    for (int index = 0; index < size; ++index)
+    {
+        const double *first = polygon[index];
+        const double *second = polygon[(index + 1) % size];
+        normal[0] += (first[1] - second[1])*(first[2] + second[2]);
+        normal[1] += (first[2] - second[2])*(first[0] + second[0]);
+        normal[2] += (first[0] - second[0])*(first[1] + second[1]);
+    }
+    const double length = sqrt(trace_norm3_squared(normal));
+    if (!(length > DBL_MIN) || !isfinite(length))
+    {
+        normal[0] = 0.0;
+        normal[1] = 0.0;
+        normal[2] = 0.0;
+        return;
+    }
+    normal[0] /= length;
+    normal[1] /= length;
+    normal[2] /= length;
+}
+
+__device__ __forceinline__ double trace_exact_polygon_area(
+    const double polygon[GPU_TRACE_EXACT_VERTICES][3], int size)
+{
+    if (size < MIN_VERTEX_NUM)
+        return 0.0;
+    const double *base = polygon[0];
+    double previous[3] = {
+        polygon[1][0] - base[0],
+        polygon[1][1] - base[1],
+        polygon[1][2] - base[2]
+    };
+    double area[3] = {0.0, 0.0, 0.0};
+    for (int index = 2; index < size; ++index)
+    {
+        const double current[3] = {
+            polygon[index][0] - base[0],
+            polygon[index][1] - base[1],
+            polygon[index][2] - base[2]
+        };
+        area[0] += previous[1]*current[2] - previous[2]*current[1];
+        area[1] += previous[2]*current[0] - previous[0]*current[2];
+        area[2] += previous[0]*current[1] - previous[1]*current[0];
+        previous[0] = current[0];
+        previous[1] = current[1];
+        previous[2] = current[2];
+    }
+    return 0.5*sqrt(trace_norm3_squared(area));
+}
+
+__device__ bool trace_exact_partition(
+    const GpuTraceBeamRecord &beam, const double (*beamVertices)[3],
+    const GpuTraceFacetRecord *facets, int facetId, double geometryScale,
+    const double targetIntersection[GPU_TRACE_EXACT_VERTICES][3],
+    int targetSize, GpuTracePartitionRecord &partition,
+    GpuTracePartitionPolygonRecord *partitionPolygons)
+{
+    partition.overlapArea = 0.0;
+    partition.remainingCount = 0;
+    partition.evaluated = 0;
+    partition.overflow = 0;
+    if (beam.lastFacetId < 0 || targetSize < MIN_VERTEX_NUM)
+        return false;
+
+    const GpuTraceFacetRecord &sourceFacet = facets[beam.lastFacetId];
+    const double *sourcePlane = beam.location == 0
+        ? sourceFacet.normalIn : sourceFacet.normalOut;
+    const double sourceDenominator = dot3_dev_d(beam.dir, sourcePlane);
+    const double sourceScale = sqrt(
+        trace_norm3_squared(beam.dir)*trace_norm3_squared(sourcePlane));
+    if (sourceScale <= DBL_MIN
+        || fabs(sourceDenominator)
+           <= 0x1p-40*fmax(sourceScale, DBL_MIN))
+        return false;
+
+    double scratch[GPU_TRACE_EXACT_VERTICES][3];
+    for (int vertex = 0; vertex < targetSize; ++vertex)
+    {
+        const double parameter =
+            (dot3_dev_d(targetIntersection[vertex], sourcePlane)
+             + sourcePlane[3])/sourceDenominator;
+        for (int coordinate = 0; coordinate < 3; ++coordinate)
+            scratch[vertex][coordinate] =
+                targetIntersection[vertex][coordinate]
+                - parameter*beam.dir[coordinate];
+    }
+    double projectedClip[GPU_TRACE_EXACT_VERTICES][3];
+    const int projectedSize = trace_exact_sanitize_polygon(
+        scratch, targetSize, geometryScale, projectedClip);
+    if (projectedSize < MIN_VERTEX_NUM)
+    {
+        partition.overflow = projectedSize < 0 ? 1 : 0;
+        return false;
+    }
+    double effectiveNormal[3];
+    trace_exact_polygon_normal(projectedClip, projectedSize,
+                               effectiveNormal);
+    if (dot3_dev_d(effectiveNormal, sourcePlane) < 0.0)
+    {
+        for (int left = 0, right = projectedSize - 1;
+             left < right; ++left, --right)
+        {
+            for (int coordinate = 0; coordinate < 3; ++coordinate)
+            {
+                const double value = projectedClip[left][coordinate];
+                projectedClip[left][coordinate] =
+                    projectedClip[right][coordinate];
+                projectedClip[right][coordinate] = value;
+            }
+        }
+        trace_exact_polygon_normal(projectedClip, projectedSize,
+                                   effectiveNormal);
+    }
+    const double normalLengthSquared =
+        trace_norm3_squared(effectiveNormal);
+    if (!(normalLengthSquared > DBL_MIN))
+        return false;
+
+    double retainedFirst[GPU_TRACE_EXACT_VERTICES][3];
+    double retainedSecond[GPU_TRACE_EXACT_VERTICES][3];
+    int retainedSize = beam.nVertices;
+    for (int vertex = 0; vertex < retainedSize; ++vertex)
+    {
+        const double *source = beamVertices[beam.vertexOffset + vertex];
+        for (int coordinate = 0; coordinate < 3; ++coordinate)
+            retainedFirst[vertex][coordinate] = source[coordinate];
+    }
+    double (*retained)[3] = retainedFirst;
+    double (*nextRetained)[3] = retainedSecond;
+    const double *edgeEnd = projectedClip[projectedSize - 1];
+    for (int edge = 0; edge < projectedSize; ++edge)
+    {
+        if (retainedSize < MIN_VERTEX_NUM)
+            break;
+        const double *edgeStart = edgeEnd;
+        edgeEnd = projectedClip[edge];
+        const double edgeVector[3] = {
+            edgeEnd[0] - edgeStart[0],
+            edgeEnd[1] - edgeStart[1],
+            edgeEnd[2] - edgeStart[2]
+        };
+        const double edgeLengthSquared =
+            trace_norm3_squared(edgeVector);
+        double scalar[GPU_TRACE_EXACT_VERTICES];
+        double maximumOffsetSquared = edgeLengthSquared;
+        for (int vertex = 0; vertex < retainedSize; ++vertex)
+        {
+            const double offset[3] = {
+                retained[vertex][0] - edgeStart[0],
+                retained[vertex][1] - edgeStart[1],
+                retained[vertex][2] - edgeStart[2]
+            };
+            maximumOffsetSquared = fmax(
+                maximumOffsetSquared, trace_norm3_squared(offset));
+            const double cross[3] = {
+                edgeVector[1]*offset[2] - edgeVector[2]*offset[1],
+                edgeVector[2]*offset[0] - edgeVector[0]*offset[2],
+                edgeVector[0]*offset[1] - edgeVector[1]*offset[0]
+            };
+            const double side = dot3_dev_d(cross, effectiveNormal);
+            scalar[vertex] = -side;
+        }
+        const double sideTolerance = 0x1p-40*sqrt(
+            edgeLengthSquared*maximumOffsetSquared*normalLengthSquared);
+
+        const int outsideRawSize = trace_exact_scalar_clip(
+            retained, scalar, retainedSize, sideTolerance, scratch);
+        if (outsideRawSize < 0)
+        {
+            partition.overflow = 1;
+            return false;
+        }
+        if (outsideRawSize >= MIN_VERTEX_NUM)
+        {
+            if (partition.remainingCount + 1
+                >= GPU_TRACE_PARTITION_SLOTS)
+            {
+                partition.overflow = 1;
+                return false;
+            }
+            const int outputIndex = partition.remainingCount++;
+            GpuTracePartitionPolygonRecord &outputPolygon =
+                partitionPolygons[outputIndex + 1];
+            const int outsideSize = trace_exact_sanitize_polygon(
+                scratch, outsideRawSize, geometryScale,
+                outputPolygon.vertices);
+            if (outsideSize < MIN_VERTEX_NUM)
+            {
+                --partition.remainingCount;
+                outputPolygon.nVertices = 0;
+            }
+            else
+            {
+                outputPolygon.nVertices = outsideSize;
+            }
+        }
+
+        for (int vertex = 0; vertex < retainedSize; ++vertex)
+            scalar[vertex] = -scalar[vertex];
+        const int insideRawSize = trace_exact_scalar_clip(
+            retained, scalar, retainedSize, sideTolerance, scratch);
+        if (insideRawSize < 0)
+        {
+            partition.overflow = 1;
+            return false;
+        }
+        const int insideSize = trace_exact_sanitize_polygon(
+            scratch, insideRawSize, geometryScale, nextRetained);
+        retainedSize = insideSize;
+        double (*temporary)[3] = retained;
+        retained = nextRetained;
+        nextRetained = temporary;
+    }
+    if (retainedSize < MIN_VERTEX_NUM)
+        return false;
+    partition.overlapArea = trace_exact_polygon_area(
+        retained, retainedSize);
+
+    // targetIntersection already is the reached aperture on the target
+    // facet.  Keep that exact polygon in slot zero instead of projecting the
+    // retained source aperture back to the same plane a second time.
+    partition.evaluated = 1;
+    return true;
+}
+
+__device__ int trace_exact_intersection(
+    const GpuTraceBeamRecord &beam, const double (*beamVertices)[3],
+    const GpuTraceFacetRecord *facets, int facetId, double geometryScale,
+    double result[GPU_TRACE_EXACT_VERTICES][3])
+{
+    const GpuTraceFacetRecord &facet = facets[facetId];
+    if (beam.nVertices < 3 || beam.nVertices > GPU_TRACE_COMPACT_VERTICES
+        || facet.nVertices < 3
+        || facet.nVertices > GPU_TRACE_COMPACT_VERTICES)
+        return -1;
+    const double *planeNormal = beam.location == 0
+        ? facet.normalIn : facet.normalOut;
+    const double denominator = dot3_dev_d(beam.dir, planeNormal);
+    const double denominatorScale = sqrt(
+        trace_norm3_squared(beam.dir) * trace_norm3_squared(planeNormal));
+    if (denominatorScale <= DBL_MIN
+        || fabs(denominator) <= 0x1p-40*fmax(denominatorScale, DBL_MIN))
+        return 0;
+
+    double first[GPU_TRACE_EXACT_VERTICES][3];
+    double second[GPU_TRACE_EXACT_VERTICES][3];
+    int size = beam.nVertices;
+    for (int vertex = 0; vertex < beam.nVertices; ++vertex)
+    {
+        const double *source = beamVertices[beam.vertexOffset + vertex];
+        const double parameter =
+            (dot3_dev_d(source, planeNormal) + planeNormal[3])
+            / denominator;
+        for (int coordinate = 0; coordinate < 3; ++coordinate)
+            first[vertex][coordinate] = source[coordinate]
+                                      - parameter*beam.dir[coordinate];
+    }
+
+    double (*input)[3] = first;
+    double (*output)[3] = second;
+    const double normalToFacet[3] = {
+        -facet.normalIn[0], -facet.normalIn[1], -facet.normalIn[2]
+    };
+    for (int edge = 0; edge < facet.nVertices; ++edge)
+    {
+        const int previousEdge = edge == 0 ? facet.nVertices - 1 : edge - 1;
+        const double *edgeStart = facet.vertices[previousEdge];
+        const double *edgeEnd = facet.vertices[edge];
+        int outputSize = 0;
+        double start[3] = {
+            input[size - 1][0], input[size - 1][1], input[size - 1][2]
+        };
+        bool startInside = trace_exact_inside(
+            start, edgeStart, edgeEnd, normalToFacet);
+        for (int vertex = 0; vertex < size; ++vertex)
+        {
+            const bool endInside = trace_exact_inside(
+                input[vertex], edgeStart, edgeEnd, normalToFacet);
+            if (endInside)
+            {
+                if (!startInside)
+                {
+                    if (outputSize >= GPU_TRACE_EXACT_VERTICES)
+                        return -1;
+                    if (trace_exact_edge_intersection(
+                            start, input[vertex], edgeStart, edgeEnd,
+                            normalToFacet, output[outputSize]))
+                        ++outputSize;
+                }
+                if (outputSize >= GPU_TRACE_EXACT_VERTICES)
+                    return -1;
+                for (int coordinate = 0; coordinate < 3; ++coordinate)
+                    output[outputSize][coordinate] = input[vertex][coordinate];
+                ++outputSize;
+            }
+            else if (startInside)
+            {
+                if (outputSize >= GPU_TRACE_EXACT_VERTICES)
+                    return -1;
+                if (trace_exact_edge_intersection(
+                        start, input[vertex], edgeStart, edgeEnd,
+                        normalToFacet, output[outputSize]))
+                    ++outputSize;
+            }
+            for (int coordinate = 0; coordinate < 3; ++coordinate)
+                start[coordinate] = input[vertex][coordinate];
+            startInside = endInside;
+        }
+        size = outputSize;
+        if (size < 3)
+            return 0;
+        double (*temporary)[3] = input;
+        input = output;
+        output = temporary;
+    }
+
+    size = trace_exact_sanitize_polygon(input, size, geometryScale, output);
+    if (size < 3)
+        return 0;
+    input = output;
+
+    if (beam.lastFacetId >= 0)
+    {
+        const GpuTraceFacetRecord &beamFacet = facets[beam.lastFacetId];
+        const double *beamPlane = beam.location == 0
+            ? beamFacet.normalIn : beamFacet.normalOut;
+        const double forwardDenominator = dot3_dev_d(beam.dir, beamPlane);
+        const double forwardScale = sqrt(
+            trace_norm3_squared(beam.dir)
+            * trace_norm3_squared(beamPlane));
+        if (forwardScale > DBL_MIN
+            && fabs(forwardDenominator)
+                > 0x1p-40*fmax(forwardScale, DBL_MIN))
+        {
+            const double sign = forwardDenominator >= 0.0 ? 1.0 : -1.0;
+            double scalar[GPU_TRACE_EXACT_VERTICES];
+            for (int vertex = 0; vertex < size; ++vertex)
+                scalar[vertex] = (dot3_dev_d(input[vertex], beamPlane)
+                                + beamPlane[3])*sign;
+            const double tolerance = 8.0*0x1p-40
+                * fmax(fabs(geometryScale), DBL_MIN)
+                * fabs(forwardDenominator);
+            double (*clipOutput)[3] = input == first ? second : first;
+            const int clipped = trace_exact_scalar_clip(
+                input, scalar, size, tolerance, clipOutput);
+            if (clipped < 0)
+                return -1;
+            size = trace_exact_sanitize_polygon(
+                clipOutput, clipped, geometryScale, result);
+            return size;
+        }
+    }
+
+    for (int vertex = 0; vertex < size; ++vertex)
+        for (int coordinate = 0; coordinate < 3; ++coordinate)
+            result[vertex][coordinate] = input[vertex][coordinate];
+    return size;
 }
 
 __device__ inline void add_bounds_d(double u, double v,
@@ -2135,15 +2937,139 @@ __global__ void trace_prepare_large_kernel(
     }
 }
 
+__global__ void trace_exact_hit_kernel(
+    const GpuTraceBeamRecord *beams,
+    const double (*beamVertices)[3],
+    const GpuTraceFacetRecord *facets,
+    const GpuTraceItemRecord *items,
+    const uint32_t *candidateIds,
+    double geometryScale,
+    GpuTraceExactHitRecord *hits,
+    int itemCount)
+{
+    const int itemIndex = static_cast<int>(
+        blockIdx.x*blockDim.x + threadIdx.x);
+    if (itemIndex >= itemCount)
+        return;
+
+    GpuTraceExactHitRecord &hit = hits[itemIndex];
+    hit.candidateIndex = -1;
+    hit.facetId = -1;
+    hit.nVertices = 0;
+    hit.evaluated = 0;
+
+    const GpuTraceItemRecord item = items[itemIndex];
+    if (item.count <= 0)
+    {
+        hit.evaluated = 1;
+        return;
+    }
+    const uint32_t metadata = candidateIds[item.offset];
+    if ((metadata & GPU_TRACE_SORTED_MARKER) == 0)
+        return;
+    const int kept = static_cast<int>(
+        (metadata & GPU_TRACE_COUNT_MASK) >> GPU_TRACE_COUNT_SHIFT);
+    if (kept < 0 || kept > item.count
+        || kept > GPU_TRACE_LARGE_SORT_CANDIDATES)
+        return;
+
+    const GpuTraceBeamRecord &beam = beams[itemIndex];
+    if (beam.nVertices < MIN_VERTEX_NUM
+        || beam.nVertices > GPU_TRACE_COMPACT_VERTICES
+        || beam.lastFacetId < 0)
+        return;
+
+    for (int candidate = 0; candidate < kept; ++candidate)
+    {
+        const uint32_t encoded = candidate == 0
+            ? metadata : candidateIds[item.offset + candidate];
+        const bool skipped = candidate == 0
+            ? (encoded & GPU_TRACE_FIRST_SKIP_MARKER) != 0
+            : (encoded & GPU_TRACE_SKIP_MARKER) != 0;
+        if (skipped)
+            continue;
+        const int facetId = static_cast<int>(
+            encoded & GPU_TRACE_FACET_ID_MASK);
+        double intersection[GPU_TRACE_EXACT_VERTICES][3];
+        const int vertexCount = trace_exact_intersection(
+            beam, beamVertices, facets, facetId, geometryScale,
+            intersection);
+        if (vertexCount < 0)
+            return;
+        if (vertexCount < MIN_VERTEX_NUM)
+            continue;
+        hit.candidateIndex = candidate;
+        hit.facetId = facetId;
+        hit.nVertices = vertexCount;
+        for (int vertex = 0; vertex < vertexCount; ++vertex)
+            for (int coordinate = 0; coordinate < 3; ++coordinate)
+                hit.vertices[vertex][coordinate] =
+                    intersection[vertex][coordinate];
+        hit.evaluated = 1;
+        return;
+    }
+    hit.evaluated = 1;
+}
+
+__global__ void trace_exact_partition_kernel(
+    const GpuTraceBeamRecord *beams,
+    const double (*beamVertices)[3],
+    const GpuTraceFacetRecord *facets,
+    const GpuTraceExactHitRecord *hits,
+    double geometryScale,
+    GpuTracePartitionRecord *partitions,
+    GpuTracePartitionPolygonRecord *partitionPolygons,
+    int itemCount)
+{
+    const int itemIndex = static_cast<int>(
+        blockIdx.x*blockDim.x + threadIdx.x);
+    if (itemIndex >= itemCount)
+        return;
+
+    GpuTracePartitionRecord &partition = partitions[itemIndex];
+    GpuTracePartitionPolygonRecord *polygons = partitionPolygons
+        + itemIndex*GPU_TRACE_PARTITION_SLOTS;
+    partition.remainingCount = 0;
+    partition.overlapArea = 0.0;
+    partition.evaluated = 0;
+    partition.overflow = 0;
+    partition.exactEvaluated = 0;
+    partition.candidateIndex = -1;
+    partition.facetId = -1;
+    for (int index = 0; index < GPU_TRACE_PARTITION_SLOTS; ++index)
+        polygons[index].nVertices = 0;
+
+    const GpuTraceExactHitRecord &hit = hits[itemIndex];
+    partition.exactEvaluated = hit.evaluated;
+    partition.candidateIndex = hit.candidateIndex;
+    partition.facetId = hit.facetId;
+    if (!hit.evaluated || hit.facetId < 0
+        || hit.nVertices < MIN_VERTEX_NUM)
+        return;
+
+    polygons[0].nVertices = hit.nVertices;
+    for (int vertex = 0; vertex < hit.nVertices; ++vertex)
+        for (int coordinate = 0; coordinate < 3; ++coordinate)
+            polygons[0].vertices[vertex][coordinate] =
+                hit.vertices[vertex][coordinate];
+
+    trace_exact_partition(
+        beams[itemIndex], beamVertices, facets, hit.facetId,
+        geometryScale, hit.vertices, hit.nVertices, partition,
+        polygons);
+}
+
 static int gpu_trace_threshold()
 {
+    const int automaticThreshold =
+        gpu_trace_selected_device_count() > 1 ? 256 : 1024;
     const char *value = std::getenv("MBS_GPU_TRACE_MIN_CANDIDATES");
     if (!value || !*value)
-        return 1024;
+        return automaticThreshold;
     char *end = nullptr;
     long parsed = std::strtol(value, &end, 10);
     if (!end || *end != '\0' || parsed < 1)
-        return 1024;
+        return automaticThreshold;
     return (int)parsed;
 }
 
@@ -2223,6 +3149,8 @@ bool GpuTracePrepareBeamFacetBatch(const Facet *facets,
                                    const std::vector<GpuTraceBeamFacets> &items)
 {
     g_traceLastFailureWasOutOfMemory = false;
+    if (GpuTraceBindWorkerDevice() < 0)
+        return false;
     size_t total = 0;
     size_t totalVertices = 0;
     for (size_t itemIdx = 0; itemIdx < items.size(); ++itemIdx)
@@ -2231,6 +3159,8 @@ bool GpuTracePrepareBeamFacetBatch(const Facet *facets,
         item.mayIntersect->clear();
         if (item.sortedOnGpu != nullptr)
             *item.sortedOnGpu = false;
+        if (item.exactHit != nullptr)
+            item.exactHit->Reset();
         total += item.facetIds->size;
         totalVertices += static_cast<size_t>(std::max(
             0, std::min(item.beam->nVertices,
@@ -2239,14 +3169,34 @@ bool GpuTracePrepareBeamFacetBatch(const Facet *facets,
 
     if (items.empty() || total < (size_t)gpu_trace_threshold())
         return false;
+    static std::atomic<unsigned long long> submittedDevices(0);
+    const int traceDevice = g_traceWorkspace.deviceId;
+    const unsigned long long submittedBit = traceDevice >= 0 && traceDevice < 64
+        ? (1ULL << traceDevice) : 0;
+    const unsigned long long previouslySubmitted = submittedBit == 0 ? ~0ULL
+        : submittedDevices.fetch_or(submittedBit, std::memory_order_relaxed);
+    if (submittedBit != 0 && (previouslySubmitted & submittedBit) == 0)
+    {
+        std::fprintf(stderr,
+                     "CUDA trace multi-device: submitted first trace kernel on device %d (threshold=%d).\n",
+                     traceDevice, gpu_trace_threshold());
+    }
     GpuProcessLock processGuard;
     if (!ensure_trace_stream())
         return false;
     const cudaStream_t stream = trace_stream();
     const GpuTraceInputLayout layout =
         trace_input_layout(items.size(), totalVertices, total);
+    const bool exactHitEnabled = gpu_trace_exact_hit_enabled();
+    const bool partitionEnabled = exactHitEnabled
+                               && gpu_trace_partition_enabled()
+                               && items.size()
+                                  >= gpu_trace_partition_min_items();
     if (!ensure_trace_input_capacity(layout.bytes)
         || !ensure_trace_host_input_capacity(layout.bytes))
+        return false;
+    if (partitionEnabled
+        && !ensure_trace_partition_capacity(items.size()))
         return false;
 
     unsigned char *hostInput = g_traceWorkspace.hostInput;
@@ -2260,6 +3210,9 @@ bool GpuTracePrepareBeamFacetBatch(const Facet *facets,
         hostInput + layout.vertices);
     uint32_t *hostCandidateIds =
         reinterpret_cast<uint32_t *>(hostInput + layout.candidates);
+    GpuTraceExactHitRecord *hostExactHits =
+        reinterpret_cast<GpuTraceExactHitRecord *>(
+            hostInput + layout.exactHits);
 
     size_t out = 0;
     size_t vertexOut = 0;
@@ -2273,9 +3226,11 @@ bool GpuTracePrepareBeamFacetBatch(const Facet *facets,
         record.vertexOffset = static_cast<int>(vertexOut);
         record.nVertices = beam.nVertices;
         record.location = beam.location == Location::In ? 0 : 1;
+        record.lastFacetId = beam.lastFacetId;
         record.dir[0] = beam.direction.coordinates[0];
         record.dir[1] = beam.direction.coordinates[1];
         record.dir[2] = beam.direction.coordinates[2];
+        maxFacetId = std::max(maxFacetId, beam.lastFacetId);
         const int copiedVertices = std::min(
             beam.nVertices, GPU_TRACE_COMPACT_VERTICES);
         for (int v = 0; v < copiedVertices; ++v)
@@ -2332,6 +3287,9 @@ bool GpuTracePrepareBeamFacetBatch(const Facet *facets,
             g_traceWorkspace.input + layout.vertices);
     uint32_t *deviceCandidateIds = reinterpret_cast<uint32_t *>(
         g_traceWorkspace.input + layout.candidates);
+    GpuTraceExactHitRecord *deviceExactHits =
+        reinterpret_cast<GpuTraceExactHitRecord *>(
+            g_traceWorkspace.input + layout.exactHits);
     const bool fullSort = gpu_trace_full_sort();
     const bool largeSkipFlags = fullSort && gpu_trace_large_skip_flags();
     if (traceTiming)
@@ -2426,6 +3384,33 @@ bool GpuTracePrepareBeamFacetBatch(const Facet *facets,
         cudaEventRecord(g_traceWorkspace.timingLargeDone, stream);
     }
 
+    if (exactHitEnabled)
+    {
+        constexpr int threads = 128;
+        const int blocks = static_cast<int>(
+            (items.size() + threads - 1)/threads);
+        trace_exact_hit_kernel<<<blocks, threads, 0, stream>>>(
+            deviceBeams, deviceVertices, g_traceWorkspace.facets,
+            deviceItems, deviceCandidateIds, geometryScale,
+            deviceExactHits,
+            static_cast<int>(items.size()));
+        if (!trace_cuda_ok(cudaGetLastError(),
+                           "trace_exact_hit_kernel"))
+            return false;
+        if (partitionEnabled)
+        {
+            trace_exact_partition_kernel<<<blocks, threads, 0, stream>>>(
+                deviceBeams, deviceVertices, g_traceWorkspace.facets,
+                deviceExactHits, geometryScale,
+                g_traceWorkspace.partitions,
+                g_traceWorkspace.partitionPolygons,
+                static_cast<int>(items.size()));
+            if (!trace_cuda_ok(cudaGetLastError(),
+                               "trace_exact_partition_kernel"))
+                return false;
+        }
+    }
+
     const auto d2hStarted = std::chrono::high_resolution_clock::now();
     if (!trace_cuda_ok(cudaMemcpyAsync(hostCandidateIds,
                                       deviceCandidateIds,
@@ -2433,6 +3418,30 @@ bool GpuTracePrepareBeamFacetBatch(const Facet *facets,
                                       cudaMemcpyDeviceToHost,
                                       stream),
                        "copy sorted trace candidate ids"))
+        return false;
+    if (exactHitEnabled && !partitionEnabled
+        && !trace_cuda_ok(cudaMemcpyAsync(
+                hostExactHits, deviceExactHits,
+                items.size()*sizeof(GpuTraceExactHitRecord),
+                cudaMemcpyDeviceToHost, stream),
+            "copy exact trace hits"))
+        return false;
+    if (partitionEnabled
+        && !trace_cuda_ok(cudaMemcpyAsync(
+                g_traceWorkspace.hostPartitions,
+                g_traceWorkspace.partitions,
+                items.size()*sizeof(GpuTracePartitionRecord),
+                cudaMemcpyDeviceToHost, stream),
+            "copy exact trace partitions"))
+        return false;
+    if (partitionEnabled
+        && !trace_cuda_ok(cudaMemcpyAsync(
+                g_traceWorkspace.hostPartitionPolygons,
+                g_traceWorkspace.partitionPolygons,
+                items.size()*GPU_TRACE_PARTITION_SLOTS
+                    *sizeof(GpuTracePartitionPolygonRecord),
+                cudaMemcpyDeviceToHost, stream),
+            "copy exact trace partition polygons"))
         return false;
     if (!trace_cuda_ok(cudaStreamSynchronize(stream),
                        "wait for trace preparation"))
@@ -2451,10 +3460,10 @@ bool GpuTracePrepareBeamFacetBatch(const Facet *facets,
         const double d2hMs = std::chrono::duration<double, std::milli>(
             d2hFinished - d2hStarted).count();
         std::fprintf(stderr,
-                     "GPU trace timing: items=%zu candidates=%zu bytes=%zu "
+                     "GPU trace timing: device=%d items=%zu candidates=%zu bytes=%zu "
                      "h2d_ms=%.6f small_ms=%.6f large_ms=%.6f "
                      "d2h_wait_ms=%.6f\n",
-                     items.size(), out, layout.bytes, h2dMs,
+                     g_traceWorkspace.deviceId, items.size(), out, layout.bytes, h2dMs,
                      static_cast<double>(smallMs),
                      static_cast<double>(largeMs), d2hMs);
     }
@@ -2504,6 +3513,105 @@ bool GpuTracePrepareBeamFacetBatch(const Facet *facets,
         item.facetIds->size = kept;
         if (!hasSkipFlags)
             item.mayIntersect->clear();
+        if (exactHitEnabled && item.exactHit != nullptr)
+        {
+            const GpuTraceExactHitRecord *record = partitionEnabled
+                ? nullptr : hostExactHits + itemIdx;
+            const GpuTracePartitionRecord *partition = partitionEnabled
+                ? g_traceWorkspace.hostPartitions + itemIdx : nullptr;
+            const GpuTracePartitionPolygonRecord *partitionPolygons =
+                partitionEnabled
+                ? g_traceWorkspace.hostPartitionPolygons
+                    + itemIdx*GPU_TRACE_PARTITION_SLOTS
+                : nullptr;
+            const int exactEvaluated = partitionEnabled
+                ? partition->exactEvaluated : record->evaluated;
+            const int candidateIndex = partitionEnabled
+                ? partition->candidateIndex : record->candidateIndex;
+            const int facetId = partitionEnabled
+                ? partition->facetId : record->facetId;
+            const int exactVertices = partitionEnabled
+                ? partitionPolygons[0].nVertices : record->nVertices;
+            item.exactHit->evaluated = exactEvaluated != 0;
+            item.exactHit->candidateIndex = candidateIndex;
+            item.exactHit->facetId = facetId;
+            item.exactHit->intersection.Clear();
+            item.exactHit->partitionEvaluated = false;
+            item.exactHit->partitionOverflow = false;
+            item.exactHit->partitionOverlapArea = 0.0;
+            item.exactHit->reachedIntersection.Clear();
+            item.exactHit->remaining.clear();
+            if (exactEvaluated != 0
+                && exactVertices >= MIN_VERTEX_NUM
+                && exactVertices <= GPU_TRACE_EXACT_VERTICES)
+            {
+                item.exactHit->intersection.nVertices = exactVertices;
+                for (int vertex = 0; vertex < exactVertices; ++vertex)
+                {
+                    const double *coordinates = partitionEnabled
+                        ? partitionPolygons[0].vertices[vertex]
+                        : record->vertices[vertex];
+                    item.exactHit->intersection.arr[vertex] = Point3f(
+                        coordinates[0], coordinates[1], coordinates[2]);
+                }
+            }
+            if (partitionEnabled)
+            {
+                item.exactHit->partitionEvaluated =
+                    partition->evaluated != 0;
+                item.exactHit->partitionOverflow = partition->overflow != 0;
+                item.exactHit->partitionOverlapArea = partition->overlapArea;
+                const bool validPartitionHeader = partition->evaluated != 0
+                    && partitionPolygons[0].nVertices >= MIN_VERTEX_NUM
+                    && partitionPolygons[0].nVertices
+                       <= GPU_TRACE_EXACT_VERTICES
+                    && partition->remainingCount >= 0
+                    && partition->remainingCount
+                       < GPU_TRACE_PARTITION_SLOTS;
+                if (!validPartitionHeader)
+                    item.exactHit->partitionEvaluated = false;
+                if (validPartitionHeader)
+                {
+                    item.exactHit->reachedIntersection.nVertices =
+                        partitionPolygons[0].nVertices;
+                    for (int vertex = 0;
+                         vertex < partitionPolygons[0].nVertices; ++vertex)
+                        item.exactHit->reachedIntersection.arr[vertex] =
+                            Point3f(
+                                partitionPolygons[0].vertices[vertex][0],
+                                partitionPolygons[0].vertices[vertex][1],
+                                partitionPolygons[0].vertices[vertex][2]);
+                    item.exactHit->remaining.reserve(
+                        static_cast<size_t>(partition->remainingCount));
+                    for (int polygonIndex = 0;
+                         polygonIndex < partition->remainingCount;
+                         ++polygonIndex)
+                    {
+                        const int vertexCount =
+                            partitionPolygons[polygonIndex + 1].nVertices;
+                        if (vertexCount < MIN_VERTEX_NUM
+                            || vertexCount > GPU_TRACE_EXACT_VERTICES)
+                        {
+                            item.exactHit->partitionEvaluated = false;
+                            item.exactHit->partitionOverflow = true;
+                            item.exactHit->remaining.clear();
+                            break;
+                        }
+                        Polygon polygon;
+                        polygon.nVertices = vertexCount;
+                        for (int vertex = 0; vertex < vertexCount; ++vertex)
+                            polygon.arr[vertex] = Point3f(
+                                partitionPolygons[polygonIndex + 1]
+                                    .vertices[vertex][0],
+                                partitionPolygons[polygonIndex + 1]
+                                    .vertices[vertex][1],
+                                partitionPolygons[polygonIndex + 1]
+                                    .vertices[vertex][2]);
+                        item.exactHit->remaining.push_back(polygon);
+                    }
+                }
+            }
+        }
     }
     return true;
 }
@@ -2514,6 +3622,16 @@ bool GpuTraceLastFailureWasOutOfMemory()
 }
 
 #else
+
+int GpuTraceBindWorkerDevice()
+{
+    return -1;
+}
+
+int GpuTraceWorkerDeviceCount()
+{
+    return 0;
+}
 
 bool GpuTracePrefilterBeamFacets(const Beam &/*beam*/,
                                  const Facet */*facets*/,
