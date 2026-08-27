@@ -8,8 +8,10 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <cstdint>
+#include <mutex>
 #include <utility>
 #include <vector>
 #include <iomanip>
@@ -29,6 +31,100 @@
 
 #ifdef USE_CUDA
 namespace {
+bool GpuTraceOpenMPEnabled()
+{
+    const char *value = std::getenv("MBS_GPU_TRACE_OPENMP");
+    return !(value && value[0] == '0' && value[1] == '\0');
+}
+
+int GpuTraceWorkerCount()
+{
+#ifdef _OPENMP
+    if (GpuTraceOpenMPEnabled())
+        return std::max(1, omp_get_max_threads());
+#endif
+    return 1;
+}
+
+size_t GpuTraceConfiguredInflightBeamLimit()
+{
+    const char *value = std::getenv("MBS_GPU_TRACE_INFLIGHT_BEAMS");
+    if (value && *value)
+    {
+        char *end = nullptr;
+        const unsigned long long parsed = std::strtoull(value, &end, 10);
+        if (end && *end == '\0' && parsed >= 32)
+            return static_cast<size_t>(
+                std::min<unsigned long long>(parsed, 65536));
+    }
+    return 512;
+}
+
+struct GpuTraceInflightBeamState
+{
+    std::mutex mutex;
+    std::condition_variable available;
+    size_t active = 0;
+    size_t limit = GpuTraceConfiguredInflightBeamLimit();
+};
+
+GpuTraceInflightBeamState &GpuTraceInflightBeams()
+{
+    static GpuTraceInflightBeamState state;
+    return state;
+}
+
+class GpuTraceInflightBeamGuard
+{
+public:
+    explicit GpuTraceInflightBeamGuard(size_t requested)
+        : m_count(0)
+    {
+        if (requested == 0)
+            return;
+        GpuTraceInflightBeamState &state = GpuTraceInflightBeams();
+        std::unique_lock<std::mutex> lock(state.mutex);
+        m_count = std::min(requested, state.limit);
+        state.available.wait(lock, [&state, this]() {
+            return m_count <= state.limit -
+                std::min(state.active, state.limit);
+        });
+        state.active += m_count;
+    }
+
+    ~GpuTraceInflightBeamGuard()
+    {
+        if (m_count == 0)
+            return;
+        GpuTraceInflightBeamState &state = GpuTraceInflightBeams();
+        {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            state.active -= m_count;
+        }
+        state.available.notify_all();
+    }
+
+    GpuTraceInflightBeamGuard(const GpuTraceInflightBeamGuard &) = delete;
+    GpuTraceInflightBeamGuard &operator=(
+        const GpuTraceInflightBeamGuard &) = delete;
+
+private:
+    size_t m_count;
+};
+
+size_t GpuTraceReduceInflightBeamLimit()
+{
+    GpuTraceInflightBeamState &state = GpuTraceInflightBeams();
+    size_t reduced = 0;
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.limit = std::max<size_t>(32, state.limit / 2);
+        reduced = state.limit;
+    }
+    state.available.notify_all();
+    return reduced;
+}
+
 std::atomic<int> &GpuTraceBatchBeamLimitState()
 {
     static std::atomic<int> limit([]() {
@@ -38,15 +134,13 @@ std::atomic<int> &GpuTraceBatchBeamLimitState()
             char *end = nullptr;
             const long parsed = std::strtol(value, &end, 10);
             if (end && *end == '\0' && parsed >= 1)
-                return static_cast<int>(std::min<long>(parsed, 16384));
+                return static_cast<int>(std::min<unsigned long long>(
+                    static_cast<unsigned long long>(parsed),
+                    std::min<unsigned long long>(
+                        16384, GpuTraceConfiguredInflightBeamLimit())));
         }
 
-        int workers = 1;
-#ifdef _OPENMP
-        const char *openmp = std::getenv("MBS_GPU_TRACE_OPENMP");
-        if (openmp && openmp[0] == '1' && openmp[1] == '\0')
-            workers = std::max(1, omp_get_max_threads());
-#endif
+        const int workers = GpuTraceWorkerCount();
         // Each CUDA grid reserves per-thread stack backing. Keep the total
         // number of simultaneously submitted blocks bounded when tracing
         // orientations from several OpenMP workers. Complex non-convex
@@ -82,12 +176,19 @@ bool GpuTracePrepareBeamFacetBatchAdaptive(
     double geometryScale,
     const std::vector<GpuTraceBeamFacets> &items)
 {
-    if (GpuTracePrepareBeamFacetBatch(facets, geometryScale, items))
+    bool prepared = false;
+    {
+        GpuTraceInflightBeamGuard inflightGuard(items.size());
+        prepared = GpuTracePrepareBeamFacetBatch(
+            facets, geometryScale, items);
+    }
+    if (prepared)
         return true;
-    if (!GpuTraceLastFailureWasOutOfMemory() || items.size() <= 32)
+    if (!GpuTraceLastFailureWasOutOfMemory())
         return false;
 
     const int reducedLimit = GpuTraceReduceBatchBeamLimit(items.size());
+    const size_t reducedInflightLimit = GpuTraceReduceInflightBeamLimit();
     static std::atomic<int> lastWarnedLimit(0);
     const int previousWarning = lastWarnedLimit.exchange(
         reducedLimit, std::memory_order_relaxed);
@@ -96,9 +197,13 @@ bool GpuTracePrepareBeamFacetBatchAdaptive(
         std::cerr
             << "WARNING: CUDA trace batch exhausted device memory; "
             << "retrying in smaller pieces and reducing subsequent batches to "
-            << reducedLimit << " beams."
+            << reducedLimit << " beams and the process-wide in-flight budget to "
+            << reducedInflightLimit << " beams."
             << std::endl;
     }
+
+    if (items.size() <= 32)
+        return false;
 
     const size_t middle = items.size() / 2;
     const std::vector<GpuTraceBeamFacets> first(
@@ -114,8 +219,7 @@ bool GpuTracePrepareBeamFacetBatchAdaptive(
 
 bool GpuTraceAllowOpenMP()
 {
-    const char *value = std::getenv("MBS_GPU_TRACE_OPENMP");
-    return !(value && value[0] == '0' && value[1] == '\0');
+    return GpuTraceOpenMPEnabled();
 }
 
 bool GpuTraceVerifySort()

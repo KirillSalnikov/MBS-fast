@@ -782,9 +782,12 @@ were byte-identical in both A/B checks.
 
 Independent processes using the same physical GPU serialize only their heavy
 trace-batch region through a PCI-addressed file lock. OpenMP workers within one
-process retain their separate streams and overlap as before. This default
-prevents the combined CUDA kernel-stack reservations of concurrent programs
-from exhausting device memory. It does not serialize diffraction kernels.
+process retain their separate streams and overlap while sharing a default
+512-beam in-flight budget. The per-process budget prevents per-worker batches
+from multiplying CUDA workspace and kernel-stack demand without bound. After a
+CUDA OOM both the batch size and the in-flight budget are halved. The file lock
+still prevents independent programs from overlapping their heavy trace region.
+Neither mechanism serializes diffraction kernels.
 
 Expert overrides require `--allow-experimental-environment`:
 
@@ -792,6 +795,7 @@ Expert overrides require `--allow-experimental-environment`:
 |---|---:|---|
 | `MBS_GPU_TRACE_OPENMP=0/1` | `1` | Disable or enable GPU tracing from multiple OpenMP workers. |
 | `MBS_GPU_TRACE_BATCH_BEAMS=N` | initial `ceil(512/threads)`, minimum 64 | Per-worker beam batch; reduced automatically after OOM, use an override only for measured tuning. |
+| `MBS_GPU_TRACE_INFLIGHT_BEAMS=N` | `512` | Maximum combined trace-beam count across all OpenMP workers; reduced automatically after OOM. |
 | `MBS_GPU_TRACE_FULL_SORT=0/1` | `1` | Disable or enable exact CUDA topological facet ordering. |
 | `MBS_GPU_TRACE_SORT_CACHE=0/1` | `1` | Reuse exact ordering for identical direction/candidate keys. |
 | `MBS_GPU_TRACE_LARGE_SKIP_FLAGS=0/1` | `1` | Emit conservative projected skip flags for lists of 25--256 facets. |
@@ -1071,6 +1075,7 @@ Production-use variables:
 | `MBS_GPU_BLOCK` | CUDA block size: 64 (default), 128, or 256. |
 | `MBS_GPU_TRACE_OPENMP=0/1` | Disable or enable automatic CUDA tracing with multiple OpenMP workers; default `1`. |
 | `MBS_GPU_TRACE_BATCH_BEAMS=N` | Override the automatic per-worker batch `ceil(512/threads)`; large values may exhaust CUDA stack memory. |
+| `MBS_GPU_TRACE_INFLIGHT_BEAMS=N` | Process-wide concurrent trace-beam budget; default `512`, minimum `32`. |
 | `MBS_GPU_TRACE_FULL_SORT=0/1` | Exact CUDA topological ordering; default `1`. |
 | `MBS_GPU_TRACE_SORT_CACHE=0/1` | Exact ordering cache; default `1`. |
 | `MBS_GPU_TRACE_LARGE_SKIP_FLAGS=0/1` | Conservative skip flags for large candidate lists; default `1`. |

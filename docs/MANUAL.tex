@@ -1567,6 +1567,7 @@ Variable & Default & Meaning \\
 \endlastfoot
 \nolinkurl{MBS_GPU_TRACE_OPENMP} & 1 & Allow CUDA tracing from OpenMP workers. \\
 \nolinkurl{MBS_GPU_TRACE_BATCH_BEAMS} & automatic & Override the initial per-worker batch; after OOM the process lowers and remembers the limit. \\
+\nolinkurl{MBS_GPU_TRACE_INFLIGHT_BEAMS} & 512 & Limit the combined number of trace beams submitted by all OpenMP workers; reduced after OOM. \\
 \nolinkurl{MBS_GPU_TRACE_FULL_SORT} & 1 & Exact CUDA topological ordering. \\
 \nolinkurl{MBS_GPU_TRACE_SORT_CACHE} & 1 & Reuse exact ordering for identical keys. \\
 \nolinkurl{MBS_GPU_TRACE_LARGE_SKIP_FLAGS} & 1 & Conservative projected skip flags. \\
@@ -1932,6 +1933,8 @@ tiled 3D grid for the consumer thread path. \\
 OpenMP workers; default \texttt{1}. \\
 \nolinkurl{MBS_GPU_TRACE_BATCH_BEAMS} & Override the automatic per-worker
 batch $\max(64,\lceil512/N_{\mathrm{workers}}\rceil)$. \\
+\nolinkurl{MBS_GPU_TRACE_INFLIGHT_BEAMS} & Limit all OpenMP workers to a
+combined in-flight trace budget; default \texttt{512}, minimum \texttt{32}. \\
 \nolinkurl{MBS_GPU_TRACE_FULL_SORT} & Exact CUDA topological ordering;
 default \texttt{1}. \\
 \nolinkurl{MBS_GPU_TRACE_SORT_CACHE} & Cache exact CUDA ordering; default
