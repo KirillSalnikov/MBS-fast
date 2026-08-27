@@ -1465,6 +1465,9 @@ plus reduction where supported. \\
 path for debugging. \\
 \texttt{MBS\_GPU\_COMPACT\_BEAMS=0} & Disable compact packing for beams
 with at most 8 vertices and use the general layout for diagnostics. \\
+\nolinkurl{MBS_GPU_COMPACT_BEAM4_SPLIT=0} & Disable separate four-vertex
+records for triangles/quadrilaterals and use the previous eight-vertex
+compact layout. \\
 \texttt{MBS\_GPU\_WARP\_BEAMS=0/1} & Override automatic reduction: one
 thread per output (0) or one warp per output (1). \\
 \texttt{MBS\_GPU\_WARP\_GRID\_3D=0} & Disable the 3D-grid specialization
@@ -1487,6 +1490,18 @@ a $16\,\theta\times4\,\phi$ tiled grid when incomplete edge tiles add no more
 than 15\% work. This removed two integer divisions per output thread and
 changed wall time by 0--11\% in validation. \texttt{MBS\_GPU\_TIMING=1}
 reports \texttt{reduction=thread|warp} and \texttt{layout=3d|flat}.
+
+For the compact thread path, automatic packing separates polygons with at most
+four vertices from polygons with five to eight vertices. Triangles and
+quadrilaterals use compile-time loop lengths when every compact polygon has at
+least three vertices. Packing uses one stable bucket pass instead of scanning
+the beam list once per vertex count. On the RTX 3080 Ti concave absorbing probe
+this reduced summed FP32 CUDA-kernel time by about 4\% and complete GPU
+diffraction time by about 3\%; the short end-to-end run improved by about
+2--3\% because CPU tracing was unchanged. FP64 was neutral in the kernel and
+still benefited from reduced packing and transfer work. The release gate
+compares this path with \texttt{MBS\_GPU\_COMPACT\_BEAM4\_SPLIT=0} in both
+precision profiles.
 
 \subsection{Automatic CUDA tracing profile}
 
@@ -1888,6 +1903,8 @@ Mueller reduction when supported. \\
 for debugging. \\
 \texttt{MBS\_GPU\_COMPACT\_BEAMS=0} & Disable compact packing for beams
 with at most 8 vertices. \\
+\nolinkurl{MBS_GPU_COMPACT_BEAM4_SPLIT=0} & Disable automatic four-vertex
+records for triangles/quadrilaterals. \\
 \texttt{MBS\_GPU\_WARP\_BEAMS=0/1} & Override the automatic thread-per-output
 or warp-per-output reduction choice. \\
 \texttt{MBS\_GPU\_WARP\_GRID\_3D=0} & Disable the 3D-grid specialization when

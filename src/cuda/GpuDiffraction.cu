@@ -155,13 +155,14 @@ struct GpuBeam
     int orientation;
 };
 
-struct GpuBeam8
+template <int MaxVertices>
+struct GpuCompactBeam
 {
-    GpuBeam8() {}
+    GpuCompactBeam() {}
 
-    GpuReal x[8], y[8];
-    GpuReal slope_yx[8], slope_xy[8];
-    unsigned char edge_valid_x[8], edge_valid_y[8];
+    GpuReal x[MaxVertices], y[MaxVertices];
+    GpuReal slope_yx[MaxVertices], slope_xy[MaxVertices];
+    unsigned char edge_valid_x[MaxVertices], edge_valid_y[MaxVertices];
     int nVertices;
     int nEdgeX, nEdgeY;
     int isExternal;
@@ -179,9 +180,13 @@ struct GpuBeam8
     GpuReal jp10r, jp10i, jp11r, jp11i;
 };
 
+using GpuBeam4 = GpuCompactBeam<4>;
+using GpuBeam8 = GpuCompactBeam<8>;
+
 struct GpuWorkspace
 {
     GpuBeam *beams = nullptr;
+    GpuBeam4 *beams4 = nullptr;
     GpuBeam8 *beams8 = nullptr;
     GpuReal *sinTheta = nullptr, *cosTheta = nullptr;
     GpuReal *sinPhi = nullptr, *cosPhi = nullptr;
@@ -191,23 +196,30 @@ struct GpuWorkspace
     GpuReal *scales = nullptr;
     double *absPaths = nullptr;
     int *beamOffsets = nullptr;
+    int *beamOffsets4 = nullptr;
+    int *beamOffsets4Quad = nullptr;
     int *beamOffsets8 = nullptr;
     GpuReal *m = nullptr, *mNoShadow = nullptr, *mOrient = nullptr;
     size_t beamCap = 0;
+    size_t beam4Cap = 0;
     size_t beam8Cap = 0;
     size_t sinThetaCap = 0, cosThetaCap = 0;
     size_t sinPhiCap = 0, cosPhiCap = 0;
     size_t vfCap = 0, jCap = 0, jNoShadowCap = 0;
     size_t weightsCap = 0, scalesCap = 0, absPathsCap = 0, beamOffsetsCap = 0, mCap = 0, mNoShadowCap = 0, mOrientCap = 0;
+    size_t beamOffsets4Cap = 0, beamOffsets4QuadCap = 0;
     size_t beamOffsets8Cap = 0;
     int gridNAz = -1, gridNZen = -1;
     double gridSignature = 0.0;
     std::vector<GpuBeam> hBeams;
+    std::vector<GpuBeam4> hBeams4;
     std::vector<GpuBeam8> hBeams8;
     std::vector<GpuReal> hWeights;
     std::vector<GpuReal> hScales;
     std::vector<double> hAbsPaths;
     std::vector<int> hBeamOffsets;
+    std::vector<int> hBeamOffsets4;
+    std::vector<int> hBeamOffsets4Quad;
     std::vector<int> hBeamOffsets8;
     std::vector<GpuReal> hM;
     std::vector<GpuReal> hMNoShadow;
@@ -215,10 +227,12 @@ struct GpuWorkspace
     int packedStart = 0;
     int packedOrientCount = 0;
     size_t packedBeamCount = 0;
+    size_t packedBeam4Count = 0;
     size_t packedBeam8Count = 0;
     size_t packedLargeBeamCount = 0;
     int packedMaxBeamVertices = 0;
     bool packedAllBeam8 = false;
+    bool packedCompactAllAtLeast3 = true;
     double packedScale = 1.0;
     double packedWaveIndex = 0.0;
     bool packedCacheValid = false;
@@ -237,6 +251,7 @@ struct GpuWorkspace
     ~GpuWorkspace()
     {
         cudaFree(beams);
+        cudaFree(beams4);
         cudaFree(beams8);
         cudaFree(sinTheta);
         cudaFree(cosTheta);
@@ -249,6 +264,8 @@ struct GpuWorkspace
         cudaFree(scales);
         cudaFree(absPaths);
         cudaFree(beamOffsets);
+        cudaFree(beamOffsets4);
+        cudaFree(beamOffsets4Quad);
         cudaFree(beamOffsets8);
         cudaFree(m);
         cudaFree(mNoShadow);
@@ -374,15 +391,16 @@ static inline void pack_prepared_gpu_beam(const PreparedBeam &pb,
     }
 }
 
-static inline void pack_prepared_gpu_beam8(const PreparedBeam &pb,
-                                           int orientation,
-                                           double scale,
-                                           double scale2,
-                                           bool scaleOnPack,
-                                           double waveIndex,
-                                           double phaseCoordinateScale,
-                                           double cAbs,
-                                           GpuBeam8 &b)
+template <typename CompactBeamT>
+static inline void pack_prepared_gpu_compact_beam(const PreparedBeam &pb,
+                                                  int orientation,
+                                                  double scale,
+                                                  double scale2,
+                                                  bool scaleOnPack,
+                                                  double waveIndex,
+                                                  double phaseCoordinateScale,
+                                                  double cAbs,
+                                                  CompactBeamT &b)
 {
     b.nVertices = pb.edgeData.nVertices;
     b.nEdgeX = 0;
@@ -513,6 +531,12 @@ static int gpu_stage_mueller_mode()
 static bool gpu_compact_beams_enabled()
 {
     const char *value = std::getenv("MBS_GPU_COMPACT_BEAMS");
+    return !(value && value[0] == '0' && value[1] == '\0');
+}
+
+static bool gpu_compact_beam4_split_enabled()
+{
+    const char *value = std::getenv("MBS_GPU_COMPACT_BEAM4_SPLIT");
     return !(value && value[0] == '0' && value[1] == '\0');
 }
 
@@ -1130,7 +1154,8 @@ __device__ inline bool compute_beam_integral_cached_gpu(const BeamT &b,
     return true;
 }
 
-template <typename BeamT, int MaxVertices, bool UnitWave = false>
+template <typename BeamT, int MaxVertices, bool UnitWave = false,
+          int FixedVertices = 0>
 __device__ inline bool compute_beam_jones_context_limited_gpu(const BeamT &b,
                                                               GpuReal cp,
                                                               GpuReal sp,
@@ -1160,7 +1185,7 @@ __device__ inline bool compute_beam_jones_context_limited_gpu(const BeamT &b,
                                                               GpuReal &d10r, GpuReal &d10i,
                                                               GpuReal &d11r, GpuReal &d11i)
 {
-    int nv = b.nVertices;
+    const int nv = FixedVertices > 0 ? FixedVertices : b.nVertices;
     if (nv <= 0) return false;
 
     GpuReal neg_cp = -cp, neg_sp = -sp;
@@ -2654,6 +2679,149 @@ __global__ void diffraction_grid_mueller_full8_kernel(const GpuBeam8 *__restrict
         j10r += d10r; j10i += d10i;
         j11r += d11r; j11i += d11i;
     }
+
+    mueller_accum_from_jones(j00r, j00i, j01r, j01i, j10r, j10i, j11r, j11i,
+                             weights[orient] * (GpuReal)0.25,
+                             &mFull[grid * 16]);
+}
+
+template <typename BeamT, int MaxVertices, int FixedVertices = 0>
+__device__ inline void accumulate_compact_beam_jones_gpu(
+    const BeamT &b,
+    GpuReal cp, GpuReal sp, GpuReal sin_t, GpuReal cos_t,
+    GpuReal dx, GpuReal dy, GpuReal dz,
+    GpuReal vfx, GpuReal vfy, GpuReal vfz,
+    GpuReal vtx, GpuReal vty, GpuReal vtz,
+    GpuReal waveIndex, GpuReal wi2, GpuReal eps1, GpuReal eps2,
+    GpuReal complWaveR, GpuReal complWaveI,
+    GpuReal invComplWaveR, GpuReal invComplWaveI,
+    int legacySign,
+    GpuReal &j00r, GpuReal &j00i,
+    GpuReal &j01r, GpuReal &j01i,
+    GpuReal &j10r, GpuReal &j10i,
+    GpuReal &j11r, GpuReal &j11i)
+{
+    GpuReal d00r, d00i, d01r, d01i, d10r, d10i, d11r, d11i;
+    if (!compute_beam_jones_context_limited_gpu<
+            BeamT, MaxVertices, true, FixedVertices>(
+            b, cp, sp, sin_t, cos_t, dx, dy, dz, vfx, vfy, vfz,
+            vtx, vty, vtz,
+            waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+            invComplWaveR, invComplWaveI, legacySign, 1,
+            d00r, d00i, d01r, d01i, d10r, d10i, d11r, d11i))
+        return;
+
+    j00r += d00r; j00i += d00i;
+    j01r += d01r; j01i += d01i;
+    j10r += d10r; j10i += d10i;
+    j11r += d11r; j11i += d11i;
+}
+
+template <bool Grid3D, bool Fixed34>
+__global__ void diffraction_grid_mueller_full48_kernel(
+                                                      const GpuBeam4 *__restrict__ beams4,
+                                                      const int *__restrict__ beamOffsets4,
+                                                      const int *__restrict__ beamOffsets4Quad,
+                                                      const GpuBeam8 *__restrict__ beams8,
+                                                      const int *__restrict__ beamOffsets8,
+                                                      const GpuReal *__restrict__ sinTheta,
+                                                      const GpuReal *__restrict__ cosTheta,
+                                                      const GpuReal *__restrict__ sinPhi,
+                                                      const GpuReal *__restrict__ cosPhi,
+                                                      const GpuReal *__restrict__ vf,
+                                                      const GpuReal *__restrict__ weights,
+                                                      int nAz, int nZen,
+                                                      int nOrient,
+                                                      GpuReal waveIndex,
+                                                      GpuReal wi2,
+                                                      GpuReal eps1,
+                                                      GpuReal eps2,
+                                                      GpuReal complWaveR,
+                                                      GpuReal complWaveI,
+                                                      GpuReal invComplWaveR,
+                                                      GpuReal invComplWaveI,
+                                                      int legacySign,
+                                                      GpuReal *__restrict__ mFull)
+{
+    const int gridCount = nAz * (nZen + 1);
+    int orient;
+    int grid;
+    int p;
+    int t;
+    if (Grid3D)
+    {
+        orient = (int)blockIdx.z;
+        p = (int)blockIdx.y * (int)blockDim.y + (int)threadIdx.y;
+        t = (int)blockIdx.x * (int)blockDim.x + (int)threadIdx.x;
+        if (orient >= nOrient || p >= nAz || t > nZen)
+            return;
+        grid = p * (nZen + 1) + t;
+    }
+    else
+    {
+        const long long total = (long long)nOrient * gridCount;
+        const long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+        if (idx >= total)
+            return;
+        orient = (int)(idx / gridCount);
+        grid = (int)(idx - (long long)orient * gridCount);
+        p = grid / (nZen + 1);
+        t = grid - p * (nZen + 1);
+    }
+    const GpuReal cp = cosPhi[p], sp = sinPhi[p];
+    const GpuReal sin_t = sinTheta[t], cos_t = cosTheta[t];
+    const GpuReal dx = sin_t * cp;
+    const GpuReal dy = sin_t * sp;
+    const GpuReal dz = -cos_t;
+    const GpuReal vfx = vf[(grid * 3) + 0];
+    const GpuReal vfy = vf[(grid * 3) + 1];
+    const GpuReal vfz = vf[(grid * 3) + 2];
+    GpuReal vtx, vty, vtz;
+    transverse_basis_gpu(vfx, vfy, vfz, dx, dy, dz, vtx, vty, vtz);
+
+    GpuReal j00r = 0.0, j00i = 0.0;
+    GpuReal j01r = 0.0, j01i = 0.0;
+    GpuReal j10r = 0.0, j10i = 0.0;
+    GpuReal j11r = 0.0, j11i = 0.0;
+
+    const int begin4 = beamOffsets4[orient];
+    const int end4 = beamOffsets4[orient + 1];
+    if (Fixed34)
+    {
+        const int beginQuad = beamOffsets4Quad[orient];
+        for (int bi = begin4; bi < beginQuad; ++bi)
+            accumulate_compact_beam_jones_gpu<GpuBeam4, 4, 3>(
+                beams4[bi], cp, sp, sin_t, cos_t, dx, dy, dz,
+                vfx, vfy, vfz, vtx, vty, vtz,
+                waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+                invComplWaveR, invComplWaveI, legacySign,
+                j00r, j00i, j01r, j01i, j10r, j10i, j11r, j11i);
+        for (int bi = beginQuad; bi < end4; ++bi)
+            accumulate_compact_beam_jones_gpu<GpuBeam4, 4, 4>(
+                beams4[bi], cp, sp, sin_t, cos_t, dx, dy, dz,
+                vfx, vfy, vfz, vtx, vty, vtz,
+                waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+                invComplWaveR, invComplWaveI, legacySign,
+                j00r, j00i, j01r, j01i, j10r, j10i, j11r, j11i);
+    }
+    else
+    {
+        for (int bi = begin4; bi < end4; ++bi)
+            accumulate_compact_beam_jones_gpu<GpuBeam4, 4>(
+                beams4[bi], cp, sp, sin_t, cos_t, dx, dy, dz,
+                vfx, vfy, vfz, vtx, vty, vtz,
+                waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+                invComplWaveR, invComplWaveI, legacySign,
+                j00r, j00i, j01r, j01i, j10r, j10i, j11r, j11i);
+    }
+
+    for (int bi = beamOffsets8[orient]; bi < beamOffsets8[orient + 1]; ++bi)
+        accumulate_compact_beam_jones_gpu<GpuBeam8, 8>(
+            beams8[bi], cp, sp, sin_t, cos_t, dx, dy, dz,
+            vfx, vfy, vfz, vtx, vty, vtz,
+            waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+            invComplWaveR, invComplWaveI, legacySign,
+            j00r, j00i, j01r, j01i, j10r, j10i, j11r, j11i);
 
     mueller_accum_from_jones(j00r, j00i, j01r, j01i, j10r, j10i, j11r, j11i,
                              weights[orient] * (GpuReal)0.25,
@@ -4893,10 +5061,15 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     double tCount = 0.0, tPack = 0.0, tEnsure = 0.0, tGrid = 0.0;
     double tCopy = 0.0, tKernel = 0.0, tD2h = 0.0, tAdd = 0.0;
 
+    std::vector<int> compactVertexCounts(
+        reusePacked ? 0 : (size_t)nOrient * 9, 0);
     size_t nBeams = reusePacked ? ws.packedBeamCount : 0;
+    size_t nBeams4 = reusePacked ? ws.packedBeam4Count : 0;
     size_t nBeams8 = reusePacked ? ws.packedBeam8Count : 0;
     size_t nBeamsLarge = reusePacked ? ws.packedLargeBeamCount : 0;
     bool allBeam8 = reusePacked ? ws.packedAllBeam8 : true;
+    bool compactAllAtLeast3 = reusePacked
+        ? ws.packedCompactAllAtLeast3 : true;
     int maxBeamVertices = reusePacked ? ws.packedMaxBeamVertices : 0;
     if (!reusePacked)
     {
@@ -4917,7 +5090,13 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                 }
                 else
                 {
+                    if (pb.edgeData.nVertices < 3)
+                        compactAllAtLeast3 = false;
+                    if (pb.edgeData.nVertices <= 4)
+                        ++nBeams4;
                     ++nBeams8;
+                    ++compactVertexCounts[(size_t)oi * 9
+                                          + pb.edgeData.nVertices];
                 }
                 ++nBeams;
             }
@@ -4953,15 +5132,30 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     const bool packMixedBeam8 = !allBeam8 && canUseBeam8
                              && requestedStageMueller != 1
                              && nBeams8 > 0 && nBeamsLarge > 0;
+    const bool splitBeam4 = packBeam8 && gpu_compact_beam4_split_enabled()
+                         && requestedStageMueller != 1
+                         && !gpu_warp_beams_enabled() && nBeams4 > 0;
+    const bool fixedBeam34 = splitBeam4 && compactAllAtLeast3;
     std::vector<GpuBeam> &hBeams = ws.hBeams;
+    std::vector<GpuBeam4> &hBeams4 = ws.hBeams4;
     std::vector<GpuBeam8> &hBeams8 = ws.hBeams8;
     std::vector<GpuReal> &hWeights = ws.hWeights;
     std::vector<int> &hBeamOffsets = ws.hBeamOffsets;
+    std::vector<int> &hBeamOffsets4 = ws.hBeamOffsets4;
+    std::vector<int> &hBeamOffsets4Quad = ws.hBeamOffsets4Quad;
     std::vector<int> &hBeamOffsets8 = ws.hBeamOffsets8;
     if (!reusePacked)
     {
         if (packBeam8)
-            hBeams8.resize(nBeams);
+        {
+            if (splitBeam4)
+            {
+                hBeams4.resize(nBeams4);
+                hBeams8.resize(nBeams8 - nBeams4);
+            }
+            else
+                hBeams8.resize(nBeams);
+        }
         else if (packMixedBeam8)
         {
             hBeams8.resize(nBeams8);
@@ -4971,7 +5165,14 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
             hBeams.resize(nBeams);
         hWeights.assign(nOrient, 0.0);
         hBeamOffsets.assign(nOrient + 1, 0);
-        if (packMixedBeam8)
+        if (splitBeam4)
+        {
+            hBeamOffsets4.assign(nOrient + 1, 0);
+            if (fixedBeam34)
+                hBeamOffsets4Quad.assign(nOrient, 0);
+            hBeamOffsets8.assign(nOrient + 1, 0);
+        }
+        else if (packMixedBeam8)
             hBeamOffsets8.assign(nOrient + 1, 0);
 
         const bool beamStats = gpu_beam_stats_enabled();
@@ -4980,12 +5181,23 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         size_t statEdgesX = 0, statEdgesY = 0;
         size_t statMinBeams = (size_t)-1, statMaxBeams = 0;
         size_t bi = 0;
+        size_t bi4 = 0;
         size_t bi8 = 0;
         size_t biLarge = 0;
         for (int oi = 0; oi < nOrient; ++oi)
         {
             hBeamOffsets[oi] = (int)(packMixedBeam8 ? biLarge : bi);
-            if (packMixedBeam8)
+            if (splitBeam4)
+            {
+                hBeamOffsets4[oi] = (int)bi4;
+                if (fixedBeam34)
+                    hBeamOffsets4Quad[oi] = (int)(bi4
+                        + compactVertexCounts[(size_t)oi * 9 + 1]
+                        + compactVertexCounts[(size_t)oi * 9 + 2]
+                        + compactVertexCounts[(size_t)oi * 9 + 3]);
+                hBeamOffsets8[oi] = (int)bi8;
+            }
+            else if (packMixedBeam8)
                 hBeamOffsets8[oi] = (int)bi8;
             const PreparedOrientation &po = prepared[start + oi];
             hWeights[oi] = po.sinZenith;
@@ -4995,9 +5207,9 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                 statMinBeams = std::min(statMinBeams, beamsInOrient);
                 statMaxBeams = std::max(statMaxBeams, beamsInOrient);
             }
-            for (const PreparedBeam &pb : po.beams)
+            if (beamStats)
             {
-                if (beamStats)
+                for (const PreparedBeam &pb : po.beams)
                 {
                     ++statVertexHist[pb.edgeData.nVertices];
                     if (pb.isExternal)
@@ -5011,20 +5223,32 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                     }
                 }
             }
-            if (packMixedBeam8)
+            const int *vertexCounts =
+                &compactVertexCounts[(size_t)oi * 9];
+            if (splitBeam4)
             {
-                for (const PreparedBeam &pb : po.beams)
-                {
-                    if (pb.edgeData.nVertices <= 8)
-                        ++bi8;
-                    else
-                        ++biLarge;
-                }
+                for (int nv = 1; nv <= 4; ++nv)
+                    bi4 += vertexCounts[nv];
+                for (int nv = 5; nv <= 8; ++nv)
+                    bi8 += vertexCounts[nv];
+            }
+            else if (packMixedBeam8)
+            {
+                size_t compactCount = 0;
+                for (int nv = 1; nv <= 8; ++nv)
+                    compactCount += vertexCounts[nv];
+                bi8 += compactCount;
+                biLarge += po.beams.size() - compactCount;
             }
             bi += po.beams.size();
         }
         hBeamOffsets[nOrient] = (int)(packMixedBeam8 ? biLarge : bi);
-        if (packMixedBeam8)
+        if (splitBeam4)
+        {
+            hBeamOffsets4[nOrient] = (int)bi4;
+            hBeamOffsets8[nOrient] = (int)bi8;
+        }
+        else if (packMixedBeam8)
             hBeamOffsets8[nOrient] = (int)bi8;
 
 #pragma omp parallel for schedule(static) if(nOrient > 1 && nBeams >= 4096 && !g_gpuMultiWorker)
@@ -5033,31 +5257,54 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
             size_t out = (size_t)hBeamOffsets[oi];
             size_t out8 = packMixedBeam8 ? (size_t)hBeamOffsets8[oi] : 0;
             const PreparedOrientation &po = prepared[start + oi];
-            if (packBeam8 || packMixedBeam8)
+            if (splitBeam4)
             {
-                // Stable counting passes make almost every warp homogeneous
-                // in both compile-time path and loop trip count. Packing is a
-                // one-off host cost; diffraction reuses this order for every
-                // scattering direction.
-                for (int vertexCount = 1; vertexCount <= 8; ++vertexCount)
+                size_t cursor[9] = {};
+                cursor[1] = (size_t)hBeamOffsets4[oi];
+                for (int nv = 2; nv <= 4; ++nv)
+                    cursor[nv] = cursor[nv - 1]
+                        + compactVertexCounts[(size_t)oi * 9 + nv - 1];
+                cursor[5] = (size_t)hBeamOffsets8[oi];
+                for (int nv = 6; nv <= 8; ++nv)
+                    cursor[nv] = cursor[nv - 1]
+                        + compactVertexCounts[(size_t)oi * 9 + nv - 1];
+                for (const PreparedBeam &pb : po.beams)
                 {
-                    for (const PreparedBeam &pb : po.beams)
-                    {
-                        const int nv = pb.edgeData.nVertices;
-                        if (nv != vertexCount)
-                            continue;
-                        pack_prepared_gpu_beam8(
+                    const int nv = pb.edgeData.nVertices;
+                    if (nv <= 4)
+                        pack_prepared_gpu_compact_beam(
                             pb, oi, scale, scale2, scaleOnPack, waveIndex,
                             packedPhaseScale, AbsorptionCoefficient(),
-                            hBeams8[packBeam8 ? out++ : out8++]);
-                    }
+                            hBeams4[cursor[nv]++]);
+                    else
+                        pack_prepared_gpu_compact_beam(
+                            pb, oi, scale, scale2, scaleOnPack, waveIndex,
+                            packedPhaseScale, AbsorptionCoefficient(),
+                            hBeams8[cursor[nv]++]);
                 }
-                if (packMixedBeam8)
+            }
+            else if (packBeam8 || packMixedBeam8)
+            {
+                // Stable bucket cursors retain the previous vertex-count
+                // ordering while replacing eight complete list scans with a
+                // single packing pass.
+                size_t cursor[9] = {};
+                cursor[1] = packBeam8 ? out : out8;
+                for (int nv = 2; nv <= 8; ++nv)
+                    cursor[nv] = cursor[nv - 1]
+                        + compactVertexCounts[(size_t)oi * 9 + nv - 1];
+                for (const PreparedBeam &pb : po.beams)
                 {
-                    for (const PreparedBeam &pb : po.beams)
+                    const int nv = pb.edgeData.nVertices;
+                    if (nv <= 8)
                     {
-                        if (pb.edgeData.nVertices <= 8)
-                            continue;
+                        pack_prepared_gpu_compact_beam(
+                            pb, oi, scale, scale2, scaleOnPack, waveIndex,
+                            packedPhaseScale, AbsorptionCoefficient(),
+                            hBeams8[cursor[nv]++]);
+                    }
+                    else
+                    {
                         pack_prepared_gpu_beam<GpuBeam, 32>(
                             pb, oi, scale, scale2, scaleOnPack, waveIndex,
                             packedPhaseScale, AbsorptionCoefficient(),
@@ -5120,12 +5367,18 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
             const size_t muellerBytes =
                 mCount * sizeof(GpuReal) * (computeNoShadow ? 2 : 1);
             const size_t beamBytes =
-                (packMixedBeam8
+                (splitBeam4
+                    ? nBeams4 * sizeof(GpuBeam4)
+                        + (nBeams8 - nBeams4) * sizeof(GpuBeam8)
+                    : packMixedBeam8
                     ? nBeams8 * sizeof(GpuBeam8) + nBeamsLarge * sizeof(GpuBeam)
                     : nBeams * (packBeam8 ? sizeof(GpuBeam8) : sizeof(GpuBeam)))
                 + hWeights.size() * sizeof(GpuReal)
                 + hBeamOffsets.size() * sizeof(int)
-                + (packMixedBeam8 ? hBeamOffsets8.size() * sizeof(int) : 0);
+                + (splitBeam4 ? hBeamOffsets4.size() * sizeof(int) : 0)
+                + (fixedBeam34 ? hBeamOffsets4Quad.size() * sizeof(int) : 0)
+                + ((splitBeam4 || packMixedBeam8)
+                    ? hBeamOffsets8.size() * sizeof(int) : 0);
             const size_t gridBytes =
                 ((size_t)nZen + 1) * 2 * sizeof(GpuReal)
                 + (size_t)nAz * 2 * sizeof(GpuReal)
@@ -5157,7 +5410,12 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     t0 = timing ? gpu_now_ms() : 0.0;
     if (useBeam8)
     {
-        if (!ensure_device_capacity(ws.beams8, ws.beam8Cap, nBeams)) return failDirect("alloc-beams8");
+        if (splitBeam4)
+        {
+            if (!ensure_device_capacity(ws.beams4, ws.beam4Cap, nBeams4)) return failDirect("alloc-beams4");
+            if (!ensure_device_capacity(ws.beams8, ws.beam8Cap, nBeams8 - nBeams4)) return failDirect("alloc-beams8");
+        }
+        else if (!ensure_device_capacity(ws.beams8, ws.beam8Cap, nBeams)) return failDirect("alloc-beams8");
     }
     else if (useMixedBeam8)
     {
@@ -5167,7 +5425,9 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     else if (!ensure_device_capacity(ws.beams, ws.beamCap, nBeams)) return failDirect("alloc-beams");
     if (!ensure_device_capacity(ws.weights, ws.weightsCap, hWeights.size())) return failDirect("alloc-weights");
     if (!ensure_device_capacity(ws.beamOffsets, ws.beamOffsetsCap, hBeamOffsets.size())) return failDirect("alloc-offsets");
-    if (useMixedBeam8 && !ensure_device_capacity(ws.beamOffsets8, ws.beamOffsets8Cap, hBeamOffsets8.size())) return failDirect("alloc-offsets8");
+    if (splitBeam4 && !ensure_device_capacity(ws.beamOffsets4, ws.beamOffsets4Cap, hBeamOffsets4.size())) return failDirect("alloc-offsets4");
+    if (fixedBeam34 && !ensure_device_capacity(ws.beamOffsets4Quad, ws.beamOffsets4QuadCap, hBeamOffsets4Quad.size())) return failDirect("alloc-offsets4-quad");
+    if ((splitBeam4 || useMixedBeam8) && !ensure_device_capacity(ws.beamOffsets8, ws.beamOffsets8Cap, hBeamOffsets8.size())) return failDirect("alloc-offsets8");
     if (!ensure_device_capacity(ws.sinTheta, ws.sinThetaCap, (size_t)nZen + 1)) return failDirect("alloc-sintheta");
     if (!ensure_device_capacity(ws.cosTheta, ws.cosThetaCap, (size_t)nZen + 1)) return failDirect("alloc-costheta");
     if (!ensure_device_capacity(ws.sinPhi, ws.sinPhiCap, (size_t)nAz)) return failDirect("alloc-sinphi");
@@ -5226,7 +5486,16 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         ws.packedCacheValid = false;
         if (useBeam8)
         {
-            if (cudaMemcpy(ws.beams8, hBeams8.data(), hBeams8.size() * sizeof(GpuBeam8), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+            if (splitBeam4)
+            {
+                if (cudaMemcpy(ws.beams4, hBeams4.data(), hBeams4.size() * sizeof(GpuBeam4), cudaMemcpyHostToDevice) != cudaSuccess) return false;
+                if (!hBeams8.empty()
+                    && cudaMemcpy(ws.beams8, hBeams8.data(),
+                                  hBeams8.size() * sizeof(GpuBeam8),
+                                  cudaMemcpyHostToDevice) != cudaSuccess)
+                    return false;
+            }
+            else if (cudaMemcpy(ws.beams8, hBeams8.data(), hBeams8.size() * sizeof(GpuBeam8), cudaMemcpyHostToDevice) != cudaSuccess) return false;
         }
         else if (useMixedBeam8)
         {
@@ -5236,17 +5505,21 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         else if (cudaMemcpy(ws.beams, hBeams.data(), hBeams.size() * sizeof(GpuBeam), cudaMemcpyHostToDevice) != cudaSuccess) return false;
         if (cudaMemcpy(ws.weights, hWeights.data(), hWeights.size() * sizeof(GpuReal), cudaMemcpyHostToDevice) != cudaSuccess) return failDirect("copy-weights");
         if (cudaMemcpy(ws.beamOffsets, hBeamOffsets.data(), hBeamOffsets.size() * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) return failDirect("copy-offsets");
-        if (useMixedBeam8 && cudaMemcpy(ws.beamOffsets8, hBeamOffsets8.data(), hBeamOffsets8.size() * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) return failDirect("copy-offsets8");
+        if (splitBeam4 && cudaMemcpy(ws.beamOffsets4, hBeamOffsets4.data(), hBeamOffsets4.size() * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) return failDirect("copy-offsets4");
+        if (fixedBeam34 && cudaMemcpy(ws.beamOffsets4Quad, hBeamOffsets4Quad.data(), hBeamOffsets4Quad.size() * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) return failDirect("copy-offsets4-quad");
+        if ((splitBeam4 || useMixedBeam8) && cudaMemcpy(ws.beamOffsets8, hBeamOffsets8.data(), hBeamOffsets8.size() * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) return failDirect("copy-offsets8");
         if (g_gpuPackCacheToken != 0)
         {
             ws.packedCacheToken = g_gpuPackCacheToken;
             ws.packedStart = start;
             ws.packedOrientCount = nOrient;
             ws.packedBeamCount = nBeams;
+            ws.packedBeam4Count = nBeams4;
             ws.packedBeam8Count = nBeams8;
             ws.packedLargeBeamCount = nBeamsLarge;
             ws.packedMaxBeamVertices = maxBeamVertices;
             ws.packedAllBeam8 = allBeam8;
+            ws.packedCompactAllAtLeast3 = compactAllAtLeast3;
             ws.packedScale = scale;
             ws.packedWaveIndex = waveIndex;
             ws.packedCacheValid = true;
@@ -5395,27 +5668,79 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                 {
                     if (useThreadGrid3D)
                     {
-                        diffraction_grid_mueller_full8_kernel<true><<<threadGrid3D, threadBlock3D>>>(
-                            ws.beams8, ws.beamOffsets,
-                            ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
-                            ws.vf, ws.weights, nAz, nZen, nOrient,
-                            diffractionWaveIndex, diffractionWi2,
-                            gpu_effective_eps1(m_eps1), m_eps2,
-                            real(m_complWave), imag(m_complWave),
-                            real(m_invComplWave), imag(m_invComplWave),
-                            m_legacySign ? 1 : 0, ws.m);
+                        if (splitBeam4)
+                        {
+                            if (fixedBeam34)
+                                diffraction_grid_mueller_full48_kernel<true, true><<<threadGrid3D, threadBlock3D>>>(
+                                    ws.beams4, ws.beamOffsets4, ws.beamOffsets4Quad,
+                                    ws.beams8, ws.beamOffsets8,
+                                    ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                                    ws.vf, ws.weights, nAz, nZen, nOrient,
+                                    diffractionWaveIndex, diffractionWi2,
+                                    gpu_effective_eps1(m_eps1), m_eps2,
+                                    real(m_complWave), imag(m_complWave),
+                                    real(m_invComplWave), imag(m_invComplWave),
+                                    m_legacySign ? 1 : 0, ws.m);
+                            else
+                                diffraction_grid_mueller_full48_kernel<true, false><<<threadGrid3D, threadBlock3D>>>(
+                                    ws.beams4, ws.beamOffsets4, nullptr,
+                                    ws.beams8, ws.beamOffsets8,
+                                    ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                                    ws.vf, ws.weights, nAz, nZen, nOrient,
+                                    diffractionWaveIndex, diffractionWi2,
+                                    gpu_effective_eps1(m_eps1), m_eps2,
+                                    real(m_complWave), imag(m_complWave),
+                                    real(m_invComplWave), imag(m_invComplWave),
+                                    m_legacySign ? 1 : 0, ws.m);
+                        }
+                        else
+                            diffraction_grid_mueller_full8_kernel<true><<<threadGrid3D, threadBlock3D>>>(
+                                ws.beams8, ws.beamOffsets,
+                                ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                                ws.vf, ws.weights, nAz, nZen, nOrient,
+                                diffractionWaveIndex, diffractionWi2,
+                                gpu_effective_eps1(m_eps1), m_eps2,
+                                real(m_complWave), imag(m_complWave),
+                                real(m_invComplWave), imag(m_invComplWave),
+                                m_legacySign ? 1 : 0, ws.m);
                     }
                     else
                     {
-                        diffraction_grid_mueller_full8_kernel<false><<<diffractionGrid, block>>>(
-                            ws.beams8, ws.beamOffsets,
-                            ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
-                            ws.vf, ws.weights, nAz, nZen, nOrient,
-                            diffractionWaveIndex, diffractionWi2,
-                            gpu_effective_eps1(m_eps1), m_eps2,
-                            real(m_complWave), imag(m_complWave),
-                            real(m_invComplWave), imag(m_invComplWave),
-                            m_legacySign ? 1 : 0, ws.m);
+                        if (splitBeam4)
+                        {
+                            if (fixedBeam34)
+                                diffraction_grid_mueller_full48_kernel<false, true><<<diffractionGrid, block>>>(
+                                    ws.beams4, ws.beamOffsets4, ws.beamOffsets4Quad,
+                                    ws.beams8, ws.beamOffsets8,
+                                    ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                                    ws.vf, ws.weights, nAz, nZen, nOrient,
+                                    diffractionWaveIndex, diffractionWi2,
+                                    gpu_effective_eps1(m_eps1), m_eps2,
+                                    real(m_complWave), imag(m_complWave),
+                                    real(m_invComplWave), imag(m_invComplWave),
+                                    m_legacySign ? 1 : 0, ws.m);
+                            else
+                                diffraction_grid_mueller_full48_kernel<false, false><<<diffractionGrid, block>>>(
+                                    ws.beams4, ws.beamOffsets4, nullptr,
+                                    ws.beams8, ws.beamOffsets8,
+                                    ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                                    ws.vf, ws.weights, nAz, nZen, nOrient,
+                                    diffractionWaveIndex, diffractionWi2,
+                                    gpu_effective_eps1(m_eps1), m_eps2,
+                                    real(m_complWave), imag(m_complWave),
+                                    real(m_invComplWave), imag(m_invComplWave),
+                                    m_legacySign ? 1 : 0, ws.m);
+                        }
+                        else
+                            diffraction_grid_mueller_full8_kernel<false><<<diffractionGrid, block>>>(
+                                ws.beams8, ws.beamOffsets,
+                                ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                                ws.vf, ws.weights, nAz, nZen, nOrient,
+                                diffractionWaveIndex, diffractionWi2,
+                                gpu_effective_eps1(m_eps1), m_eps2,
+                                real(m_complWave), imag(m_complWave),
+                                real(m_invComplWave), imag(m_invComplWave),
+                                m_legacySign ? 1 : 0, ws.m);
                     }
                 }
             }
@@ -5585,7 +5910,9 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         tAdd = gpu_now_ms() - t0;
         std::fprintf(stderr,
                      "GPU timing diffract path=%s reduction=%s layout=%s block=%d orient=%d beams=%zu nAz=%d nZen=%d count=%.3fms pack=%.3fms ensure=%.3fms grid=%.3fms copy=%.3fms kernels=%.3fms d2h=%.3fms add=%.3fms total=%.3fms\n",
-                     useBeam8 ? "beam8" : (useMixedBeam8 ? "mixed-beam8" : "generic"),
+                     splitBeam4 ? "beam4+8"
+                         : (useBeam8 ? "beam8"
+                             : (useMixedBeam8 ? "mixed-beam8" : "generic")),
                      useWarpBeams ? "warp" : "thread",
                      (useWarpGrid3D || useThreadGrid3D) ? "3d" : "flat",
                      block, nOrient, nBeams, nAz, nZen, tCount, tPack, tEnsure,

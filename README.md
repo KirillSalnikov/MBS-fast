@@ -160,6 +160,12 @@ also selects a tiled `(theta, phi, orientation)` CUDA grid when edge padding
 adds no more than 15% work. This removes per-output integer division and gave
 0-11% wall-time improvement across the validation cases. Set
 `MBS_GPU_THREAD_GRID_3D=0` or `1` only to compare the flat and tiled layouts.
+The same thread path automatically stores triangles and quadrilaterals in a
+four-vertex record, retains a separate record for polygons with 5--8 vertices,
+and specializes the common 3/4-vertex loops. A single stable bucket pass
+replaces repeated scans during host packing. Set
+`MBS_GPU_COMPACT_BEAM4_SPLIT=0` only for an A/B comparison with the previous
+eight-vertex compact layout.
 
 For a double CUDA build without fast math:
 

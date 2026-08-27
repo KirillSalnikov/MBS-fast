@@ -690,6 +690,7 @@ Useful controls:
 | `MBS_GPU_STAGE_MUELLER=1` | Use staged per-orientation Mueller plus reduction where supported. |
 | `MBS_GPU_NO_VERTEX_CACHE=1` | Disable cached/packed vertex path for debugging. |
 | `MBS_GPU_COMPACT_BEAMS=0` | Disable compact packing for beams with at most 8 vertices and use the general layout for diagnostics. |
+| `MBS_GPU_COMPACT_BEAM4_SPLIT=0` | Disable the automatic separate four-vertex layout for triangles/quadrilaterals and use the previous eight-vertex compact layout. |
 | `MBS_GPU_WARP_BEAMS=0/1` | Override automatic beam reduction: one thread per output (`0`) or one warp per output (`1`). By default consumer GPUs use the thread path and datacenter GPUs with strong FP64 hardware use the warp path. |
 | `MBS_GPU_WARP_GRID_3D=0` | Disable the 3D-grid specialization when warp reduction is active. |
 | `MBS_GPU_THREAD_GRID_3D=0/1` | Override the tiled 3D-grid layout for the consumer thread path. Automatic mode uses it with a 64-thread block when edge padding is at most 15%. |
@@ -706,6 +707,17 @@ phi` tiled CUDA grid when padding incomplete edge tiles adds no more than 15%
 work. It removes two integer divisions from each output thread and changed
 wall time by 0-11% in the validation set. `MBS_GPU_TIMING=1` reports both the
 reduction and layout as `reduction=thread|warp` and `layout=3d|flat`.
+
+For the compact thread path, automatic packing separates polygons with at most
+four vertices from polygons with five to eight vertices. Triangles and
+quadrilaterals use compile-time loop lengths when every compact polygon has at
+least three vertices. Packing uses one stable bucket pass instead of scanning
+the beam list once per vertex count. On the RTX 3080 Ti concave absorbing
+probe this reduced summed FP32 CUDA-kernel time by about 4% and complete GPU
+diffraction time by about 3%; the short end-to-end run improved by about 2--3%
+because CPU tracing was unchanged. FP64 was neutral in the kernel and still
+benefited from reduced packing and transfer work. The release gate compares
+this path with `MBS_GPU_COMPACT_BEAM4_SPLIT=0` in both precision profiles.
 
 The diagnostic target below compares FP64 direct quaternion-vector rotation
 with a precomputed 3x3 matrix on the GPU:
@@ -1036,6 +1048,7 @@ Production-use variables:
 | `MBS_GPU_STAGE_MUELLER` | Enable staged per-orientation Mueller reduction when supported. |
 | `MBS_GPU_NO_VERTEX_CACHE` | Disable cached/packed vertex path for debugging. |
 | `MBS_GPU_COMPACT_BEAMS=0` | Disable compact packing for beams with at most 8 vertices. |
+| `MBS_GPU_COMPACT_BEAM4_SPLIT=0` | Disable automatic four-vertex records for triangles/quadrilaterals. |
 | `MBS_GPU_WARP_BEAMS=0/1` | Override the automatic reduction: one thread per output (`0`) or one warp per output (`1`). |
 | `MBS_GPU_WARP_GRID_3D=0` | Disable the 3D-grid specialization when warp reduction is active. |
 | `MBS_GPU_THREAD_GRID_3D=0/1` | Override the automatically selected tiled 3D grid for the consumer thread path. |

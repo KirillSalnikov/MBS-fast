@@ -7,6 +7,7 @@ gpu=${MBS_GPU:-$root/gpu/bin/mbs_po_gpu_double}
 device=${MBS_CUDA_TEST_DEVICE:-0}
 relative_tolerance=${MBS_CUDA_L2_TOLERANCE:-1e-5}
 compact_tolerance=${MBS_CUDA_COMPACT_L2_TOLERANCE:-1e-12}
+beam4_tolerance=${MBS_CUDA_BEAM4_L2_TOLERANCE:-$compact_tolerance}
 atomic_tolerance=${MBS_CUDA_ATOMIC_L2_TOLERANCE:-1e-10}
 work=$(mktemp -d /tmp/mbs-cuda-gate.XXXXXX)
 keep_work=1
@@ -52,6 +53,14 @@ MBS_GPU_SLOT="$device" "$gpu" "${common[@]}" --backend cuda \
 MBS_GPU_SLOT="$device" MBS_GPU_COMPACT_BEAMS=0 \
     "$gpu" "${common[@]}" --backend cuda \
     --output "$work/gpu_generic" >"$work/gpu_generic.log" 2>&1
+MBS_GPU_SLOT="$device" MBS_GPU_WARP_BEAMS=0 \
+    MBS_GPU_COMPACT_BEAM4_SPLIT=0 \
+    "$gpu" "${common[@]}" --backend cuda \
+    --output "$work/gpu_beam8" >"$work/gpu_beam8.log" 2>&1
+MBS_GPU_SLOT="$device" MBS_GPU_WARP_BEAMS=0 \
+    MBS_GPU_COMPACT_BEAM4_SPLIT=1 MBS_GPU_TIMING=1 \
+    "$gpu" "${common[@]}" --backend cuda \
+    --output "$work/gpu_beam4" >"$work/gpu_beam4.log" 2>&1
 MBS_GPU_SLOT="$device" MBS_GPU_NO_ATOMICS=0 \
     "$gpu" "${common[@]}" --backend cuda \
     --allow-experimental-environment \
@@ -65,11 +74,17 @@ grep -q 'GPU backend: CUDA' "$work/gpu.log" || {
     echo 'ERROR: CUDA binary did not confirm use of the CUDA backend' >&2
     exit 1
 }
+grep -q 'path=beam4+8' "$work/gpu_beam4.log" || {
+    echo 'ERROR: CUDA Beam4 release gate did not use the Beam4+Beam8 path' >&2
+    exit 1
+}
 
 python3 - "$work/cpu/cpu.dat" "$work/gpu/gpu.dat" \
     "$work/gpu_generic/gpu_generic.dat" "$relative_tolerance" \
     "$compact_tolerance" "$work/gpu_atomic/gpu_atomic.dat" \
-    "$atomic_tolerance" "$work/gpu_grid3d/gpu_grid3d.dat" <<'PY'
+    "$atomic_tolerance" "$work/gpu_grid3d/gpu_grid3d.dat" \
+    "$work/gpu_beam8/gpu_beam8.dat" "$work/gpu_beam4/gpu_beam4.dat" \
+    "$beam4_tolerance" <<'PY'
 import math
 import sys
 
@@ -128,6 +143,16 @@ print("CUDA flat/tiled-3D weighted L2: {:.3e} (limit {:.3e})".format(
 if not math.isfinite(grid3d_relative) or grid3d_relative > atomic_tolerance:
     raise SystemExit("ERROR: tiled 3D CUDA mismatch exceeds {:.3e}".format(
         atomic_tolerance))
+
+gpu_beam8 = load(sys.argv[9])
+gpu_beam4 = load(sys.argv[10])
+beam4_tolerance = float(sys.argv[11])
+beam4_relative = relative_l2(gpu_beam8, gpu_beam4)
+print("CUDA Beam8/Beam4+8 weighted L2: {:.3e} (limit {:.3e})".format(
+    beam4_relative, beam4_tolerance))
+if not math.isfinite(beam4_relative) or beam4_relative > beam4_tolerance:
+    raise SystemExit("ERROR: Beam4+8 CUDA mismatch exceeds {:.3e}".format(
+        beam4_tolerance))
 PY
 
 trace_common=(
