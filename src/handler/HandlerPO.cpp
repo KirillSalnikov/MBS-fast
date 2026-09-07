@@ -3060,6 +3060,11 @@ bool HandlerPO::HandleOrientationsToLocalGpuFftPhi(const std::vector<PreparedOri
     return false;
 }
 
+int HandlerPO::FftAverageDirectPhiCount() const
+{
+    throw std::runtime_error("FFT phi average-only requires a CUDA build");
+}
+
 bool HandlerPO::HandleOrientationsToLocalGpuMultiK(const std::vector<PreparedOrientation> &/*prepared*/,
                                                    int /*start*/,
                                                    int /*count*/,

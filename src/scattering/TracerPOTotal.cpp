@@ -7,6 +7,7 @@
 #include "OrientationFile.h"
 #include "Sobol.h"
 #include "cuda/GpuSupport.h"
+#include "AdaptivePhi.h"
 
 #include <iostream>
 #include <fstream>
@@ -4105,6 +4106,76 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
         throw std::runtime_error("shared multikeq does not support MPI");
     }
 
+    const char *adaptivePhiEnv = std::getenv("MBS_PHI_ADAPTIVE");
+    const bool adaptivePhi = adaptivePhiEnv && std::atoi(adaptivePhiEnv) != 0;
+    AdaptivePhi::Config adaptivePhiConfig(adaptivePhi);
+    std::ofstream adaptivePhiReport;
+    if (adaptivePhi)
+    {
+        if (!dynamic_cast<HandlerPOTotal*>(handlerPO) || !handlerPO->IsGpuEnabled()
+            || !handlerPO->isCoh || handlerPO->ComputeNoShadow() || m_mirrorGamma
+            || handlerPO->IsFftEnabled() || SharedFftGlobalRefineEnabled()
+            || handlerPO->FftTolerance() > 0)
+            throw std::runtime_error("Adaptive phi requires coherent full-only total CUDA shared multisize, "
+                                     "without FFT, mirror or legacy refinement");
+        if (std::getenv("MBS_GPU_MULTI_K_FULL") && std::atoi(std::getenv("MBS_GPU_MULTI_K_FULL")) == 0)
+            throw std::runtime_error("Adaptive phi requires multi-k enabled");
+        if (std::getenv("MBS_SHARED_GPU_EXPLICIT_SCALE") && std::atoi(std::getenv("MBS_SHARED_GPU_EXPLICIT_SCALE")))
+            throw std::runtime_error("Adaptive phi does not support explicit CPU scaling");
+        adaptivePhiReport.open((m_resultDirName + "_phi_convergence.csv").c_str());
+        if (!adaptivePhiReport) throw std::runtime_error("Cannot open adaptive phi convergence report");
+        adaptivePhiReport << std::setprecision(17)
+            << "size_index,chunk_start,gpu_start,theta_deg,nphi,m11_relative_change,normalized_mueller_change,status\n";
+        std::cout << "Adaptive phi enabled: " << adaptivePhiConfig.first << ".." << adaptivePhiConfig.maximum
+                  << ", M11 tolerance=" << adaptivePhiConfig.intensity
+                  << ", normalized Mueller tolerance=" << adaptivePhiConfig.polarization
+                  << "; two consecutive passes, per size/theta/chunk" << std::endl;
+    }
+
+    const char *averageOnlyEnv = std::getenv("MBS_FFT_PHI_AVERAGE_ONLY");
+    if (averageOnlyEnv && std::atoi(averageOnlyEnv) != 0 && handlerPO->IsFftEnabled())
+    {
+        if (!dynamic_cast<HandlerPOTotal*>(handlerPO) || m_mirrorGamma
+            || SharedFftGlobalRefineEnabled())
+            throw std::runtime_error("FFT phi average-only supports total averaged shared multisize "
+                                     "without mirror symmetry or global refinement only");
+        const int directPhi = handlerPO->FftAverageDirectPhiCount();
+        const ScatteringRange savedSphere = handlerPO->m_sphere;
+        const Arr2D savedM = handlerPO->M;
+        const Arr2D savedMns = handlerPO->M_noshadow;
+        ScatteringRange compactSphere = savedSphere;
+        compactSphere.nAzimuth = directPhi;
+        compactSphere.azinuthStep = M_2PI / directPhi;
+        // The total writer needs only modes 0 and +/-2 (right Stokes rotation),
+        // or mode 0 at the poles. Their discrete moments on the direct grid
+        // equal those of the FFT interpolant. No dense phi field is observable
+        // in this path; keep the compact samples through accumulation/output.
+        // This preserves the FFT approximation, NOT the full direct-phi result.
+        auto restore = [&]() {
+            handlerPO->SetScatteringSphere(savedSphere);
+            handlerPO->M = savedM;
+            handlerPO->M_noshadow = savedMns;
+            handlerPO->SetFftEnabled(true);
+        };
+        std::cout << "FFT phi average-only: direct Nphi=" << directPhi
+                  << ", requested Nphi=" << savedSphere.nAzimuth
+                  << "; retain moments 0,+/-2, skip dense FFT reconstruction. "
+                  << "Direct-grid sampling error is unchanged." << std::endl;
+        try
+        {
+            handlerPO->SetScatteringSphere(compactSphere);
+            handlerPO->SetFftEnabled(false);
+            TraceRandomMultiSize(betaRange, gammaRange, x_sizes, labels);
+        }
+        catch (...)
+        {
+            restore();
+            throw;
+        }
+        restore();
+        return;
+    }
+
     int nGamma = gammaRange.number;
     const bool betaMidpoint = OldautoBetaMidpointEnabled() && !m_fastPoleGamma;
     int nBeta = OldautoBetaCount(betaRange, betaMidpoint);
@@ -4155,8 +4226,15 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     std::vector<double> results_energy(x_sizes.size(), 0.0);
     std::vector<double> results_output_energy(x_sizes.size(), 0.0);
     std::vector<double> results_ext_ot(x_sizes.size(), 0.0);
+    std::vector<std::vector<matrix>> adaptiveResults(x_sizes.size());
     for (size_t s = 0; s < x_sizes.size(); ++s)
     {
+        if (adaptivePhi)
+        {
+            adaptiveResults[s].assign(nZen+1, matrix(4,4));
+            for (matrix &row : adaptiveResults[s]) row.Fill(0.0);
+            continue;
+        }
         results_M.push_back(Arr2D(nAz + 1, nZen + 1, 4, 4));
         results_M.back().ClearArr();
         if (computeNoShadow)
@@ -4269,14 +4347,22 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     if (m_mpiRank == 0 && sharedGpuExplicitScale)
         std::cout << "Shared multikeq GPU: explicit CPU scaling enabled "
                   << "(MBS_SHARED_GPU_EXPLICIT_SCALE=1)" << std::endl;
+    const char *multiKEnv = std::getenv("MBS_GPU_MULTI_K_FULL");
+#ifdef MBS_GPU_FP64
+    const bool autoMultiK = !handlerPO->IsFftEnabled() && x_sizes.size() > 1
+        && x_sizes.size() <= 32;
+#else
+    const bool autoMultiK = false;
+#endif
+    const bool multiKRequested = multiKEnv ? std::atoi(multiKEnv) != 0
+        : autoMultiK;
     const bool sharedGpuMultiKFull =
         handlerPO->IsGpuEnabled()
         && !computeNoShadow
         && !sharedGpuExplicitScale
-        && std::getenv("MBS_GPU_MULTI_K_FULL")
-        && std::atoi(std::getenv("MBS_GPU_MULTI_K_FULL")) != 0;
+        && (multiKRequested || adaptivePhi);
     if (m_mpiRank == 0 && sharedGpuMultiKFull)
-        std::cout << "Shared multikeq GPU: experimental fused multi-k kernel "
+        std::cout << "Shared multikeq GPU: fused multi-k kernel "
                   << "enabled" << std::endl;
     HandlerPO prepareTemplate(m_particle, &m_incidentLight,
                               handlerPO->nTheta, m_scattering->m_wave);
@@ -4406,6 +4492,37 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
                             po, scale, waveIndex,
                             handlerPO->AbsorptionCoefficient());
                 }
+            }
+
+            if (adaptivePhi)
+            {
+                for (size_t s = 0; s < scales.size(); ++s)
+                {
+                    for (int gpuStart = 0; gpuStart < group.groupOrient; )
+                    {
+                        // Conservative input batching; larger refined grids are
+                        // memory-checked by the fused kernel and fail explicitly.
+                        const int batch = handlerPO->SelectGpuOrientationBatchSize(
+                            group.prepared, gpuStart, group.groupOrient-gpuStart);
+                        const int gpuEnd = std::min(gpuStart+batch, group.groupOrient);
+                        const std::vector<matrix> rows = AdaptivePhi::Compute(*handlerPO,
+                            m_incidentLight, group.prepared, gpuStart, gpuEnd-gpuStart,
+                            scales[s], 2.0*M_PI/m_scattering->m_wave, adaptivePhiConfig,
+                            adaptivePhiReport, s, group.orientStart);
+                        for (int t = 0; t <= nZen; ++t) adaptiveResults[s][t] += rows[t];
+                        gpuStart = gpuEnd;
+                    }
+                    results_ext_ot[s] += localExtOt[s];
+                    for (int i = 0; i < group.groupOrient; ++i)
+                    {
+                        results_energy[s] += group.energies[i]*scales[s]*scales[s];
+                        results_output_energy[s] += PreparedOutputEnergy(
+                            group.prepared[i], scales[s], handlerPO->AbsorptionCoefficient());
+                    }
+                }
+                phase2 += std::chrono::duration<double>(
+                    std::chrono::high_resolution_clock::now()-betaDiffStart).count();
+                return;
             }
 
             std::vector<Arr2D> localMs;
@@ -4813,7 +4930,7 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     bool savedHasExtOt = handlerPO->m_hasExtinctionOt;
     for (size_t s = 0; s < x_sizes.size(); ++s)
     {
-        handlerPO->M = results_M[s];
+        if (!adaptivePhi) handlerPO->M = results_M[s];
         m_incomingEnergy = results_energy[s];
         handlerPO->m_outputEnergy = results_output_energy[s];
         handlerPO->m_extinctionCrossSectionOt = results_ext_ot[s];
@@ -4822,7 +4939,12 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
             ? labels[s]
             : ("x" + std::to_string((int)x_sizes[s]));
         std::string outName = baseName + "_" + suffix;
-        handlerPO->WriteMatricesToFile(outName, m_incomingEnergy);
+        if (adaptivePhi)
+            WriteAveragedRowsFile(outName, handlerPO->m_sphere, adaptiveResults[s],
+                m_incomingEnergy, results_ext_ot[s], true,
+                handlerPO->HasAbsorptionAccounting(), handlerPO->m_integralSummary);
+        else
+            handlerPO->WriteMatricesToFile(outName, m_incomingEnergy);
         if (computeNoShadow)
         {
             handlerPO->M_noshadow = results_M_ns[s];

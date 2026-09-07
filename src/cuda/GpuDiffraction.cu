@@ -191,6 +191,12 @@ struct GpuCompactBeam
 using GpuBeam4 = GpuCompactBeam<4>;
 using GpuBeam8 = GpuCompactBeam<8>;
 
+// Direction-independent phased Jones matrix, reused by every angular cell.
+struct GpuPhasedJones
+{
+    GpuReal v[8];
+};
+
 struct GpuWorkspace
 {
     GpuBeam *beams = nullptr;
@@ -202,6 +208,8 @@ struct GpuWorkspace
     GpuReal *j = nullptr, *jNoShadow = nullptr;
     GpuReal *weights = nullptr;
     GpuReal *scales = nullptr;
+    GpuPhasedJones *phasedJones = nullptr;
+    size_t phasedJonesCap = 0;
     double *absPaths = nullptr;
     int *beamOffsets = nullptr;
     int *beamOffsets4 = nullptr;
@@ -258,6 +266,7 @@ struct GpuWorkspace
 
     ~GpuWorkspace()
     {
+        cudaFree(phasedJones);
         cudaFree(beams);
         cudaFree(beams4);
         cudaFree(beams8);
@@ -651,7 +660,13 @@ static bool gpu_timing_enabled()
 static bool gpu_multik_full_enabled()
 {
     const char *value = std::getenv("MBS_GPU_MULTI_K_FULL");
-    return value && value[0] == '1' && value[1] == '\0';
+    return !(value && value[0] == '0' && value[1] == '\0');
+}
+
+static bool gpu_multik_phase_cache_enabled()
+{
+    const char *value = std::getenv("MBS_GPU_MULTI_K_PHASE_CACHE");
+    return !(value && value[0] == '0' && value[1] == '\0');
 }
 
 static bool gpu_fft_pair_enabled()
@@ -812,6 +827,19 @@ static int choose_fft_phi_factor(int nFull, int configured)
     if (nFull >= 240)
         return 3;
     return 2;
+}
+
+int HandlerPO::FftAverageDirectPhiCount() const
+{
+    if (!m_gpuEnabled || !m_fftEnabled || !isCoh || ComputeNoShadow()
+        || gpu_fft_theta_factor() != 1 || gpu_fft_check_enabled()
+        || m_fftTolerance > 0.0 || gpu_fft_adaptive_phi_enabled())
+        throw std::runtime_error("FFT phi average-only requires coherent full-only CUDA FFT, "
+                                 "without theta interpolation, checks or adaptive refinement");
+    const int nFull = m_sphere.nAzimuth;
+    const int factor = choose_fft_phi_factor(nFull, m_fftPhiFactor);
+    return factor <= 1 || nFull < 32 ? nFull
+        : std::min(nFull, std::max(16, nFull / factor));
 }
 
 template <typename T>
@@ -1068,7 +1096,7 @@ __device__ inline void add_stable_edge_quotient_gpu(
     sumImag += (GpuReal)(pr*localImag + pi*localReal);
 }
 
-template <int MaxVertices, bool UnitWave = false, typename BeamT>
+template <int MaxVertices, bool UnitWave = false, bool Streaming = false, typename BeamT>
 __device__ inline bool compute_beam_integral_cached_gpu(const BeamT &b,
                                                               int nv,
                                                               GpuReal waveIndex,
@@ -1104,11 +1132,54 @@ __device__ inline bool compute_beam_integral_cached_gpu(const BeamT &b,
         return true;
     }
 
-    GpuReal vc[MaxVertices], vs[MaxVertices];
     const GpuVertexPhaseReal qx = UnitWave ? (GpuVertexPhaseReal)A
         : (GpuVertexPhaseReal)waveIndex * (GpuVertexPhaseReal)A;
     const GpuVertexPhaseReal qy = UnitWave ? (GpuVertexPhaseReal)B
         : (GpuVertexPhaseReal)waveIndex * (GpuVertexPhaseReal)B;
+    if (Streaming)
+    {
+        // Edge lists retain polygon order. Carry the endpoint phasor into
+        // the next edge instead of spilling a dynamically indexed array of
+        // 32 vertex phasors to local memory. Gaps in the valid edge list are
+        // handled by evaluating the new starting vertex explicitly.
+        GpuReal firstC, firstS;
+        gpu_sincos_phase(qx * (GpuVertexPhaseReal)b.x[0]
+            + qy * (GpuVertexPhaseReal)b.y[0] + commonPhase, &firstS, &firstC);
+        GpuReal lastC = firstC, lastS = firstS;
+        int lastVertex = 0;
+        GpuReal sr = 0.0, si = 0.0;
+        const bool useX = absB > absA;
+        const int nEdge = useX ? b.nEdgeX : b.nEdgeY;
+        for (int ii = 0; ii < nEdge; ++ii)
+        {
+            const int e = useX ? b.edge_valid_x[ii] : b.edge_valid_y[ii];
+            const int en = (e + 1 < nv) ? e + 1 : 0;
+            GpuReal startC, startS, endC, endS;
+            if (e == lastVertex) { startC = lastC; startS = lastS; }
+            else if (e == 0) { startC = firstC; startS = firstS; }
+            else gpu_sincos_phase(qx * (GpuVertexPhaseReal)b.x[e]
+                + qy * (GpuVertexPhaseReal)b.y[e] + commonPhase, &startS, &startC);
+            if (en == 0) { endC = firstC; endS = firstS; }
+            else gpu_sincos_phase(qx * (GpuVertexPhaseReal)b.x[en]
+                + qy * (GpuVertexPhaseReal)b.y[en] + commonPhase, &endS, &endC);
+            const GpuReal coefficient = useX ? A + b.slope_yx[e] * B
+                                               : A * b.slope_xy[e] + B;
+            const GpuReal absCoefficient = fabs(coefficient);
+            const GpuReal inv = absCoefficient > eps1 ? 1.0 / coefficient : 0.0;
+            sr += (endC - startC) * inv;
+            si += (endS - startS) * inv;
+            if (singularCorrection && absCoefficient <= eps1)
+                add_stable_edge_quotient_gpu<UnitWave>(startC, startS,
+                    useX ? b.x[en]-b.x[e] : b.y[en]-b.y[e],
+                    coefficient, waveIndex, sr, si);
+            lastVertex = en; lastC = endC; lastS = endS;
+        }
+        if (useX) { sr /= B; si /= B; }
+        else { const GpuReal inv_nA = -1.0 / A; sr *= inv_nA; si *= inv_nA; }
+        cmul(complWaveR, complWaveI, sr, si, fr, fi);
+        return true;
+    }
+    GpuReal vc[MaxVertices], vs[MaxVertices];
     for (int v = 0; v < nv; ++v)
     {
         const GpuVertexPhaseReal x = (GpuVertexPhaseReal)b.x[v];
@@ -1354,8 +1425,26 @@ __device__ inline void phase_raw_jones_scaled(const GpuBeam &b,
     jp11i = (GpuReal)(sign * absorption * (b.raw11r * sn + b.raw11i * cs));
 }
 
+__global__ void prepare_multik_jones_kernel(
+    const GpuBeam *__restrict__ beams, size_t nBeams,
+    const GpuReal *__restrict__ scales, int nSizes,
+    GpuReal waveIndex, const double *__restrict__ absPaths, GpuReal cAbs,
+    GpuPhasedJones *__restrict__ output)
+{
+    const size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= nBeams * (size_t)nSizes) return;
+    const size_t sizeIdx = idx / nBeams;
+    const size_t beamIdx = idx - sizeIdx * nBeams;
+    GpuPhasedJones &j = output[idx];
+    phase_raw_jones_scaled(beams[beamIdx], waveIndex, scales[sizeIdx],
+        absPaths, cAbs, j.v[0], j.v[1], j.v[2], j.v[3],
+        j.v[4], j.v[5], j.v[6], j.v[7]);
+}
+
+template <bool CachedPhase, bool StreamingVertices = false>
 __device__ inline bool compute_beam_jones_context_gpu_multik(
                                                       const GpuBeam &b,
+                                                      const GpuPhasedJones *phasedJones,
                                                       GpuReal cp,
                                                       GpuReal sp,
                                                       GpuReal sin_t,
@@ -1417,7 +1506,7 @@ __device__ inline bool compute_beam_jones_context_gpu_multik(
 
     GpuReal fr, fi;
     bool usedSmallPhase = false;
-    bool integralOk = compute_beam_integral_cached_gpu<32>(
+    bool integralOk = compute_beam_integral_cached_gpu<32, false, StreamingVertices>(
         b, nv, waveIndexEff, wi2Eff, eps1, eps2,
         complWaveR, complWaveI, invComplWaveR, invComplWaveI,
         legacySign, 1,
@@ -1453,7 +1542,15 @@ __device__ inline bool compute_beam_jones_context_gpu_multik(
     GpuReal sr11r = cpr * r11, sr11i = cpi * r11;
 
     GpuReal jp00r, jp00i, jp01r, jp01i, jp10r, jp10i, jp11r, jp11i;
-    phase_raw_jones_scaled(b, waveIndex, scale, absPaths, cAbs,
+    if (CachedPhase)
+    {
+        jp00r = phasedJones->v[0]; jp00i = phasedJones->v[1];
+        jp01r = phasedJones->v[2]; jp01i = phasedJones->v[3];
+        jp10r = phasedJones->v[4]; jp10i = phasedJones->v[5];
+        jp11r = phasedJones->v[6]; jp11i = phasedJones->v[7];
+    }
+    else
+        phase_raw_jones_scaled(b, waveIndex, scale, absPaths, cAbs,
                            jp00r, jp00i, jp01r, jp01i,
                            jp10r, jp10i, jp11r, jp11i);
 
@@ -2536,7 +2633,10 @@ __global__ void diffraction_grid_mueller_full_kernel(const GpuBeam *__restrict__
     }
 }
 
+template <bool CachedPhase, bool StreamingVertices = false>
 __global__ void diffraction_grid_mueller_multik_kernel(const GpuBeam *__restrict__ beams,
+                                                       const GpuPhasedJones *__restrict__ phasedJones,
+                                                       size_t nBeams,
                                                        const int *__restrict__ beamOffsets,
                                                        const GpuReal *__restrict__ sinTheta,
                                                        const GpuReal *__restrict__ cosTheta,
@@ -2586,7 +2686,6 @@ __global__ void diffraction_grid_mueller_multik_kernel(const GpuBeam *__restrict
     GpuReal vtx, vty, vtz;
     transverse_basis_gpu(vfx, vfy, vfz, dx, dy, dz, vtx, vty, vtz);
     const GpuReal scale = scales[sizeIdx];
-
     GpuReal j00r = 0.0, j00i = 0.0;
     GpuReal j01r = 0.0, j01i = 0.0;
     GpuReal j10r = 0.0, j10i = 0.0;
@@ -2594,10 +2693,12 @@ __global__ void diffraction_grid_mueller_multik_kernel(const GpuBeam *__restrict
 
     for (int bi = begin; bi < end; ++bi)
     {
-        GpuReal d00r, d00i, d01r, d01i, d10r, d10i, d11r, d11i;
         const GpuBeam &b = beams[bi];
-        if (!compute_beam_jones_context_gpu_multik(
-                b, cp, sp, sin_t, cos_t, dx, dy, dz, vfx, vfy, vfz,
+        GpuReal d00r, d00i, d01r, d01i, d10r, d10i, d11r, d11i;
+        const GpuPhasedJones *phase = CachedPhase
+            ? &phasedJones[(size_t)sizeIdx * nBeams + bi] : nullptr;
+        if (!compute_beam_jones_context_gpu_multik<CachedPhase, StreamingVertices>(
+                b, phase, cp, sp, sin_t, cos_t, dx, dy, dz, vfx, vfy, vfz,
                 vtx, vty, vtz,
                 waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
                 invComplWaveR, invComplWaveI, legacySign, scale,
@@ -2611,7 +2712,8 @@ __global__ void diffraction_grid_mueller_multik_kernel(const GpuBeam *__restrict
         j11r += d11r; j11i += d11i;
     }
 
-    mueller_accum_from_jones(j00r, j00i, j01r, j01i, j10r, j10i, j11r, j11i,
+    mueller_accum_from_jones(j00r, j00i, j01r, j01i,
+                             j10r, j10i, j11r, j11i,
                              weights[orient] * (GpuReal)0.25,
                              &mFull[((size_t)sizeIdx * gridCount + grid) * 16]);
 }
@@ -4867,6 +4969,30 @@ bool HandlerPO::HandleOrientationsToLocalGpuMultiK(const std::vector<PreparedOri
     if (timing) tPack = gpu_now_ms() - t0;
 
     const size_t mCount = (size_t)nSizes * gridCount * 16;
+    // Multi-size Mueller output is larger than the single-size batch planner
+    // assumes. Decline the fused path before allocation if it would consume
+    // the configured VRAM reserve; the caller can use the per-size path.
+    size_t freeBytes = 0, totalBytes = 0;
+    auto growth = [](size_t need, size_t cap, size_t bytes) -> size_t {
+        return need > cap ? need * bytes : 0;
+    };
+    const size_t required =
+        growth(nBeams, ws.beamCap, sizeof(GpuBeam))
+        + growth(ws.hWeights.size(), ws.weightsCap, sizeof(GpuReal))
+        + growth(ws.hScales.size(), ws.scalesCap, sizeof(GpuReal))
+        + growth(ws.hAbsPaths.size(), ws.absPathsCap, sizeof(double))
+        + growth(ws.hBeamOffsets.size(), ws.beamOffsetsCap, sizeof(int))
+        + growth((size_t)nZen + 1, ws.sinThetaCap, sizeof(GpuReal))
+        + growth((size_t)nZen + 1, ws.cosThetaCap, sizeof(GpuReal))
+        + growth(nAz, ws.sinPhiCap, sizeof(GpuReal))
+        + growth(nAz, ws.cosPhiCap, sizeof(GpuReal))
+        + growth((size_t)gridCount * 3, ws.vfCap, sizeof(GpuReal))
+        + growth(mCount, ws.mCap, sizeof(GpuReal));
+    if (cudaMemGetInfo(&freeBytes, &totalBytes) != cudaSuccess
+        || required > (size_t)(freeBytes * gpu_memory_fraction()))
+        return failMultiK("memory-budget");
+    // This path repacks the shared beam buffer in unscaled coordinates.
+    ws.packedCacheValid = false;
     t0 = timing ? gpu_now_ms() : 0.0;
     if (!ensure_device_capacity(ws.beams, ws.beamCap, nBeams)) return failMultiK("alloc-beams");
     if (!ensure_device_capacity(ws.weights, ws.weightsCap, ws.hWeights.size())) return failMultiK("alloc-weights");
@@ -4883,7 +5009,8 @@ bool HandlerPO::HandleOrientationsToLocalGpuMultiK(const std::vector<PreparedOri
 
     t0 = timing ? gpu_now_ms() : 0.0;
     const double gridSignature = gpu_grid_signature(m_sphere, nZen);
-    if (ws.gridNAz != nAz || ws.gridNZen != nZen || fabs(ws.gridSignature - gridSignature) > 1e-12)
+    // Adaptive theta subsets must not rely on a floating weighted-sum signature.
+    if (m_sphere.isNonUniform || ws.gridNAz != nAz || ws.gridNZen != nZen || fabs(ws.gridSignature - gridSignature) > 1e-12)
     {
         std::vector<GpuReal> hSinTheta(nZen + 1), hCosTheta(nZen + 1);
         for (int t = 0; t <= nZen; ++t)
@@ -4937,8 +5064,43 @@ bool HandlerPO::HandleOrientationsToLocalGpuMultiK(const std::vector<PreparedOri
     int block = gpu_block_size();
     long long total = (long long)nSizes * nOrient * gridCount;
     int kernelGrid = (int)((total + block - 1) / block);
-    diffraction_grid_mueller_multik_kernel<<<kernelGrid, block>>>(
-        ws.beams, ws.beamOffsets, ws.sinTheta, ws.cosTheta, ws.sinPhi,
+    // The optional cache must fit beside the already allocated diffraction
+    // workspace. If it cannot, keep the identical on-the-fly FP64 calculation.
+    const size_t phaseCount = (size_t)nSizes * nBeams;
+    size_t phaseFree = 0, phaseTotal = 0;
+    bool cachePhase = gpu_multik_phase_cache_enabled();
+    if (cachePhase && phaseCount > ws.phasedJonesCap)
+    {
+        cachePhase = cudaMemGetInfo(&phaseFree, &phaseTotal) == cudaSuccess
+            && phaseCount <= (size_t)(phaseFree * gpu_memory_fraction())
+                                / sizeof(GpuPhasedJones);
+        if (cachePhase)
+        {
+            cachePhase = ensure_device_capacity(ws.phasedJones,
+                ws.phasedJonesCap, phaseCount);
+            if (!cachePhase)
+                cudaGetLastError(); // Optional allocation failure is recoverable.
+        }
+    }
+    if (cachePhase)
+    {
+        const char *streamEnv = std::getenv("MBS_GPU_MULTI_K_STREAM");
+        const bool streaming = !(streamEnv && std::atoi(streamEnv) == 0);
+        if (streaming && !std::getenv("MBS_GPU_BLOCK"))
+        {
+            block = 128;
+            kernelGrid = (int)((total + block - 1) / block);
+        }
+        prepare_multik_jones_kernel<<<(phaseCount + block - 1) / block, block>>>(
+            ws.beams, nBeams, ws.scales, nSizes, m_waveIndex,
+            ws.hAbsPaths.empty() ? nullptr : ws.absPaths,
+            (GpuReal)AbsorptionCoefficient(), ws.phasedJones);
+        if (!gpu_report_cuda_error(cudaGetLastError(), "multik phase preparation"))
+            return failMultiK("prepare-phases");
+        if (streaming)
+            diffraction_grid_mueller_multik_kernel<true, true><<<kernelGrid, block>>>(
+        ws.beams, ws.phasedJones, nBeams,
+        ws.beamOffsets, ws.sinTheta, ws.cosTheta, ws.sinPhi,
         ws.cosPhi, ws.vf, ws.weights, ws.scales,
         ws.hAbsPaths.empty() ? nullptr : ws.absPaths,
         nAz, nZen, nOrient, nSizes,
@@ -4946,6 +5108,31 @@ bool HandlerPO::HandleOrientationsToLocalGpuMultiK(const std::vector<PreparedOri
         real(m_complWave), imag(m_complWave),
         real(m_invComplWave), imag(m_invComplWave),
         m_legacySign ? 1 : 0, (GpuReal)AbsorptionCoefficient(), ws.m);
+        else
+            diffraction_grid_mueller_multik_kernel<true, false><<<kernelGrid, block>>>(
+        ws.beams, ws.phasedJones, nBeams,
+        ws.beamOffsets, ws.sinTheta, ws.cosTheta, ws.sinPhi,
+        ws.cosPhi, ws.vf, ws.weights, ws.scales,
+        ws.hAbsPaths.empty() ? nullptr : ws.absPaths,
+        nAz, nZen, nOrient, nSizes,
+        m_waveIndex, m_wi2, gpu_effective_eps1(m_eps1), m_eps2,
+        real(m_complWave), imag(m_complWave),
+        real(m_invComplWave), imag(m_invComplWave),
+        m_legacySign ? 1 : 0, (GpuReal)AbsorptionCoefficient(), ws.m);
+    }
+    else
+    {
+        diffraction_grid_mueller_multik_kernel<false><<<kernelGrid, block>>>(
+        ws.beams, nullptr, nBeams,
+        ws.beamOffsets, ws.sinTheta, ws.cosTheta, ws.sinPhi,
+        ws.cosPhi, ws.vf, ws.weights, ws.scales,
+        ws.hAbsPaths.empty() ? nullptr : ws.absPaths,
+        nAz, nZen, nOrient, nSizes,
+        m_waveIndex, m_wi2, gpu_effective_eps1(m_eps1), m_eps2,
+        real(m_complWave), imag(m_complWave),
+        real(m_invComplWave), imag(m_invComplWave),
+        m_legacySign ? 1 : 0, (GpuReal)AbsorptionCoefficient(), ws.m);
+    }
     cudaError_t err = cudaGetLastError();
     if (!gpu_report_cuda_error(err, "multik diffraction kernel launch"))
         return failMultiK("kernel-launch");

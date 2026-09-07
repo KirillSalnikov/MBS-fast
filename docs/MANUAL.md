@@ -1094,13 +1094,17 @@ Production-use variables:
 | `MBS_OLDAUTO_BETA_MIDPOINT=0/1` | Use midpoint beta rings in oldauto/random quadrature. |
 | `MBS_OLDAUTO_GAMMA_STAGGER=1` | Stagger gamma samples between beta rings to reduce aliasing in narrow events. |
 | `MBS_FFT_PHI_FACTOR` | Override FFT reduced phi factor. |
+| `MBS_PHI_ADAPTIVE=1` | Opt-in direct adaptive phi means for total serial shared multisize CUDA, without FFT or mirror. Refines separately per size/theta/chunk until two consecutive comparisons pass. Defaults: MIN=75, MAX=9600, M11_TOL=0.005, POL_TOL=0.0025 (prefix `MBS_PHI_ADAPT_`). Errors at an unconverged limit. See `ADAPTIVE_PHI_20260907.md`; controls phi only, not other convergence dimensions. |
+| `MBS_FFT_PHI_AVERAGE_ONLY=1` | Experimental shared multisize total-output shortcut: keep the original FFT direct-phi samples through averaging and skip dense interpolation. Preserves the FFT mean (including Stokes modes 0 and ±2), not the dense direct-grid solution. Requires coherent full-only CUDA FFT; rejects mirror symmetry, theta FFT, tolerance/checks and adaptive/global refinement. Default off; currently scoped to serial `TraceRandomMultiSize`. |
 | `MBS_FFT_THETA_FACTOR` | Override FFT theta batching factor. |
 | `MBS_FFT_CHECK=1` | Enable FFT diagnostic checks. |
 | `MBS_FFT_ADAPTIVE_PHI=1` | Enable adaptive reduced-phi behavior in FFT backend. |
 | `MBS_GPU_MULTI=0` | Disable automatic multi-orientation GPU batching. |
 | `MBS_GPU_MULTI_MAX=N` | Cap automatic GPU multi batching. |
 | `MBS_GPU_GROUPS=1` | Distribute variable latitude-phi theta groups across visible GPUs. |
-| `MBS_GPU_MULTI_K_FULL=1` | Experimental fused multi-`k_eq` diffraction. |
+| `MBS_GPU_MULTI_K_FULL=0/1` | Override fused multi-`k_eq` diffraction. Automatic for FP64 serial shared direct scans with 2..32 sizes; `0` restores per-size diffraction. FFT and other precision profiles retain opt-in behavior. |
+| `MBS_GPU_MULTI_K_PHASE_CACHE=0/1` | Cache direction-independent phased Jones matrices per beam and size in the fused kernel (default on). Optional cache allocation respects available VRAM; insufficient space uses on-the-fly phases. `0` provides a numerical/performance reference. |
+| `MBS_GPU_MULTI_K_STREAM=0/1` | Stream adjacent polygon vertex phases in phase-cached multi-k (default on), avoiding dynamically indexed local vertex arrays. `0` restores the vertex-array path. Default CUDA block size for streaming is 128; an explicit `MBS_GPU_BLOCK` overrides it. |
 | `MBS_GPU_BEAM_STATS=1` | Print GPU beam packing/count diagnostics. |
 | `MBS_SHARED_BETA_GROUP=N` | Override shared-batch beta grouping. |
 | `MBS_SHARED_ORIENT_CHUNK=N` | Override shared-batch orientation chunk size. |

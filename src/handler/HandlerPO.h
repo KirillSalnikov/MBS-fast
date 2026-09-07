@@ -393,6 +393,8 @@ public:
     bool IsFftEnabled() const;
     void SetFftPhiFactor(int value);
     int FftPhiFactor() const;
+    // Direct phi grid for mean-only FFT execution; rejects validation/refinement.
+    int FftAverageDirectPhiCount() const;
     void SetFftTolerance(double value);
     double FftTolerance() const;
     std::string FftReport() const;
