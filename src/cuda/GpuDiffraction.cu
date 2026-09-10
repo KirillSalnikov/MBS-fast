@@ -5324,7 +5324,46 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
             {
                 if (!pb.edgeData.valid || pb.edgeData.nVertices <= 0
                     || pb.edgeData.nVertices > 32)
-                    return failDirect("bad-edge-data");
+                {
+                    // The fixed-size CUDA aperture representation cannot cover
+                    // every clipped polygon. Keep the ENTIRE orientation on
+                    // CPU: adding a single beam's Mueller matrix would lose its
+                    // coherent cross terms with the other beams.
+                    if (scale != 1.0 || waveIndex != 0.0)
+                        return failDirect("bad-edge-data-scaled");
+                    const int bad = start + oi;
+                    std::fprintf(stderr,
+                        "GPU aperture fallback: orientation-in-chunk=%d "
+                        "edge-valid=%d prepared-vertices=%d source-vertices=%d; "
+                        "complete coherent orientation evaluated on CPU\n",
+                        bad, (int)pb.edgeData.valid, pb.edgeData.nVertices,
+                        pb.fallback ? pb.fallback->beam.nVertices : -1);
+                    if (oi > 0 && !HandleOrientationsToLocalGpu(
+                            prepared, start, oi, localM, localM_noshadow,
+                            scale, waveIndex))
+                        return false;
+
+                    std::vector<Arr2DC> cpuJ, cpuJns;
+                    cpuJ.emplace_back(nAz + 1, nZen + 1, 2, 2);
+                    cpuJ.back().ClearArr();
+                    if (computeNoShadow)
+                    {
+                        cpuJns.emplace_back(nAz + 1, nZen + 1, 2, 2);
+                        cpuJns.back().ClearArr();
+                    }
+                    const PreparedOrientation &cpuOrientation = prepared[bad];
+                    HandleBeamsToLocal(cpuOrientation, localM, cpuJ,
+                                       computeNoShadow ? &cpuJns : nullptr);
+                    AddToMuellerLocal(cpuJ, cpuOrientation.sinZenith,
+                                      localM, nAz, nZen);
+                    if (computeNoShadow)
+                        AddToMuellerLocal(cpuJns, cpuOrientation.sinZenith,
+                                          localM_noshadow, nAz, nZen);
+                    const int remaining = nOrient - oi - 1;
+                    return remaining == 0 || HandleOrientationsToLocalGpu(
+                        prepared, bad + 1, remaining, localM, localM_noshadow,
+                        scale, waveIndex);
+                }
                 maxBeamVertices = std::max(
                     maxBeamVertices, pb.edgeData.nVertices);
                 if (pb.edgeData.nVertices > 8)
