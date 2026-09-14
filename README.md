@@ -151,15 +151,16 @@ absorbing, nonabsorbing, `L=5...500 um`, and 8--20-reflection probes, the
 largest side/back M11 L2 error was `8.4e-5`; a weak off-diagonal element reached
 `5.3e-3`. This is a selection example, not a universal tolerance guarantee;
 repeat it for the production particle and grid.
-The CUDA diffraction path selects its reduction automatically. Datacenter GPUs
-with strong FP64 hardware use warp-per-output beam reduction and its 3D-grid
-specialization. Consumer GPUs with a large FP32:FP64 throughput ratio use the
-faster compact thread-per-output kernel. Set `MBS_GPU_WARP_BEAMS=0` or `1` only
-for diagnostic A/B runs; `MBS_GPU_WARP_GRID_3D=0` disables only the 3D warp
-specialization. With the default 64-thread block, the consumer thread path
-also selects a tiled `(theta, phi, orientation)` CUDA grid when edge padding
-adds no more than 15% work. This removes per-output integer division and gave
-0-11% wall-time improvement across the validation cases. Set
+The CUDA diffraction path selects its reduction automatically. Coherent runs
+use the GPU FP32:FP64 throughput ratio. Incoherent runs use one warp per output
+when there are at least 32 beams per orientation and no more than 200,000
+orientation-grid output cells; larger grids use the compact thread-per-output
+kernel. Set `MBS_GPU_WARP_BEAMS=0` or `1` only for diagnostic A/B runs;
+`MBS_GPU_WARP_GRID_3D=0` disables only the 3D warp specialization. With the
+default 64-thread block, the thread path also selects a tiled
+`(theta, phi, orientation)` CUDA grid when edge padding adds no more than 15%
+work. This removes per-output integer division and gave 0-11% wall-time
+improvement across the validation cases. Set
 `MBS_GPU_THREAD_GRID_3D=0` or `1` only to compare the flat and tiled layouts.
 The same thread path automatically stores triangles and quadrilaterals in a
 four-vertex record, retains a separate record for polygons with 5--8 vertices,
@@ -167,6 +168,17 @@ and specializes the common 3/4-vertex loops. A single stable bucket pass
 replaces repeated scans during host packing. Set
 `MBS_GPU_COMPACT_BEAM4_SPLIT=0` only for an A/B comparison with the previous
 eight-vertex compact layout.
+
+In incoherent mode the CUDA kernel converts each beam directly to a Mueller
+matrix. It omits the common scalar phase exactly because
+`Mueller(c J) = |c|^2 Mueller(J)`, evaluates only the local aperture phase in
+the selected GPU storage precision, and then accumulates beam intensities.
+The coherent Jones-summation path keeps its precise phase evaluation.
+On the RTX 3080 Ti reference run (`L=119.7 um`, 546 orientations,
+`N_phi=96`, `N_theta=48`, 12 reflections), these changes reduced phase-2
+time from 2.35 s to 0.79 s (2.97x) and wall time from 2.81 s to 1.21 s
+(2.32x). The weighted M11 L2 change relative to the previous exact FP32 path
+was `9.9e-8`.
 
 For a double CUDA build without fast math:
 

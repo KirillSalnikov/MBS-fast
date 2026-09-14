@@ -1481,7 +1481,8 @@ with at most 8 vertices and use the general layout for diagnostics. \\
 records for triangles/quadrilaterals and use the previous eight-vertex
 compact layout. \\
 \texttt{MBS\_GPU\_WARP\_BEAMS=0/1} & Override automatic reduction: one
-thread per output (0) or one warp per output (1). \\
+thread per output (0) or one warp per output (1); incoherent automatic
+mode also accounts for grid size and beams per orientation. \\
 \texttt{MBS\_GPU\_WARP\_GRID\_3D=0} & Disable the 3D-grid specialization
 when warp reduction is active. \\
 \texttt{MBS\_GPU\_THREAD\_GRID\_3D=0/1} & Override the tiled 3D-grid
@@ -1493,15 +1494,20 @@ count/pack/copy/kernels/d2h/add. \\
 tuning. \\
 \end{longtable}
 
-By default CUDA uses its reported FP32:FP64 throughput ratio. A ratio of 16
-or greater selects one thread per output; lower ratios retain warp reduction.
-The former was 2--11\% faster on an RTX 3080 Ti across the tested convex,
-concave, FP32, FP64, and 8--20-reflection cases. V100/A100-class GPUs retain
-the warp path. With the default 64-thread block the consumer path also uses
-a $16\,\theta\times4\,\phi$ tiled grid when incomplete edge tiles add no more
-than 15\% work. This removed two integer divisions per output thread and
-changed wall time by 0--11\% in validation. \texttt{MBS\_GPU\_TIMING=1}
-reports \texttt{reduction=thread|warp} and \texttt{layout=3d|flat}.
+For coherent runs CUDA uses its reported FP32:FP64 throughput ratio. A ratio
+of 16 or greater selects one thread per output; lower ratios retain warp
+reduction. For incoherent runs one warp per output is selected when there are
+at least 32 beams per orientation and no more than 200,000 orientation-grid
+output cells. Other incoherent workloads use one thread per output. The common
+scalar beam phase is omitted exactly using
+$\operatorname{Mueller}(cJ)=|c|^2\operatorname{Mueller}(J)$; only the local
+aperture phase is evaluated in the selected GPU storage precision. Coherent
+Jones summation retains precise phase evaluation. With the default 64-thread
+block the thread path also uses a $16\,\theta\times4\,\phi$ tiled grid when
+incomplete edge tiles add no more than 15\% work. This removed two integer
+divisions per output thread and changed wall time by 0--11\% in validation.
+\texttt{MBS\_GPU\_TIMING=1} reports \texttt{reduction=thread|warp} and
+\texttt{layout=3d|flat}.
 
 For the compact thread path, automatic packing separates polygons with at most
 four vertices from polygons with five to eight vertices. Larger polygons remain

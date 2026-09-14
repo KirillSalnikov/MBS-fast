@@ -548,13 +548,21 @@ static bool gpu_compact_beam4_split_enabled()
     return !(value && value[0] == '0' && value[1] == '\0');
 }
 
-static bool gpu_warp_beams_enabled()
+static int gpu_warp_beams_mode()
 {
     const char *value = std::getenv("MBS_GPU_WARP_BEAMS");
     if (value && value[0] == '0' && value[1] == '\0')
-        return false;
+        return 0;
     if (value && value[0] == '1' && value[1] == '\0')
-        return true;
+        return 1;
+    return -1;
+}
+
+static bool gpu_warp_beams_enabled()
+{
+    const int mode = gpu_warp_beams_mode();
+    if (mode >= 0)
+        return mode != 0;
 
     int device = 0;
     cudaDeviceProp prop;
@@ -1068,7 +1076,8 @@ __device__ inline void add_stable_edge_quotient_gpu(
     sumImag += (GpuReal)(pr*localImag + pi*localReal);
 }
 
-template <int MaxVertices, bool UnitWave = false, typename BeamT>
+template <int MaxVertices, bool UnitWave = false,
+          bool NativePhase = false, typename BeamT>
 __device__ inline bool compute_beam_integral_cached_gpu(const BeamT &b,
                                                               int nv,
                                                               GpuReal waveIndex,
@@ -1105,15 +1114,27 @@ __device__ inline bool compute_beam_integral_cached_gpu(const BeamT &b,
     }
 
     GpuReal vc[MaxVertices], vs[MaxVertices];
-    const GpuVertexPhaseReal qx = UnitWave ? (GpuVertexPhaseReal)A
-        : (GpuVertexPhaseReal)waveIndex * (GpuVertexPhaseReal)A;
-    const GpuVertexPhaseReal qy = UnitWave ? (GpuVertexPhaseReal)B
-        : (GpuVertexPhaseReal)waveIndex * (GpuVertexPhaseReal)B;
-    for (int v = 0; v < nv; ++v)
+    if (NativePhase)
     {
-        const GpuVertexPhaseReal x = (GpuVertexPhaseReal)b.x[v];
-        const GpuVertexPhaseReal y = (GpuVertexPhaseReal)b.y[v];
-        gpu_sincos_phase(qx * x + qy * y + commonPhase, &vs[v], &vc[v]);
+        const GpuReal qx = UnitWave ? A : waveIndex * A;
+        const GpuReal qy = UnitWave ? B : waveIndex * B;
+        for (int v = 0; v < nv; ++v)
+            gpu_sincos(qx * b.x[v] + qy * b.y[v]
+                       + (GpuReal)commonPhase, &vs[v], &vc[v]);
+    }
+    else
+    {
+        const GpuVertexPhaseReal qx = UnitWave ? (GpuVertexPhaseReal)A
+            : (GpuVertexPhaseReal)waveIndex * (GpuVertexPhaseReal)A;
+        const GpuVertexPhaseReal qy = UnitWave ? (GpuVertexPhaseReal)B
+            : (GpuVertexPhaseReal)waveIndex * (GpuVertexPhaseReal)B;
+        for (int v = 0; v < nv; ++v)
+        {
+            const GpuVertexPhaseReal x = (GpuVertexPhaseReal)b.x[v];
+            const GpuVertexPhaseReal y = (GpuVertexPhaseReal)b.y[v];
+            gpu_sincos_phase(qx * x + qy * y + commonPhase,
+                             &vs[v], &vc[v]);
+        }
     }
 
     GpuReal sr = 0.0, si = 0.0;
@@ -2830,6 +2851,336 @@ __device__ inline void accumulate_compact_beam_jones_gpu(
     j01r += d01r; j01i += d01i;
     j10r += d10r; j10i += d10i;
     j11r += d11r; j11i += d11i;
+}
+
+template <typename BeamT, int MaxVertices, int FixedVertices = 0>
+__device__ inline void accumulate_beam_mueller_incoherent_gpu(
+    const BeamT &b,
+    GpuReal cp, GpuReal sp, GpuReal sin_t, GpuReal cos_t,
+    GpuReal vfx, GpuReal vfy, GpuReal vfz,
+    GpuReal vtx, GpuReal vty, GpuReal vtz,
+    GpuReal waveIndex, GpuReal wi2, GpuReal eps1, GpuReal eps2,
+    GpuReal complWaveR, GpuReal complWaveI,
+    GpuReal invComplWaveR, GpuReal invComplWaveI,
+    int legacySign, GpuReal weight, GpuReal *mueller)
+{
+    const int nv = FixedVertices > 0 ? FixedVertices : b.nVertices;
+    if (nv <= 0)
+        return;
+
+    const GpuReal neg_cp = -cp, neg_sp = -sp;
+    const GpuReal aSin = neg_cp * b.horAx + neg_sp * b.horAy;
+    const GpuReal aCos = b.horAz;
+    const GpuReal bSin = neg_cp * b.verAx + neg_sp * b.verAy;
+    const GpuReal bCos = b.verAz;
+    const GpuReal A = sin_t * aSin + cos_t * aCos + b.bdx;
+    const GpuReal B = sin_t * bSin + cos_t * bCos + b.bdy;
+
+    // A common scalar phase is absent here by construction: Mueller(cJ) is
+    // |c|^2 Mueller(J), so incoherent beam accumulation needs only the power
+    // of the aperture factor.  The remaining local phase is evaluated in the
+    // native storage precision, avoiding consumer-GPU FP64 transcendental
+    // throughput without changing the coherent path.
+    GpuReal fr, fi;
+    bool usedSmallPhase = false;
+    if (!compute_beam_integral_cached_gpu<MaxVertices, true, true>(
+            b, nv, waveIndex, wi2, eps1, eps2,
+            complWaveR, complWaveI, invComplWaveR, invComplWaveI,
+            legacySign, 1, A, B, fabs(A), fabs(B), 0.0,
+            usedSmallPhase, fr, fi) || isnan(fr))
+        return;
+
+    GpuReal r00, r01, r10, r11;
+    rotate_jones_precomputed_gpu(
+        b.pNTx, b.pNTy, b.pNTz, b.pNPx, b.pNPy, b.pNPz,
+        b.pnxDTx, b.pnxDTy, b.pnxDTz,
+        b.pnxDPx, b.pnxDPy, b.pnxDPz,
+        vfx, vfy, vfz, vtx, vty, vtz,
+        r00, r01, r10, r11);
+
+    const GpuReal j00r = r00 * b.jp00r + r01 * b.jp10r;
+    const GpuReal j00i = r00 * b.jp00i + r01 * b.jp10i;
+    const GpuReal j01r = r00 * b.jp01r + r01 * b.jp11r;
+    const GpuReal j01i = r00 * b.jp01i + r01 * b.jp11i;
+    const GpuReal j10r = r10 * b.jp00r + r11 * b.jp10r;
+    const GpuReal j10i = r10 * b.jp00i + r11 * b.jp10i;
+    const GpuReal j11r = r10 * b.jp01r + r11 * b.jp11r;
+    const GpuReal j11i = r10 * b.jp01i + r11 * b.jp11i;
+    const GpuReal powerWeight = weight * (fr * fr + fi * fi);
+    mueller_add_from_jones(j00r, j00i, j01r, j01i,
+                           j10r, j10i, j11r, j11i,
+                           powerWeight, mueller);
+}
+
+template <bool Split4, bool HasGeneric, bool Fixed34>
+__global__ void diffraction_grid_mueller_incoherent_compact_kernel(
+                                                      const GpuBeam4 *__restrict__ beams4,
+                                                      const int *__restrict__ beamOffsets4,
+                                                      const int *__restrict__ beamOffsets4Quad,
+                                                      const GpuBeam8 *__restrict__ beams8,
+                                                      const int *__restrict__ beamOffsets8,
+                                                      const GpuBeam *__restrict__ beams,
+                                                      const int *__restrict__ beamOffsets,
+                                                      const GpuReal *__restrict__ sinTheta,
+                                                      const GpuReal *__restrict__ cosTheta,
+                                                      const GpuReal *__restrict__ sinPhi,
+                                                      const GpuReal *__restrict__ cosPhi,
+                                                      const GpuReal *__restrict__ vf,
+                                                      const GpuReal *__restrict__ weights,
+                                                      int nAz, int nZen,
+                                                      int nOrient,
+                                                      GpuReal waveIndex,
+                                                      GpuReal wi2,
+                                                      GpuReal eps1,
+                                                      GpuReal eps2,
+                                                      GpuReal complWaveR,
+                                                      GpuReal complWaveI,
+                                                      GpuReal invComplWaveR,
+                                                      GpuReal invComplWaveI,
+                                                      int legacySign,
+                                                      GpuReal *__restrict__ mFull)
+{
+    const int gridCount = nAz * (nZen + 1);
+    int orient;
+    int grid;
+    int p;
+    int t;
+    const bool grid3D = blockDim.y > 1;
+    if (grid3D)
+    {
+        orient = (int)blockIdx.z;
+        p = (int)blockIdx.y * (int)blockDim.y + (int)threadIdx.y;
+        t = (int)blockIdx.x * (int)blockDim.x + (int)threadIdx.x;
+        if (orient >= nOrient || p >= nAz || t > nZen)
+            return;
+        grid = p * (nZen + 1) + t;
+    }
+    else
+    {
+        const long long total = (long long)nOrient * gridCount;
+        const long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+        if (idx >= total)
+            return;
+        orient = (int)(idx / gridCount);
+        grid = (int)(idx - (long long)orient * gridCount);
+        p = grid / (nZen + 1);
+        t = grid - p * (nZen + 1);
+    }
+
+    const GpuReal cp = cosPhi[p], sp = sinPhi[p];
+    const GpuReal sin_t = sinTheta[t], cos_t = cosTheta[t];
+    const GpuReal dx = sin_t * cp;
+    const GpuReal dy = sin_t * sp;
+    const GpuReal dz = -cos_t;
+    const GpuReal vfx = vf[(grid * 3) + 0];
+    const GpuReal vfy = vf[(grid * 3) + 1];
+    const GpuReal vfz = vf[(grid * 3) + 2];
+    GpuReal vtx, vty, vtz;
+    transverse_basis_gpu(vfx, vfy, vfz, dx, dy, dz, vtx, vty, vtz);
+    const GpuReal weight = weights[orient] * (GpuReal)0.25;
+    GpuReal mueller[16] = {};
+
+    if (Split4)
+    {
+        const int begin4 = beamOffsets4[orient];
+        const int end4 = beamOffsets4[orient + 1];
+        if (Fixed34)
+        {
+            const int beginQuad = beamOffsets4Quad[orient];
+            for (int bi = begin4; bi < beginQuad; ++bi)
+                accumulate_beam_mueller_incoherent_gpu<GpuBeam4, 4, 3>(
+                    beams4[bi], cp, sp, sin_t, cos_t,
+                    vfx, vfy, vfz, vtx, vty, vtz,
+                    waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+                    invComplWaveR, invComplWaveI, legacySign, weight, mueller);
+            for (int bi = beginQuad; bi < end4; ++bi)
+                accumulate_beam_mueller_incoherent_gpu<GpuBeam4, 4, 4>(
+                    beams4[bi], cp, sp, sin_t, cos_t,
+                    vfx, vfy, vfz, vtx, vty, vtz,
+                    waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+                    invComplWaveR, invComplWaveI, legacySign, weight, mueller);
+        }
+        else
+        {
+            for (int bi = begin4; bi < end4; ++bi)
+                accumulate_beam_mueller_incoherent_gpu<GpuBeam4, 4>(
+                    beams4[bi], cp, sp, sin_t, cos_t,
+                    vfx, vfy, vfz, vtx, vty, vtz,
+                    waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+                    invComplWaveR, invComplWaveI, legacySign, weight, mueller);
+        }
+    }
+
+    for (int bi = beamOffsets8[orient]; bi < beamOffsets8[orient + 1]; ++bi)
+        accumulate_beam_mueller_incoherent_gpu<GpuBeam8, 8>(
+            beams8[bi], cp, sp, sin_t, cos_t,
+            vfx, vfy, vfz, vtx, vty, vtz,
+            waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+            invComplWaveR, invComplWaveI, legacySign, weight, mueller);
+
+    if (HasGeneric)
+    {
+        for (int bi = beamOffsets[orient]; bi < beamOffsets[orient + 1]; ++bi)
+            accumulate_beam_mueller_incoherent_gpu<GpuBeam, 32>(
+                beams[bi], cp, sp, sin_t, cos_t,
+                vfx, vfy, vfz, vtx, vty, vtz,
+                waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+                invComplWaveR, invComplWaveI, legacySign, weight, mueller);
+    }
+
+#pragma unroll
+    for (int k = 0; k < 16; ++k)
+        gpu_atomic_add(&mFull[grid * 16 + k], mueller[k]);
+}
+
+template <bool Split4, bool HasGeneric, bool Fixed34>
+__global__ void diffraction_grid_mueller_incoherent_warp_kernel(
+                                                      const GpuBeam4 *__restrict__ beams4,
+                                                      const int *__restrict__ beamOffsets4,
+                                                      const int *__restrict__ beamOffsets4Quad,
+                                                      const GpuBeam8 *__restrict__ beams8,
+                                                      const int *__restrict__ beamOffsets8,
+                                                      const GpuBeam *__restrict__ beams,
+                                                      const int *__restrict__ beamOffsets,
+                                                      const GpuReal *__restrict__ sinTheta,
+                                                      const GpuReal *__restrict__ cosTheta,
+                                                      const GpuReal *__restrict__ sinPhi,
+                                                      const GpuReal *__restrict__ cosPhi,
+                                                      const GpuReal *__restrict__ vf,
+                                                      const GpuReal *__restrict__ weights,
+                                                      int grid3D,
+                                                      int nAz, int nZen,
+                                                      int nOrient,
+                                                      GpuReal waveIndex,
+                                                      GpuReal wi2,
+                                                      GpuReal eps1,
+                                                      GpuReal eps2,
+                                                      GpuReal complWaveR,
+                                                      GpuReal complWaveI,
+                                                      GpuReal invComplWaveR,
+                                                      GpuReal invComplWaveI,
+                                                      int legacySign,
+                                                      GpuReal *__restrict__ mFull)
+{
+    const int gridCount = nAz * (nZen + 1);
+    const int lane = (int)threadIdx.x & 31;
+    const unsigned mask = 0xffffffffu;
+    int orient;
+    int grid;
+    int p;
+    int t;
+    if (grid3D)
+    {
+        const int warpInBlock = (int)threadIdx.x >> 5;
+        const int warpsPerBlock = (int)blockDim.x >> 5;
+        orient = (int)blockIdx.z;
+        p = (int)blockIdx.y;
+        t = (int)blockIdx.x * warpsPerBlock + warpInBlock;
+        if (orient >= nOrient || p >= nAz || t > nZen)
+            return;
+        grid = p * (nZen + 1) + t;
+    }
+    else
+    {
+        const long long warp =
+            ((long long)blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+        const long long total = (long long)nOrient * gridCount;
+        if (warp >= total)
+            return;
+        orient = (int)(warp / gridCount);
+        grid = (int)(warp - (long long)orient * gridCount);
+        p = grid / (nZen + 1);
+        t = grid - p * (nZen + 1);
+    }
+
+    GpuReal cp = 0.0, sp = 0.0;
+    GpuReal sin_t = 0.0, cos_t = 0.0;
+    GpuReal vfx = 0.0, vfy = 0.0, vfz = 0.0;
+    GpuReal vtx = 0.0, vty = 0.0, vtz = 0.0;
+    if (lane == 0)
+    {
+        cp = cosPhi[p]; sp = sinPhi[p];
+        sin_t = sinTheta[t]; cos_t = cosTheta[t];
+        const GpuReal dx = sin_t * cp;
+        const GpuReal dy = sin_t * sp;
+        const GpuReal dz = -cos_t;
+        vfx = vf[(grid * 3) + 0];
+        vfy = vf[(grid * 3) + 1];
+        vfz = vf[(grid * 3) + 2];
+        transverse_basis_orthonormal_gpu(
+            vfx, vfy, vfz, dx, dy, dz, vtx, vty, vtz);
+    }
+    cp = __shfl_sync(mask, cp, 0); sp = __shfl_sync(mask, sp, 0);
+    sin_t = __shfl_sync(mask, sin_t, 0);
+    cos_t = __shfl_sync(mask, cos_t, 0);
+    vfx = __shfl_sync(mask, vfx, 0); vfy = __shfl_sync(mask, vfy, 0);
+    vfz = __shfl_sync(mask, vfz, 0);
+    vtx = __shfl_sync(mask, vtx, 0); vty = __shfl_sync(mask, vty, 0);
+    vtz = __shfl_sync(mask, vtz, 0);
+
+    const GpuReal weight = weights[orient] * (GpuReal)0.25;
+    GpuReal mueller[16] = {};
+    if (Split4)
+    {
+        const int begin4 = beamOffsets4[orient];
+        const int end4 = beamOffsets4[orient + 1];
+        if (Fixed34)
+        {
+            const int beginQuad = beamOffsets4Quad[orient];
+            for (int bi = begin4 + lane; bi < beginQuad; bi += 32)
+                accumulate_beam_mueller_incoherent_gpu<GpuBeam4, 4, 3>(
+                    beams4[bi], cp, sp, sin_t, cos_t,
+                    vfx, vfy, vfz, vtx, vty, vtz,
+                    waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+                    invComplWaveR, invComplWaveI, legacySign, weight, mueller);
+            for (int bi = beginQuad + lane; bi < end4; bi += 32)
+                accumulate_beam_mueller_incoherent_gpu<GpuBeam4, 4, 4>(
+                    beams4[bi], cp, sp, sin_t, cos_t,
+                    vfx, vfy, vfz, vtx, vty, vtz,
+                    waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+                    invComplWaveR, invComplWaveI, legacySign, weight, mueller);
+        }
+        else
+        {
+            for (int bi = begin4 + lane; bi < end4; bi += 32)
+                accumulate_beam_mueller_incoherent_gpu<GpuBeam4, 4>(
+                    beams4[bi], cp, sp, sin_t, cos_t,
+                    vfx, vfy, vfz, vtx, vty, vtz,
+                    waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+                    invComplWaveR, invComplWaveI, legacySign, weight, mueller);
+        }
+    }
+
+    for (int bi = beamOffsets8[orient] + lane;
+         bi < beamOffsets8[orient + 1]; bi += 32)
+        accumulate_beam_mueller_incoherent_gpu<GpuBeam8, 8>(
+            beams8[bi], cp, sp, sin_t, cos_t,
+            vfx, vfy, vfz, vtx, vty, vtz,
+            waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+            invComplWaveR, invComplWaveI, legacySign, weight, mueller);
+
+    if (HasGeneric)
+    {
+        for (int bi = beamOffsets[orient] + lane;
+             bi < beamOffsets[orient + 1]; bi += 32)
+            accumulate_beam_mueller_incoherent_gpu<GpuBeam, 32>(
+                beams[bi], cp, sp, sin_t, cos_t,
+                vfx, vfy, vfz, vtx, vty, vtz,
+                waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+                invComplWaveR, invComplWaveI, legacySign, weight, mueller);
+    }
+
+#pragma unroll
+    for (int k = 0; k < 16; ++k)
+        for (int offset = 16; offset > 0; offset >>= 1)
+            mueller[k] += __shfl_down_sync(mask, mueller[k], offset);
+
+    if (lane == 0)
+    {
+#pragma unroll
+        for (int k = 0; k < 16; ++k)
+            gpu_atomic_add(&mFull[grid * 16 + k], mueller[k]);
+    }
 }
 
 template <bool Grid3D, bool Fixed34>
@@ -5278,8 +5629,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     const int requestedStageMueller = gpu_stage_mueller_mode();
     const int requestedNoVertexCache = gpu_no_vertex_cache_mode();
     const int requestedNoAtomics = gpu_no_atomics_mode();
-    const bool canUseBeam8 = isCoh
-        && gpu_compact_beams_enabled()
+    const bool canUseBeam8 = gpu_compact_beams_enabled()
         && !computeNoShadow
         && requestedNoAtomics != 0
         && requestedFusedMueller != 0
@@ -5577,8 +5927,15 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         && !noVertexCache;
     const bool useMixedBeam8 = packMixedBeam8 && fusedMueller && !computeNoShadow
         && !stageMueller && !noVertexCache;
+    const int warpBeamsMode = gpu_warp_beams_mode();
+    const bool autoIncoherentWarp = !isCoh
+        && (long long)nOrient * gridCount <= 200000
+        && nBeams >= (size_t)nOrient * 32;
+    const bool preferWarpBeams = warpBeamsMode >= 0
+        ? warpBeamsMode != 0
+        : (isCoh ? gpu_warp_beams_enabled() : autoIncoherentWarp);
     const bool useWarpBeams = (useBeam8 || useMixedBeam8)
-        && gpu_warp_beams_enabled();
+        && preferWarpBeams;
     t0 = timing ? gpu_now_ms() : 0.0;
     if (useBeam8)
     {
@@ -5734,7 +6091,8 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     const int threadGrid3DMode = gpu_thread_grid_3d_mode();
     const bool threadGridPaddingOk =
         threadGridPadded * 100 <= threadGridActual * 115;
-    const bool useThreadGrid3D = useBeam8 && !useWarpBeams && !stageMueller
+    const bool useThreadGrid3D = (useBeam8 || useMixedBeam8)
+        && !useWarpBeams && !stageMueller
         && (threadGrid3DMode == 1
             || (threadGrid3DMode < 0 && block == 64
                 && threadGridPaddingOk))
@@ -5749,6 +6107,13 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         (unsigned int)((nZen + threadThetaTile) / threadThetaTile),
         (unsigned int)((nAz + threadPhiTile - 1) / threadPhiTile),
         (unsigned int)nOrient);
+    const dim3 incoherentCompactBlock = useThreadGrid3D
+        ? threadBlock3D : dim3((unsigned int)block, 1u, 1u);
+    const long long incoherentWarpThreads =
+        (long long)nOrient * gridCount * 32;
+    const dim3 incoherentWarpGrid = useWarpGrid3D
+        ? warpGrid3D
+        : dim3((unsigned int)((incoherentWarpThreads + block - 1) / block));
     long long diffractionTotal = (long long)((fusedMueller || noAtomics)
         ? nOrient : (int)nBeams) * gridCount;
     int diffractionGrid = (int)((diffractionTotal + block - 1) / block);
@@ -5756,7 +6121,172 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     {
         if (!isCoh)
         {
-            if (computeNoShadow)
+            if (useWarpBeams)
+            {
+                if (useBeam8)
+                {
+                    if (splitBeam4 && fixedBeam34)
+                        diffraction_grid_mueller_incoherent_warp_kernel<true, false, true><<<incoherentWarpGrid, block>>>(
+                            ws.beams4, ws.beamOffsets4, ws.beamOffsets4Quad,
+                            ws.beams8, ws.beamOffsets8, nullptr, nullptr,
+                            ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                            ws.vf, ws.weights, useWarpGrid3D ? 1 : 0,
+                            nAz, nZen, nOrient,
+                            diffractionWaveIndex, diffractionWi2,
+                            gpu_effective_eps1(m_eps1), m_eps2,
+                            real(m_complWave), imag(m_complWave),
+                            real(m_invComplWave), imag(m_invComplWave),
+                            m_legacySign ? 1 : 0, ws.m);
+                    else if (splitBeam4)
+                        diffraction_grid_mueller_incoherent_warp_kernel<true, false, false><<<incoherentWarpGrid, block>>>(
+                            ws.beams4, ws.beamOffsets4, nullptr,
+                            ws.beams8, ws.beamOffsets8, nullptr, nullptr,
+                            ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                            ws.vf, ws.weights, useWarpGrid3D ? 1 : 0,
+                            nAz, nZen, nOrient,
+                            diffractionWaveIndex, diffractionWi2,
+                            gpu_effective_eps1(m_eps1), m_eps2,
+                            real(m_complWave), imag(m_complWave),
+                            real(m_invComplWave), imag(m_invComplWave),
+                            m_legacySign ? 1 : 0, ws.m);
+                    else
+                        diffraction_grid_mueller_incoherent_warp_kernel<false, false, false><<<incoherentWarpGrid, block>>>(
+                            nullptr, nullptr, nullptr,
+                            ws.beams8, ws.beamOffsets, nullptr, nullptr,
+                            ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                            ws.vf, ws.weights, useWarpGrid3D ? 1 : 0,
+                            nAz, nZen, nOrient,
+                            diffractionWaveIndex, diffractionWi2,
+                            gpu_effective_eps1(m_eps1), m_eps2,
+                            real(m_complWave), imag(m_complWave),
+                            real(m_invComplWave), imag(m_invComplWave),
+                            m_legacySign ? 1 : 0, ws.m);
+                }
+                else if (splitBeam4 && fixedBeam34)
+                    diffraction_grid_mueller_incoherent_warp_kernel<true, true, true><<<incoherentWarpGrid, block>>>(
+                        ws.beams4, ws.beamOffsets4, ws.beamOffsets4Quad,
+                        ws.beams8, ws.beamOffsets8, ws.beams, ws.beamOffsets,
+                        ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                        ws.vf, ws.weights, useWarpGrid3D ? 1 : 0,
+                        nAz, nZen, nOrient,
+                        diffractionWaveIndex, diffractionWi2,
+                        gpu_effective_eps1(m_eps1), m_eps2,
+                        real(m_complWave), imag(m_complWave),
+                        real(m_invComplWave), imag(m_invComplWave),
+                        m_legacySign ? 1 : 0, ws.m);
+                else if (splitBeam4)
+                    diffraction_grid_mueller_incoherent_warp_kernel<true, true, false><<<incoherentWarpGrid, block>>>(
+                        ws.beams4, ws.beamOffsets4, nullptr,
+                        ws.beams8, ws.beamOffsets8, ws.beams, ws.beamOffsets,
+                        ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                        ws.vf, ws.weights, useWarpGrid3D ? 1 : 0,
+                        nAz, nZen, nOrient,
+                        diffractionWaveIndex, diffractionWi2,
+                        gpu_effective_eps1(m_eps1), m_eps2,
+                        real(m_complWave), imag(m_complWave),
+                        real(m_invComplWave), imag(m_invComplWave),
+                        m_legacySign ? 1 : 0, ws.m);
+                else
+                    diffraction_grid_mueller_incoherent_warp_kernel<false, true, false><<<incoherentWarpGrid, block>>>(
+                        nullptr, nullptr, nullptr,
+                        ws.beams8, ws.beamOffsets8, ws.beams, ws.beamOffsets,
+                        ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                        ws.vf, ws.weights, useWarpGrid3D ? 1 : 0,
+                        nAz, nZen, nOrient,
+                        diffractionWaveIndex, diffractionWi2,
+                        gpu_effective_eps1(m_eps1), m_eps2,
+                        real(m_complWave), imag(m_complWave),
+                        real(m_invComplWave), imag(m_invComplWave),
+                        m_legacySign ? 1 : 0, ws.m);
+            }
+            else if (useBeam8)
+            {
+                if (splitBeam4)
+                {
+                    if (fixedBeam34)
+                        diffraction_grid_mueller_incoherent_compact_kernel<true, false, true><<<
+                            useThreadGrid3D ? threadGrid3D : dim3((unsigned int)diffractionGrid),
+                            incoherentCompactBlock>>>(
+                            ws.beams4, ws.beamOffsets4, ws.beamOffsets4Quad,
+                            ws.beams8, ws.beamOffsets8, nullptr, nullptr,
+                            ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                            ws.vf, ws.weights, nAz, nZen, nOrient,
+                            diffractionWaveIndex, diffractionWi2,
+                            gpu_effective_eps1(m_eps1), m_eps2,
+                            real(m_complWave), imag(m_complWave),
+                            real(m_invComplWave), imag(m_invComplWave),
+                            m_legacySign ? 1 : 0, ws.m);
+                    else
+                        diffraction_grid_mueller_incoherent_compact_kernel<true, false, false><<<
+                            useThreadGrid3D ? threadGrid3D : dim3((unsigned int)diffractionGrid),
+                            incoherentCompactBlock>>>(
+                            ws.beams4, ws.beamOffsets4, nullptr,
+                            ws.beams8, ws.beamOffsets8, nullptr, nullptr,
+                            ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                            ws.vf, ws.weights, nAz, nZen, nOrient,
+                            diffractionWaveIndex, diffractionWi2,
+                            gpu_effective_eps1(m_eps1), m_eps2,
+                            real(m_complWave), imag(m_complWave),
+                            real(m_invComplWave), imag(m_invComplWave),
+                            m_legacySign ? 1 : 0, ws.m);
+                }
+                else
+                    diffraction_grid_mueller_incoherent_compact_kernel<false, false, false><<<
+                        useThreadGrid3D ? threadGrid3D : dim3((unsigned int)diffractionGrid),
+                        incoherentCompactBlock>>>(
+                        nullptr, nullptr, nullptr,
+                        ws.beams8, ws.beamOffsets, nullptr, nullptr,
+                        ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                        ws.vf, ws.weights, nAz, nZen, nOrient,
+                        diffractionWaveIndex, diffractionWi2,
+                        gpu_effective_eps1(m_eps1), m_eps2,
+                        real(m_complWave), imag(m_complWave),
+                        real(m_invComplWave), imag(m_invComplWave),
+                        m_legacySign ? 1 : 0, ws.m);
+            }
+            else if (useMixedBeam8)
+            {
+                if (splitBeam4 && fixedBeam34)
+                    diffraction_grid_mueller_incoherent_compact_kernel<true, true, true><<<
+                        useThreadGrid3D ? threadGrid3D : dim3((unsigned int)diffractionGrid),
+                        incoherentCompactBlock>>>(
+                        ws.beams4, ws.beamOffsets4, ws.beamOffsets4Quad,
+                        ws.beams8, ws.beamOffsets8, ws.beams, ws.beamOffsets,
+                        ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                        ws.vf, ws.weights, nAz, nZen, nOrient,
+                        diffractionWaveIndex, diffractionWi2,
+                        gpu_effective_eps1(m_eps1), m_eps2,
+                        real(m_complWave), imag(m_complWave),
+                        real(m_invComplWave), imag(m_invComplWave),
+                        m_legacySign ? 1 : 0, ws.m);
+                else if (splitBeam4)
+                    diffraction_grid_mueller_incoherent_compact_kernel<true, true, false><<<
+                        useThreadGrid3D ? threadGrid3D : dim3((unsigned int)diffractionGrid),
+                        incoherentCompactBlock>>>(
+                        ws.beams4, ws.beamOffsets4, nullptr,
+                        ws.beams8, ws.beamOffsets8, ws.beams, ws.beamOffsets,
+                        ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                        ws.vf, ws.weights, nAz, nZen, nOrient,
+                        diffractionWaveIndex, diffractionWi2,
+                        gpu_effective_eps1(m_eps1), m_eps2,
+                        real(m_complWave), imag(m_complWave),
+                        real(m_invComplWave), imag(m_invComplWave),
+                        m_legacySign ? 1 : 0, ws.m);
+                else
+                    diffraction_grid_mueller_incoherent_compact_kernel<false, true, false><<<
+                        useThreadGrid3D ? threadGrid3D : dim3((unsigned int)diffractionGrid),
+                        incoherentCompactBlock>>>(
+                        nullptr, nullptr, nullptr,
+                        ws.beams8, ws.beamOffsets8, ws.beams, ws.beamOffsets,
+                        ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                        ws.vf, ws.weights, nAz, nZen, nOrient,
+                        diffractionWaveIndex, diffractionWi2,
+                        gpu_effective_eps1(m_eps1), m_eps2,
+                        real(m_complWave), imag(m_complWave),
+                        real(m_invComplWave), imag(m_invComplWave),
+                        m_legacySign ? 1 : 0, ws.m);
+            }
+            else if (computeNoShadow)
             {
                 diffraction_grid_mueller_incoherent_kernel<true><<<diffractionGrid, block>>>(
                     ws.beams, ws.beamOffsets, ws.sinTheta, ws.cosTheta,
