@@ -50,6 +50,10 @@ common=(
     >"$work/cpu.log" 2>&1
 MBS_GPU_SLOT="$device" "$gpu" "${common[@]}" --backend cuda \
     --output "$work/gpu" >"$work/gpu.log" 2>&1
+"$cpu" "${common[@]}" --incoh --backend cpu \
+    --output "$work/cpu_incoh" >"$work/cpu_incoh.log" 2>&1
+MBS_GPU_SLOT="$device" "$gpu" "${common[@]}" --incoh --backend cuda \
+    --output "$work/gpu_incoh" >"$work/gpu_incoh.log" 2>&1
 MBS_GPU_SLOT="$device" MBS_GPU_COMPACT_BEAMS=0 \
     "$gpu" "${common[@]}" --backend cuda \
     --output "$work/gpu_generic" >"$work/gpu_generic.log" 2>&1
@@ -214,6 +218,41 @@ print("CUDA mixed Beam8/Beam4+8+generic weighted L2: {:.3e} (limit {:.3e})".form
     relative, tolerance))
 if not math.isfinite(relative) or relative > tolerance:
     raise SystemExit("ERROR: mixed Beam4 CUDA mismatch exceeds {:.3e}".format(
+        tolerance))
+PY
+
+python3 - "$work/cpu_incoh/cpu_incoh.dat" \
+    "$work/gpu_incoh/gpu_incoh.dat" "$relative_tolerance" <<'PY'
+import math
+import sys
+
+def load(path):
+    with open(path, encoding="utf-8") as stream:
+        next(stream)
+        return [[float(value) for value in line.split()]
+                for line in stream if line.strip()]
+
+reference = load(sys.argv[1])
+candidate = load(sys.argv[2])
+if len(reference) != len(candidate) or not reference:
+    raise SystemExit("ERROR: incoherent CUDA output grids have different sizes")
+num = 0.0
+den = 0.0
+for reference_row, candidate_row in zip(reference, candidate):
+    if (abs(reference_row[0] - candidate_row[0]) > 1e-10 or
+            abs(reference_row[1] - candidate_row[1]) > 1e-10):
+        raise SystemExit("ERROR: incoherent CUDA output grids differ")
+    weight = reference_row[1]
+    for index in range(2, 18):
+        delta = candidate_row[index] - reference_row[index]
+        num += weight * delta * delta
+        den += weight * reference_row[index] * reference_row[index]
+relative = math.sqrt(num / max(den, 1e-300))
+tolerance = float(sys.argv[3])
+print("CUDA incoherent weighted L2: {:.3e} (limit {:.3e})".format(
+    relative, tolerance))
+if not math.isfinite(relative) or relative > tolerance:
+    raise SystemExit("ERROR: incoherent CPU/GPU mismatch exceeds {:.3e}".format(
         tolerance))
 PY
 
