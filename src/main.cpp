@@ -2027,10 +2027,10 @@ int main(int argc, const char* argv[])
             cout << "      Experimental flag for M33/M34/M44 research only." << endl;
         }
 
-        if (args.IsCatched("integrals_only"))
+        if (args.IsCatched("extinction_only"))
         {
             if (mpi_size != 1)
-                throw std::runtime_error("--integrals-only supports one MPI rank with OpenMP threads.");
+                throw std::runtime_error("--extinction-only supports one MPI rank with OpenMP threads.");
             std::vector<double> diameters;
             if (args.IsCatched("multigrid") || args.IsCatched("multikeq") || args.IsCatched("multikeq_list"))
             {
@@ -2051,7 +2051,7 @@ int main(int argc, const char* argv[])
             ApplyBeamCutoffOptions(args, &handler);
             handler.m_keepIntegralRayBudget = true;
             tracer.SetHandler(&handler);
-            tracer.TraceIntegralOnly(args.GetIntValue("hammersley", 0), diameters);
+            tracer.TraceExtinctionOnly(args.GetIntValue("hammersley", 0), diameters);
         }
         else if (args.IsCatched("fixed"))
         {
