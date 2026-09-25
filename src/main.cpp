@@ -2027,7 +2027,33 @@ int main(int argc, const char* argv[])
             cout << "      Experimental flag for M33/M34/M44 research only." << endl;
         }
 
-        if (args.IsCatched("fixed"))
+        if (args.IsCatched("integrals_only"))
+        {
+            if (mpi_size != 1)
+                throw std::runtime_error("--integrals-only supports one MPI rank with OpenMP threads.");
+            std::vector<double> diameters;
+            if (args.IsCatched("multigrid") || args.IsCatched("multikeq") || args.IsCatched("multikeq_list"))
+            {
+                SerialSizeScan scan = BuildSerialSizeScan(args, particle, wave);
+                for (double x : scan.xValues) diameters.push_back(x * wave / M_PI);
+            }
+            else diameters.push_back(particle->MaximalDimention());
+            const double reference = *std::min_element(diameters.begin(), diameters.end());
+            particle->Resize(reference);
+            TracerPOTotal tracer(particle, reflNum, dirName);
+            tracer.m_scattering->m_wave = wave;
+            tracer.m_summary = additionalSummary;
+            ApplyTraceCutoffOptions(args, tracer.m_scattering, false);
+            HandlerPO handler(particle, &tracer.m_incidentLight, 0, wave);
+            handler.isCoh = true;
+            handler.SetAbsorptionAccounting(isAbs);
+            ApplyAbsorptionPointOption(args, &handler);
+            ApplyBeamCutoffOptions(args, &handler);
+            handler.m_keepIntegralRayBudget = true;
+            tracer.SetHandler(&handler);
+            tracer.TraceIntegralOnly(args.GetIntValue("hammersley", 0), diameters);
+        }
+        else if (args.IsCatched("fixed"))
         {
             additionalSummary += ", fixed orientation\n\n";
 

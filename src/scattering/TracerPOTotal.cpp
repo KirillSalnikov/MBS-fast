@@ -5544,6 +5544,128 @@ void TracerPOTotal::TraceFromSobolRing(int nBeta, int nGamma,
     TraceWeightedOrientations(orientations, "Sobol ring", betaSym, gammaSym);
 }
 
+void TracerPOTotal::TraceIntegralOnly(int nOrient, const std::vector<double> &diameters)
+{
+    HandlerPO *handler = dynamic_cast<HandlerPO*>(m_handler);
+    if (!handler || nOrient <= 0 || diameters.empty() || m_particle->isConcave)
+        throw std::invalid_argument("Integral-only requires a convex particle, a PO handler, and positive sample counts.");
+    const double reference = m_particle->MaximalDimention();
+    const double wave = m_scattering->m_wave;
+    const double k = 2.0*M_PI/wave;
+    const size_t sizes = diameters.size();
+    if (sizes > 4096 || size_t(nOrient) > 50000000 / (4*sizes))
+        throw std::invalid_argument("Integral-only batch exceeds its bounded orientation storage; split the size list.");
+    for (double d : diameters)
+        if (!std::isfinite(d) || d < reference*(1.0-1e-8))
+            throw std::invalid_argument("Shared integral tracing must use the smallest requested diameter as reference.");
+    const auto start = std::chrono::steady_clock::now();
+    std::vector<double> samples(size_t(nOrient)*sizes*4, 0.0);
+    std::vector<int> beamCounts(nOrient, 0);
+    std::atomic<int> finished(0);
+    m_scattering->PrepareForParallelTrace();
+    ParallelExceptionState errors;
+    std::cout << "Integral-only: " << nOrient << " full-domain Hammersley orientations; "
+              << sizes << " sizes; reference Dmax=" << reference
+              << "; no angular Mueller grid, no GPU allocation." << std::endl;
+    #pragma omp parallel
+    {
+        Particle particle = *m_particle;
+        std::unique_ptr<Scattering> scatter(m_scattering->CloneFor(&particle, &m_incidentLight));
+        HandlerPO local(&particle, &m_incidentLight, 0, wave);
+        local.ConfigureForThreadLocalPrepare(*handler, scatter.get());
+        std::vector<Beam> beams;
+        PreparedOrientation prepared;
+        #pragma omp for schedule(dynamic, 1)
+        for (int i=0; i<nOrient; ++i)
+        {
+            if (errors.Failed()) continue;
+            try
+            {
+                const double u=(i+0.5)/nOrient;
+                const double v=RadicalInverseBase2(uint32_t(i));
+                particle.Rotate(std::acos(1.0-2.0*u), 2.0*M_PI*v, 0.0);
+                beams.clear();
+                if (!scatter->ScatterLightWithLimitRetry(0, 0, beams, true))
+                    throw std::runtime_error("Integral-only: incomplete trace; refusing partial-orientation output.");
+                beamCounts[i]=int(beams.size());
+                const double incoming=scatter->GetIncedentEnergy();
+                local.PrepareBeams(beams, 1.0, prepared);
+                for (size_t j=0; j<sizes; ++j)
+                {
+                    const double scale=diameters[j]/reference;
+                    const double scale2=scale*scale;
+                    const double ext=local.ComputeForwardExtinctionOtScaled(prepared,scale,k,local.AbsorptionCoefficient());
+                    double outgoing=0.0, unabsorbed=0.0;
+                    for (const auto &ray : prepared.integralRays)
+                    {
+                        double attenuation=1.0;
+                        if (!ray.absorptionPaths.empty())
+                        {
+                            attenuation=0.0;
+                            for (double path : ray.absorptionPaths)
+                                attenuation += path>DBL_EPSILON ? std::exp(local.AbsorptionCoefficient()*path*scale) : 1.0;
+                            attenuation/=ray.absorptionPaths.size();
+                        }
+                        unabsorbed+=ray.unabsorbedEnergy*scale2;
+                        outgoing+=ray.unabsorbedEnergy*scale2*attenuation*attenuation;
+                    }
+                    const size_t offset=(size_t(i)*sizes+j)*4;
+                    samples[offset]=incoming*scale2;
+                    samples[offset+1]=ext;
+                    samples[offset+2]=outgoing;
+                    samples[offset+3]=unabsorbed;
+                    for (size_t c=0; c<4; ++c)
+                        if (!std::isfinite(samples[offset+c]))
+                            throw std::runtime_error("Nonfinite integral-only contribution.");
+                }
+                const int done=++finished;
+                if (done % std::max(1,nOrient/8)==0)
+                {
+                    #pragma omp critical(integral_progress)
+                    std::cout << "Integral-only progress " << done << "/" << nOrient << std::endl;
+                }
+            }
+            catch (...) { errors.Capture(); }
+        }
+    }
+    errors.Rethrow();
+    const double seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
+    const std::string filename=m_resultDirName+"_fast_integrals.tsv";
+    std::ofstream out(filename.c_str());
+    if (!out) throw std::runtime_error("Cannot open integral-only output: "+filename);
+    out << "Dmax_um\twavelength_um\tn_orient\tG\tCext_OT\tCout_ray\tCout_unabsorbed_ray"
+        << "\tCabs_ray_loss\tCabs_including_unclosed_rays\tCsca_OT_minus_ray_loss\talbedo_OT_ray"
+        << "\tCsca_GO_plus_shadow\tray_closure_relative\tQext_OT\tseconds\tstatus\n";
+    out << std::setprecision(17);
+    for (size_t j=0; j<sizes; ++j)
+    {
+        double sums[4]={0,0,0,0};
+        // Fixed orientation-order reduction, independent of OpenMP scheduling.
+        for (int i=0; i<nOrient; ++i)
+            for (int c=0; c<4; ++c) sums[c]+=samples[(size_t(i)*sizes+j)*4+c]/nOrient;
+        const double G=sums[0], ext=sums[1], escaped=sums[2], unabsorbed=sums[3];
+        const double absorption=unabsorbed-escaped;
+        const double sca=ext-absorption;
+        const bool physical=G>0 && ext>0 && sca>=0 && sca<=ext;
+        out << diameters[j] << '\t' << wave << '\t' << nOrient << '\t' << G << '\t' << ext
+            << '\t' << escaped << '\t' << unabsorbed << '\t' << absorption << '\t' << G-escaped
+            << '\t' << sca << '\t' << sca/ext << '\t' << G+escaped << '\t' << (G-unabsorbed)/G
+            << '\t' << ext/G << '\t' << seconds << '\t'
+            << (physical ? "OT_with_approximate_ray_absorption" : "check_energy_balance") << '\n';
+    }
+    out.close();
+    if (!out) throw std::runtime_error("Failed writing integral-only table.");
+    std::ostringstream log;
+    log << "\nINTEGRAL_ONLY: forward optical theorem; ray absorption is a separate approximation.\n"
+        << "No angular Csca quadrature was computed. Join Cext_OT with saved absolute M11 when available.\n"
+        << "Reference Dmax=" << reference << "; full beta=0..pi, gamma=0..2pi, no symmetry reduction.\n"
+        << "Max output beam count=" << *std::max_element(beamCounts.begin(),beamCounts.end())
+        << "; elapsed seconds=" << seconds << "\n"
+        << m_scattering->TraceCutoffReport() << handler->BeamCutoffReport();
+    AppendIntegralCharacteristicsLog(m_resultDirName,log.str());
+    std::cout << log.str() << "Saved " << filename << std::endl;
+}
+
 void TracerPOTotal::TraceFromHammersley(int nOrient, double betaSym,
                                         double gammaSym)
 {

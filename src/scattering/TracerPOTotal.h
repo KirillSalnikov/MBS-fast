@@ -11,6 +11,7 @@ struct PreparedOrientation;
 class TracerPOTotal : public TracerPO
 {
 public:
+    void TraceIntegralOnly(int nOrient, const std::vector<double> &diameters);
 	TracerPOTotal(Particle *particle, int nActs, const std::string &resultFileName);
 	void TraceRandom(const AngleRange &betaRange,
 					 const AngleRange &gammaRange) override;

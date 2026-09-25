@@ -253,6 +253,12 @@ struct PreparedBeam
 /// All preprocessed beams from one orientation, ready for parallel processing.
 struct PreparedOrientation
 {
+    struct IntegralRay
+    {
+        double unabsorbedEnergy;
+        std::vector<double> absorptionPaths;
+    };
+    std::vector<IntegralRay> integralRays;
     std::vector<PreparedBeam> beams;
     double sinZenith;  // weight for this orientation
     double extinctionOt = 0.0;
@@ -261,6 +267,7 @@ struct PreparedOrientation
 class HandlerPO : public Handler
 {
 public:
+    bool m_keepIntegralRayBudget = false;
     HandlerPO(Particle *particle, Light *incidentLight, int nTheta,
               double wavelength);
     ~HandlerPO() override;

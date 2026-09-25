@@ -1006,6 +1006,7 @@ void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
                                                 Scattering *scattering)
 {
     m_scattering = scattering;
+    m_keepIntegralRayBudget = source.m_keepIntegralRayBudget;
     m_sphere = source.m_sphere;
     m_tracks = source.m_tracks;
     m_hasAbsorption = source.m_hasAbsorption;
@@ -1644,6 +1645,7 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
     // than recomputing it for every beam edge.
     m_geometryScale = m_particle->MaximalDimention();
     out.beams.clear();
+    out.integralRays.clear();
     out.beams.reserve(beams.size());
     out.sinZenith = sinZenith;
     out.extinctionOt = 0.0;
@@ -1748,6 +1750,13 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
 
         if (beam.lastFacetId != __INT_MAX__)
         {
+            if (m_keepIntegralRayBudget)
+            {
+                PreparedOrientation::IntegralRay ray;
+                ray.unabsorbedEnergy = unabsorbedCrossSection * unabsorbedMueller00;
+                ray.absorptionPaths = absorptionPaths;
+                out.integralRays.push_back(std::move(ray));
+            }
             ++candidateBeams;
             matrix m_ = Mueller(beam.J);
             localEnergy += BeamCrossSection(beam)*m_[0][0]*sinZenith;

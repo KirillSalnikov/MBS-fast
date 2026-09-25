@@ -1264,11 +1264,11 @@ void ValidateScan(const ArgPP &args, const RunConfig &config)
         && !args.IsCatched("multigrid_parallel"))
     {
         if (args.IsCatched("multigrid")
-            && !SupportsSerialDmaxScan(config.orientation))
+            && !SupportsSerialDmaxScan(config.orientation) && !args.IsCatched("integrals_only"))
             Fail("--dmax-grid is not implemented by the selected serial PO orientation path.",
                  "add --scan-jobs N with --particle-file FILE, or use --diffraction-grid, --euler-grid, --sobol, --lattice, --euler-quadrature, or --diffraction-autofull.");
         if ((args.IsCatched("multikeq") || args.IsCatched("multikeq_list"))
-            && !SupportsSerialKeqScan(config.orientation))
+            && !SupportsSerialKeqScan(config.orientation) && !args.IsCatched("integrals_only"))
             Fail("the selected serial PO orientation path does not consume a k_eq size scan.",
                  "add --scan-jobs N, or use --diffraction-grid, --euler-grid, or --diffraction-autofull.");
     }
@@ -1430,6 +1430,19 @@ RunConfig RunConfig::FromCommandLine(const ArgPP &args,
 
     config.orientation = ResolveOrientation(args);
     ValidateOrientationValues(args, config.orientation);
+    if (args.IsCatched("integrals_only"))
+    {
+        if (config.method != RunMethod::PhysicalOptics || config.useGpu
+            || config.orientation != OrientationMode::Hammersley
+            || config.geometry != GeometryClassification::Convex)
+            Fail("--integrals-only requires PO, CPU, explicit convex geometry and Hammersley orientations.",
+                 "use --method po --backend cpu --geometry convex --hammersley N.");
+        const char *incompatible[] = {"shadow_off", "mirror_gamma", "sym", "incoh", "coh_orient", "fft", "ot_phase_avg", "ot_ping", "ot_phase_shift", "multigrid_parallel", "tr", "filter", "point", "checkpoint", "save_betas", "jones", "legacy_sign", "karczewski", "noshadow_output"};
+        for (const char *key : incompatible)
+            if (args.IsCatched(key))
+                Fail("--integrals-only does not support this modifier: " + std::string(key),
+                     "remove it; integral-only uses the full orientation domain and physical forward amplitude.");
+    }
     config.thetaGrid = ValidateThetaGrid(args, config.warnings);
     ValidateSO3AzimuthIntegration(args, config.orientation);
     ValidateOrientationModifiers(args, config);
