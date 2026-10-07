@@ -3653,17 +3653,47 @@ void TracerPOTotal::TraceMonteCarlo(const AngleRange &betaRange,
 }
 
 void TracerPOTotal::TraceFromFile(const std::string &orientFile,
-                                   bool parallelTrace)
+                                   bool parallelTrace, bool deduplicateOrientations)
 {
-    const std::vector<EulerOrientationRadians> orientations =
+    std::vector<EulerOrientationRadians> orientations =
         ReadOrientationFileDegrees(orientFile);
+    const int inputOrientations = (int)orientations.size();
+    std::vector<double> orientationWeights(inputOrientations, 1.0 / inputOrientations);
+    if (deduplicateOrientations)
+    {
+        std::map<std::pair<double, double>, size_t> indices;
+        std::vector<EulerOrientationRadians> unique;
+        std::vector<int> multiplicities;
+        for (const EulerOrientationRadians &value : orientations)
+        {
+            const std::pair<double, double> key(value.beta, value.gamma);
+            const auto found = indices.find(key);
+            if (found == indices.end())
+            {
+                indices[key] = unique.size();
+                unique.push_back(value);
+                multiplicities.push_back(1);
+            }
+            else
+            {
+                ++multiplicities[found->second];
+            }
+        }
+        orientations.swap(unique);
+        orientationWeights.clear();
+        for (int count : multiplicities)
+            orientationWeights.push_back((double)count / inputOrientations);
+        if (m_mpiRank == 0)
+            std::cout << "Exact orientation duplicates: " << inputOrientations
+                      << " entries -> " << orientations.size()
+                      << " traces; summed weights preserved" << std::endl;
+    }
     const int nOrientations = (int)orientations.size();
 
     CalcTimer timer;
     timer.Start();
     OutputStartTime(timer);
 
-    double weight = 1.0 / nOrientations;
     m_handler->SetNormIndex(1);
 
     HandlerPO *handlerPO = dynamic_cast<HandlerPO*>(m_handler);
@@ -3687,7 +3717,7 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile,
     // retain the same orientation weights and coherent per-particle amplitudes.
     // =========================================================================
     // Chunked streaming: process orientations in chunks to limit memory.
-    // Each chunk: Phase 1 (sequential trace) → Phase 2 (parallel diffraction).
+    // Each chunk: optional parallel tracing, then parallel diffraction.
     // Memory: O(chunkSize * beams_per_orient * sizeof(PreparedBeam)).
     //
     // Chunk size starts with a small pilot and is selected from measured
@@ -3732,6 +3762,15 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile,
             + 0x9e3779b9 + (paramHash << 6) + (paramHash >> 2);
         paramHash ^= std::hash<double>{}(bg.gamma)
             + 0x9e3779b9 + (paramHash << 6) + (paramHash >> 2);
+    }
+    if (deduplicateOrientations)
+    {
+        // Equal unique nodes can represent different distributions of repeats.
+        // Include their weights so a checkpoint cannot silently change the rule.
+        MixHashInt(paramHash, inputOrientations);
+        for (double weight : orientationWeights)
+            paramHash ^= std::hash<double>{}(weight)
+                + 0x9e3779b9 + (paramHash << 6) + (paramHash >> 2);
     }
     int resumeOrientation = 0;
     if (m_enableCheckpoint)
@@ -3810,12 +3849,13 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile,
                         if (!shadowOff)
                             localScatter->FormShadowBeam(localBeams);
                         const bool ok = localScatter->ScatterLight(0, 0, localBeams);
-                        incoming[i] = localScatter->GetIncedentEnergy() * weight;
+                        incoming[i] = localScatter->GetIncedentEnergy() * orientationWeights[idx];
                         localHandler->m_outputEnergy = 0.0;
                         if (ok)
-                            localHandler->PrepareBeams(localBeams, weight, chunkPrepared[i]);
+                            localHandler->PrepareBeams(localBeams, orientationWeights[idx],
+                                                       chunkPrepared[i]);
                         else
-                            chunkPrepared[i].sinZenith = weight;
+                            chunkPrepared[i].sinZenith = orientationWeights[idx];
                         outgoing[i] = localHandler->m_outputEnergy;
                         localBeams.clear();
                     }
@@ -3852,11 +3892,11 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile,
                 bool ok = m_scattering->ScatterLight(0, 0, outBeams);
 
                 if (ok)
-                    handlerPO->PrepareBeams(outBeams, weight, chunkPrepared[i]);
+                    handlerPO->PrepareBeams(outBeams, orientationWeights[idx], chunkPrepared[i]);
                 else
-                    chunkPrepared[i].sinZenith = weight;
+                    chunkPrepared[i].sinZenith = orientationWeights[idx];
 
-                m_incomingEnergy += m_scattering->GetIncedentEnergy() * weight;
+                m_incomingEnergy += m_scattering->GetIncedentEnergy() * orientationWeights[idx];
                 if (m_mpiRank == 0) OutputProgress(nOrientations, count + 1, iStart + i, 0, timer, outBeams.size());
                 outBeams.clear();
                 ++count;

@@ -838,6 +838,11 @@ bool SupportsAutoPhi(OrientationMode mode)
 void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
 {
     const OrientationMode mode = config.orientation;
+    if (args.IsCatched("deduplicate_orientations")
+        && (config.method != RunMethod::PhysicalOptics
+            || mode != OrientationMode::File || config.useGpu))
+        Fail("--deduplicate-orientations requires CPU PO --orientation-file.",
+             "use --method po --backend cpu --orientation-file FILE, or remove --deduplicate-orientations.");
     if (args.IsCatched("parallel_trace")
         && (config.method != RunMethod::PhysicalOptics
             || mode != OrientationMode::File || config.useGpu))

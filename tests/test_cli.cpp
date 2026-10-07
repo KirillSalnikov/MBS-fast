@@ -840,6 +840,12 @@ int main()
     ExpectSuccess("parallel orientation-file tracing", fileParallel);
     fileParallel.push_back("--incoherent");
     ExpectSuccess("parallel incoherent orientation-file tracing", fileParallel);
+    fileParallel.push_back("--deduplicate-orientations");
+    ExpectSuccess("parallel duplicate orientation-file tracing", fileParallel);
+    std::vector<std::string> invalidDedup = CanonicalBase();
+    invalidDedup.push_back("--deduplicate-orientations");
+    ExpectFailure("deduplication rejects fixed mode", invalidDedup,
+                  "requires CPU PO --orientation-file");
     std::vector<std::string> cudaFileParallel = fileParallel;
     for (size_t i = 0; i + 1 < cudaFileParallel.size(); ++i)
         if (cudaFileParallel[i] == "--backend")

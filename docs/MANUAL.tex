@@ -966,6 +966,30 @@ Use one MPI rank. Fixed orientation, GO and CUDA combinations are rejected.
 Worker-local buffers increase peak RAM. Serial and parallel tracing retain the
 same checkpoint order and weights and can resume the same checkpoint.
 
+\subsection{Reusing exact duplicate orientations}
+\texttt{--deduplicate-orientations} merges only beta/gamma pairs that compare
+exactly equal after parsing. Nearby angles, asserted symmetries and different
+gamma values at a pole are not merged. A node occurring $c$ times among $N$
+input rows retains Mueller weight $c/N$. The original quadrature is preserved.
+Both flags are opt-in, independent, and require single-rank CPU PO file runs.
+Add another \texttt{60 0} row to the preceding file and run:
+
+\begin{verbatim}
+cpu/bin/mbs_po_mpi --method po --backend cpu \
+  --particle 1 10 10 --refractive-index 1.31 0 --wavelength-um 0.532 \
+  --orientation-file orientations.txt --parallel-trace \
+  --deduplicate-orientations --threads 4 \
+  --scattering-grid 170 180 4 40 --max-reflections 6 \
+  --cutoff-profile off --output results/file_average --close
+\end{verbatim}
+
+Five rows require four traces with weights $1/5,2/5,1/5,1/5$.
+The log reports input and unique counts. Checkpoints include multiplicities
+and weights; resume with the same file and deduplication flag. A different
+weight distribution does not reuse the checkpoint. Three dust-particle tests
+of the same 24-row rule gave about five-fold combined acceleration; speed
+and extra worker RAM depend on the workload.
+
 \section{Scattering grids}\label{scattering-grids}
 
 \begin{longtable}[]{@{}L{0.24\linewidth}L{0.22\linewidth}L{0.46\linewidth}@{}}

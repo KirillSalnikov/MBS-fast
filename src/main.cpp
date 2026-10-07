@@ -2671,7 +2671,8 @@ int main(int argc, const char* argv[])
 
             std::string orientFileName = args.GetStringValue("orientfile", 0);
 
-            tracer->TraceFromFile(orientFileName, args.IsCatched("parallel_trace"));
+            tracer->TraceFromFile(orientFileName, args.IsCatched("parallel_trace"),
+                                  args.IsCatched("deduplicate_orientations"));
 
         }
         else if (args.IsCatched("sobol") || args.IsCatched("so3_quat")

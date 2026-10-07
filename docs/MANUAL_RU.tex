@@ -1561,6 +1561,30 @@ cpu/bin/mbs_po_mpi --method po --backend cpu \
 Порядок и веса в checkpoint сохраняются; продолжение возможно при смене
 последовательной трассировки на параллельную и обратно.
 
+\subsection{Повторное использование одинаковых ориентаций}
+Флаг \flag{--deduplicate-orientations} объединяет только пары $\beta,\gamma$,
+точно равные после чтения файла. Близкие углы, симметрийно связанные узлы и
+разные $\gamma$ на полюсе не объединяются. Если пара встречается $c$ раз
+в $N$ строках, её вес Мюллера равен $c/N$: исходная квадратура сохраняется.
+Оба флага независимы, выключены по умолчанию и требуют CPU PO из файла,
+одного MPI-процесса. Добавьте вторую строку \code{60 0} в предыдущий файл:
+
+\begin{verbatim}
+cpu/bin/mbs_po_mpi --method po --backend cpu \
+  --particle 1 10 10 --refractive-index 1.31 0 --wavelength-um 0.532 \
+  --orientation-file orientations.txt --parallel-trace \
+  --deduplicate-orientations --threads 4 \
+  --scattering-grid 170 180 4 40 --max-reflections 6 \
+  --cutoff-profile off --output results/file_average --close
+\end{verbatim}
+
+Пять строк потребуют четырёх трассировок с весами $1/5,2/5,1/5,1/5$.
+Журнал показывает число строк и уникальных трассировок. Подпись checkpoint
+включает кратности и веса: продолжайте с тем же файлом и флагом объединения.
+Checkpoint с другим распределением весов не используется. На трёх частицах
+пыли совместные флаги дали около пятикратного ускорения той же квадратуры
+из 24 строк. Выигрыш и дополнительная память потоков зависят от задачи.
+
 \section{Угловая сетка рассеяния}
 
 \subsection{Строки по \texorpdfstring{$\theta$}{theta} и телесный угол}
@@ -2246,6 +2270,7 @@ gpu/bin/mbs_po_gpu_double \
 \code{--fixed-orientation} & \code{BETA GAMMA} & Одна ориентация в градусах. \\
 \code{--orientation-file} & \code{FILE} & Прочитать пары $\beta,\gamma$ в градусах из файла. \\
 \code{--parallel-trace} & нет & Параллельная трассировка CPU PO из файла; потоки задаёт \code{--threads}. \\
+\flag{--deduplicate-orientations} & нет & Одна трассировка точных повторов с суммарными весами. \\
 \code{--euler-grid} & \code{NBETA NGAMMA} & Регулярная сетка $\beta\times\gamma$. \\
 \code{--euler-quadrature} & \code{NBETA NGAMMA} & Квадратура Гаусса по $\cos\beta$ и периодическая сетка по $\gamma$. \\
 \code{--diffraction-sampling} & \code{Q} & Задать шаг $\xi/Q$ одновременно для ориентаций и рассеяния. \\

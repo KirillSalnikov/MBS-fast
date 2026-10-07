@@ -41,7 +41,10 @@ def main():
             reference = None
             for mode, flags, threads in [('serial', [], '4'),
                                          ('parallel_one', ['--parallel-trace'], '1'),
-                                         ('parallel_four', ['--parallel-trace'], '4')]:
+                                         ('parallel_four', ['--parallel-trace'], '4'),
+                                         ('dedup', ['--deduplicate-orientations'], '4'),
+                                         ('both', ['--parallel-trace',
+                                                   '--deduplicate-orientations'], '4')]:
                 target = work/(name+'_'+mode)/'result'
                 command = [str(args.binary.resolve()), '--method','po','--backend','cpu',
                            '--particle',*particle,'--refractive-index',*ri,

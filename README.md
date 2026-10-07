@@ -11,7 +11,9 @@ MBS-fast is an optimized and numerically hardened development of the original
 repository for the upstream implementation and project history.
 
 For CPU PO orientation files, add `--parallel-trace --threads N` to parallelize
-tracing as well as diffraction. Examples are in both manuals.
+tracing as well as diffraction. Add `--deduplicate-orientations` to reuse exact
+repeated angle pairs with their summed weights. Both flags are opt-in; examples
+are in both manuals.
 
 ## Method Reference
 

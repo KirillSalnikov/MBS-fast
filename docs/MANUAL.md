@@ -570,6 +570,37 @@ orientations, GO, and CUDA. Worker-local tracing buffers increase peak RAM.
 Checkpoint/resume uses the same orientation order and weights, so serial and
 parallel tracing can continue the same checkpoint.
 
+### Reusing exact duplicate orientations
+
+Add `--deduplicate-orientations` to trace each exactly equal beta/gamma pair
+once. Equality is checked on the numeric angles after reading the file;
+nearby angles, symmetry-related nodes, and different gamma values at a pole
+are not merged. If a pair occurs `c` times in an original file of `N` rows,
+its Mueller weight becomes `c/N`. The intensity average therefore keeps the
+original rule, including intentional repeated rows used to encode weights.
+This flag does not reduce the number of different sampled orientations.
+
+The flags can be used independently or together. For example, add a second
+`60 0` row to the file above and run:
+
+```bash
+cpu/bin/mbs_po_mpi --method po --backend cpu \
+  --particle 1 10 10 --refractive-index 1.31 0 --wavelength-um 0.532 \
+  --orientation-file orientations.txt --parallel-trace \
+  --deduplicate-orientations --threads 4 \
+  --scattering-grid 170 180 4 40 --max-reflections 6 \
+  --cutoff-profile off --output results/file_average --close
+```
+
+Five input rows then require four traces, with weights `1/5,2/5,1/5,1/5`.
+The log reports input rows and unique traces. Both flags are opt-in and require
+CPU PO with `--orientation-file`, in a single MPI process. Deduplicated
+checkpoints include the multiplicities/weights in their signature: resume
+with the same file and deduplication option. A checkpoint for a different
+weight distribution is not reused. Runtime comparisons of the same finite
+24-row rule on three dust particles gave about 5x combined speedup; this is
+workload dependent and worker buffers increase RAM.
+
 ## Scattering grids
 
 | Flag | Arguments | Description |
@@ -1000,6 +1031,7 @@ Common scheduler controls:
 | `--mirror_gamma` | none | Use mirrored half gamma domain. |
 | `--orientfile` | `FILE` | Load beta/gamma orientations in degrees from file. |
 | `--parallel-trace` | none | Trace CPU PO orientation-file rows in parallel; worker count is `--threads`. |
+| `--deduplicate-orientations` | none | Trace exact duplicate orientation-file angles once; sum their original weights. |
 | `--b` | `B1 B2` | Beta range for `--random`. |
 | `--g` | `G1 G2` | Gamma range for `--random`. |
 | `--maxorient` | `N` | Maximum adaptive orientation count. |
