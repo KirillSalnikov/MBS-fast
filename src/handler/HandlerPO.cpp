@@ -1023,6 +1023,8 @@ void HandlerPO::ConfigureForThreadLocalPrepare(const HandlerPO &source,
     m_cutoffProfileName = source.m_cutoffProfileName;
     m_beamCutoffStatistics = source.m_beamCutoffStatistics;
     m_legacySign = source.m_legacySign;
+    useKarczewski = source.useKarczewski;
+    isCoh = source.isCoh;
     m_gpuEnabled = source.m_gpuEnabled;
     m_fftEnabled = source.m_fftEnabled;
     m_fftPhiFactor = source.m_fftPhiFactor;

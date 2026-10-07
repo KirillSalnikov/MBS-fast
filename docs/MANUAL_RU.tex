@@ -1532,6 +1532,35 @@ $N_\phi$. Параметры \code{--scattering-grid} и \code{--theta-grid-file
 \]
 Но при $\beta\ne0,\pi$ наклоненный столбик не инвариантен относительно поворота на $60^\circ$ вокруг лабораторной оси падающего луча. Поэтому для $\alpha$ остается область $0\leq\alpha<2\pi$, и автоматическое деление $N_\phi$ на шесть было бы физически неверным. \code{--alpha-points} является понятным алиасом \code{--phi-points}, а \code{--adaptive-alpha} --- алиасом \code{--adaptive-phi}; они не включают дополнительное приближение.
 
+\subsection{Параллельная трассировка ориентаций из файла}
+\code{--parallel-trace} включает параллельную трассировку CPU PO для
+\code{--orientation-file}. Число потоков задаёт \code{--threads N}.
+Каждый поток получает собственную частицу, состояние трассировщика и буферы
+пучков. Без флага трассировка последовательная; дифракция сохраняет прежний
+параллельный код. При одном потоке используется последовательный путь.
+Каждая строка файла сохраняет равный вес. Амплитуды складываются внутри
+ориентации, затем усредняются матрицы Мюллера.
+
+\begin{verbatim}
+cat > orientations.txt <<'EOF'
+# beta_deg gamma_deg
+0 0
+60 0
+90 180
+120 90
+EOF
+cpu/bin/mbs_po_mpi --method po --backend cpu \
+  --particle 1 10 10 --refractive-index 1.31 0 --wavelength-um 0.532 \
+  --orientation-file orientations.txt --parallel-trace --threads 4 \
+  --scattering-grid 170 180 4 40 --max-reflections 6 \
+  --cutoff-profile off --output results/file_average --close
+\end{verbatim}
+
+Используйте один MPI-процесс. Сочетания с фиксированной ориентацией, GO и CUDA
+отклоняются. Отдельные буферы потоков увеличивают пиковую память.
+Порядок и веса в checkpoint сохраняются; продолжение возможно при смене
+последовательной трассировки на параллельную и обратно.
+
 \section{Угловая сетка рассеяния}
 
 \subsection{Строки по \texorpdfstring{$\theta$}{theta} и телесный угол}
@@ -2216,6 +2245,7 @@ gpu/bin/mbs_po_gpu_double \
 \endhead
 \code{--fixed-orientation} & \code{BETA GAMMA} & Одна ориентация в градусах. \\
 \code{--orientation-file} & \code{FILE} & Прочитать пары $\beta,\gamma$ в градусах из файла. \\
+\code{--parallel-trace} & нет & Параллельная трассировка CPU PO из файла; потоки задаёт \code{--threads}. \\
 \code{--euler-grid} & \code{NBETA NGAMMA} & Регулярная сетка $\beta\times\gamma$. \\
 \code{--euler-quadrature} & \code{NBETA NGAMMA} & Квадратура Гаусса по $\cos\beta$ и периодическая сетка по $\gamma$. \\
 \code{--diffraction-sampling} & \code{Q} & Задать шаг $\xi/Q$ одновременно для ориентаций и рассеяния. \\

@@ -829,6 +829,28 @@ int main()
     ExpectFailure("phi endpoint allocation overflow", hugePhi,
                   "required endpoint allocation");
 
+    const std::string fastOrientations = WriteAdaptiveTestFile(
+        "parallel_orientations.txt", "0 0\n60 90\n60 90\n");
+    std::vector<std::string> fileParallel = {
+        "--method", "po", "--particle", "1", "10", "10",
+        "--refractive-index", "1.31", "0", "--wavelength-um", "0.532",
+        "--orientation-file", fastOrientations, "--backend", "cpu",
+        "--parallel-trace", "--threads", "4"
+    };
+    ExpectSuccess("parallel orientation-file tracing", fileParallel);
+    fileParallel.push_back("--incoherent");
+    ExpectSuccess("parallel incoherent orientation-file tracing", fileParallel);
+    std::vector<std::string> cudaFileParallel = fileParallel;
+    for (size_t i = 0; i + 1 < cudaFileParallel.size(); ++i)
+        if (cudaFileParallel[i] == "--backend")
+            cudaFileParallel[i + 1] = "cuda";
+    ExpectFailureForBuild("parallel tracing rejects CUDA", cudaFileParallel,
+                          true, true, "requires CPU PO --orientation-file");
+    std::vector<std::string> invalidParallel = CanonicalBase();
+    invalidParallel.push_back("--parallel-trace");
+    ExpectFailure("parallel tracing rejects fixed mode", invalidParallel,
+                  "requires CPU PO --orientation-file");
+
     if (failures != 0)
     {
         std::cerr << failures << " CLI test(s) failed\n";

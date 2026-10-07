@@ -536,6 +536,40 @@ Use `--so3-full-quaternion N` only to audit the reduced result. Its `N` counts
 full three-dimensional rotations, whereas the reduced mode's `N` counts traced
 beta/gamma particle orientations; its phi grid performs the alpha quadrature.
 
+### Parallel tracing of orientation files
+
+`--parallel-trace` accelerates CPU PO calculations with `--orientation-file`.
+It gives each OpenMP worker its own particle, scattering state, and beam buffers.
+`--threads N` controls both tracing and diffraction workers. Without this flag,
+tracing remains serial; diffraction keeps its existing parallel implementation.
+With one thread the original serial tracing path is used.
+
+The file still contains one `beta_deg gamma_deg` pair per line, in degrees;
+comments beginning with `#` are allowed. Each row keeps its original equal
+weight. Coherent Jones sums remain inside each orientation, followed by the
+orientation average of Mueller matrices. For example:
+
+```bash
+cat > orientations.txt <<'EOF'
+# beta_deg gamma_deg
+0 0
+60 0
+90 180
+120 90
+EOF
+cpu/bin/mbs_po_mpi --method po --backend cpu \
+  --particle 1 10 10 --refractive-index 1.31 0 --wavelength-um 0.532 \
+  --orientation-file orientations.txt --parallel-trace --threads 4 \
+  --scattering-grid 170 180 4 40 --max-reflections 6 \
+  --cutoff-profile off --output results/file_average --close
+```
+
+Use one MPI rank: orientation-file runs do not partition work between ranks.
+This option requires CPU PO and an orientation file; it is rejected for fixed
+orientations, GO, and CUDA. Worker-local tracing buffers increase peak RAM.
+Checkpoint/resume uses the same orientation order and weights, so serial and
+parallel tracing can continue the same checkpoint.
+
 ## Scattering grids
 
 | Flag | Arguments | Description |
@@ -965,6 +999,7 @@ Common scheduler controls:
 | `--ring_points` | `N` | Points per diffraction ring estimate. |
 | `--mirror_gamma` | none | Use mirrored half gamma domain. |
 | `--orientfile` | `FILE` | Load beta/gamma orientations in degrees from file. |
+| `--parallel-trace` | none | Trace CPU PO orientation-file rows in parallel; worker count is `--threads`. |
 | `--b` | `B1 B2` | Beta range for `--random`. |
 | `--g` | `G1 G2` | Gamma range for `--random`. |
 | `--maxorient` | `N` | Maximum adaptive orientation count. |

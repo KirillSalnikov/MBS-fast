@@ -16,7 +16,8 @@ public:
 					 const AngleRange &gammaRange) override;
     void TraceMonteCarlo(const AngleRange &betaRange,
                          const AngleRange &gammaRange, int nOrientations);
-    void TraceFromFile(const std::string &orientFile);
+    void TraceFromFile(const std::string &orientFile,
+                       bool parallelTrace = false);
 
     /// Multi-size computation: trace once, compute diffraction for multiple sizes
     void TraceFromFileMultiSize(const std::string &orientFile,

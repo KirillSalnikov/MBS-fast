@@ -28,6 +28,7 @@
 #include <atomic>
 #include <exception>
 #include <new>
+#include <memory>
 #include <mutex>
 #include <sys/stat.h>
 
@@ -3651,7 +3652,8 @@ void TracerPOTotal::TraceMonteCarlo(const AngleRange &betaRange,
     }
 }
 
-void TracerPOTotal::TraceFromFile(const std::string &orientFile)
+void TracerPOTotal::TraceFromFile(const std::string &orientFile,
+                                   bool parallelTrace)
 {
     const std::vector<EulerOrientationRadians> orientations =
         ReadOrientationFileDegrees(orientFile);
@@ -3680,17 +3682,9 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
     handlerPO->M_noshadow.ClearArr();
     handlerPO->CleanJ();
 
-    // =========================================================================
-    // Phase 1 (sequential): Trace beams for all orientations, preprocess them.
-    //
-    // WHY SEQUENTIAL: Particle::Rotate() and ScatterLight() modify shared
-    // state (particle geometry, scattering internals). Parallelizing would
-    // require N_THREADS copies of Particle and Scattering (no Clone() method
-    // exists, and the virtual hierarchy makes it complex to implement).
-    //
-    // PERFORMANCE: Phase 1 is typically <5% of total time. The dominant
-    // Phase 2 (diffraction integrals) IS parallelized with OpenMP.
-    // =========================================================================
+    // Mutable tracing state is worker-local when parallel tracing is enabled.
+    // Prepared orientations remain immutable during diffraction. Both stages
+    // retain the same orientation weights and coherent per-particle amplitudes.
     // =========================================================================
     // Chunked streaming: process orientations in chunks to limit memory.
     // Each chunk: Phase 1 (sequential trace) → Phase 2 (parallel diffraction).
@@ -3777,25 +3771,96 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
                 "grid, or raise MBS_HOST_MEM_BUDGET_MB.");
         }
 
-        for (int i = 0; i < thisChunkSize; ++i)
+        if (parallelTrace && nThreads > 1)
         {
-            int idx = iStart + i;
-            m_particle->Rotate(orientations[idx].beta, orientations[idx].gamma, 0);
+            std::vector<double> incoming(thisChunkSize, 0.0);
+            std::vector<double> outgoing(thisChunkSize, 0.0);
+            ParallelExceptionState parallelError;
+            #pragma omp parallel
+            {
+                std::unique_ptr<Particle> localParticle;
+                std::unique_ptr<Scattering> localScatter;
+                std::unique_ptr<HandlerPO> localHandler;
+                std::vector<Beam> localBeams;
+                try
+                {
+                    localParticle.reset(new Particle(*m_particle));
+                    localScatter.reset(m_scattering->CloneFor(
+                        localParticle.get(), &m_incidentLight));
+                    localHandler.reset(new HandlerPO(localParticle.get(),
+                        &m_incidentLight, handlerPO->nTheta, m_scattering->m_wave));
+                    localHandler->ConfigureForThreadLocalPrepare(
+                        *handlerPO, localScatter.get());
+                }
+                catch (...)
+                {
+                    parallelError.Capture();
+                }
 
-            if (!shadowOff)
-                m_scattering->FormShadowBeam(outBeams);
+                #pragma omp for schedule(dynamic, 1)
+                for (int i = 0; i < thisChunkSize; ++i)
+                {
+                    if (parallelError.Failed())
+                        continue;
+                    try
+                    {
+                        const int idx = iStart + i;
+                        localParticle->Rotate(orientations[idx].beta,
+                                              orientations[idx].gamma, 0);
+                        if (!shadowOff)
+                            localScatter->FormShadowBeam(localBeams);
+                        const bool ok = localScatter->ScatterLight(0, 0, localBeams);
+                        incoming[i] = localScatter->GetIncedentEnergy() * weight;
+                        localHandler->m_outputEnergy = 0.0;
+                        if (ok)
+                            localHandler->PrepareBeams(localBeams, weight, chunkPrepared[i]);
+                        else
+                            chunkPrepared[i].sinZenith = weight;
+                        outgoing[i] = localHandler->m_outputEnergy;
+                        localBeams.clear();
+                    }
+                    catch (...)
+                    {
+                        parallelError.Capture();
+                    }
+                }
+            }
+            parallelError.Rethrow();
+            // Match the serial orientation order for scalar diagnostic sums.
+            for (int i = 0; i < thisChunkSize; ++i)
+            {
+                m_incomingEnergy += incoming[i];
+                handlerPO->m_outputEnergy += outgoing[i];
+                handlerPO->m_extinctionCrossSectionOt += chunkPrepared[i].extinctionOt;
+                handlerPO->m_hasExtinctionOt = true;
+                if (m_mpiRank == 0)
+                    OutputProgress(nOrientations, count + 1, iStart + i, 0,
+                                   timer, chunkPrepared[i].beams.size());
+                ++count;
+            }
+        }
+        else
+        {
+            for (int i = 0; i < thisChunkSize; ++i)
+            {
+                int idx = iStart + i;
+                m_particle->Rotate(orientations[idx].beta, orientations[idx].gamma, 0);
 
-            bool ok = m_scattering->ScatterLight(0, 0, outBeams);
+                if (!shadowOff)
+                    m_scattering->FormShadowBeam(outBeams);
 
-            if (ok)
-                handlerPO->PrepareBeams(outBeams, weight, chunkPrepared[i]);
-            else
-                chunkPrepared[i].sinZenith = weight;
+                bool ok = m_scattering->ScatterLight(0, 0, outBeams);
 
-            m_incomingEnergy += m_scattering->GetIncedentEnergy() * weight;
-            if (m_mpiRank == 0) OutputProgress(nOrientations, count + 1, iStart + i, 0, timer, outBeams.size());
-            outBeams.clear();
-            ++count;
+                if (ok)
+                    handlerPO->PrepareBeams(outBeams, weight, chunkPrepared[i]);
+                else
+                    chunkPrepared[i].sinZenith = weight;
+
+                m_incomingEnergy += m_scattering->GetIncedentEnergy() * weight;
+                if (m_mpiRank == 0) OutputProgress(nOrientations, count + 1, iStart + i, 0, timer, outBeams.size());
+                outBeams.clear();
+                ++count;
+            }
         }
 
         auto t_p1_end = std::chrono::high_resolution_clock::now();
@@ -3879,7 +3944,8 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile)
     if (m_mpiRank == 0)
     {
         std::ostringstream line;
-        line << "Sequential tracing completed: " << count << "/" << nOrientations
+        line << (parallelTrace && nThreads > 1
+            ? "Parallel tracing completed: " : "Sequential tracing completed: ") << count << "/" << nOrientations
              << " trace calls, phase1=" << std::fixed << std::setprecision(2)
              << phase1_total << " s";
         std::cout << line.str() << std::endl;

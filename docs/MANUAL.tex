@@ -939,6 +939,33 @@ independent audit.  Its $N$ counts complete three-dimensional rotations,
 whereas the production mode's $N$ counts traced beta/gamma orientations and
 uses the phi grid for the alpha quadrature.
 
+\subsection{Parallel tracing of orientation files}
+\texttt{--parallel-trace} enables worker-local CPU PO tracing for
+\texttt{--orientation-file}; \texttt{--threads N} selects the worker count.
+Each worker owns its particle, scattering state and beam buffers. Without the
+flag, tracing stays serial and diffraction retains its existing parallel path.
+One worker uses the serial tracing path. Each input row keeps its equal weight;
+Jones amplitudes are summed inside an orientation before Mueller averaging.
+
+\begin{verbatim}
+cat > orientations.txt <<'EOF'
+# beta_deg gamma_deg
+0 0
+60 0
+90 180
+120 90
+EOF
+cpu/bin/mbs_po_mpi --method po --backend cpu \
+  --particle 1 10 10 --refractive-index 1.31 0 --wavelength-um 0.532 \
+  --orientation-file orientations.txt --parallel-trace --threads 4 \
+  --scattering-grid 170 180 4 40 --max-reflections 6 \
+  --cutoff-profile off --output results/file_average --close
+\end{verbatim}
+
+Use one MPI rank. Fixed orientation, GO and CUDA combinations are rejected.
+Worker-local buffers increase peak RAM. Serial and parallel tracing retain the
+same checkpoint order and weights and can resume the same checkpoint.
+
 \section{Scattering grids}\label{scattering-grids}
 
 \begin{longtable}[]{@{}L{0.24\linewidth}L{0.22\linewidth}L{0.46\linewidth}@{}}

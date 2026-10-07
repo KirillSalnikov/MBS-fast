@@ -10,6 +10,9 @@ MBS-fast is an optimized and numerically hardened development of the original
 [`MBS-raw`](https://github.com/Heart-Under-Blade/MBS-raw) codebase. Consult that
 repository for the upstream implementation and project history.
 
+For CPU PO orientation files, add `--parallel-trace --threads N` to parallelize
+tracing as well as diffraction. Examples are in both manuals.
+
 ## Method Reference
 
 When using the MBS-1 method, cite D. N. Timofeev, A. V. Konoshonkin, and

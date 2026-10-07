@@ -838,6 +838,11 @@ bool SupportsAutoPhi(OrientationMode mode)
 void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
 {
     const OrientationMode mode = config.orientation;
+    if (args.IsCatched("parallel_trace")
+        && (config.method != RunMethod::PhysicalOptics
+            || mode != OrientationMode::File || config.useGpu))
+        Fail("--parallel-trace requires CPU PO --orientation-file.",
+             "use --method po --backend cpu --orientation-file FILE, or remove --parallel-trace.");
     if (HasAnyDiffractionScattering(args))
     {
         if (config.method != RunMethod::PhysicalOptics
