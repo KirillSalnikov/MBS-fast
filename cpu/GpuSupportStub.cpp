@@ -1,4 +1,17 @@
 #include "../src/cuda/GpuSupport.h"
+#include "../src/cuda/GpuAnalyticFacet.h"
+
+bool EvaluateAnalyticFacetGpu(const AnalyticGpuModel&,
+    const std::vector<std::array<AnalyticBackscatter::Vec,3>>&,
+    const std::vector<double>&,const std::vector<double>&,int,
+    std::vector<double>&,std::vector<double>&,
+    std::vector<AnalyticFacetAverage::Components>*){return false;}
+
+bool EvaluateAnalyticAzimuthGaussianGpu(
+    const std::vector<std::vector<AnalyticAzimuthGaussian::Beam>>&,
+    const std::vector<double>&,const std::vector<double>&,int,
+    std::vector<double>&,std::vector<double>&,
+    std::vector<AnalyticAzimuthGaussian::Values>*){return false;}
 
 bool CheckGpuRuntime(GpuDeviceInfo &/*info*/, std::string &error)
 {

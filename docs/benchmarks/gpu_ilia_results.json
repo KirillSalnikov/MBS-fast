@@ -1,0 +1,311 @@
+[
+  {
+    "case": {
+      "height_um": 446.7,
+      "diameter_um": 138.9,
+      "index": [
+        1.3116,
+        0.0
+      ],
+      "wavelength_um": 0.532,
+      "theta_sha256": "f031caca0e58bb97a4928cefc107b0d5a866336d599b29a6b498fa9affa09eb4"
+    },
+    "angles": 267,
+    "theta_range_deg": [
+      0,
+      25
+    ],
+    "depths": [
+      8,
+      10,
+      12
+    ],
+    "cutoffs": [
+      ".001",
+      "off",
+      "off"
+    ],
+    "phi": 8,
+    "seeds": [
+      11,
+      23,
+      37,
+      53,
+      71,
+      89,
+      107,
+      131
+    ],
+    "counts_per_seed": [
+      2097152,
+      32768,
+      16384
+    ],
+    "final_precision": {
+      "max_M11_pointwise95": 0.014065546564163322,
+      "max_mueller95_scaled_M11": 0.01678076723332779,
+      "confidence_pass": true,
+      "max_nested_change": 0.0014679546076542334,
+      "nested_pass": true
+    },
+    "refinements": [
+      {
+        "round": 1,
+        "counts": [
+          2097152,
+          16384,
+          16384
+        ],
+        "stage_time_upper_bound": 697.6324530449929,
+        "cost_per_orientation": [
+          3.7617691929937164e-05,
+          0.00017101234042349311,
+          0.00033643631462854096
+        ],
+        "pass_streak": 1,
+        "coarse_refinement_verified": true,
+        "coarse_refinement_change": 0.010307066303320504,
+        "refinement_baseline_counts": [
+          1048576,
+          16384,
+          16384
+        ],
+        "max_M11_pointwise95": 0.014184993704514702,
+        "max_mueller95_scaled_M11": 0.016219078994015618,
+        "confidence_pass": true,
+        "max_nested_change": 0.010307066303320504,
+        "nested_pass": true
+      },
+      {
+        "round": 2,
+        "counts": [
+          2097152,
+          32768,
+          16384
+        ],
+        "stage_time_upper_bound": 730.2676786610391,
+        "cost_per_orientation": [
+          3.7617691929937164e-05,
+          0.00020999967613233306,
+          0.00033643631462854096
+        ],
+        "pass_streak": 2,
+        "coarse_refinement_verified": true,
+        "coarse_refinement_change": null,
+        "refinement_baseline_counts": null,
+        "max_M11_pointwise95": 0.014065546564163322,
+        "max_mueller95_scaled_M11": 0.01678076723332779,
+        "confidence_pass": true,
+        "max_nested_change": 0.0014679546076542334,
+        "nested_pass": true
+      }
+    ],
+    "binary_sha256": "c619e949ae23fe433ab4a38430e1fc3d5eda21ce42e1d5fc74e3e07fc3b635db"
+  },
+  {
+    "case": {
+      "height_um": 891.3,
+      "diameter_um": 207.8,
+      "index": [
+        1.3116,
+        0.0
+      ],
+      "wavelength_um": 0.532,
+      "theta_sha256": "26b252e052303f12b58e1788c46f3c59eb08cacf164af029b9bfd5bf63747f2d"
+    },
+    "angles": 531,
+    "theta_range_deg": [
+      0,
+      25
+    ],
+    "depths": [
+      8,
+      10,
+      12
+    ],
+    "cutoffs": [
+      ".001",
+      "off",
+      "off"
+    ],
+    "phi": 8,
+    "seeds": [
+      11,
+      23,
+      37,
+      53,
+      71,
+      89,
+      107,
+      131
+    ],
+    "counts_per_seed": [
+      4194304,
+      65536,
+      16384
+    ],
+    "final_precision": {
+      "max_M11_pointwise95": 0.026564238374812723,
+      "max_mueller95_scaled_M11": 0.027838791510825155,
+      "confidence_pass": true,
+      "max_nested_change": 0.0019641161299411582,
+      "nested_pass": true
+    },
+    "refinements": [
+      {
+        "round": 2,
+        "counts": [
+          4194304,
+          32768,
+          16384
+        ],
+        "stage_time_upper_bound": 1412.8639473529474,
+        "cost_per_orientation": [
+          3.781626480618087e-05,
+          0.00025825930823131227,
+          0.0005818140664899385
+        ],
+        "pass_streak": 1,
+        "coarse_refinement_verified": true,
+        "coarse_refinement_change": 0.02857629620520781,
+        "refinement_baseline_counts": null,
+        "max_M11_pointwise95": 0.02639076023524904,
+        "max_mueller95_scaled_M11": 0.02751100528884232,
+        "confidence_pass": true,
+        "max_nested_change": 0.028576296205207706,
+        "nested_pass": true
+      },
+      {
+        "round": 3,
+        "counts": [
+          4194304,
+          65536,
+          16384
+        ],
+        "stage_time_upper_bound": 1471.9822446719918,
+        "cost_per_orientation": [
+          3.781626480618087e-05,
+          0.00024188885768133828,
+          0.0005818140664899385
+        ],
+        "pass_streak": 2,
+        "coarse_refinement_verified": true,
+        "coarse_refinement_change": null,
+        "refinement_baseline_counts": null,
+        "max_M11_pointwise95": 0.026564238374812723,
+        "max_mueller95_scaled_M11": 0.027838791510825155,
+        "confidence_pass": true,
+        "max_nested_change": 0.0019641161299411582,
+        "nested_pass": true
+      }
+    ],
+    "binary_sha256": "c3f0e71fc46aa03f3c3f300bf2bd903837b1bdc58f3f2cc717de06f3b0c918bc"
+  },
+  {
+    "status": "complete",
+    "physical": {
+      "height_um": 316.2,
+      "diameter_um": 123.8,
+      "index": [
+        1.3116,
+        0.0
+      ],
+      "wavelength_um": 0.532,
+      "theta_sha256": "5645fe31cf7e914639e7be50e9a70250816d4503bbbd100e612a65871a97c402",
+      "analytic_controls": "off"
+    },
+    "angles": 227,
+    "estimated_precision": {
+      "max_M11_pointwise95": 0.02187697490366615,
+      "max_mueller95_scaled_M11": 0.022247976489304672,
+      "confidence_pass": true,
+      "max_nested_change": 0.0052059438149921295,
+      "nested_pass": true
+    },
+    "refinement_checks": [
+      {
+        "counts": [
+          524288,
+          32768,
+          16384,
+          2048
+        ],
+        "baseline_counts": [
+          131072,
+          8192,
+          8192,
+          1024
+        ],
+        "max_M11_pointwise95": 0.027501853216544515,
+        "max_mueller95_scaled_M11": 0.027501853216544515,
+        "max_change": 0.023196825971321184
+      },
+      {
+        "counts": [
+          524288,
+          65536,
+          16384,
+          2048
+        ],
+        "baseline_counts": [
+          524288,
+          32768,
+          16384,
+          2048
+        ],
+        "max_M11_pointwise95": 0.02187697490366615,
+        "max_mueller95_scaled_M11": 0.022247976489304672,
+        "max_change": 0.0052059438149921295
+      }
+    ],
+    "counts_per_seed": [
+      524288,
+      65536,
+      16384,
+      2048
+    ],
+    "phi": 64,
+    "seeds": [
+      11,
+      23,
+      37,
+      53,
+      71,
+      89,
+      107,
+      131
+    ],
+    "depth": 18,
+    "cutoff": "off",
+    "production_elapsed_seconds": 1371.1635179519653,
+    "binary_sha256": "c3f0e71fc46aa03f3c3f300bf2bd903837b1bdc58f3f2cc717de06f3b0c918bc",
+    "old_reference": "MBS float, depth18/cutoff0.001; not ADDA",
+    "original_cutoff_comparison": {
+      "paired_count_per_seed": 2048,
+      "production_phi": 64,
+      "recorded_stage_seconds": 7.486866736988304,
+      "elapsed_seconds": 0.8203470900189131,
+      "max_absolute_M11_effect": 0.04217419519078093,
+      "max_absolute_full_mueller_effect": 0.04217419519078093,
+      "max_effect_plus_pointwise_interval": 0.05818645079160428,
+      "backscatter_M11": {
+        "cutoff_off": 22390.28574234246,
+        "cutoff_001": 21445.99346106755,
+        "old_MBS_float": 21439.46345
+      },
+      "original_cutoff_estimated_precision": {
+        "max_M11_pointwise95": 0.021352829319629486,
+        "max_mueller95_scaled_M11": 0.02169521748948242,
+        "confidence_pass": true,
+        "max_nested_change": null,
+        "nested_pass": false
+      },
+      "max_M11_agreement_with_old_float": 0.010079844673348893,
+      "scope": "Paired diagnostic; original-cutoff estimate has no separate two-refinement stopping check."
+    },
+    "original_cutoff_all_mueller_max_agreement_scaled_old_M11": 0.010079844673348893,
+    "back180_M11_estimated95": 0.017623754894013556,
+    "back180_all_mueller_estimated95": 0.017623754894013556,
+    "audited_matrix_sha256": "ed43115a7828d837f62a89891f0c74270bd317117260ee7c0dd4a07e90c460c3"
+  }
+]

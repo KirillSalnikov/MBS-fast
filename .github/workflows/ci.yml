@@ -11,10 +11,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y build-essential openmpi-bin libopenmpi-dev
+        run: sudo apt-get update && sudo apt-get install -y build-essential openmpi-bin libopenmpi-dev python3-numpy python3-scipy
       - name: Strict warning gate
         run: make test_warnings MBS_BUILD_JOBS=2
       - name: Command-line release matrix
         run: make test_release
       - name: Numerical stability tests
         run: make test_so3 test_poles test_beam_topology test_forward_depth test_fixed_threads
+      - name: Physical analytic backscatter and full residual
+        run: make test_analytic
+      - name: Two-direction analytic kernels and full Haar orientations
+        run: make test_analytic_facets test_analytic_directions test_analytic_azimuth
+      - name: Independent control coefficients and multilevel covariance
+        run: make test_gpu_optimization

@@ -838,6 +838,101 @@ bool SupportsAutoPhi(OrientationMode mode)
 void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
 {
     const OrientationMode mode = config.orientation;
+    if (args.IsCatched("haar_alpha"))
+    {
+        if (config.method!=RunMethod::PhysicalOptics
+            || (mode!=OrientationMode::Sobol && mode!=OrientationMode::SobolSeed))
+            Fail("--haar-alpha requires PO Sobol or seeded Sobol.",
+                 "use --method po --sobol-seed N SEED, or remove --haar-alpha.");
+        if (args.IsCatched("multigrid") || args.IsCatched("multikeq") || args.IsCatched("multikeq_list")
+            || args.IsCatched("auto_phi") || args.IsCatched("adaptive_phi") || args.IsCatched("auto_tgrid")
+            || args.IsCatched("adaptive_reflections") || args.IsCatched("mirror_gamma"))
+            Fail("--haar-alpha requires a single size and fixed scattering/reflection grids.",
+                 "remove multi-size/adaptive/mirror-gamma modifiers or run this size independently.");
+    }
+    if ((args.IsCatched("analytic_shadow_control") || args.IsCatched("analytic_facet_samples") || args.IsCatched("analytic_mean_cache") || args.IsCatched("analytic_azimuth_gaussian") || args.IsCatched("analytic_control_weights"))
+        && !args.IsCatched("analytic_facet_average"))
+        Fail("analytic facet controls/output require --analytic-facet-average.",
+             "add --analytic-facet-average or remove its modifiers.");
+    if (args.IsCatched("analytic_facet_average"))
+    {
+        const bool fullQuaternion=mode==OrientationMode::SO3FullQuaternion;
+        const bool haarSobol=(mode==OrientationMode::Sobol || mode==OrientationMode::SobolSeed)
+            && args.IsCatched("haar_alpha");
+        if (config.method!=RunMethod::PhysicalOptics || (!fullQuaternion && !haarSobol))
+            Fail("--analytic-facet-average requires PO full Haar orientations.",
+                 "use --sobol-seed N SEED --haar-alpha, or --so3-full-quaternion N.");
+        if (config.refractiveReal<1.0)
+            Fail("--analytic-facet-average requires refractive REAL>=1.",
+                 "use --refractive-index REAL IMAG with REAL>=1, or remove the flag.");
+        if (args.IsCatched("incoh") || args.IsCatched("multigrid") || args.IsCatched("multikeq")
+            || args.IsCatched("multikeq_list") || args.IsCatched("auto_phi") || args.IsCatched("adaptive_phi")
+            || args.IsCatched("auto_tgrid") || args.IsCatched("adaptive_reflections") || args.IsCatched("mirror_gamma"))
+            Fail("--analytic-facet-average requires coherent beams, one size and fixed grids.",
+                 "remove incoherent/multi-size/adaptive/mirror-gamma modifiers.");
+        if (args.IsCatched("analytic_shadow_control"))
+        {
+            const std::string value=args.GetStringValue("analytic_shadow_control",0);
+            if (value!="facets" && value!="circular" && value!="off")
+                Fail("unknown --analytic-shadow-control model: "+value+".",
+                     "choose facets, circular, or off.");
+        }
+    }
+    if(args.IsCatched("orientation_pipeline") || args.IsCatched("profile_phases"))
+    {
+        const bool weighted=mode==OrientationMode::Sobol || mode==OrientationMode::SobolSeed
+            || mode==OrientationMode::SO3FullQuaternion || mode==OrientationMode::Hammersley
+            || mode==OrientationMode::Lattice || mode==OrientationMode::LatticeGenerator
+            || mode==OrientationMode::EulerQuadrature;
+        if(config.method!=RunMethod::PhysicalOptics || !weighted)
+            Fail("orientation pipeline/profiling requires fixed weighted PO orientations.",
+                 "use --sobol-seed N SEED or a fixed weighted orientation rule.");
+        if(args.IsCatched("orientation_pipeline") && !config.useGpu)
+            Fail("--orientation-pipeline requires CUDA.","use --backend cuda or remove the flag.");
+        if(args.IsCatched("orientation_pipeline") && (args.IsCatched("analytic_facet_samples") || args.IsCatched("analytic_backscatter")))
+            Fail("--orientation-pipeline cannot combine with per-orientation diagnostics.",
+                 "remove --analytic-facet-samples/--analytic-backscatter or disable the pipeline.");
+        if(args.IsCatched("multigrid") || args.IsCatched("multikeq") || args.IsCatched("multikeq_list")
+            || args.IsCatched("auto_phi") || args.IsCatched("adaptive_phi") || args.IsCatched("auto_tgrid")
+            || args.IsCatched("adaptive_reflections"))
+            Fail("weighted orientation pipeline/profiling requires one size and fixed grids.",
+                 "remove adaptive and multi-size modifiers.");
+    }
+    if (args.IsCatched("analytic_return_order"))
+    {
+        if (!args.IsCatched("analytic_backscatter"))
+            Fail("--analytic-return-order requires --analytic-backscatter.",
+                 "add --analytic-backscatter or remove --analytic-return-order.");
+        const int order=IntValue(args,"analytic_return_order",0);
+        if (order<1 || order>8)
+            Fail("--analytic-return-order must be in [1, 8].",
+                 "use a value from 1 to 8.");
+        if (2*order+1>config.maxReflections)
+            Fail("--analytic-return-order reaches paths beyond --max-reflections.",
+                 "use --max-reflections >= 2*K+1, or reduce --analytic-return-order K.");
+    }
+    if (args.IsCatched("analytic_backscatter"))
+    {
+        const bool supported = mode == OrientationMode::Sobol
+            || mode == OrientationMode::SobolSeed || mode == OrientationMode::Hammersley
+            || mode == OrientationMode::Lattice || mode == OrientationMode::LatticeGenerator
+            || mode == OrientationMode::EulerQuadrature;
+        if (config.method != RunMethod::PhysicalOptics || !supported)
+            Fail("--analytic-backscatter requires PO Sobol, Hammersley, lattice, or Euler quadrature.",
+                 "use --method po --sobol-seed N SEED, or remove --analytic-backscatter.");
+        if (config.refractiveImag != 0.0 || config.refractiveReal <= 1.0 || args.IsCatched("abs"))
+            Fail("--analytic-backscatter currently requires nonabsorbing real refractive index > 1.",
+                 "use --refractive-index REAL 0 with REAL > 1, without --absorption, or remove the flag.");
+        if (args.IsCatched("incoh"))
+            Fail("--analytic-backscatter requires coherent beam accumulation.",
+                 "remove --incoherent or remove --analytic-backscatter.");
+        if (args.IsCatched("multigrid") || args.IsCatched("multikeq") || args.IsCatched("multikeq_list")
+            || args.IsCatched("adaptive_phi") || args.IsCatched("auto_phi")
+            || args.IsCatched("auto_tgrid") || args.IsCatched("adaptive_reflections")
+            || args.IsCatched("mirror_gamma"))
+            Fail("--analytic-backscatter requires a single size and a fixed scattering/reflection grid without mirror-gamma.",
+                 "run each size separately with --max-reflections and --scattering-grid, or remove the flag.");
+    }
     if (args.IsCatched("deduplicate_orientations")
         && (config.method != RunMethod::PhysicalOptics
             || mode != OrientationMode::File || config.useGpu))

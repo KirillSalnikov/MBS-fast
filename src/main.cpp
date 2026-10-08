@@ -2836,6 +2836,21 @@ int main(int argc, const char* argv[])
             std::unique_ptr<TracerPOTotal> tracerOwner(tracer);
             { TracerPOTotal *tpt = dynamic_cast<TracerPOTotal*>(tracer); if(tpt) { if (args.IsCatched("log")) tpt->m_logTime = args.GetIntValue("log"); tpt->SetMPI(mpi_rank, mpi_size); tpt->m_cohOrient = args.IsCatched("coh_orient"); tpt->m_saveBetas = args.IsCatched("save_betas"); tpt->m_enableCheckpoint = args.IsCatched("checkpoint"); tpt->m_fastPoleGamma = args.IsCatched("pole"); tpt->m_mirrorGamma = args.IsCatched("mirror_gamma"); tpt->m_sobolChunkSize = args.IsCatched("chunk") ? std::max(1, args.GetIntValue("chunk", 0)) : 0; tpt->m_ringPoints = ringPoints; } }
             tracer->m_adaptiveLimits = config.adaptive;
+            tracer->m_analyticBackscatter = args.IsCatched("analytic_backscatter");
+            tracer->m_analyticReturnOrder = args.IsCatched("analytic_return_order")
+                ? args.GetIntValue("analytic_return_order",0) : 1;
+            tracer->m_haarAlpha = args.IsCatched("haar_alpha");
+            tracer->m_analyticFacetAverage = args.IsCatched("analytic_facet_average");
+            tracer->m_analyticFacetSamples = args.IsCatched("analytic_facet_samples");
+            tracer->m_analyticAzimuthGaussian = args.IsCatched("analytic_azimuth_gaussian");
+            tracer->m_analyticShadowControl = args.IsCatched("analytic_shadow_control")
+                ? args.GetStringValue("analytic_shadow_control",0) : "facets";
+            tracer->m_analyticMeanCache=args.IsCatched("analytic_mean_cache")
+                ? args.GetStringValue("analytic_mean_cache",0) : "";
+            tracer->m_analyticControlWeights=args.IsCatched("analytic_control_weights")
+                ? args.GetStringValue("analytic_control_weights",0) : "";
+            tracer->m_orientationPipeline=args.IsCatched("orientation_pipeline");
+            tracer->m_profilePhases=args.IsCatched("profile_phases");
             tracer->m_scattering->m_wave = wave;
             ApplyTraceCutoffOptions(args, tracer->m_scattering, useGpu);
             tracer->shadowOff = args.IsCatched("shadow_off");
@@ -2895,6 +2910,12 @@ int main(int argc, const char* argv[])
 
             double betaSym = particle->GetSymmetry().beta;
             double gammaSym = particle->GetSymmetry().gamma;
+
+            if (tracer->m_analyticBackscatter)
+            {
+                cout << "Analytic backscatter: physical return control with verified geometric symmetry; "
+                     << "all remaining paths and cross terms sampled in full MBS residual" << endl;
+            }
 
             // Override symmetry: --sym beta_factor gamma_factor
             // e.g. --sym 2 6 means β∈[0,π/2], γ∈[0,2π/6] = 2× and 6× reduction

@@ -5,6 +5,11 @@
 #include "BeamCache.h"
 #include "IntegralCharacteristics.h"
 #include "OrientationFile.h"
+#include "AnalyticBackscatter.h"
+#include "AnalyticFacetAverage.h"
+#include "AnalyticAzimuthGaussian.h"
+#include "cuda/GpuAnalyticFacet.h"
+#include <array>
 #include "Sobol.h"
 #include "cuda/GpuSupport.h"
 
@@ -22,6 +27,7 @@
 #include <map>
 #include <stdexcept>
 #include <future>
+#include <condition_variable>
 #include <algorithm>
 #include <iterator>
 #include <limits>
@@ -752,8 +758,8 @@ static long long PreparedStorageBudgetBytes()
 class PreparedChunkController
 {
 public:
-    explicit PreparedChunkController(int maximumChunk)
-        : m_maximum(std::max(1, maximumChunk)),
+    explicit PreparedChunkController(int maximumChunk, int residentChunks = 1)
+        : m_maximum(std::max(1, maximumChunk)), m_residentChunks(std::max(1,residentChunks)),
           m_next(std::min(16, m_maximum)),
           m_safeBytesPerOrientation(0)
     {
@@ -781,7 +787,7 @@ public:
         m_safeBytesPerOrientation = std::max(
             m_safeBytesPerOrientation, observedSafe);
 
-        const long long budgetBytes = PreparedStorageBudgetBytes();
+        const long long budgetBytes = PreparedStorageBudgetBytes() / m_residentChunks;
         const long long byMemory = budgetBytes
             / std::max(1LL, m_safeBytesPerOrientation);
         int target = (int)std::max(
@@ -807,6 +813,7 @@ public:
 
 private:
     int m_maximum;
+    int m_residentChunks;
     int m_next;
     long long m_safeBytesPerOrientation;
     bool m_reported = false;
@@ -5591,18 +5598,27 @@ void TracerPOTotal::TraceFromSobolSeed(int nOrient, unsigned int seed,
     if (nOrient <= 0)
         throw std::invalid_argument("Sobol orientation count must be positive");
 
-    Sobol2D sobol(seed);
-    std::vector<double> su, sv;
-    sobol.generate(nOrient, su, sv);
-
-    double cosBetaSym = cos(betaSym);
+    const double cosBetaSym = cos(betaSym),weight = 1.0 / nOrient;
     std::vector<WeightedOrientation> orientations(nOrient);
-    double weight = 1.0 / nOrient;
-    for (int i = 0; i < nOrient; ++i)
+    if(!m_haarAlpha)
     {
-        double beta  = acos(1.0 - (1.0 - cosBetaSym) * su[i]);
-        double gamma = gammaSym * sv[i];
-        orientations[i] = {beta, gamma, weight};
+        Sobol2D sobol(seed);std::vector<double> su,sv;
+        sobol.generate(nOrient,su,sv);
+        for(int i=0;i<nOrient;++i)
+            orientations[i]=WeightedOrientation(acos(1.0-(1.0-cosBetaSym)*su[i]),gammaSym*sv[i],weight);
+    }
+
+    if (m_haarAlpha)
+    {
+        Sobol3D haar(seed);
+        for (int i=0;i<nOrient;++i)
+        {
+            double u,v,w;haar.next(u,v,w);
+            orientations[i]=WeightedOrientation(std::acos(1-(1-cosBetaSym)*u),gammaSym*v,weight);
+            orientations[i].alpha=2*M_PI*w;
+        }
+        if(m_mpiRank==0)
+            std::cout << "Full Haar alpha: third Owen-Sobol dimension, uniform alpha in [0,360) deg" << std::endl;
     }
 
     std::ostringstream label;
@@ -5856,6 +5872,131 @@ void TracerPOTotal::TraceWeightedOrientations(
     }
     const bool computeNoShadow = handlerPO->ComputeNoShadow();
 
+    std::unique_ptr<AnalyticBackscatter::ReturnControl> analyticControl;
+    int backwardIndex = -1;
+    double analyticSetupSeconds = 0.0;
+    std::vector<double> controlValues, rawBackscatter, rawNoShadow;
+    if (m_analyticBackscatter)
+    {
+        if (m_mpiSize != 1)
+            throw std::runtime_error("--analytic-backscatter currently requires one MPI rank.\n  Fix: run one rank with --threads N, or remove the flag.");
+        for (int t=0; t<=handlerPO->m_sphere.nZenith; ++t)
+            if (PoleMueller::IsBackward(handlerPO->m_sphere.GetZenith(t))) backwardIndex=t;
+        if (backwardIndex<0)
+            throw std::runtime_error("--analytic-backscatter requires an exact 180-degree row.\n  Fix: use --scattering-grid 179 180 4 1, or a theta grid containing 180.");
+        const auto setupStart=std::chrono::steady_clock::now();
+        Particle geometry=*m_particle;
+        geometry.Rotate(0,0,0);
+        if (geometry.IsConcave() || geometry.isAggregated)
+            throw std::runtime_error("--analytic-backscatter requires one convex particle.\n  Fix: use a convex prism or remove the flag.");
+        std::vector<AnalyticBackscatter::Face> faces;
+        for (int f=0; f<geometry.nFacets; ++f)
+        {
+            AnalyticBackscatter::Face face;
+            const Facet &facet=geometry.facets[f];
+            face.normal=AnalyticBackscatter::Vec(facet.ex_normal.cx,facet.ex_normal.cy,facet.ex_normal.cz);
+            for (int v=0; v<facet.nVertices; ++v)
+                face.vertices.push_back(AnalyticBackscatter::Vec(facet.arr[v].cx,facet.arr[v].cy,facet.arr[v].cz));
+            faces.push_back(face);
+        }
+        analyticControl.reset(new AnalyticBackscatter::ReturnControl(faces,
+            real(geometry.GetRefractiveIndex()),m_scattering->m_wave,m_analyticReturnOrder));
+        if (!analyticControl->SupportsDomain(betaSym,gammaSym))
+            throw std::runtime_error("--analytic-backscatter cannot verify the declared beta/gamma symmetry for its physical strips.\n  Fix: use --symmetry 1 1 for full-sphere sampling, or remove the flag.");
+        controlValues.resize(nOrient);
+        rawBackscatter.resize(nOrient);
+        if (computeNoShadow) rawNoShadow.resize(nOrient);
+        for (int i=0; i<nOrient; ++i)
+        {
+            const WeightedOrientation &o=orientations[i];
+            if (o.useQuaternion)
+                throw std::runtime_error("analytic backscatter requires beta/gamma orientations");
+            // R^T*(0,0,1), the body-frame source direction used by Particle::Rotate.
+            const AnalyticBackscatter::Vec source(-std::sin(o.beta)*std::cos(o.gamma),
+                std::sin(o.beta)*std::sin(o.gamma),std::cos(o.beta));
+            controlValues[i]=analyticControl->Evaluate(source);
+        }
+        analyticSetupSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-setupStart).count();
+        std::cout << "Analytic backscatter: " << analyticControl->StripCount()
+                  << " physical return strips, known mean=" << std::setprecision(12)
+                  << analyticControl->Mean() << ", moment refinement="
+                  << analyticControl->RefinementError() << ", setup+profiles="
+                  << analyticSetupSeconds << " s" << std::endl;
+    }
+
+    std::unique_ptr<AnalyticFacetAverage::Control> facetControl;
+    std::vector<std::array<AnalyticBackscatter::Vec,3>> bodyFrames;
+    std::vector<double> facetReflectionCells,facetShadowCells,facetRawSamples,facetRawNS;
+    std::vector<AnalyticFacetAverage::Components> facetSampleControls;
+    std::vector<double> facetTheta;
+    std::vector<double> gaussianPointCells,gaussianMeanCells;
+    std::vector<AnalyticAzimuthGaussian::Values> gaussianSamples;
+    double gaussianSeconds=0;
+    double facetSetupSeconds=0;
+    const int facetRows=handlerPO->m_sphere.nZenith+1;
+    const int facetAz=handlerPO->m_sphere.nAzimuth;
+    const auto makeBodyFrame=[](const WeightedOrientation &o)
+    {
+        std::array<AnalyticBackscatter::Vec,3> frame;double R[3][3];
+            if(o.useQuaternion)
+            {
+                const double norm=std::sqrt(o.qx*o.qx+o.qy*o.qy+o.qz*o.qz+o.qw*o.qw);
+                const double x=o.qx/norm,y=o.qy/norm,z=o.qz/norm,w=o.qw/norm;
+                R[0][0]=1-2*(y*y+z*z);R[0][1]=2*(x*y-w*z);R[0][2]=2*(x*z+w*y);
+                R[1][0]=2*(x*y+w*z);R[1][1]=1-2*(x*x+z*z);R[1][2]=2*(y*z-w*x);
+                R[2][0]=2*(x*z-w*y);R[2][1]=2*(y*z+w*x);R[2][2]=1-2*(x*x+y*y);
+            }
+            else
+            {
+                const double ca=std::cos(o.alpha),sa=std::sin(o.alpha),cb=std::cos(o.beta),sb=std::sin(o.beta),cg=std::cos(o.gamma),sg=std::sin(o.gamma);
+                R[0][0]=ca*cb*cg-sa*sg;R[0][1]=-ca*cb*sg-sa*cg;R[0][2]=ca*sb;
+                R[1][0]=sa*cb*cg+ca*sg;R[1][1]=-sa*cb*sg+ca*cg;R[1][2]=sa*sb;
+                R[2][0]=-sb*cg;R[2][1]=sb*sg;R[2][2]=cb;
+            }
+        for(int axis=0;axis<3;++axis)
+            frame[axis]=AnalyticBackscatter::Vec(R[axis][0],R[axis][1],R[axis][2]);
+        return frame;
+    };
+    if(m_analyticFacetAverage)
+    {
+        if(m_mpiSize!=1)
+            throw std::runtime_error("--analytic-facet-average requires one MPI rank.\n  Fix: use one rank with --threads N.");
+        const auto started=std::chrono::steady_clock::now();
+        Particle geometry=*m_particle;geometry.Rotate(0,0,0);
+        std::vector<AnalyticBackscatter::Face> faces;
+        for(int f=0;f<geometry.nFacets;++f)
+        {
+            AnalyticBackscatter::Face face;const Facet &part=geometry.facets[f];
+            face.normal=AnalyticBackscatter::Vec(part.ex_normal.cx,part.ex_normal.cy,part.ex_normal.cz);
+            for(int v=0;v<part.nVertices;++v)
+                face.vertices.push_back(AnalyticBackscatter::Vec(part.arr[v].cx,part.arr[v].cy,part.arr[v].cz));
+            faces.push_back(face);
+        }
+        for(int t=0;t<facetRows;++t)facetTheta.push_back(handlerPO->m_sphere.GetZenith(t));
+        const ::complex ri=geometry.GetRefractiveIndex();
+        facetControl.reset(new AnalyticFacetAverage::Control(faces,std::complex<double>(real(ri),imag(ri)),
+            m_scattering->m_wave,facetTheta,shadowOff ? "off":m_analyticShadowControl,m_analyticMeanCache));
+        if(!facetControl->SupportsDomain(betaSym,gammaSym))
+            throw std::runtime_error("analytic facet control cannot verify this orientation symmetry.\n  Fix: use --symmetry 1 1.");
+        facetReflectionCells.assign(static_cast<size_t>(facetAz)*facetRows,0);
+        facetShadowCells=facetReflectionCells;
+        if(m_analyticAzimuthGaussian){gaussianPointCells=facetReflectionCells;gaussianMeanCells=facetReflectionCells;}
+        if(m_analyticFacetSamples)
+        {
+            const size_t samples=static_cast<size_t>(nOrient)*facetRows;
+            if(samples>8000000)
+                throw std::runtime_error("analytic facet sample output exceeds eight million rows.\n  Fix: remove --analytic-facet-samples or reduce the grid/count.");
+            facetRawSamples.assign(samples,0);facetSampleControls.assign(samples,AnalyticFacetAverage::Components{0,0});
+            if(m_analyticAzimuthGaussian)gaussianSamples.assign(samples,AnalyticAzimuthGaussian::Values{0,0});
+            if(computeNoShadow)facetRawNS.assign(samples,0);
+        }
+        facetSetupSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+        std::cout << "Analytic facet average: all " << facetRows << " theta rows, shadow=" << m_analyticShadowControl
+                  << ", component refinement=" << facetControl->RefinementError() << ", setup=" << facetSetupSeconds << " s" << std::endl;
+    }
+
+    const auto facetWeights=AnalyticFacetAverage::ReadControlWeights(m_analyticControlWeights,facetTheta);
+
     m_incomingEnergy = 0;
     handlerPO->m_outputEnergy = 0;
     handlerPO->m_extinctionCrossSectionOt = 0;
@@ -5874,7 +6015,8 @@ void TracerPOTotal::TraceWeightedOrientations(
     int maximumChunk = std::max(1, std::min(4096, myCount));
     if (m_sobolChunkSize > 0)
         maximumChunk = std::max(1, std::min(maximumChunk, m_sobolChunkSize));
-    PreparedChunkController memoryChunks(maximumChunk);
+    const bool pipeline=m_orientationPipeline && handlerPO->IsGpuEnabled();
+    PreparedChunkController memoryChunks(maximumChunk,pipeline ? 2:1);
     int nThreads = 1;
 #ifdef _OPENMP
     #pragma omp parallel
@@ -5898,7 +6040,9 @@ void TracerPOTotal::TraceWeightedOrientations(
     }
 
     double phase1_total = 0, phase2_total = 0;
-    const bool profileOrientation = EnvEnabled("MBS_ORIENTATION_TIMING");
+    const bool profileOrientation = m_profilePhases || EnvEnabled("MBS_ORIENTATION_TIMING");
+    double controlSeconds=0.0,diffractionSeconds=0.0;
+    const auto processingStarted=std::chrono::steady_clock::now();
     double rotationCpuSeconds = 0.0;
     double traceCpuSeconds = 0.0;
     double prepareCpuSeconds = 0.0;
@@ -5906,16 +6050,26 @@ void TracerPOTotal::TraceWeightedOrientations(
     long long count = 0;
     m_scattering->PrepareForParallelTrace();
 
-    int chunkNumber = 0;
-    for (int iStart = myStart; iStart < myEnd; )
+    struct PreparedBlock
     {
-        const int thisChunk = memoryChunks.Next(myEnd - iStart);
-        const int iEnd = iStart + thisChunk;
-
+        int start=0,count=0;
+        std::vector<PreparedOrientation> prepared;
+        std::vector<double> energies,outputEnergies;
+        std::vector<std::array<AnalyticBackscatter::Vec,3>> frames;
+        double seconds=0,rotation=0,trace=0,prepare=0;
+    };
+    auto prepareBlock = [&](int iStart,int thisChunk)
+    {
+        PreparedBlock block;block.start=iStart;block.count=thisChunk;
+        if(facetControl)
+        {
+            block.frames.resize(thisChunk);
+            for(int i=0;i<thisChunk;++i)block.frames[i]=makeBodyFrame(orientations[iStart+i]);
+        }
         // Phase 1: trace and preprocess this chunk in parallel. Each thread
         // has its own Particle, Scattering and HandlerPO scratch state.
         auto tp1 = std::chrono::high_resolution_clock::now();
-        std::vector<PreparedOrientation> chunkPrepared;
+        auto &chunkPrepared=block.prepared;
         try
         {
             chunkPrepared.resize(thisChunk);
@@ -5927,11 +6081,13 @@ void TracerPOTotal::TraceWeightedOrientations(
                 "\n  Fix: reduce --orientation-chunk, reduce the scattering "
                 "grid, or raise MBS_HOST_MEM_BUDGET_MB.");
         }
-        std::vector<double> chunkEnergies(thisChunk, 0);
-        std::vector<double> chunkOutputEnergies(thisChunk, 0);
+        block.energies.assign(thisChunk,0);
+        block.outputEnergies.assign(thisChunk,0);
         ParallelExceptionState parallelError;
 
-        #pragma omp parallel
+        // std::async workers do not inherit the calling thread's OpenMP ICV.
+        // Keep four concurrent GPU jobs within the requested CPU budget.
+        #pragma omp parallel num_threads(nThreads)
         {
             // Thread-local copies of all mutable tracing/preprocessing state.
             Particle localParticle = *m_particle;
@@ -5985,13 +6141,13 @@ void TracerPOTotal::TraceWeightedOrientations(
                 {
                     double beforeOutput = localHandler.m_outputEnergy;
                     localHandler.PrepareBeams(localBeams, weight, chunkPrepared[i]);
-                    chunkOutputEnergies[i] = localHandler.m_outputEnergy - beforeOutput;
+                    block.outputEnergies[i] = localHandler.m_outputEnergy - beforeOutput;
                 }
                 else
                 {
                     chunkPrepared[i].sinZenith = weight;
                 }
-                chunkEnergies[i] = localScatter->GetIncedentEnergy() * weight;
+                block.energies[i] = localScatter->GetIncedentEnergy() * weight;
                 localBeams.clear();
                 if (profileOrientation)
                     localPrepareSeconds += std::chrono::duration<double>(
@@ -6006,17 +6162,28 @@ void TracerPOTotal::TraceWeightedOrientations(
             if (profileOrientation)
             {
                 #pragma omp atomic update
-                rotationCpuSeconds += localRotationSeconds;
+                block.rotation += localRotationSeconds;
                 #pragma omp atomic update
-                traceCpuSeconds += localTraceSeconds;
+                block.trace += localTraceSeconds;
                 #pragma omp atomic update
-                prepareCpuSeconds += localPrepareSeconds;
+                block.prepare += localPrepareSeconds;
             }
 
             delete localScatter;
         }
         parallelError.Rethrow();
 
+        block.seconds=std::chrono::duration<double>(std::chrono::high_resolution_clock::now()-tp1).count();
+        return block;
+    };
+    int chunkNumber=0;
+    auto processBlock = [&](PreparedBlock &block)
+    {
+        const int iStart=block.start,thisChunk=block.count,iEnd=iStart+thisChunk;
+        auto &chunkPrepared=block.prepared;
+        const auto &bodyFrames=block.frames;
+        const auto &chunkEnergies=block.energies,&chunkOutputEnergies=block.outputEnergies;
+        rotationCpuSeconds+=block.rotation;traceCpuSeconds+=block.trace;prepareCpuSeconds+=block.prepare;
         // Accumulate scalar counters sequentially after the parallel region.
         for (int i = 0; i < thisChunk; ++i) {
             m_incomingEnergy += chunkEnergies[i];
@@ -6026,22 +6193,95 @@ void TracerPOTotal::TraceWeightedOrientations(
             handlerPO->m_hasExtinctionOt = true;
             count++;
         }
-        phase1_total += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - tp1).count();
+        phase1_total += block.seconds;
 
         // Phase 2: parallel diffraction for this chunk
         auto tp2 = std::chrono::high_resolution_clock::now();
 
+        if(m_analyticAzimuthGaussian)
+        {
+            const auto started=std::chrono::steady_clock::now();
+            std::vector<std::vector<AnalyticAzimuthGaussian::Beam>> poses(thisChunk);
+            std::vector<double> weights(thisChunk);
+            const ::complex ri=m_particle->GetRefractiveIndex();
+            for(int i=0;i<thisChunk;++i)
+            {
+                weights[i]=chunkPrepared[i].sinZenith;
+                if(real(ri)==1 && imag(ri)==0)continue;
+                for(const auto &b:chunkPrepared[i].beams)
+                {
+                    // Facet controls already cover the primary reflection;
+                    // shadow is handled separately. Use retained internal beams.
+                    if(b.isExternal || b.nActs<=0)continue;
+                    const double nx=b.horAy*b.verAz-b.horAz*b.verAy,ny=b.horAz*b.verAx-b.horAx*b.verAz,nz=b.horAx*b.verAy-b.horAy*b.verAx;
+                    const double area=b.beam_area*std::fabs(nx*b.bdx+ny*b.bdy+nz*b.bdz);
+                    const double norm=b.jp00r*b.jp00r+b.jp00i*b.jp00i+b.jp01r*b.jp01r+b.jp01i*b.jp01i
+                        +b.jp10r*b.jp10r+b.jp10i*b.jp10i+b.jp11r*b.jp11r+b.jp11i*b.jp11i;
+                    if(area>0 && norm>0)poses[i].push_back(AnalyticAzimuthGaussian::Aperture(
+                        AnalyticBackscatter::Vec(b.bdx,b.bdy,b.bdz),area,norm,m_scattering->m_wave));
+                }
+            }
+            std::vector<double> point,mean;std::vector<AnalyticAzimuthGaussian::Values> samples;
+            const bool ok=handlerPO->IsGpuEnabled()
+                ? EvaluateAnalyticAzimuthGaussianGpu(poses,weights,facetTheta,nAz,point,mean,m_analyticFacetSamples ? &samples:nullptr)
+                : AnalyticAzimuthGaussian::EvaluateCells(poses,weights,facetTheta,nAz,point,mean,m_analyticFacetSamples ? &samples:nullptr);
+            if(!ok)throw std::runtime_error("analytic Gaussian azimuth evaluation failed");
+            for(size_t cell=0;cell<point.size();++cell){gaussianPointCells[cell]+=point[cell];gaussianMeanCells[cell]+=mean[cell];}
+            if(m_analyticFacetSamples)for(int i=0;i<thisChunk;++i)for(int t=0;t<facetRows;++t)
+                gaussianSamples[static_cast<size_t>(iStart+i)*facetRows+t]=samples[static_cast<size_t>(i)*facetRows+t];
+            gaussianSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+        }
+
         if (handlerPO->IsGpuEnabled())
         {
+            // Small physical controls are evaluated by a separate FP64 CUDA
+            // aperture kernel. The expensive full coherent field still uses
+            // the existing optimized diffraction/batching/multi-device path.
+            if(facetControl)
+            {
+                const auto controlStarted=std::chrono::steady_clock::now();
+                const auto &poses=bodyFrames;
+                std::vector<double> weights(thisChunk);
+                for(int i=0;i<thisChunk;++i)weights[i]=chunkPrepared[i].sinZenith;
+                std::vector<double> ref,shadow;
+                std::vector<AnalyticFacetAverage::Components> samples;
+                if(!EvaluateAnalyticFacetGpu(facetControl->GpuModel(),poses,weights,facetTheta,nAz,
+                    ref,shadow,m_analyticFacetSamples ? &samples : nullptr))
+                    throw std::runtime_error("CUDA analytic aperture kernel failed.\n  Fix: inspect available GPU memory and CUDA diagnostics.");
+                for(size_t cell=0;cell<ref.size();++cell)
+                {facetReflectionCells[cell]+=ref[cell];facetShadowCells[cell]+=shadow[cell];}
+                if(m_analyticFacetSamples)
+                    for(int i=0;i<thisChunk;++i)for(int t=0;t<facetRows;++t)
+                        facetSampleControls[static_cast<size_t>(iStart+i)*facetRows+t]=samples[static_cast<size_t>(i)*facetRows+t];
+                controlSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-controlStarted).count();
+            }
             Arr2D localM(nAz + 1, nZen + 1, 4, 4);
             localM.ClearArr();
             Arr2D localM_ns(nAz + 1, nZen + 1, 4, 4);
             localM_ns.ClearArr();
 
+            const auto diffractionStarted=std::chrono::steady_clock::now();
             for (int gpuStart = 0; gpuStart < thisChunk; )
             {
                 int gpuBatchSize = handlerPO->SelectGpuOrientationBatchSize(
                     chunkPrepared, gpuStart, thisChunk - gpuStart);
+                // Per-orientation raw diagnostics require a single-orientation
+                // batch. Normal production aggregation keeps the optimized batch
+                // size and multi-device backend. No precision/data is fabricated.
+                const bool diagnosticOrientation=m_analyticFacetSamples || bool(analyticControl);
+                if(diagnosticOrientation)gpuBatchSize=1;
+                std::vector<double> before, beforeNS;
+                if(diagnosticOrientation)
+                {
+                    before.resize(static_cast<size_t>(nAz)*facetRows);
+                    if(computeNoShadow)beforeNS.resize(before.size());
+                    for(int p=0;p<nAz;++p)for(int t=0;t<=nZen;++t)
+                    {
+                        const size_t cell=static_cast<size_t>(p)*facetRows+t;
+                        before[cell]=localM(p,t,0,0);
+                        if(computeNoShadow)beforeNS[cell]=localM_ns(p,t,0,0);
+                    }
+                }
                 int gpuEnd = std::min(gpuStart + gpuBatchSize, thisChunk);
                 bool ok = handlerPO->IsFftEnabled()
                     ? handlerPO->HandleOrientationsToLocalGpuFftPhi(
@@ -6056,9 +6296,30 @@ void TracerPOTotal::TraceWeightedOrientations(
                               << "could not process this chunk." << std::endl;
                     throw std::runtime_error("GPU diffraction backend failed");
                 }
+                if(diagnosticOrientation)
+                {
+                    const int index=iStart+gpuStart;const double w=chunkPrepared[gpuStart].sinZenith;
+                    if(m_analyticFacetSamples)
+                        for(int t=0;t<=nZen;++t)
+                        {
+                            const size_t sample=static_cast<size_t>(index)*facetRows+t;
+                            for(int p=0;p<nAz;++p)
+                            {
+                                const size_t cell=static_cast<size_t>(p)*facetRows+t;
+                                if(w>0)facetRawSamples[sample]+=(localM(p,t,0,0)-before[cell])/(w*nAz);
+                                if(w>0 && computeNoShadow)facetRawNS[sample]+=(localM_ns(p,t,0,0)-beforeNS[cell])/(w*nAz);
+                            }
+                        }
+                    if(analyticControl && w>0)
+                    {
+                        rawBackscatter[index]=(localM(0,backwardIndex,0,0)-before[backwardIndex])/w;
+                        if(computeNoShadow)rawNoShadow[index]=(localM_ns(0,backwardIndex,0,0)-beforeNS[backwardIndex])/w;
+                    }
+                }
                 gpuStart = gpuEnd;
             }
 
+            diffractionSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-diffractionStarted).count();
             for (int p = 0; p < nAz; ++p)
                 for (int t = 0; t <= nZen; ++t)
                 {
@@ -6077,6 +6338,8 @@ void TracerPOTotal::TraceWeightedOrientations(
                 Arr2D localM_ns(nAz + 1, nZen + 1, 4, 4);
                 localM_ns.ClearArr();
                 std::vector<Arr2DC> localJ, localJ_ns;
+                std::vector<double> localFacetRef(facetControl ? facetReflectionCells.size() : 0,0);
+                std::vector<double> localFacetShadow(localFacetRef.size(),0);
                 if (handlerPO->isCoh) {
                     Arr2DC tmp(nAz + 1, nZen + 1, 2, 2);
                     tmp.ClearArr();
@@ -6093,6 +6356,50 @@ void TracerPOTotal::TraceWeightedOrientations(
                         handlerPO->HandleBeamsToLocal(chunkPrepared[i], localM, localJ,
                                                        handlerPO->isCoh ? &localJ_ns : nullptr);
                     if (handlerPO->isCoh && !localJ.empty()) {
+                        if(facetControl)
+                        {
+                            const int index=iStart+i;const auto &frame=bodyFrames[i];
+                            const double weight=chunkPrepared[i].sinZenith;
+                            for(int p=0;p<nAz;++p)
+                            {
+                                const double az=p*handlerPO->m_sphere.azinuthStep,cp=std::cos(az),sp=std::sin(az);
+                                for(int t=0;t<=nZen;++t)
+                                {
+                                    const double st=std::sin(facetTheta[t]),ct=std::cos(facetTheta[t]);
+                                    const AnalyticBackscatter::Vec observer(
+                                        st*(cp*frame[0].x+sp*frame[1].x)-ct*frame[2].x,
+                                        st*(cp*frame[0].y+sp*frame[1].y)-ct*frame[2].y,
+                                        st*(cp*frame[0].z+sp*frame[1].z)-ct*frame[2].z);
+                                    const auto control=facetControl->Evaluate(frame[2],observer);
+                                    const size_t cell=static_cast<size_t>(p)*facetRows+t;
+                                    localFacetRef[cell]+=weight*control.reflection;
+                                    localFacetShadow[cell]+=weight*control.shadow;
+                                    if(m_analyticFacetSamples)
+                                    {
+                                        const size_t sample=static_cast<size_t>(index)*facetRows+t;
+                                        facetSampleControls[sample].reflection+=control.reflection/nAz;
+                                        facetSampleControls[sample].shadow+=control.shadow/nAz;
+                                        const auto intensity=[p,t](const Arr2DC&j)
+                                        {return .5*(norm(j(p,t,0,0))+norm(j(p,t,0,1))+norm(j(p,t,1,0))+norm(j(p,t,1,1)));};
+                                        facetRawSamples[sample]+=intensity(localJ[0])/nAz;
+                                        if(computeNoShadow)facetRawNS[sample]+=intensity(localJ_ns[0])/nAz;
+                                    }
+                                }
+                            }
+                        }
+                        if (analyticControl)
+                        {
+                            const auto intensity = [backwardIndex](const Arr2DC &j)
+                            {
+                                return .5*(norm(j(0,backwardIndex,0,0))+norm(j(0,backwardIndex,0,1))
+                                    +norm(j(0,backwardIndex,1,0))+norm(j(0,backwardIndex,1,1)));
+                            };
+                            // Read the complete coherent field before clearing it.
+                            // Differencing cumulative Mueller sums would lose small
+                            // per-orientation signals next to a large earlier peak.
+                            rawBackscatter[iStart+i]=intensity(localJ[0]);
+                            if (computeNoShadow) rawNoShadow[iStart+i]=intensity(localJ_ns[0]);
+                        }
                         double w = chunkPrepared[i].sinZenith;
                         HandlerPO::AddToMuellerLocal(localJ, w, localM, nAz, nZen);
                         HandlerPO::AddToMuellerLocal(localJ_ns, w, localM_ns, nAz, nZen);
@@ -6103,6 +6410,9 @@ void TracerPOTotal::TraceWeightedOrientations(
 
                 #pragma omp critical
                 {
+                    if(facetControl)
+                        for(size_t cell=0;cell<facetReflectionCells.size();++cell)
+                        {facetReflectionCells[cell]+=localFacetRef[cell];facetShadowCells[cell]+=localFacetShadow[cell];}
                     for (int p = 0; p < nAz; ++p)
                         for (int t = 0; t <= nZen; ++t) {
                             handlerPO->M.insert(p, t, localM(p, t));
@@ -6120,11 +6430,82 @@ void TracerPOTotal::TraceWeightedOrientations(
         if (m_mpiRank == 0)
             OutputProgress(nOrient, count, iEnd - 1, chunkNumber + 1, timer, -1);
 
-        chunkPrepared.clear();
-        chunkPrepared.shrink_to_fit();
-        iStart = iEnd;
         ++chunkNumber;
+    };
+    if(pipeline && myStart<myEnd)
+    {
+        std::cout << "Weighted orientation pipeline: persistent CPU producer overlaps CUDA diffraction; two host chunks" << std::endl;
+        std::mutex mutex;std::condition_variable condition;
+        bool requested=false,stop=false;int requestStart=0,requestCount=0;
+        std::unique_ptr<PreparedBlock> ready;std::exception_ptr failure;
+        // Keep one producer alive: recreating std::async/OpenMP teams for
+        // every chunk spends significant time starting CPU worker threads.
+        auto producer=std::async(std::launch::async,[&]()
+        {
+            for(;;)
+            {
+                int start,size;
+                {
+                    std::unique_lock<std::mutex> lock(mutex);
+                    condition.wait(lock,[&](){return requested || stop;});
+                    if(stop)return;
+                    start=requestStart;size=requestCount;requested=false;
+                }
+                try
+                {
+                    PreparedBlock block=prepareBlock(start,size);
+                    std::lock_guard<std::mutex> lock(mutex);
+                    ready.reset(new PreparedBlock(std::move(block)));condition.notify_all();
+                }
+                catch(...)
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    failure=std::current_exception();condition.notify_all();return;
+                }
+            }
+        });
+        const auto request=[&](int start,int size)
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            requestStart=start;requestCount=size;requested=true;condition.notify_all();
+        };
+        const auto shutdown=[&]()
+        {
+            {std::lock_guard<std::mutex> lock(mutex);stop=true;condition.notify_all();}
+            producer.get();
+        };
+        try
+        {
+            int nextStart=myStart;const int initial=memoryChunks.Next(myEnd-nextStart);
+            request(nextStart,initial);nextStart+=initial;
+            for(;;)
+            {
+                std::unique_ptr<PreparedBlock> block;
+                {
+                    std::unique_lock<std::mutex> lock(mutex);
+                    condition.wait(lock,[&](){return bool(ready) || bool(failure);});
+                    if(failure)std::rethrow_exception(failure);
+                    block=std::move(ready);
+                }
+                const bool more=nextStart<myEnd;
+                if(more)
+                {
+                    const int size=memoryChunks.Next(myEnd-nextStart);
+                    request(nextStart,size);nextStart+=size;
+                }
+                processBlock(*block);
+                if(!more)break;
+            }
+        }
+        catch(...){shutdown();throw;}
+        shutdown();
     }
+    else for(int start=myStart;start<myEnd;)
+    {
+        const int size=memoryChunks.Next(myEnd-start);
+        PreparedBlock block=prepareBlock(start,size);processBlock(block);start+=size;
+    }
+    const double processingWall=std::chrono::duration<double>(std::chrono::steady_clock::now()-processingStarted).count();
 
     // MPI: reduce Mueller matrices from all ranks to rank 0
     MPI_ReduceMueller(handlerPO, nAz, nZen, m_incomingEnergy, m_mpiRank);
@@ -6135,6 +6516,146 @@ void TracerPOTotal::TraceWeightedOrientations(
             ApplyMirrorGammaMueller(handlerPO->M_noshadow, nAz, nZen);
     }
 
+    std::vector<double> facetRawMeans,facetHybridMeans;
+    if(facetControl)
+    {
+        const std::string path=m_resultDirName+"_analytic_facets.tsv";
+        std::ofstream file(path.c_str());file << std::setprecision(17)
+            << "theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n";
+        facetRawMeans.resize(facetRows);facetHybridMeans.resize(facetRows);
+        for(int t=0;t<facetRows;++t)
+        {
+            const auto known=facetControl->Mean(t);const double wr=facetWeights[t][0],ws=facetWeights[t][1];double raw=0,ref=0,shadow=0;
+            for(int p=0;p<nAz;++p)
+            {
+                const size_t cell=static_cast<size_t>(p)*facetRows+t;
+                raw+=handlerPO->M(p,t,0,0)/nAz;ref+=facetReflectionCells[cell]/nAz;shadow+=facetShadowCells[cell]/nAz;
+                handlerPO->M(p,t,0,0)+=wr*(known.reflection-facetReflectionCells[cell])
+                    +(shadowOff ? 0:ws*(known.shadow-facetShadowCells[cell]));
+                if(computeNoShadow)handlerPO->M_noshadow(p,t,0,0)+=wr*(known.reflection-facetReflectionCells[cell]);
+            }
+            const double sampled=wr*ref+(shadowOff ? 0:ws*shadow),mean=wr*known.reflection+(shadowOff ? 0:ws*known.shadow);
+            facetRawMeans[t]=raw;facetHybridMeans[t]=raw+mean-sampled;
+            file << RadToDeg(facetTheta[t]) << '\t' << raw << '\t' << known.reflection << '\t'
+                 << (shadowOff ? 0:known.shadow) << '\t' << ref << '\t' << (shadowOff ? 0:shadow)
+                 << '\t' << raw-sampled << '\t' << facetHybridMeans[t] << '\t'
+                 << facetControl->RefinementError() << '\t' << facetSetupSeconds << '\t' << wr << '\t' << ws << '\n';
+        }
+        file.flush();if(!file)throw std::runtime_error("cannot write analytic facet summary.\n  Fix: check output permissions and disk space.");
+        if(m_analyticFacetSamples)
+        {
+            std::ofstream samples((m_resultDirName+"_analytic_facet_samples.tsv").c_str());
+            samples << std::setprecision(17) << "index\ttheta_deg\tbeta_deg\tgamma_deg\talpha_deg\tquaternion\tqx\tqy\tqz\tqw\tweight\traw_M11\treflection_control\tshadow_control\tresidual_M11";
+            if(computeNoShadow)samples << "\traw_noshadow_M11";
+            samples << '\n';
+            for(int i=0;i<nOrient;++i)for(int t=0;t<facetRows;++t)
+            {
+                const auto &o=orientations[i];const size_t j=static_cast<size_t>(i)*facetRows+t;
+                const auto c=facetSampleControls[j];const double shadow=shadowOff ? 0:c.shadow;
+                samples << i << '\t' << RadToDeg(facetTheta[t]) << '\t' << RadToDeg(o.beta) << '\t'
+                    << RadToDeg(o.gamma) << '\t' << RadToDeg(o.alpha) << '\t' << o.useQuaternion << '\t'
+                    << o.qx << '\t' << o.qy << '\t' << o.qz << '\t' << o.qw << '\t' << o.weight << '\t'
+                    << facetRawSamples[j] << '\t' << c.reflection << '\t' << shadow << '\t'
+                    << facetRawSamples[j]-facetWeights[t][0]*c.reflection-facetWeights[t][1]*shadow;
+                if(computeNoShadow)samples << '\t' << facetRawNS[j];
+                samples << '\n';
+            }
+            samples.flush();if(!samples)throw std::runtime_error("cannot write analytic facet samples.\n  Fix: check disk space.");
+        }
+        std::cout << "Analytic facet corrections written for all theta rows: " << path << std::endl;
+    }
+
+    if(m_analyticAzimuthGaussian)
+    {
+        std::ofstream file((m_resultDirName+"_analytic_azimuth.tsv").c_str());
+        file << std::setprecision(17) << "theta_deg\tfacet_hybrid_M11\tsampled_point\tconditional_mean\thybrid_M11\tcontrol_seconds\n";
+        for(int t=0;t<facetRows;++t)
+        {
+            double raw=0,point=0,mean=0;
+            for(int p=0;p<nAz;++p)
+            {
+                const size_t cell=static_cast<size_t>(p)*facetRows+t;
+                raw+=handlerPO->M(p,t,0,0)/nAz;point+=gaussianPointCells[cell]/nAz;mean+=gaussianMeanCells[cell]/nAz;
+                handlerPO->M(p,t,0,0)+=gaussianMeanCells[cell]-gaussianPointCells[cell];
+                if(computeNoShadow)handlerPO->M_noshadow(p,t,0,0)+=gaussianMeanCells[cell]-gaussianPointCells[cell];
+            }
+            file << RadToDeg(facetTheta[t]) << '\t' << raw << '\t' << point << '\t' << mean << '\t' << raw+mean-point << '\t' << gaussianSeconds << '\n';
+        }
+        file.flush();if(!file)throw std::runtime_error("cannot write analytic Gaussian azimuth summary");
+        if(m_analyticFacetSamples)
+        {
+            std::ofstream samples((m_resultDirName+"_analytic_azimuth_samples.tsv").c_str());
+            samples << std::setprecision(17) << "orientation\tweight\ttheta_deg\tpoint\tconditional_mean\n";
+            for(int i=0;i<nOrient;++i)for(int t=0;t<facetRows;++t)
+            {
+                const auto &v=gaussianSamples[static_cast<size_t>(i)*facetRows+t];
+                samples << i << '\t' << orientations[i].weight << '\t' << RadToDeg(facetTheta[t]) << '\t' << v.point << '\t' << v.mean << '\n';
+            }
+            samples.flush();if(!samples)throw std::runtime_error("cannot write analytic Gaussian azimuth samples");
+        }
+    }
+
+    if (analyticControl)
+    {
+        double sampledControl=0, raw=0, sampleResidual=0;
+        for (int i=0; i<nOrient; ++i)
+        {
+            sampledControl+=orientations[i].weight*controlValues[i];
+            raw+=orientations[i].weight*rawBackscatter[i];
+            sampleResidual+=orientations[i].weight*(rawBackscatter[i]-controlValues[i]);
+        }
+        const double correction=analyticControl->Mean()-sampledControl;
+        // A zero-radius backscatter cone can contain repeated 180-degree rows.
+        // Correct every pole row, using the same orientation-independent mean.
+        for (int t=0; t<=nZen; ++t)
+            if (PoleMueller::IsBackward(handlerPO->m_sphere.GetZenith(t)))
+                for (int p=0; p<nAz; ++p)
+                {
+                    handlerPO->M(p,t,0,0)+=correction;
+                    if (computeNoShadow) handlerPO->M_noshadow(p,t,0,0)+=correction;
+                }
+        const std::string summaryPath=m_resultDirName+"_analytic_backscatter.tsv";
+        std::ofstream summary(summaryPath.c_str());
+        summary << std::setprecision(17)
+            << "theta_deg\traw_M11\tanalytic_control_mean\tsampled_control_mean\tresidual_mean\thybrid_M11\tmoment_refinement\tsetup_profile_seconds\tstrips\torientations\treturn_order\n"
+            << "180\t" << raw << '\t' << analyticControl->Mean() << '\t'
+            << sampledControl << '\t' << sampleResidual << '\t' << raw+correction << '\t'
+            << analyticControl->RefinementError() << '\t' << analyticSetupSeconds << '\t'
+            << analyticControl->StripCount() << '\t' << nOrient << '\t' << m_analyticReturnOrder << '\n';
+        summary.flush();
+        const std::string samplesPath=m_resultDirName+"_analytic_backscatter_samples.tsv";
+        std::ofstream samples(samplesPath.c_str());
+        samples << std::setprecision(17) << "index\tbeta_deg\tgamma_deg\tweight\traw_M11\tcontrol_M11\tresidual_M11";
+        if (computeNoShadow) samples << "\traw_noshadow_M11";
+        samples << '\n';
+        for (int i=0; i<nOrient; ++i)
+        {
+            samples << i << '\t' << RadToDeg(orientations[i].beta) << '\t'
+                << RadToDeg(orientations[i].gamma) << '\t' << orientations[i].weight << '\t'
+                << rawBackscatter[i] << '\t' << controlValues[i] << '\t'
+                << rawBackscatter[i]-controlValues[i];
+            if (computeNoShadow) samples << '\t' << rawNoShadow[i];
+            samples << '\n';
+        }
+        samples.flush();
+        if (!summary || !samples)
+            throw std::runtime_error("cannot write analytic backscatter diagnostics.\n  Fix: check output permissions and free disk space.");
+        std::cout << "Hybrid M11(180)=" << std::setprecision(12) << raw+correction
+                  << " = known physical mean + full coherent residual; raw=" << raw
+                  << "; diagnostics: " << summaryPath << std::endl;
+    }
+
+    if(facetControl && analyticControl)
+    {
+        std::ofstream combined((m_resultDirName+"_analytic_combined.tsv").c_str());
+        combined << std::setprecision(17) << "theta_deg\traw_M11\tfacet_hybrid_M11\tcombined_hybrid_M11\n";
+        for(int t=0;t<facetRows;++t)
+        {
+            double mean=0;for(int p=0;p<nAz;++p)mean+=handlerPO->M(p,t,0,0)/nAz;
+            combined << RadToDeg(facetTheta[t]) << '\t' << facetRawMeans[t] << '\t' << facetHybridMeans[t] << '\t' << mean << '\n';
+        }
+        combined.flush();if(!combined)throw std::runtime_error("cannot write combined analytic diagnostics.\n  Fix: check disk space.");
+    }
     EraseConsoleLine(60);
     if (m_mpiRank == 0) {
         std::cout << "Phase 1 (tracing): " << std::fixed
@@ -6156,6 +6677,22 @@ void TracerPOTotal::TraceWeightedOrientations(
                     << "%), tracing=" << traceCpuSeconds
                     << " s, beam preparation=" << prepareCpuSeconds << " s";
             std::cout << profile.str() << std::endl;
+        }
+
+        if(m_profilePhases)
+        {
+            std::ofstream profile((m_resultDirName+"_phase_timings.tsv").c_str());
+            profile << std::setprecision(17) << "phase\tseconds\tclock\n"
+                << "trace_prepare\t" << phase1_total << "\tstage_wall_sum\n"
+                << "diffraction_and_controls\t" << phase2_total << "\tstage_wall_sum\n"
+                << "gpu_diffraction_including_packing\t" << diffractionSeconds << "\tstage_wall_sum\n"
+                << "analytic_controls\t" << controlSeconds << "\tstage_wall_sum\n"
+                << "processing\t" << processingWall << "\twall\n"
+                << "overlap_saved\t" << std::max(0.,phase1_total+phase2_total-processingWall) << "\twall_estimate\n"
+                << "rotation\t" << rotationCpuSeconds << "\tsummed_cpu_wall\n"
+                << "trace\t" << traceCpuSeconds << "\tsummed_cpu_wall\n"
+                << "beam_preparation\t" << prepareCpuSeconds << "\tsummed_cpu_wall\n";
+            profile.flush();if(!profile)throw std::runtime_error("cannot write phase timings");
         }
 
         m_handler->WriteTotalMatricesToFile(m_resultDirName);

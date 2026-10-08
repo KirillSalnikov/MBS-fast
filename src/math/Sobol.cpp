@@ -104,3 +104,43 @@ void Sobol2D::generate(int n, std::vector<double> &x, std::vector<double> &y)
     for (int i = 0; i < n; ++i)
         next(x[i], y[i]);
 }
+
+Sobol3D::Sobol3D(uint32_t seed_,bool scramble_)
+    : index(0),seed(seed_),state{0,0,0},scramble(scramble_)
+{
+    for(int i=0;i<32;++i) directions[0][i]=1u<<(31-i);
+    directions[1][0]=1u<<31;
+    for(int i=1;i<32;++i) directions[1][i]=directions[1][i-1]^(directions[1][i-1]>>1);
+    directions[2][0]=1u<<31; directions[2][1]=3u<<30;
+    for(int i=2;i<32;++i)
+        directions[2][i]=directions[2][i-2]^(directions[2][i-2]>>2)^directions[2][i-1];
+}
+
+uint32_t Sobol3D::Scramble(uint32_t value,uint32_t dim) const
+{
+    if(!scramble) return value;
+    uint32_t out=0,prefix=0;
+    for(uint32_t level=0;level<32;++level)
+    {
+        uint32_t h=seed^0x9e3779b9u;
+        h^=dim+0x85ebca6bu+(h<<6)+(h>>2);
+        h^=level+0xc2b2ae35u+(h<<6)+(h>>2);
+        h^=prefix+0x27d4eb2fu+(h<<6)+(h>>2);
+        h^=h>>16; h*=0x7feb352du; h^=h>>15; h*=0x846ca68bu; h^=h>>16;
+        const uint32_t bit=(value>>(31-level))&1u;
+        out|=(bit^(h&1u))<<(31-level); prefix=(prefix<<1)|bit;
+    }
+    return out;
+}
+
+void Sobol3D::next(double &x,double &y,double &z)
+{
+    uint32_t c=0,v=index;
+    while(v&1u){v>>=1;++c;}
+    if(c>=32) c=0;
+    for(int d=0;d<3;++d) state[d]^=directions[d][c];
+    ++index;
+    x=double(Scramble(state[0],0))/4294967296.;
+    y=double(Scramble(state[1],1))/4294967296.;
+    z=double(Scramble(state[2],2))/4294967296.;
+}

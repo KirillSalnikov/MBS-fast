@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <iostream>
@@ -856,6 +857,84 @@ int main()
     invalidParallel.push_back("--parallel-trace");
     ExpectFailure("parallel tracing rejects fixed mode", invalidParallel,
                   "requires CPU PO --orientation-file");
+
+    std::vector<std::string> analytic = {
+        "--method", "po", "--backend", "cpu", "--particle", "1", "10", "10",
+        "--refractive-index", "1.31", "0", "--wavelength-um", ".532",
+        "--max-reflections", "6", "--sobol-seed", "64", "42", "--analytic-backscatter"
+    };
+    ExpectSuccess("physical analytic backscatter control", analytic);
+    auto analyticOrder=analytic;
+    analyticOrder.insert(analyticOrder.end(),{"--analytic-return-order","2"});
+    ExpectSuccess("longer physical return self terms",analyticOrder);
+    auto tooDeepOrder=analytic;
+    tooDeepOrder.insert(tooDeepOrder.end(),{"--analytic-return-order","3"});
+    ExpectFailure("analytic order respects ray depth",tooDeepOrder,"beyond --max-reflections");
+    auto missingControl=CanonicalBase();
+    missingControl.insert(missingControl.end(),{"--analytic-return-order","2"});
+    ExpectFailure("analytic order requires control",missingControl,"requires --analytic-backscatter");
+    auto badOrder=analytic;
+    badOrder.insert(badOrder.end(),{"--analytic-return-order","0"});
+    ExpectFailure("analytic order positive range",badOrder,"must be in [1, 8]");
+    auto fractionalOrder=analytic;
+    fractionalOrder.insert(fractionalOrder.end(),{"--analytic-return-order","2.5"});
+    ExpectFailure("analytic order rejects fractional values",fractionalOrder,"expects an integer");
+    std::vector<std::string> analyticFixed = CanonicalBase();
+    analyticFixed.push_back("--analytic-backscatter");
+    ExpectFailure("analytic control rejects fixed orientation", analyticFixed,
+                  "requires PO Sobol");
+    for (const std::vector<std::string> &extra : {
+        std::vector<std::string>{"--incoherent"},
+        std::vector<std::string>{"--mirror-gamma"},
+        std::vector<std::string>{"--auto-phi"},
+        std::vector<std::string>{"--dmax-grid", "1", "2", "3"}
+    })
+    {
+        auto invalid = analytic;
+        invalid.insert(invalid.end(), extra.begin(), extra.end());
+        const std::string expected = extra[0] == "--incoherent" ? "coherent beam" : "single size";
+        ExpectFailure("analytic control rejects "+extra[0], invalid, expected);
+    }
+    auto absorbingAnalytic=analytic;
+    for (size_t i=0; i+2<absorbingAnalytic.size(); ++i)
+        if (absorbingAnalytic[i]=="--refractive-index") absorbingAnalytic[i+2]=".0018";
+    ExpectFailure("analytic control rejects absorption", absorbingAnalytic,
+                  "nonabsorbing real refractive index");
+    auto cudaAnalytic=analytic;
+    for (size_t i=0; i+1<cudaAnalytic.size(); ++i)
+        if (cudaAnalytic[i]=="--backend") cudaAnalytic[i+1]="cuda";
+    ExpectSuccessForBuild("analytic control supports CUDA",cudaAnalytic,true,true);
+
+    std::vector<std::string> general={"--method","po","--backend","cpu","--particle","1","4","4",
+        "--refractive-index","1.53",".0018","--wavelength-um",".532","--max-reflections","4",
+        "--sobol-seed","64","42","--haar-alpha","--analytic-facet-average","--analytic-facet-samples"};
+    ExpectSuccess("general analytic kernels with absorbing index and Haar alpha",general);
+    auto cachedGeneral=general;cachedGeneral.insert(cachedGeneral.end(),{"--analytic-mean-cache","physical_means.cache"});
+    ExpectSuccess("physical analytic means cache modifier",cachedGeneral);
+    auto orphanCache=CanonicalBase();orphanCache.insert(orphanCache.end(),{"--analytic-mean-cache","physical_means.cache"});
+    ExpectFailure("physical means cache requires analytic control",orphanCache,"require --analytic-facet-average");
+    auto generalCuda=general;
+    for(size_t i=0;i+1<generalCuda.size();++i)if(generalCuda[i]=="--backend")generalCuda[i+1]="cuda";
+    ExpectSuccessForBuild("full Haar physical facet controls support CUDA",generalCuda,true,true);
+    auto gaussian=general;gaussian.push_back("--analytic-azimuth-gaussian");
+    ExpectSuccess("conditional Gaussian azimuth control",gaussian);
+    auto gaussianCuda=generalCuda;gaussianCuda.push_back("--analytic-azimuth-gaussian");
+    ExpectSuccessForBuild("conditional Gaussian azimuth supports CUDA",gaussianCuda,true,true);
+    auto orphanGaussian=CanonicalBase();orphanGaussian.push_back("--analytic-azimuth-gaussian");
+    ExpectFailure("Gaussian azimuth requires full Haar facet control",orphanGaussian,"require --analytic-facet-average");
+    auto circular=general;circular.insert(circular.end(),{"--analytic-shadow-control","circular"});
+    ExpectSuccess("circular analytic shadow",circular);
+    auto badShadow=general;badShadow.insert(badShadow.end(),{"--analytic-shadow-control","fit_pdf"});
+    ExpectFailure("general shadow validates physical model",badShadow,"unknown --analytic-shadow-control");
+    auto missingHaar=general;
+    missingHaar.erase(std::find(missingHaar.begin(),missingHaar.end(),"--haar-alpha"));
+    ExpectFailure("general analytic mean rejects incomplete orientation measure",missingHaar,"full Haar orientations");
+    auto fixedHaar=CanonicalBase();fixedHaar.push_back("--haar-alpha");
+    ExpectFailure("Haar alpha rejects fixed mode",fixedHaar,"requires PO Sobol");
+    auto orphanShadow=CanonicalBase();orphanShadow.insert(orphanShadow.end(),{"--analytic-shadow-control","off"});
+    ExpectFailure("shadow model requires general control",orphanShadow,"require --analytic-facet-average");
+    auto incoherentFacet=general;incoherentFacet.push_back("--incoherent");
+    ExpectFailure("general kernel requires full coherent field",incoherentFacet,"requires coherent beams");
 
     if (failures != 0)
     {

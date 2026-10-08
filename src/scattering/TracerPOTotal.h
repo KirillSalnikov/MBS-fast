@@ -11,6 +11,17 @@ struct PreparedOrientation;
 class TracerPOTotal : public TracerPO
 {
 public:
+	bool m_analyticBackscatter = false;
+	int m_analyticReturnOrder = 1;
+	bool m_haarAlpha = false;
+	bool m_analyticFacetAverage = false;
+	bool m_analyticFacetSamples = false;
+	bool m_analyticAzimuthGaussian = false;
+	std::string m_analyticShadowControl = "facets";
+	std::string m_analyticMeanCache;
+	std::string m_analyticControlWeights;
+	bool m_orientationPipeline = false;
+	bool m_profilePhases = false;
 	TracerPOTotal(Particle *particle, int nActs, const std::string &resultFileName);
 	void TraceRandom(const AngleRange &betaRange,
 					 const AngleRange &gammaRange) override;

@@ -23,6 +23,8 @@ M\out.txt
 *.synctex.gz
 
 # Runtime
+__pycache__/
+*.py[cod]
 particle_for_check.dat
 beam_log.dat
 log1.txt

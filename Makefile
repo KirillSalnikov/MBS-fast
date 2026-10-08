@@ -221,6 +221,22 @@ test_beam_topology: cpu
 test_coherence: cpu
 	MBS_BIN=cpu/bin/mbs_po_mpi tests/run_coherent_sum_test.sh
 
+test_analytic: cpu
+	OPENBLAS_NUM_THREADS=1 python3 tests/test_analytic_backscatter.py
+
+test_gpu_optimization: cpu
+	OPENBLAS_NUM_THREADS=1 python3 tests/test_gpu_campaign.py
+	OPENBLAS_NUM_THREADS=1 python3 tests/test_analytic_control_weights.py
+
+test_analytic_facets: cpu
+	OPENBLAS_NUM_THREADS=1 python3 tests/test_analytic_facets.py
+
+test_analytic_directions:
+	OPENBLAS_NUM_THREADS=1 python3 tests/test_analytic_directions.py
+
+test_analytic_azimuth: cpu
+	OPENBLAS_NUM_THREADS=1 python3 tests/test_analytic_azimuth.py
+
 test_forward_depth:
 	tests/run_forward_depth_clipping_test.sh
 
@@ -276,7 +292,7 @@ test_sanitize:
 		MBS=$(CURDIR)/cpu/bin/mbs_po_mpi_sanitize \
 		MBS_RELEASE_TIMEOUT_SECONDS=90 tests/run_release_cli_matrix.sh
 
-test: test_release test_adaptive test_regression test_extinction test_so3 test_poles test_beam_topology test_coherence test_forward_depth test_fixed_threads test_concave_visibility test_warnings test_cuda_profiles test_cuda_if_available
+test: test_gpu_optimization test_release test_adaptive test_regression test_extinction test_so3 test_poles test_beam_topology test_coherence test_analytic test_analytic_facets test_analytic_directions test_analytic_azimuth test_forward_depth test_fixed_threads test_concave_visibility test_warnings test_cuda_profiles test_cuda_if_available
 
 $(TARGET): $(OBJECTS)
 	@mkdir -p bin
@@ -391,8 +407,8 @@ endif
 
 .PHONY: all cuda_check cpu gpu gpu_float gpu_float_consumer gpu_float_fast gpu_double gpu_double_fast \
 	gpu_fp32 gpu_fp32_consumer gpu_fp64 gpu_fp32_fast gpu_fp64_fast split docs \
-	test test_cli test_release test_adaptive test_regression test_so3 test_poles \
-	test_beam_topology test_coherence test_forward_depth test_concave_visibility test_warnings test_cuda_build test_cuda \
+	test test_gpu_optimization test_cli test_release test_adaptive test_regression test_so3 test_poles \
+	test_beam_topology test_coherence test_analytic test_analytic_facets test_analytic_directions test_analytic_azimuth test_forward_depth test_concave_visibility test_warnings test_cuda_build test_cuda \
 	test_cuda_profiles test_cuda_consumer_build test_cuda_consumer test_cuda_if_available test_sanitize clean \
 	clean_cuda_objects cuda_float cuda_float_consumer cuda_float_fast cuda_double cuda_double_fast cuda_variants \
 	fft_probe gpu_trace_probe gpu_quaternion_probe

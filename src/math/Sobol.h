@@ -34,3 +34,16 @@ private:
                   uint32_t prefix) const;
     uint32_t scrambleOwen(uint32_t value, uint32_t dim) const;
 };
+
+// Three-dimensional Sobol sequence with the same first two dimensions and
+// nested Owen permutations as Sobol2D. Dimension 3: x^2+x+1, m=(1,3).
+class Sobol3D
+{
+public:
+    explicit Sobol3D(uint32_t seed=0, bool scramble=true);
+    void next(double &x, double &y, double &z);
+private:
+    uint32_t index, seed, state[3], directions[3][32];
+    bool scramble;
+    uint32_t Scramble(uint32_t value, uint32_t dim) const;
+};

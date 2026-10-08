@@ -15,6 +15,45 @@ tracing as well as diffraction. Add `--deduplicate-orientations` to reuse exact
 repeated angle pairs with their summed weights. Both flags are opt-in; examples
 are in both manuals.
 
+For real-index convex prisms, `--analytic-backscatter` integrates physical
+return-strip phases and adds the full coherent MBS residual at exactly 180°.
+It targets orientation-averaging variance, while retaining all traced paths.
+Usage, supported modes and diagnostics are documented in both manuals;
+`scripts/benchmark_analytic_backscatter.py` compares independent scrambles.
+
+For arbitrary scattering angles, add `--haar-alpha --analytic-facet-average`
+to CPU seeded Sobol, or combine the latter with full SO(3) quaternion samples.
+The physical component uses angular Fresnel and analytic orientation-phase
+kernels; the complete coherent residual stays numerical. Only M11 changes.
+The manuals document shadow models, refinement, diagnostics and measured limits.
+
+The GPU campaign scripts accept `--case test3` for the 316.2 × 123.8 µm
+column and the 227-point 170–180° grid. Use `--theta-grid-file` to preserve an
+external reference grid exactly. Device lists may contain any number of
+distinct GPUs, for example `--gpus 1 2 3`. When analytic mean tables exceed
+their budget, `--analytic-controls off` keeps the full coherent estimator.
+An explicit cutoff refinement at the same depth is supported:
+
+```bash
+python3 scripts/benchmark_gpu_optimized.py --binary gpu/bin/mbs_po_gpu_double \
+  --output test3_calibration --case test3 --fine-depth 18 \
+  --analytic-controls off --gpus 1 2 3 --phi-candidates 16 32 64 128
+python3 scripts/run_gpu_optimized.py --binary gpu/bin/mbs_po_gpu_double \
+  --output test3_results --case test3 --analytic-controls off --gpus 1 2 3 \
+  --calibration test3_calibration/calibration.json \
+  --depths 8 12 18 18 --level-cutoffs .001 .001 .001 off \
+  --initial-counts 131072 8192 8192 1024 --min-correction-count 1024
+```
+
+The final level has no cutoff. Each correction uses paired full Mueller
+matrices from identical orientations; confidence is estimated from eight
+independent scrambles after combining all levels. Completion requires the
+pointwise intervals and two sample refinements to pass for all 16 entries.
+
+Measured convergence for three large-column campaigns, including the backward
+170–180° range and polarization plots, is recorded in
+[`docs/benchmarks/GPU_RESULTS_RU.md`](docs/benchmarks/GPU_RESULTS_RU.md).
+
 ## Method Reference
 
 When using the MBS-1 method, cite D. N. Timofeev, A. V. Konoshonkin, and
@@ -628,6 +667,11 @@ make test_cuda
 
 # CLI schema and validation unit tests
 tests/run_cli_tests.sh
+
+# Physical analytic phases, longer ray-family audit and complete MBS residual
+# Requires numpy/scipy for independent references; the CPU binary does not.
+make test_analytic
+make test_analytic_facets
 
 # Real CPU calculations plus pairwise selector and cross-domain checks
 MBS=cpu/bin/mbs_po_mpi tests/run_release_cli_matrix.sh

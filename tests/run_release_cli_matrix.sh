@@ -612,6 +612,25 @@ expect_success 'multi-size: process-parallel dmax file scan' \
 
 printf 'Running pairwise selector conflicts...\n'
 
+expect_success 'orientation file: parallel trace and exact duplicate reuse' \
+    "${PO_CORE[@]}" --orientation-file "$ORIENTATION_FILE" "${GRID[@]}" \
+    --parallel-trace --deduplicate-orientations
+expect_success 'physical analytic backscatter with longer return self terms' \
+    "$MBS" --method po --backend cpu --particle 1 1 1 \
+    --refractive-index 1.31 0 --wavelength-um 10 --max-reflections 7 \
+    --sobol-seed 4 7 --analytic-backscatter --analytic-return-order 3 \
+    --scattering-grid 179 180 1 1 --threads 1 --close
+expect_error 'analytic return order without analytic control' \
+    "${PO_CORE[@]}" --fixed-orientation 0 0 "${GRID[@]}" --analytic-return-order 2
+expect_success 'full-Haar all-angle analytic physical components' \
+    "$MBS" --method po --backend cpu --particle 1 1 1 \
+    --refractive-index 1.53 0.0018 --wavelength-um 10 --max-reflections 3 \
+    --sobol-seed 4 7 --haar-alpha --analytic-facet-average --analytic-facet-samples \
+    --analytic-mean-cache "$WORK_DIR/physical_means.cache" \
+    --analytic-shadow-control circular --scattering-grid 0 180 1 2 --threads 1 --close
+expect_error 'general analytic mean requires full orientation measure' \
+    "${PO_CORE[@]}" --sobol-seed 4 7 "${GRID[@]}" --analytic-facet-average
+
 METHOD_NAMES=(canonical-method legacy-po legacy-go)
 append_method()
 {

@@ -990,6 +990,197 @@ weight distribution does not reuse the checkpoint. Three dust-particle tests
 of the same 24-row rule gave about five-fold combined acceleration; speed
 and extra worker RAM depend on the workload.
 
+\subsection{Physical analytic control at exact backscatter}
+\texttt{--analytic-backscatter} computes
+\[
+ \widehat{\langle M_{11}(180^\circ)\rangle}
+ =\langle C\rangle+\sum_i w_i\,[M_{11}^{\mathrm{MBS}}(i)-C(i)].
+\]
+The return-strip profile $C$ retains entry/exit transmission, two internal
+reflections in both orders and coherent interference between the two entry
+faces, including angular Fresnel and total-internal-reflection phases.
+Right-angle shared edges and opposing parallel faces are detected from the
+geometry. Rectangular and regular hexagonal prisms have 12 such strips;
+for the hexagonal base, a rectangular strip approximates the aperture.
+The finite sinc-squared edge integral and optical Fourier-Legendre/Bessel
+phase moments are analytic. Smooth physical coefficients require numerical
+one-dimensional preparation, reused for identical strips. Degree 96/160,
+then 320 if needed, must give mean refinement within $10^{-6}$.
+
+All traced complex MBS beams are summed before forming the full intensity.
+Longer paths, finite-window corrections and cross-family interference remain
+in the numerical residual. No probability density is fitted in place of
+physical scattering.
+
+\begin{verbatim}
+cpu/bin/mbs_po_mpi --method po --backend cpu \
+  --particle 1 101.02 101.02 --refractive-index 1.31 0 \
+  --wavelength-um 0.532 --max-reflections 20 \
+  --sobol-seed 4096 42 --analytic-backscatter --threads 4 \
+  --scattering-grid 179 180 4 4 --cutoff-profile off \
+  --output results/analytic_backscatter --close
+\end{verbatim}
+
+\texttt{--analytic-return-order K} adds longer image-family self terms with
+$p+q\leq K+1$: $p$ counts longitudinal round trips and $2q-1$ counts lateral
+reflections. $K=1\ldots8$, default 1; reflection depth must be at least $2K+1$.
+Each self phase cancels, its edge integral is analytic, and its Fresnel amplitude
+uses one-dimensional preparation. Cross-family terms remain in the full
+numerical residual. Append \texttt{--analytic-return-order 3}, for example.
+Orders 3--8 barely changed scatter in the tested 1:1 prism at $n=1.31$,
+so order 1 remains the default.
+
+Requires single-rank CPU PO, real nonabsorbing index $n>1$, coherent beams,
+a convex particle with suitable edges and an exact $180^\circ$ row. Supported
+rules are Sobol, seeded Sobol, Hammersley, lattice and Euler quadrature.
+Symmetry of $C$ is verified; use \texttt{--symmetry 1 1} if rejected.
+Multi-size, adaptive grid/depth searches and mirror-gamma are unsupported.
+
+Only $M_{11}$ at $180^\circ$ changes in ordinary \texttt{.dat}; other elements
+and directions retain their ordinary numerical estimates. The same correction
+applies to no-shadow output. Diagnostic files are:
+\begin{verbatim}
+<name>_analytic_backscatter.tsv
+<name>_analytic_backscatter_samples.tsv
+\end{verbatim}
+They record raw/hybrid means, known/sampled control means, residual, refinement
+and per-orientation samples.
+A poorly sampled estimate can be negative and is not clipped, to avoid bias.
+
+At fixed $N$ the trace count is unchanged. Acceleration requires fewer samples
+at the same full-mean error and is not guaranteed. Compare independent Owen
+scrambles. The script \texttt{scripts/benchmark\_analytic\_backscatter.py}
+compares both estimates on the same orientations.
+
+\subsection{Analytic physical components at all scattering angles}
+\texttt{--analytic-facet-average} corrects only $M_{11}$ at every theta row.
+Reflected facet self terms and projected shadow apertures are averaged;
+internal paths, clipping and all cross terms remain in the complete coherent
+numerical MBS residual. At fixed $N$ the trace count is unchanged.
+
+The facet incidence cosine $\mu=\vec n\cdot\vec u$ differs from scattering
+angle $\theta=\arccos(-\vec u\cdot\vec v)$, with unit outward normal $\vec n$.
+Source $\vec u$ points toward the source; observer $\vec v$ points toward the
+observer. $\theta=0$ is forward. Fresnel retains its dependence on each $\mu$,
+including oblique incidence. Simultaneous rigid rotations preserve $M_{11}$.
+\texttt{Control::Evaluate(u,v)} normalizes directions; \texttt{SourceFrame}
+and \texttt{Observer} construct arbitrary incidence axes and azimuth references
+on CPU/CUDA. Tangency within eight FP64 epsilons uses the same boundary.
+The CLI samples incidence through particle rotations and needs no extra flag.
+A full Haar mean is independent of the laboratory illumination axis; aligned
+ensembles do not have this invariance.
+
+\texttt{--haar-alpha} adds a third Owen-Sobol laboratory-alpha coordinate,
+preserving the old beta/gamma samples. $N_\phi=1$ is now sufficient for the
+orientation measure; extra azimuths provide additional averaging.
+Alternatively use \texttt{--so3-full-quaternion N}. Two-angle Sobol without
+alpha is rejected because it is not full Haar sampling away from poles.
+
+\begin{verbatim}
+cpu/bin/mbs_po_mpi --method po --backend cpu \
+  --particle 1 30.3063 30.3063 --refractive-index 1.31 0 \
+  --wavelength-um 0.532 --max-reflections 20 \
+  --sobol-seed 4096 42 --haar-alpha --analytic-facet-average \
+  --threads 4 --scattering-grid 0 180 1 36 \
+  --cutoff-profile off --output results/analytic_all_angles --close
+\end{verbatim}
+
+With body-frame source direction $\vec u$ and observer $\vec v$:
+\[
+ \vec q_r=k(\vec u+\vec v),\quad |\vec q_r|=2k\sin(\theta/2),
+ \qquad \vec q_s=k[\vec v-(\vec u\cdot\vec v)\vec u],\quad |\vec q_s|=k\sin\theta.
+\]
+Angular Fresnel is retained. The Legendre addition theorem and Rayleigh
+expansion analytically integrate spin and oscillatory orientation phases,
+sharing 1D $R(\mu)$ moments across the grid. Green tabulation and edge quadrature
+remain numerical. Reflection changes are checked to $10^{-4}$; a small shadow
+change uses the combined-control scale. Up to 320 harmonics and 768 edge nodes
+are used. Large-particle setup can be substantial and is reported separately.
+
+Congruent facets reuse self-mean boundary integrals; point controls and coherent
+projected-area means retain all physical normals. Two radial tables allow
+64 million FP64 entries each (about1GiB combined), accommodating the891.3um
+prism on0--25 degree grids.
+
+At $0^\circ$ reflection vanishes. The coherent projected-area square has a
+closed spherical mean over pairs of facet normals; it matches forward shadow
+self intensity for convex particles. Nonconvex differences stay in the residual.
+Vacuum $n=1+0i$ receives no correction. Absorption with $\operatorname{Re}n\geq1$
+is supported; ideal complex Fresnel in the control can slightly differ from
+native real refracted-direction coefficients. The residual preserves native
+physics, including that difference.
+
+\texttt{--analytic-shadow-control facets|circular|off} selects the shadow model.
+Default facets uses projected-facet self terms and coherent area at $0^\circ$.
+Circular uses a circular diffraction aperture with mean-projection radius and
+the original orientation-dependent area; its approximation is corrected by
+the residual. Off retains only reflection. No-shadow receives reflection alone.
+
+Files:
+\begin{verbatim}
+<name>_analytic_facets.tsv
+<name>_analytic_facet_samples.tsv
+<name>_analytic_combined.tsv
+\end{verbatim}
+The first records raw/hybrid means, controls, residual and refinement.
+The second is optional under \texttt{--analytic-facet-samples}. The third reports
+composition with \texttt{--analytic-backscatter}, whose return correction is
+added only at $180^\circ$. Individual summaries retain their own raw-MBS estimator.
+
+Requires single-rank coherent CPU/CUDA PO, one size, fixed grids/depth and full Haar
+sampling. Arbitrary faceted shapes are supported; use \texttt{--symmetry 1 1}
+when control symmetry is not verified. The three-prism $8\times512$ comparison
+gave variance ratios about 0.77--1.52; some angles worsened. These are not
+measured runtime-to-tolerance speedups or a closure of all internal paths.
+
+\texttt{--analytic-mean-cache FILE} reuses verified physical means across
+identical geometry, material, wavelength and grid inputs, with a process lock
+and atomic publication. Point apertures run on FP64 CUDA when CUDA is selected;
+the full coherent field retains its optimized GPU path.
+
+The portable \texttt{scripts/run\_gpu\_multilevel.py} runner uses
+\[
+ E[M_f]=E[M_c]+E[M_f-M_c]
+\]
+with many coarse samples and fewer coupled correction samples. These are
+Mueller intensities after full coherent beam addition at each orientation.
+Eight final scramble estimates include the covariance of their components.
+Defaults use depth8/cutoff0.001 and depth12/cutoffoff; two successive changes
+and pointwise confidence intervals must stay below3\%, scaling every Mueller
+element by $M_{11}$. All raw GPU runs are retained.
+\begin{verbatim}
+python3 scripts/run_gpu_multilevel.py \
+  --binary gpu/bin/mbs_po_gpu_double --case test2 \
+  --output results/test2 --gpus 0 1 2 3 --threads 16 --phi-points 4
+\end{verbatim}
+The presets reproduce446.7/138.9um and891.3/207.8um prisms, index1.3116,
+wavelength0.532um and267/531rows at0--25 degrees. Physical inputs, theta
+files and CUDA libraries can be configured; \texttt{--dry-run} prints inputs.
+\texttt{status.json} records progress and \texttt{mueller\_multilevel.dat}
+the final estimate. Resume requires matching binary and physical inputs;
+check job PIDs after a controller crash before restarting.
+
+Experimental \texttt{--analytic-azimuth-gaussian} adds internal-beam Gaussian
+aperture controls to \texttt{--analytic-facet-average}. Projected area $A$ and
+actual Jones norm set $P=\|J\|^2 A^2/(2\lambda^2)$ and
+$\kappa=2\pi A/\lambda^2$. For outgoing polar angle $\theta_b$,
+\[
+ C=P e^{-\kappa|\vec d-\vec v|^2/2},\qquad
+ E_\alpha C=P e^{-2\kappa\sin^2[(\theta-\theta_b)/2]}
+ I_{0e}(\kappa\sin\theta\sin\theta_b),
+\]
+where $I_{0e}(x)=e^{-x}I_0(x)$; see
+\href{https://dlmf.nist.gov/10.32.E1}{NIST DLMF 10.32.1}.
+This is the exact conditional mean of a Gaussian surrogate; adding
+$E_\alpha C-C$ preserves all polygon diffraction and coherent interference
+in the native residual. An alpha-independent polar exponent window at64
+applies to both terms. Vacuum and both poles get zero correction.
+The \texttt{\_analytic\_azimuth.tsv} file reports values and cost; optional
+sample diagnostics use \texttt{--analytic-facet-samples}. Variance can increase
+at some angles; compare independent seeds before production use.
+Body frames are prepared per orientation chunk, avoiding an additional
+$72N$ bytes, and Haar generation avoids unused $16N$ bytes of 2D samples.
+
 \section{Scattering grids}\label{scattering-grids}
 
 \begin{longtable}[]{@{}L{0.24\linewidth}L{0.22\linewidth}L{0.46\linewidth}@{}}
@@ -2147,4 +2338,28 @@ For nonabsorbing runs physical absorption is fixed to zero. The reported
 $C_{\mathrm{sca}}$ error remains a convergence diagnostic and does not replace
 inspection of the output Mueller matrix.
 
+
+\section{Calibrated multi-level GPU acceleration}
+The portable controller combines depths 8, 10 and 12, with the last cutoff disabled. Independent pilots select azimuth count, CUDA kernel and frozen analytic coefficients. Actual pointwise intervals and two refinement checks determine stopping. See the Markdown manual for full details.
+\begin{verbatim}
+python3 scripts/run_gpu_optimized.py \
+  --binary gpu/bin/mbs_po_gpu_double --case test1 \
+  --output results/test1 --calibrate \
+  --depths 8 10 12 --level-cutoffs .001 off off \
+  --gpus 0 1 2 3 --threads 16
+\end{verbatim}
+\paragraph{Backward angular range.}
+The \texttt{--case test3} preset selects the 316.2 by 123.8 micrometre column
+and 227 angles from 170 to 180 degrees. An external theta file preserves
+reference nodes. Device lists may contain any number of distinct GPUs.
+For a separate weak-beam correction use:
+\begin{verbatim}
+--analytic-controls off --gpus 1 2 3
+--depths 8 12 18 18 --level-cutoffs .001 .001 .001 off
+--initial-counts 131072 8192 8192 1024
+--min-correction-count 1024
+\end{verbatim}
+The final level estimates depth18 with no cutoff. Equal depths require a
+strictly smaller cutoff. Disabling analytic components preserves the full
+coherent estimator when known-mean tables exceed their budget.
 \end{document}
