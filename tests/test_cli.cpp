@@ -386,7 +386,7 @@ int main()
         "--max-orientations", "65536",
         "--backend", "cpu"
     });
-    ExpectSuccess("fullauto compatibility alias", {
+    ExpectSuccess("native fullauto", {
         "--method", "po",
         "--particle", "1", "10", "10",
         "--refractive-index", "1.31", "0",
@@ -394,6 +394,21 @@ int main()
         "--fullauto", "0.02",
         "--backend", "cpu"
     });
+    ExpectSuccess("single dash native fullauto and small fixed target", {
+        "--method", "po", "--particle", "1", "1", "1",
+        "--ri", "1.31", "0", "-w", "1", "--max-reflections", "2",
+        "-fullauto", "0.01", "--fullauto-pilot", "32",
+        "--fullauto-theta-start", "3", "--max-theta-points", "9",
+        "--max-phi-points", "4", "--backend", "cpu"
+    });
+    ExpectFailure("fullauto budget invalid", {
+        "--method", "po", "--particle", "1", "1", "1", "--ri", "1.31", "0",
+        "-w", "1", "--fullauto", "0", "--backend", "cpu"
+    }, "must be in (0, 1)");
+    ExpectFailure("fullauto settings require native mode", {
+        "--method", "po", "--particle", "1", "1", "1", "--ri", "1.31", "0",
+        "-w", "1", "--sobol", "32", "--fullauto-pilot", "16", "--backend", "cpu"
+    }, "requires --fullauto");
     ExpectSuccess("alpha quadrature aliases", {
         "--method", "po",
         "--particle", "1", "10", "10",
@@ -936,6 +951,20 @@ int main()
     auto incoherentFacet=general;incoherentFacet.push_back("--incoherent");
     ExpectFailure("general kernel requires full coherent field",incoherentFacet,"requires coherent beams");
 
+    auto mirrorHaar=general;mirrorHaar.push_back("--mirror-gamma");
+    ExpectSuccess("full Haar facet controls accept verified mirror reduction",mirrorHaar);
+    auto pairedHaar=general;pairedHaar.push_back("--haar-mirror-audit");
+    ExpectSuccess("paired Haar mirror audit",pairedHaar);
+    auto badPaired=mirrorHaar;badPaired.push_back("--haar-mirror-audit");
+    ExpectFailure("Haar mirror audit rejects reconstruction",badPaired,"cannot be combined");
+    auto noHaarAudit=CanonicalBase();noHaarAudit.push_back("--haar-mirror-audit");
+    ExpectFailure("Haar mirror audit requires Haar Sobol",noHaarAudit,"requires PO Sobol");
+    auto newMirror=std::vector<std::string>{"--method","po","--backend","cpu","--particle","1","10","3.1","--ri","1.3116","0","--wavelength-um",".532","--max-reflections","12","--fullauto",".01","--mirror-gamma"};
+    ExpectSuccess("native fullauto accepts mirror verification",newMirror);
+    newMirror.insert(newMirror.end(),{"--fullauto-mirror","off"});
+    ExpectFailure("native mirror policy conflict",newMirror,"conflicts");
+    auto orphanPolicy=CanonicalBase();orphanPolicy.insert(orphanPolicy.end(),{"--fullauto-mirror","auto"});
+    ExpectFailure("mirror policy requires fullauto",orphanPolicy,"requires --fullauto");
     if (failures != 0)
     {
         std::cerr << failures << " CLI test(s) failed\n";

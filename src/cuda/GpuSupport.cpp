@@ -1,5 +1,6 @@
 #include "GpuSupport.h"
 #include "GpuProcessLock.h"
+#include "GpuAnalyticFacet.h"
 
 #include <cstdlib>
 #include <sstream>
@@ -10,6 +11,19 @@
 
 #ifndef MBS_GPU_BUILD_ARCH
 #define MBS_GPU_BUILD_ARCH 0
+#endif
+
+#ifndef USE_CUDA
+bool EvaluateAnalyticFacetGpu(const AnalyticGpuModel&,
+    const std::vector<std::array<AnalyticBackscatter::Vec,3>>&,
+    const std::vector<double>&,const std::vector<double>&,int,
+    std::vector<double>&,std::vector<double>&,
+    std::vector<AnalyticFacetAverage::Components>*) { return false; }
+bool EvaluateAnalyticAzimuthGaussianGpu(
+    const std::vector<std::vector<AnalyticAzimuthGaussian::Beam>>&,
+    const std::vector<double>&,const std::vector<double>&,int,
+    std::vector<double>&,std::vector<double>&,
+    std::vector<AnalyticAzimuthGaussian::Values>*) { return false; }
 #endif
 
 bool CheckGpuRuntime(GpuDeviceInfo &info, std::string &error)

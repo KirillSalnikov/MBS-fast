@@ -78,7 +78,7 @@ def main():
     binary=str(args.binary.resolve())
     with tempfile.TemporaryDirectory(prefix='mbs_general_analytic_') as directory:
         work=Path(directory);probe=work/'probe'
-        subprocess.run(['g++','-std=gnu++11','-O2','-march=native','-Wall','-Wextra',
+        subprocess.run(['g++','-std=gnu++11','-O2','-march=native','-Wall','-Wextra','-fopenmp',
           '-I'+str(ROOT/'src'),'-I'+str(ROOT/'src/math'),'-I'+str(ROOT/'src/handler'),
           str(ROOT/'tests/analytic_facet_probe.cpp'),str(ROOT/'src/AnalyticFacetAverage.cpp'),
           str(ROOT/'src/AnalyticBackscatter.cpp'),str(ROOT/'src/math/Sobol.cpp'),'-o',str(probe)],check=True)
@@ -119,6 +119,17 @@ def main():
                 grouped=np.loadtxt(subprocess.check_output([str(probe),'groups',str(index.real),str(index.imag),str(degrees)],text=True).splitlines())
                 assert np.max(abs(grouped[:2]-grouped[2:]))<1e-12*max(np.max(abs(grouped)),1.),(index,degrees,grouped)
         print('PASS: congruent-facet grouping equals independent self means under cyclic order, translation, tilt and reversal')
+        # Cold means on enough rows to enter the OpenMP path, including an
+        # oscillatory large facet and an absorbing non-rectangular facet.
+        # Equality covers the per-row sums and the convergence reduction.
+        for shape,scale,index,shadow,angles in [
+            ('rectangle',300.,1.31+0j,'off',np.linspace(0,25,129)),
+            ('triangle',4.,1.53+.0018j,'facets',np.linspace(0,180,33)),
+            ('hex',1.,1.31+0j,'circular',np.linspace(0,180,33))]:
+            command=[str(probe),'mean',shape,str(scale),str(index.real),str(index.imag),shadow,*map(str,angles)]
+            outputs=[subprocess.check_output(command,env=dict(os.environ,OMP_NUM_THREADS=str(n))) for n in [1,4]]
+            assert outputs[0]==outputs[1],(shape,'parallel analytic means changed')
+        print('PASS: serial/four-thread analytic means are bitwise equal on large, absorbing and circular-shadow cases')
         env={k:v for k,v in os.environ.items() if not k.startswith('MBS_')}
         base=[binary,'--method','po','--backend','cpu','--particle','1','4','4','--refractive-index','1.31','0',
               '--wavelength-um','.532','--max-reflections','4','--scattering-grid','0','180','2','6',

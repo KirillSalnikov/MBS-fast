@@ -381,6 +381,9 @@ private: // methods
 
 	std::string RetrieveKey(const std::string &rawArg)
 	{
+		// Historical spelling requested for the native full-auto controller.
+		if (rawArg == "-fullauto")
+			return "fullauto";
 		using namespace std;
 		string key;
 		size_t c = 0;

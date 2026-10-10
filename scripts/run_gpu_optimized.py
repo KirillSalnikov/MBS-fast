@@ -60,6 +60,8 @@ def main():
     p.add_argument('--orientation-pipeline',action='store_true')
     p.add_argument('--depths',type=int,nargs='+',default=[8,10,12])
     p.add_argument('--level-cutoffs',nargs='+',default=['.001','off','off'])
+    p.add_argument('--target-cutoff',default='off')
+    p.add_argument('--gpu-scheduling',choices=['waves','queue'],default='waves')
     p.add_argument('--initial-counts',type=int,nargs='+',default=[131072,8192,8192])
     p.add_argument('--min-correction-count',type=int,default=8192)
     p.add_argument('--max-count',type=int,default=67108864)
@@ -72,7 +74,7 @@ def main():
     a=p.parse_args()
     if not (len(a.depths)==len(a.level_cutoffs)==len(a.initial_counts)>=2):p.error('depths, cutoffs and counts must have equal length>=2')
     if a.depths!=sorted(a.depths) or min(a.depths)<=0:p.error('depths must be positive and nondecreasing')
-    if a.level_cutoffs[-1]!='off':p.error('final level must have cutoff off')
+    if a.level_cutoffs[-1]!=a.target_cutoff:p.error('final cutoff must match explicit --target-cutoff (default off)')
     if min(*a.initial_counts,a.max_count,a.min_correction_count,a.max_rounds,a.phi_points)<=0:p.error('counts must be positive')
     if a.max_count>=2147483647 or max(a.initial_counts)>a.max_count or a.min_correction_count>a.max_count:
         p.error('initial/minimum counts must fit max-count and signed32bit count limit')
@@ -86,7 +88,8 @@ def main():
     runner=JobRunner(a.binary,a.output,case=a.case,height=a.height_um,diameter=a.diameter_um,
                      index=a.refractive_index,wave=a.wavelength_um,theta_file=a.theta_grid_file,
                      gpus=a.gpus,threads=a.threads,chunk=a.orientation_chunk,
-                     cuda_lib_dir=a.cuda_lib_dir,mean_cache=a.mean_cache,controls=a.analytic_controls)
+                     cuda_lib_dir=a.cuda_lib_dir,mean_cache=a.mean_cache,controls=a.analytic_controls,
+                     scheduling=a.gpu_scheduling)
     options=dict(pipeline=a.orientation_pipeline,block=a.gpu_block_size,warp=a.gpu_warp_beams)
     calibration=None;weights=None;phi=a.phi_points
     if a.calibration:
@@ -110,6 +113,7 @@ def main():
                 cutoffs=a.level_cutoffs,seeds=a.seeds,phi=phi,options=options,
                 weights_sha256=None if weights is None else hashlib.sha256(weights.read_bytes()).hexdigest(),
                 tolerance=a.relative_error,allocation=a.allocation)
+    if runner.scheduling!='waves':config['gpu_scheduling']=runner.scheduling
     state=dict(status='active',configuration=config,configuration_sha256=fingerprint(config),levels=[],
                controller_pid=os.getpid(),started=time.time(),sampling_policy=dict(max_growth=a.max_growth))
     status=runner.work/'status.json'

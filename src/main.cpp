@@ -48,6 +48,7 @@
 #include "CliOptions.h"
 #include "RuntimeInfo.h"
 #include "RunConfig.h"
+#include "FullAuto.h"
 
 #ifdef _OUTPUT_NRG_CONV
 ofstream energyFile("energy.dat", ios::out);
@@ -388,7 +389,7 @@ static int MirrorSafePhiCount(ArgPP &parser, int nphi)
     const bool fftRequested = parser.IsCatched("fft")
         || parser.IsCatched("fft_factor")
         || parser.IsCatched("fft_tolerance");
-    if (parser.IsCatched("mirror_gamma") || fftRequested)
+    if ((parser.IsCatched("mirror_gamma") && !parser.IsCatched("haar_alpha")) || fftRequested)
     {
         int rounded = RoundUpToMultiple(nphi, 6);
         if (rounded != nphi)
@@ -1583,6 +1584,16 @@ int main(int argc, const char* argv[])
 
     const bool useGpu = config.useGpu;
     const bool useFft = config.useFft;
+
+    if (args.IsCatched("fullauto"))
+    {
+        try { return FullAuto::Run(args, config, argc, argv); }
+        catch (const std::exception& error)
+        {
+            PrintCommandLineError(error.what());
+            return 2;
+        }
+    }
 
 #ifdef USE_MPI
     MPI_Init(&argc, const_cast<char***>(&argv));
@@ -2840,6 +2851,7 @@ int main(int argc, const char* argv[])
             tracer->m_analyticReturnOrder = args.IsCatched("analytic_return_order")
                 ? args.GetIntValue("analytic_return_order",0) : 1;
             tracer->m_haarAlpha = args.IsCatched("haar_alpha");
+            tracer->m_haarMirrorAudit = args.IsCatched("haar_mirror_audit");
             tracer->m_analyticFacetAverage = args.IsCatched("analytic_facet_average");
             tracer->m_analyticFacetSamples = args.IsCatched("analytic_facet_samples");
             tracer->m_analyticAzimuthGaussian = args.IsCatched("analytic_azimuth_gaussian");
@@ -2847,6 +2859,8 @@ int main(int argc, const char* argv[])
                 ? args.GetStringValue("analytic_shadow_control",0) : "facets";
             tracer->m_analyticMeanCache=args.IsCatched("analytic_mean_cache")
                 ? args.GetStringValue("analytic_mean_cache",0) : "";
+            tracer->m_analyticMeanReferenceGrid=args.IsCatched("analytic_mean_reference")
+                ? args.GetStringValue("analytic_mean_reference",0) : "";
             tracer->m_analyticControlWeights=args.IsCatched("analytic_control_weights")
                 ? args.GetStringValue("analytic_control_weights",0) : "";
             tracer->m_orientationPipeline=args.IsCatched("orientation_pipeline");

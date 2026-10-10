@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import queue
 import subprocess
 import time
 
@@ -124,7 +125,7 @@ def allocation(level_samples, costs, current_counts, reference_m11, tolerance=.0
 class JobRunner:
     def __init__(self, binary, output, case='test1', height=None, diameter=None,
                  index=(1.3116, 0.), wave=.532, theta_file=None, gpus=(0,1,2,3),
-                 threads=16, chunk=256, cuda_lib_dir=None, mean_cache=None, controls='facets'):
+                 threads=16, chunk=256, cuda_lib_dir=None, mean_cache=None, controls='facets', scheduling='waves'):
         self.binary = Path(binary).resolve()
         self.work = Path(output).resolve()
         self.work.mkdir(parents=True, exist_ok=True)
@@ -142,6 +143,8 @@ class JobRunner:
         if controls not in ('facets','off'):
             raise ValueError('controls must be facets or off')
         self.controls=controls
+        if scheduling not in ('waves','queue'):raise ValueError('unknown GPU scheduling mode')
+        self.scheduling=scheduling
         if not self.gpus or len(set(self.gpus)) != len(self.gpus) or min(self.gpus) < 0:
             raise ValueError('require distinct nonnegative GPUs')
         if min(self.height, self.diameter, self.wave, threads, chunk) <= 0:
@@ -241,11 +244,32 @@ class JobRunner:
         if len(seeds)!=8 or len(set(seeds))!=8:
             raise ValueError('require eight distinct independent scrambles')
         jobs=[];wall=0.
-        for start in range(0,len(seeds),len(self.gpus)):
-            slots=range(min(len(self.gpus),len(seeds)-start))
+        if self.scheduling=='queue':
+            pending=queue.Queue();ordered=[None]*len(seeds)
+            for index,seed in enumerate(seeds):pending.put((index,seed))
+            def worker(gpu):
+                busy=0.
+                while True:
+                    try:index,seed=pending.get_nowait()
+                    except queue.Empty:return busy
+                    result=self.job(gpu,n,seed,depth,cutoff,phi,**options)
+                    ordered[index]=result;busy+=result['seconds']
             with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.gpus)) as pool:
-                batch=list(pool.map(lambda slot:self.job(self.gpus[slot],n,seeds[start+slot],depth,cutoff,phi,**options),slots))
-            jobs += batch;wall += max(job['seconds'] for job in batch)
+                busy=list(pool.map(worker,self.gpus))
+            jobs=ordered
+            # Cached jobs can be returned instantly by a single worker.
+            # Preserve their recorded assignment when forecasting level cost.
+            recorded_busy={gpu:0. for gpu in self.gpus}
+            for result in jobs:
+                slot=result.get('assigned_slot',result.get('gpu'))
+                if slot in recorded_busy:recorded_busy[slot]+=result['seconds']
+            wall=max(recorded_busy.values()) if any(recorded_busy.values()) else max(busy)
+        else:
+            for start in range(0,len(seeds),len(self.gpus)):
+                slots=range(min(len(self.gpus),len(seeds)-start))
+                with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.gpus)) as pool:
+                    batch=list(pool.map(lambda slot:self.job(self.gpus[slot],n,seeds[start+slot],depth,cutoff,phi,**options),slots))
+                jobs += batch;wall += max(job['seconds'] for job in batch)
         data=np.stack([np.loadtxt(j['data'],skiprows=1) for j in jobs])
         if self.controls=='facets':
             summaries=[np.atleast_1d(np.genfromtxt(j['summary'],names=True,delimiter='\t')) for j in jobs]

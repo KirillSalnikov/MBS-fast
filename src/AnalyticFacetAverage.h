@@ -34,7 +34,8 @@ class Control
 public:
     Control(const std::vector<Face>&faces,std::complex<double> index,
             double wavelength,const std::vector<double>&theta,
-            const std::string &shadowMode="facets",const std::string &meanCache="");
+            const std::string &shadowMode="facets",const std::string &meanCache="",
+            const std::string &meanReferenceGrid="");
     // Arbitrary incidence and observation; nonzero finite vectors are
     // normalized and the scattering geometry is derived from their pair.
     Components Evaluate(const Vec&source,const Vec&observer) const;

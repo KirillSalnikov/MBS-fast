@@ -5,6 +5,7 @@ from pathlib import Path
 import unittest
 import tempfile
 import threading
+import time
 
 import numpy as np
 
@@ -14,6 +15,26 @@ from run_gpu_optimized import combine, difference, validate_level_order
 
 
 class EstimatorTests(unittest.TestCase):
+    def test_dynamic_queue_retains_seed_order_and_one_job_per_device(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);binary=root/'binary';binary.write_bytes(b'test')
+            theta=root/'theta.csv';theta.write_text('170\n180\n')
+            runner=JobRunner(binary,root/'run',theta_file=theta,gpus=[0,1,2],controls='off',scheduling='queue')
+            active=set();lock=threading.Lock();assigned=[]
+            def job(gpu,n,seed,depth,cutoff,phi,**options):
+                with lock:
+                    self.assertNotIn(gpu,active);active.add(gpu);assigned.append((gpu,seed))
+                time.sleep(.003 if gpu==0 else .02)
+                matrix=np.zeros((2,18));matrix[:,0]=[170,180];matrix[:,1]=1;matrix[:,2]=seed+100
+                path=root/f'{seed}.dat';np.savetxt(path,matrix,comments='',header='columns')
+                with lock:active.remove(gpu)
+                return dict(data=str(path),seconds=.003 if gpu==0 else .02,gpu=gpu)
+            runner.job=job
+            data,_,_,jobs=runner.stage(128,seeds=list(range(8)))
+            np.testing.assert_array_equal(data[:,0,2],np.arange(8)+100)
+            self.assertEqual(sorted(seed for _,seed in assigned),list(range(8)))
+            self.assertGreater(sum(gpu==0 for gpu,_ in assigned),3)
+
     def test_equal_depth_cutoff_refinement_has_a_distinct_order(self):
         validate_level_order([8,12,18,18],['.001','.001','.001','off'])
         validate_level_order([8,12,18],['.001','off','off'])

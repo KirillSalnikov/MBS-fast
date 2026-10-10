@@ -54,6 +54,35 @@ static matrix MirrorGammaMuellerMatrix(const matrix &src, const matrix &mirror)
     return out;
 }
 
+// R(alpha,beta,gamma) = Rz(alpha) Ry(beta) Rz(gamma).
+// For S=diag(1,-1,1), S R S = R(-alpha,beta,-gamma).
+// Verify S maps complete faces, including their outward normals, to faces.
+static bool HasBodyXZMirror(const Particle &input)
+{
+    Particle geometry=input;geometry.Rotate(0,0,0);
+    double center[3]={};size_t count=0;double extent=0;
+    for(int f=0;f<geometry.nFacets;++f)for(int i=0;i<geometry.facets[f].nVertices;++i){
+        const auto& v=geometry.facets[f].arr[i];center[0]+=v.cx;center[1]+=v.cy;center[2]+=v.cz;++count;}
+    if(!count)return false;
+    for(double& v:center)v/=count;
+    for(int f=0;f<geometry.nFacets;++f)for(int i=0;i<geometry.facets[f].nVertices;++i){
+        const auto& v=geometry.facets[f].arr[i];extent=std::max(extent,std::hypot(std::hypot(v.cx-center[0],v.cy-center[1]),v.cz-center[2]));}
+    if(!(extent>0))return false;
+    std::vector<bool> used(geometry.nFacets,false);
+    for(int f=0;f<geometry.nFacets;++f){const Facet& a=geometry.facets[f];bool found=false;
+        for(int j=0;j<geometry.nFacets&&!found;++j){const Facet& b=geometry.facets[j];
+            if(used[j]||a.nVertices!=b.nVertices)continue;
+            if(std::hypot(std::hypot(a.ex_normal.cx-b.ex_normal.cx,a.ex_normal.cy+b.ex_normal.cy),a.ex_normal.cz-b.ex_normal.cz)>1e-8)continue;
+            std::vector<bool> vertexUsed(b.nVertices,false);bool match=true;
+            for(int i=0;i<a.nVertices;++i){const auto& v=a.arr[i];bool vertex=false;
+                for(int k=0;k<b.nVertices;++k){const auto& w=b.arr[k];
+                    if(!vertexUsed[k]&&std::hypot(std::hypot(v.cx-w.cx,2*center[1]-v.cy-w.cy),v.cz-w.cz)<1e-8*extent){vertex=true;vertexUsed[k]=true;break;}}
+                if(!vertex){match=false;break;}}
+            if(match){used[j]=true;found=true;}}
+        if(!found)return false;}
+    return true;
+}
+
 static long long ReadMeminfoKb(const char *key)
 {
     std::ifstream f("/proc/meminfo");
@@ -5610,20 +5639,35 @@ void TracerPOTotal::TraceFromSobolSeed(int nOrient, unsigned int seed,
 
     if (m_haarAlpha)
     {
+        if((m_mirrorGamma||m_haarMirrorAudit)&&!HasBodyXZMirror(*m_particle))
+            throw std::runtime_error("Haar mirror: geometry has no verified body xz reflection; use full gamma.");
+        const int baseCount=nOrient;
+        if(m_haarMirrorAudit){
+            if(nOrient>std::numeric_limits<int>::max()/2)throw std::invalid_argument("Haar mirror audit count overflows");
+            nOrient*=2;orientations.resize(nOrient);}
+        const double sampledGamma=(m_haarMirrorAudit||m_mirrorGamma)?.5*gammaSym:gammaSym;
         Sobol3D haar(seed);
-        for (int i=0;i<nOrient;++i)
+        for (int i=0;i<baseCount;++i)
         {
             double u,v,w;haar.next(u,v,w);
-            orientations[i]=WeightedOrientation(std::acos(1-(1-cosBetaSym)*u),gammaSym*v,weight);
-            orientations[i].alpha=2*M_PI*w;
+            const int index=m_haarMirrorAudit?2*i:i;
+            orientations[index]=WeightedOrientation(std::acos(1-(1-cosBetaSym)*u),sampledGamma*v,1./nOrient);
+            orientations[index].alpha=2*M_PI*w;
+            if(m_haarMirrorAudit){orientations[index+1]=orientations[index];
+                orientations[index+1].gamma=gammaSym-orientations[index].gamma;
+                orientations[index+1].alpha=-orientations[index].alpha;}
         }
         if(m_mpiRank==0)
             std::cout << "Full Haar alpha: third Owen-Sobol dimension, uniform alpha in [0,360) deg" << std::endl;
+        if(m_mpiRank==0&&(m_mirrorGamma||m_haarMirrorAudit))
+            std::cout<<"Haar mirror: "<<baseCount<<" base points, sampled gamma=0.."<<RadToDeg(sampledGamma)
+                     <<" deg; partners (beta,Gamma-gamma,-alpha), "
+                     <<(m_haarMirrorAudit?"explicit 2*N traces":"reconstructed P M(-phi) P, P=diag(1,1,-1,-1)")<<std::endl;
     }
 
     std::ostringstream label;
     label << "Sobol Owen(seed=" << seed << ")";
-    TraceWeightedOrientations(orientations, label.str(), betaSym, gammaSym);
+    TraceWeightedOrientations(orientations, label.str(), betaSym,gammaSym);
 }
 
 void TracerPOTotal::TraceFromSobolRing(int nBeta, int nGamma,
@@ -5975,7 +6019,7 @@ void TracerPOTotal::TraceWeightedOrientations(
         for(int t=0;t<facetRows;++t)facetTheta.push_back(handlerPO->m_sphere.GetZenith(t));
         const ::complex ri=geometry.GetRefractiveIndex();
         facetControl.reset(new AnalyticFacetAverage::Control(faces,std::complex<double>(real(ri),imag(ri)),
-            m_scattering->m_wave,facetTheta,shadowOff ? "off":m_analyticShadowControl,m_analyticMeanCache));
+            m_scattering->m_wave,facetTheta,shadowOff ? "off":m_analyticShadowControl,m_analyticMeanCache,m_analyticMeanReferenceGrid));
         if(!facetControl->SupportsDomain(betaSym,gammaSym))
             throw std::runtime_error("analytic facet control cannot verify this orientation symmetry.\n  Fix: use --symmetry 1 1.");
         facetReflectionCells.assign(static_cast<size_t>(facetAz)*facetRows,0);
@@ -6514,6 +6558,12 @@ void TracerPOTotal::TraceWeightedOrientations(
         ApplyMirrorGammaMueller(handlerPO->M, nAz, nZen);
         if (handlerPO->ComputeNoShadow())
             ApplyMirrorGammaMueller(handlerPO->M_noshadow, nAz, nZen);
+        if(m_haarAlpha&&facetControl){
+            auto project=[&](std::vector<double>& cells){const auto original=cells;
+                for(int p=0;p<nAz;++p)for(int t=0;t<facetRows;++t)
+                    cells[static_cast<size_t>(p)*facetRows+t]=.5*(original[static_cast<size_t>(p)*facetRows+t]+original[static_cast<size_t>((nAz-p)%nAz)*facetRows+t]);};
+            project(facetReflectionCells);project(facetShadowCells);
+        }
     }
 
     std::vector<double> facetRawMeans,facetHybridMeans;

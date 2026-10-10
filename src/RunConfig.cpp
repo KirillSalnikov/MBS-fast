@@ -557,6 +557,7 @@ OrientationMode ResolveOrientation(const ArgPP &args)
         {"adaptive", OrientationMode::Adaptive},
         {"auto", OrientationMode::Auto},
         {"autofull", OrientationMode::AutoFull},
+        {"fullauto", OrientationMode::AutoFull},
         {"oldautofull", OrientationMode::DiffractionAutoFull}
     };
 
@@ -692,7 +693,7 @@ void ValidateOrientationValues(const ArgPP &args, OrientationMode mode)
         RequireRelativeTolerance(args, "auto");
         break;
     case OrientationMode::AutoFull:
-        RequireRelativeTolerance(args, "autofull");
+        RequireRelativeTolerance(args, args.IsCatched("fullauto") ? "fullauto" : "autofull");
         break;
     case OrientationMode::DiffractionAutoFull:
         RequireRelativeTolerance(args, "oldautofull");
@@ -838,19 +839,23 @@ bool SupportsAutoPhi(OrientationMode mode)
 void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
 {
     const OrientationMode mode = config.orientation;
+    for (const auto& spec : GetCliOptionSpecs())
+        if (spec.key.compare(0, 9, "fullauto_") == 0 && args.IsCatched(spec.key)
+            && !args.IsCatched("fullauto"))
+            Fail(CliCanonicalFlag(spec.key) + " requires --fullauto EPS.", "select --fullauto or remove the controller setting.");
     if (args.IsCatched("haar_alpha"))
     {
         if (config.method!=RunMethod::PhysicalOptics
-            || (mode!=OrientationMode::Sobol && mode!=OrientationMode::SobolSeed))
+            || (mode!=OrientationMode::Sobol && mode!=OrientationMode::SobolSeed && !args.IsCatched("fullauto")))
             Fail("--haar-alpha requires PO Sobol or seeded Sobol.",
                  "use --method po --sobol-seed N SEED, or remove --haar-alpha.");
         if (args.IsCatched("multigrid") || args.IsCatched("multikeq") || args.IsCatched("multikeq_list")
             || args.IsCatched("auto_phi") || args.IsCatched("adaptive_phi") || args.IsCatched("auto_tgrid")
-            || args.IsCatched("adaptive_reflections") || args.IsCatched("mirror_gamma"))
+            || args.IsCatched("adaptive_reflections"))
             Fail("--haar-alpha requires a single size and fixed scattering/reflection grids.",
                  "remove multi-size/adaptive/mirror-gamma modifiers or run this size independently.");
     }
-    if ((args.IsCatched("analytic_shadow_control") || args.IsCatched("analytic_facet_samples") || args.IsCatched("analytic_mean_cache") || args.IsCatched("analytic_azimuth_gaussian") || args.IsCatched("analytic_control_weights"))
+    if ((args.IsCatched("analytic_shadow_control") || args.IsCatched("analytic_facet_samples") || args.IsCatched("analytic_mean_cache") || args.IsCatched("analytic_mean_reference") || args.IsCatched("analytic_azimuth_gaussian") || args.IsCatched("analytic_control_weights"))
         && !args.IsCatched("analytic_facet_average"))
         Fail("analytic facet controls/output require --analytic-facet-average.",
              "add --analytic-facet-average or remove its modifiers.");
@@ -859,7 +864,7 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
         const bool fullQuaternion=mode==OrientationMode::SO3FullQuaternion;
         const bool haarSobol=(mode==OrientationMode::Sobol || mode==OrientationMode::SobolSeed)
             && args.IsCatched("haar_alpha");
-        if (config.method!=RunMethod::PhysicalOptics || (!fullQuaternion && !haarSobol))
+        if (config.method!=RunMethod::PhysicalOptics || (!fullQuaternion && !haarSobol && !args.IsCatched("fullauto")))
             Fail("--analytic-facet-average requires PO full Haar orientations.",
                  "use --sobol-seed N SEED --haar-alpha, or --so3-full-quaternion N.");
         if (config.refractiveReal<1.0)
@@ -867,7 +872,8 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
                  "use --refractive-index REAL IMAG with REAL>=1, or remove the flag.");
         if (args.IsCatched("incoh") || args.IsCatched("multigrid") || args.IsCatched("multikeq")
             || args.IsCatched("multikeq_list") || args.IsCatched("auto_phi") || args.IsCatched("adaptive_phi")
-            || args.IsCatched("auto_tgrid") || args.IsCatched("adaptive_reflections") || args.IsCatched("mirror_gamma"))
+            || args.IsCatched("auto_tgrid") || args.IsCatched("adaptive_reflections")
+            || (args.IsCatched("mirror_gamma") && !haarSobol && !args.IsCatched("fullauto")))
             Fail("--analytic-facet-average requires coherent beams, one size and fixed grids.",
                  "remove incoherent/multi-size/adaptive/mirror-gamma modifiers.");
         if (args.IsCatched("analytic_shadow_control"))
@@ -883,7 +889,7 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
         const bool weighted=mode==OrientationMode::Sobol || mode==OrientationMode::SobolSeed
             || mode==OrientationMode::SO3FullQuaternion || mode==OrientationMode::Hammersley
             || mode==OrientationMode::Lattice || mode==OrientationMode::LatticeGenerator
-            || mode==OrientationMode::EulerQuadrature;
+            || mode==OrientationMode::EulerQuadrature || args.IsCatched("fullauto");
         if(config.method!=RunMethod::PhysicalOptics || !weighted)
             Fail("orientation pipeline/profiling requires fixed weighted PO orientations.",
                  "use --sobol-seed N SEED or a fixed weighted orientation rule.");
@@ -977,10 +983,10 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
     if (args.IsCatched("maxorient") && !UsesAdaptiveOrientationSearch(mode))
         Fail("--max-orientations is only used by adaptive orientation modes.",
              "select --adaptive-orientations, --auto, --autofull, or --diffraction-autofull, or remove the limit.");
-    const bool thetaSearch = args.IsCatched("auto_tgrid")
+    const bool thetaSearch = args.IsCatched("fullauto") || args.IsCatched("auto_tgrid")
         || (UsesUnifiedThetaSearch(mode)
             && config.thetaGrid == ThetaGridMode::Default);
-    const bool phiSearch = args.IsCatched("auto_phi")
+    const bool phiSearch = args.IsCatched("fullauto") || args.IsCatched("auto_phi")
         || args.IsCatched("adaptive_phi")
         || (UsesUnifiedPhiSearch(mode) && !args.IsCatched("nphi"));
     const bool eulerSearch = UsesAdaptiveEulerSearch(mode);
@@ -1030,6 +1036,47 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
         if (!supported)
             Fail("--pole does not apply to the selected orientation mode.",
                  "remove it or use --diffraction-grid, --euler-grid, or --diffraction-autofull.");
+    }
+    if (args.IsCatched("haar_mirror_audit"))
+    {
+        if (config.method!=RunMethod::PhysicalOptics || !args.IsCatched("haar_alpha")
+            || (mode!=OrientationMode::Sobol && mode!=OrientationMode::SobolSeed))
+            Fail("--haar-mirror-audit requires PO Sobol with --haar-alpha.",
+                 "select --sobol-seed N SEED --haar-alpha.");
+        if (args.IsCatched("mirror_gamma"))
+            Fail("--haar-mirror-audit cannot be combined with --mirror-gamma.",
+                 "compare two separate runs with the same base count and seed.");
+        int count=IntValue(args,args.IsCatched("sobol_seed")?"sobol_seed":"sobol",0);
+        if (count>std::numeric_limits<int>::max()/2)
+            Fail("--haar-mirror-audit doubles the count beyond signed32bit.","reduce N.");
+    }
+    if (args.IsCatched("fullauto_mirror"))
+    {
+        const std::string value=args.GetStringValue("fullauto_mirror");
+        if (value!="auto" && value!="on" && value!="off")
+            Fail("--fullauto-mirror expects auto, on or off.","choose auto, on or off.");
+        if (value=="off" && args.IsCatched("mirror_gamma"))
+            Fail("--fullauto-mirror off conflicts with --mirror-gamma.","remove one of the conflicting options.");
+    }
+    if (args.IsCatched("fullauto_angular_cache"))
+    {
+        const std::string value=args.GetStringValue("fullauto_angular_cache");
+        if(value!="on"&&value!="off")
+            Fail("--fullauto-angular-cache expects on or off.","choose on or off.");
+    }
+    if(args.IsCatched("fullauto_theta_range"))
+    {
+        double lo=args.GetDoubleValue("fullauto_theta_range",0),hi=args.GetDoubleValue("fullauto_theta_range",1);
+        if(!(lo>=0&&hi<=180&&hi>lo))Fail("--fullauto-theta-range requires 0<=TH1<TH2<=180.","choose an increasing physical angular range.");
+        if(args.IsCatched("grid")||args.IsCatched("tgrid"))Fail("--fullauto-theta-range conflicts with an explicit theta grid.","use the automatic range or an explicit grid.");
+    }
+    if(args.IsCatched("fullauto_controls"))
+    {
+        const std::string value=args.GetStringValue("fullauto_controls");
+        if(value!="auto"&&value!="on"&&value!="off")
+            Fail("--fullauto-analytic-controls expects auto, on or off.","choose auto, on or off.");
+        if(value=="off"&&args.IsCatched("analytic_facet_average"))
+            Fail("--fullauto-analytic-controls off conflicts with --analytic-facet-average.","remove one of the conflicting options.");
     }
     if (args.IsCatched("mirror_gamma")
         && (mode == OrientationMode::Fixed
@@ -1641,11 +1688,11 @@ RunConfig RunConfig::FromCommandLine(const ArgPP &args,
     RequirePositiveInt(args, "max_gamma_points");
     RequirePositiveInt(args, "convergence_passes");
     if (args.IsCatched("max_theta_points")
-        && IntValue(args, "max_theta_points", 0) < 17)
+        && IntValue(args, "max_theta_points", 0) < (args.IsCatched("fullauto") ? 2 : 17))
         Fail("--max-theta-points must be at least 17.",
              "use 17 or a larger safety limit; the default is 4097.");
     if (args.IsCatched("max_phi_points")
-        && IntValue(args, "max_phi_points", 0) < 12)
+        && IntValue(args, "max_phi_points", 0) < (args.IsCatched("fullauto") ? 1 : 12))
         Fail("--max-phi-points must be at least 12.",
              "use 12 or a larger safety limit; the default is 2400.");
     if (args.IsCatched("max_phi_points")
@@ -1676,7 +1723,7 @@ RunConfig RunConfig::FromCommandLine(const ArgPP &args,
         if (args.IsCatched("adaptive_config"))
             config.adaptive = LoadAdaptiveConvergenceConfig(
                 args.GetStringValue("adaptive_config", 0));
-        const bool tunesReflections = UsesAutoFull(config.orientation)
+        const bool tunesReflections = (UsesAutoFull(config.orientation) && !args.IsCatched("fullauto"))
             || args.IsCatched("adaptive_reflections");
         if (args.IsCatched("n") && tunesReflections)
             config.adaptive.maxReflections = config.maxReflections;
@@ -1686,7 +1733,7 @@ RunConfig RunConfig::FromCommandLine(const ArgPP &args,
         if (args.IsCatched("max_phi_points"))
         {
             const int requested = IntValue(args, "max_phi_points", 0);
-            config.adaptive.maxPhiPoints = (requested / 6) * 6;
+            config.adaptive.maxPhiPoints = args.IsCatched("fullauto") ? requested : (requested / 6) * 6;
             if (config.adaptive.maxPhiPoints != requested)
                 config.warnings.push_back(
                     "--max-phi-points was rounded down to "
@@ -1711,7 +1758,7 @@ RunConfig RunConfig::FromCommandLine(const ArgPP &args,
         if (args.IsCatched("convergence_passes"))
             config.adaptive.stablePasses = IntValue(
                 args, "convergence_passes", 0);
-        ValidateAdaptiveConvergenceLimits(
+        if (!args.IsCatched("fullauto")) ValidateAdaptiveConvergenceLimits(
             config.adaptive,
             args.IsCatched("adaptive_config")
                 ? "effective adaptive settings after command-line overrides"
@@ -1872,7 +1919,7 @@ RunConfig RunConfig::FromCommandLine(const ArgPP &args,
          || config.orientation == OrientationMode::AutoFull
          || config.orientation == OrientationMode::DiffractionAutoFull)
         && config.thetaGrid != ThetaGridMode::Default)
-        config.warnings.push_back("the explicit theta grid overrides theta-grid selection from the auto orientation mode.");
+        if (!args.IsCatched("fullauto")) config.warnings.push_back("the explicit theta grid overrides theta-grid selection from the auto orientation mode.");
     if (UsesUnifiedPhiSearch(config.orientation) && args.IsCatched("nphi"))
         config.warnings.push_back("--phi-points fixes N_phi and overrides phi selection from the auto orientation mode.");
 

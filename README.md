@@ -490,9 +490,50 @@ Adaptive modes are PO-only:
 | `--adaptive-euler-grid EPS` | `N_beta`, `N_gamma`, then joint refinement |
 | `--auto EPS` | `N_phi`, theta, Sobol `N`; fixed `n` |
 | `--autofull EPS` | `n`, `N_phi`, theta, Sobol `N` |
+| `--fullauto EPS` / `-fullauto EPS` | native eight-seed multilevel controller, independent control calibration, local GPU queue, adaptive theta interpolation with budget `EPS/4`; fixed target reflection depth |
 | `--diffraction-autofull EPS` | `n`, `N_phi`, theta, `N_beta`, `N_gamma` |
 
-The convergence metric is mode-specific:
+The new native `--fullauto` runs without Python. Its statistical budget is
+`3*EPS/4` without mirror reduction (mirror verification reserves `EPS/256`),
+and its interpolation budget is always `EPS/4`. Automatic theta ranges use
+an independent dense pilot; compatible angular rows are reused by default. It returns zero
+only after convergence, three when limits leave further sampling necessary,
+and two on input/worker/cache failures. It is distinct from legacy `--autofull`.
+See the [Russian HTML manual with actual independent audit results](docs/FULLAUTO_RU.html)
+for commands, outputs, resume rules and the scope of these error estimates.
+
+Analytic mean preparation uses OpenMP across independent theta rows. The
+`--threads N` worker setting also controls this preparation; sums inside each
+row and the convergence reduction retain their serial order. This acceleration
+does not require prism symmetry. For a file-based shape without verified
+rotational symmetry, use `--particle-file shape.particle --symmetry 1 1`.
+All theta subsets use one analytic mean cache on the full requested reference
+grid, including grids above 4097 rows. Refinement reuses those means instead
+of preparing a new mean table for each angular subset.
+The default mirror policy verifies geometry before reducing its orientation
+domain, and analytic controls in `auto` mode retain full sampled PO if the
+mean calculation reaches its numerical limits.
+
+Reproduce the accuracy gates (the second keeps all commands and raw results):
+
+```bash
+python3 tests/test_analytic_facets.py --binary bin/mbs_po
+python3 tests/test_fullauto_arbitrary.py --binary bin/mbs_po \
+    --output results/fullauto_arbitrary_check
+```
+
+The arbitrary-shape check uses convex, concave, asymmetric and absorbing particles, automatically
+chooses theta support, and independently audits all 16 elements against a
+direct calculation of every requested angle. It fixes phi to four to isolate
+the theta/control/cache paths by default. Use `--phi-points 0` in this test
+to exercise automatic phi selection; production fullauto selects phi unless pinned.
+For example, `--case asymmetric --phi-points 0` tests a tetrahedron without
+mirror symmetry, and `--case absorbing --phi-points 0` tests a rotated box
+with refractive index `1.45+0.02i`. An optional `--reference-binary PATH`
+also audits the previous implementation at the selected phi and compares
+all 16 matrix entries within the measured uncertainty and interpolation budgets.
+
+The legacy convergence metric is mode-specific:
 
 - phi and Euler candidates compare relative `M11`, every other element after
   normalization by `M11`, and integrated `M11`;

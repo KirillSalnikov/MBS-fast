@@ -14,11 +14,13 @@ public:
 	bool m_analyticBackscatter = false;
 	int m_analyticReturnOrder = 1;
 	bool m_haarAlpha = false;
+    bool m_haarMirrorAudit = false;
 	bool m_analyticFacetAverage = false;
 	bool m_analyticFacetSamples = false;
 	bool m_analyticAzimuthGaussian = false;
 	std::string m_analyticShadowControl = "facets";
 	std::string m_analyticMeanCache;
+    std::string m_analyticMeanReferenceGrid;
 	std::string m_analyticControlWeights;
 	bool m_orientationPipeline = false;
 	bool m_profilePhases = false;

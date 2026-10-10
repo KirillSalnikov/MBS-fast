@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <exception>
 #include <stdexcept>
 #include <cstdint>
 #include <cstring>
@@ -303,7 +304,7 @@ AnalyticGpuModel Control::GpuModel() const
 }
 
 Control::Control(const std::vector<Face>&input,C refractive,double wavelength,
-                 const std::vector<double>&theta,const std::string &mode,const std::string &meanCache)
+                 const std::vector<double>&theta,const std::string &mode,const std::string &meanCache,const std::string &referenceGrid)
     :faces(input),index(refractive),wave(wavelength),refinementError(0),forwardShadowMean(0),circleRadius(0),shadowMode(mode)
 {
     if(faces.empty() || !(wave>0) || index.real()<1 || !std::isfinite(index.real()+index.imag()+wave))
@@ -333,7 +334,21 @@ Control::Control(const std::vector<Face>&input,C refractive,double wavelength,
         double dot=std::max(-1.,std::min(1.,Dot(a.n,b.n))),angle=std::acos(dot);
         forwardShadowMean+=a.area*b.area*(std::sin(angle)+(pi-angle)*dot)/(6*pi*wave*wave);
     }
-    PrepareCachedMeans(theta,meanCache);
+    if(referenceGrid.empty())PrepareCachedMeans(theta,meanCache);
+    else{
+        std::ifstream file(referenceGrid.c_str());if(!file)throw std::runtime_error("cannot read analytic mean reference grid: "+referenceGrid);
+        std::vector<double> all;std::string line;
+        while(std::getline(file,line)){size_t comment=line.find('#');if(comment!=std::string::npos)line.erase(comment);
+            std::replace(line.begin(),line.end(),',',' ');std::istringstream row(line);double value;
+            while(row>>value){if(!std::isfinite(value)||value<0||value>180)throw std::runtime_error("invalid analytic mean reference angle");all.push_back(value*pi/180);}
+            if(!row.eof())throw std::runtime_error("nonnumeric analytic mean reference grid");}
+        if(all.size()<2)throw std::runtime_error("analytic mean reference grid needs two angles");
+        for(size_t i=1;i<all.size();++i)if(!(all[i]>all[i-1]))throw std::runtime_error("analytic mean reference grid must increase");
+        std::vector<size_t> ids;for(double q:theta){auto found=std::lower_bound(all.begin(),all.end(),q-1e-13);
+            if(found==all.end()||std::fabs(*found-q)>1e-13)throw std::runtime_error("theta is absent from the analytic mean reference grid");
+            ids.push_back(found-all.begin());}
+        PrepareCachedMeans(all,meanCache);const auto full=means;means.clear();for(size_t i:ids)means.push_back(full.at(i));
+    }
 }
 
 void Control::PrepareCachedMeans(const std::vector<double>&theta,const std::string &path)
@@ -497,8 +512,14 @@ void Control::PrepareMeans(const std::vector<double>&theta)
         double step=pass==0 ? .06:(pass==1 ? .03:.015);
         Moments moments(index,degree);Basis basis(degree,maxQ*maxDiameter+step*4,step);
         double worst=0;
-        for(size_t row=0;row<theta.size();++row)
+        std::vector<std::exception_ptr> errors(theta.size());
+#ifdef _OPENMP
+        #pragma omp parallel for schedule(dynamic,1) if(theta.size()>=8)
+#endif
+        for(long long indexRow=0;indexRow<static_cast<long long>(theta.size());++indexRow)
         {
+            const size_t row=static_cast<size_t>(indexRow);
+            try {
             double h2,c2;Angles(theta[row],h2,c2);double reflection=0,shadow=0,Q=4*pi/wave*std::sqrt(h2);
             if(Q>0)
             {
@@ -523,20 +544,23 @@ void Control::PrepareMeans(const std::vector<double>&theta)
                     }
                 }
             }
-            if(pass)
-            {
+            if(!std::isfinite(reflection+shadow) || reflection<0 || shadow<0)
+                throw std::runtime_error("analytic facet mean is nonfinite or negative.\n  Fix: reduce size or remove --analytic-facet-average.");
+            means[row]=Components{reflection,shadow};
+            }catch(...){errors[row]=std::current_exception();}
+        }
+        // Only independent rows run in parallel. Preserve the serial order
+        // of the convergence reduction and all sums within each row.
+        for(size_t row=0;row<theta.size();++row){
+            if(errors[row])std::rethrow_exception(errors[row]);
+            const double reflection=means[row].reflection,shadow=means[row].shadow;
+            if(pass){
                 double re=std::fabs(reflection-previous[row].reflection)/std::max(std::fabs(reflection),1e-100);
-                // Shadow self terms can be tiny far from forward scattering.
-                // Control their absolute error relative to the FULL control;
-                // reflection remains independently checked for no-shadow use.
-                double se=std::fabs(shadow-previous[row].shadow)
-                    /std::max(std::fabs(reflection)+std::fabs(shadow),1e-100);
+                double se=std::fabs(shadow-previous[row].shadow)/std::max(std::fabs(reflection)+std::fabs(shadow),1e-100);
                 if(std::max(re,se)>worst){lastReflection=re;lastShadow=se;lastAngle=theta[row]*180/pi;}
                 worst=std::max(worst,std::max(re,se));
             }
-            if(!std::isfinite(reflection+shadow) || reflection<0 || shadow<0)
-                throw std::runtime_error("analytic facet mean is nonfinite or negative.\n  Fix: reduce size or remove --analytic-facet-average.");
-            means[row]=Components{reflection,shadow};previous[row]=means[row];
+            previous[row]=means[row];
         }
         if(pass && worst<1e-4){refinementError=worst;return;}
         if(pass==4)
