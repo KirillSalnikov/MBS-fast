@@ -31,4 +31,5 @@ bool CheckGpuRuntime(GpuDeviceInfo &info, std::string &error);
 bool QueryActiveGpuMemory(long long &freeBytes, long long &totalBytes,
                           std::string &error);
 int VisibleGpuDeviceCount();
+bool QueryVisibleGpuMemory(int device,long long& freeBytes,long long& totalBytes,std::string& error);
 std::string FormatGpuInfo(const GpuDeviceInfo &info);

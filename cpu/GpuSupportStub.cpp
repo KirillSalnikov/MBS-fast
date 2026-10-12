@@ -33,6 +33,10 @@ int VisibleGpuDeviceCount()
     return 0;
 }
 
+bool QueryVisibleGpuMemory(int,long long& freeBytes,long long& totalBytes,std::string& error){
+    freeBytes=totalBytes=0;error="CPU binary has no CUDA devices";return false;
+}
+
 std::string FormatGpuInfo(const GpuDeviceInfo &/*info*/)
 {
     return "CUDA unavailable in CPU MPI/OpenMP binary";

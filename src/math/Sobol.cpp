@@ -116,6 +116,16 @@ Sobol3D::Sobol3D(uint32_t seed_,bool scramble_)
         directions[2][i]=directions[2][i-2]^(directions[2][i-2]>>2)^directions[2][i-1];
 }
 
+void Sobol3D::seek(uint32_t offset)
+{
+    index=offset;
+    const uint32_t gray=offset^(offset>>1);
+    for(int d=0;d<3;++d){
+        state[d]=0;
+        for(int bit=0;bit<32;++bit)if((gray>>bit)&1u)state[d]^=directions[d][bit];
+    }
+}
+
 uint32_t Sobol3D::Scramble(uint32_t value,uint32_t dim) const
 {
     if(!scramble) return value;

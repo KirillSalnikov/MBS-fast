@@ -10,9 +10,11 @@ typedef std::vector<Mueller> Matrix;
 typedef std::vector<Matrix> Samples;
 Matrix CubicInterpolate(const std::vector<double>& x, const Matrix& y,
                         const std::vector<double>& query);
+Matrix LocalCubicInterpolate(const std::vector<double>& x,const Matrix& y,
+                            const std::vector<double>& query);
 struct Statistics {
-    Matrix mean, interval;
-    double maxInterval = 0;
+    Matrix mean, interval, ratioInterval;
+    double maxInterval = 0, maxRatioInterval = 0;
 };
 Statistics Estimate(const Samples& samples);
 double Difference(const Matrix& a, const Matrix& b, const Matrix& reference);

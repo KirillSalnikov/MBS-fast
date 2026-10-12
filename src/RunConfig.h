@@ -43,6 +43,7 @@ enum class OrientationMode
     Sobol,
     SO3Quaternion,
     SO3FullQuaternion,
+    SO3Rule,
     SobolSeed,
     SobolRing,
     Hammersley,

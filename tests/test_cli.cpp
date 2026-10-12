@@ -965,6 +965,21 @@ int main()
     ExpectFailure("native mirror policy conflict",newMirror,"conflicts");
     auto orphanPolicy=CanonicalBase();orphanPolicy.insert(orphanPolicy.end(),{"--fullauto-mirror","auto"});
     ExpectFailure("mirror policy requires fullauto",orphanPolicy,"requires --fullauto");
+    auto localAuto=std::vector<std::string>{"--method","po","--backend","cpu","--particle","1","1","1","--ri","1.3116","0","--wavelength-um","1","--max-reflections","4","--fullauto",".01","--fullauto-local-orientations","auto"};
+    ExpectSuccess("cost gated local native fullauto",localAuto);
+    for(const std::string flag:{"--fullauto-resources","--fullauto-rotation-symmetry","--fullauto-cutoffs"}){
+        auto valid=localAuto;valid.insert(valid.end(),{flag,"auto"});ExpectSuccess("native tuning "+flag,valid);
+        auto invalid=localAuto;invalid.insert(invalid.end(),{flag,"yes"});ExpectFailure("invalid tuning "+flag,invalid,"expects auto or off");}
+    auto gpuAuto=localAuto;gpuAuto[3]="cuda";gpuAuto.insert(gpuAuto.end(),{"--fullauto-gpus","auto"});
+    try{ParseConfig(gpuAuto,false,true);Pass("native automatic visible GPUs");}catch(const std::exception& e){FailTest("native automatic visible GPUs",e.what());}
+    auto badGpu=localAuto;badGpu[3]="cuda";badGpu.insert(badGpu.end(),{"--fullauto-gpus","0,0"});
+    ExpectFailureForBuild("duplicate automatic GPU list",badGpu,false,true,"invalid --fullauto-gpus list");
+
+    for(const std::string flag:{"--fullauto-ratio-accuracy","--fullauto-phi-recheck","--fullauto-polarization-controls","--fullauto-final-audit","--fullauto-physics-audit","--fullauto-depth-sharing"}){
+        auto valid=localAuto;valid.insert(valid.end(),{flag,"on"});ExpectSuccess("native fullauto modifier "+flag,valid);
+        auto invalid=localAuto;invalid.insert(invalid.end(),{flag,"maybe"});ExpectFailure("native fullauto invalid modifier "+flag,invalid,"expects on or off");}
+    auto joint=std::vector<std::string>{"--method","po","--backend","cpu","--particle","1","1","1","--ri","1.3116","0","--wavelength-um","1","--max-reflections","4","--sobol-seed","64","11","--haar-alpha","--paired-depth","2"};
+    ExpectSuccess("coherent depth sharing CLI",joint);joint.back()="4";ExpectFailure("paired depth must be lower",joint,"LOWER <");
     if (failures != 0)
     {
         std::cerr << failures << " CLI test(s) failed\n";

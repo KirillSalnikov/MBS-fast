@@ -1,0 +1,19 @@
+[Unit]
+Description=MBS-fast SO(3) averaging comparison (finite saved job queue)
+StartLimitIntervalSec=3600
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=/home/kirill_epyc2/benchmarks/mbs_so3_comparison_20261012
+Environment=LD_LIBRARY_PATH=/home/kirill_epyc2/benchmarks/mbs_list3_20261008/runtime_lib:/home/kirill_epyc2/cuda-12.2/usr/local/cuda-12.2/targets/x86_64-linux/lib
+ExecStart=/usr/bin/python3 /home/kirill_epyc2/benchmarks/mbs_so3_comparison_20261012/run_so3_comparison.py --root /home/kirill_epyc2/benchmarks/mbs_so3_comparison_20261012 --binary /home/kirill_epyc2/benchmarks/mbs_so3_comparison_20261012/bin/mbs_po_gpu_double --backend gpu --threads 4 --wait-lock
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=45
+KillMode=control-group
+StandardOutput=append:/home/kirill_epyc2/benchmarks/mbs_so3_comparison_20261012/runner.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target

@@ -546,6 +546,7 @@ OrientationMode ResolveOrientation(const ArgPP &args)
         {"sobol", OrientationMode::Sobol},
         {"so3_quat", OrientationMode::SO3Quaternion},
         {"so3_full_quat", OrientationMode::SO3FullQuaternion},
+        {"so3_rule", OrientationMode::SO3Rule},
         {"sobol_seed", OrientationMode::SobolSeed},
         {"sobol_ring", OrientationMode::SobolRing},
         {"hammersley", OrientationMode::Hammersley},
@@ -626,6 +627,11 @@ void ValidateOrientationValues(const ArgPP &args, OrientationMode mode)
         break;
     case OrientationMode::File:
         ValidateOrientationFile(args);
+        break;
+    case OrientationMode::SO3Rule:
+        RequireReadableFile(args,"so3_rule");
+        try{(void)ReadSO3RuleDegrees(args.GetStringValue("so3_rule"));}
+        catch(const std::exception& e){Fail(e.what(),"supply a normalized full SO(3) rule with angles in degrees.");}
         break;
     case OrientationMode::DiffractionGrid:
         RequirePositiveFinite(args, "diffraction_sampling");
@@ -763,7 +769,7 @@ bool UsesAdaptiveEulerSearch(OrientationMode mode)
 
 bool SupportsSymmetryOverride(OrientationMode mode)
 {
-    return mode == OrientationMode::Sobol
+    return mode == OrientationMode::SO3Rule || mode == OrientationMode::Sobol
         || mode == OrientationMode::SO3Quaternion
         || mode == OrientationMode::SobolSeed
         || mode == OrientationMode::SobolRing
@@ -839,6 +845,20 @@ bool SupportsAutoPhi(OrientationMode mode)
 void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
 {
     const OrientationMode mode = config.orientation;
+    if(mode==OrientationMode::SO3Rule){
+        if(config.method!=RunMethod::PhysicalOptics)Fail("--so3-rule requires PO.","select --method po.");
+        if(args.IsCatched("mirror_gamma")||args.IsCatched("haar_mirror_audit"))Fail("--so3-rule uses full SO(3) without mirror reconstruction.","remove mirror modifiers.");
+        if(args.IsCatched("symmetry")&&(IntValue(args,"symmetry",0)!=1||IntValue(args,"symmetry",1)!=1))
+            Fail("--so3-rule requires full orientation symmetry 1 1.","use --symmetry 1 1.");
+    }
+    if(args.IsCatched("sobol_offset")){
+        if(mode!=OrientationMode::SobolSeed || !args.IsCatched("haar_alpha"))
+            Fail("--sobol-offset requires --sobol-seed and --haar-alpha.","select seeded Haar Sobol or remove the offset.");
+        RequireNonnegativeInt(args,"sobol_offset");
+        const long long end=static_cast<long long>(IntValue(args,"sobol_offset"))+IntValue(args,"sobol_seed",0);
+        if(end>std::numeric_limits<int>::max())
+            Fail("Sobol block endpoint overflows signed32bit.","reduce the offset or orientation count.");
+    }
     for (const auto& spec : GetCliOptionSpecs())
         if (spec.key.compare(0, 9, "fullauto_") == 0 && args.IsCatched(spec.key)
             && !args.IsCatched("fullauto"))
@@ -846,7 +866,7 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
     if (args.IsCatched("haar_alpha"))
     {
         if (config.method!=RunMethod::PhysicalOptics
-            || (mode!=OrientationMode::Sobol && mode!=OrientationMode::SobolSeed && !args.IsCatched("fullauto")))
+            || (mode!=OrientationMode::Sobol && mode!=OrientationMode::SobolSeed && mode!=OrientationMode::SO3Rule && !args.IsCatched("fullauto")))
             Fail("--haar-alpha requires PO Sobol or seeded Sobol.",
                  "use --method po --sobol-seed N SEED, or remove --haar-alpha.");
         if (args.IsCatched("multigrid") || args.IsCatched("multikeq") || args.IsCatched("multikeq_list")
@@ -861,7 +881,7 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
              "add --analytic-facet-average or remove its modifiers.");
     if (args.IsCatched("analytic_facet_average"))
     {
-        const bool fullQuaternion=mode==OrientationMode::SO3FullQuaternion;
+        const bool fullQuaternion=mode==OrientationMode::SO3FullQuaternion || mode==OrientationMode::SO3Rule;
         const bool haarSobol=(mode==OrientationMode::Sobol || mode==OrientationMode::SobolSeed)
             && args.IsCatched("haar_alpha");
         if (config.method!=RunMethod::PhysicalOptics || (!fullQuaternion && !haarSobol && !args.IsCatched("fullauto")))
@@ -887,7 +907,7 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
     if(args.IsCatched("orientation_pipeline") || args.IsCatched("profile_phases"))
     {
         const bool weighted=mode==OrientationMode::Sobol || mode==OrientationMode::SobolSeed
-            || mode==OrientationMode::SO3FullQuaternion || mode==OrientationMode::Hammersley
+            || mode==OrientationMode::SO3FullQuaternion || mode==OrientationMode::SO3Rule || mode==OrientationMode::Hammersley
             || mode==OrientationMode::Lattice || mode==OrientationMode::LatticeGenerator
             || mode==OrientationMode::EulerQuadrature || args.IsCatched("fullauto");
         if(config.method!=RunMethod::PhysicalOptics || !weighted)
@@ -1057,6 +1077,51 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
             Fail("--fullauto-mirror expects auto, on or off.","choose auto, on or off.");
         if (value=="off" && args.IsCatched("mirror_gamma"))
             Fail("--fullauto-mirror off conflicts with --mirror-gamma.","remove one of the conflicting options.");
+    }
+    if(args.IsCatched("fullauto_incremental")){
+        const std::string value=args.GetStringValue("fullauto_incremental");
+        if(value!="on"&&value!="off")Fail("--fullauto-incremental must be on or off.","choose on or off.");
+    }
+    if(args.IsCatched("fullauto_orientation_block")){
+        RequirePositiveInt(args,"fullauto_orientation_block");
+        RequirePowerOfTwo(args,"fullauto_orientation_block");
+    }
+    for(const char* key:{"fullauto_resources","fullauto_rotation","fullauto_cutoffs"})if(args.IsCatched(key)){
+        const std::string value=args.GetStringValue(key);
+        if(value!="auto"&&value!="off")Fail(std::string("--")+key+" expects auto or off.","choose auto or off.");
+    }
+    if(args.IsCatched("fullauto_gpus")){
+        const std::string value=args.GetStringValue("fullauto_gpus");
+        if(!config.useGpu)Fail("--fullauto-gpus requires CUDA.","select --backend cuda or remove the GPU list.");
+        if(value!="auto"){
+            std::istringstream list(value);std::string token;std::set<int> seen;
+            if(value.empty()||value.back()==',')Fail("invalid --fullauto-gpus list.","use auto or distinct nonnegative indices.");
+            while(std::getline(list,token,',')){char* end=nullptr;long id=std::strtol(token.c_str(),&end,10);
+                if(token.empty()||end!=token.c_str()+token.size()||id<0||id>2147483646||!seen.insert(int(id)).second)
+                    Fail("invalid --fullauto-gpus list.","use auto or distinct nonnegative indices.");}
+        }
+    }
+    if(args.IsCatched("verified_rotation")||args.IsCatched("haar_rotation_audit")){
+        if(config.method!=RunMethod::PhysicalOptics||!args.IsCatched("sobol_seed")||!args.IsCatched("haar_alpha"))
+            Fail("rotation verification requires PO seeded Haar Sobol.","use --sobol-seed N SEED --haar-alpha.");
+        if(args.IsCatched("verified_rotation")&&args.IsCatched("sym"))
+            Fail("verified rotation conflicts with an explicit symmetry override.","keep one symmetry selection.");
+        if(args.IsCatched("haar_rotation_audit")){
+            const std::string axis=args.GetStringValue("haar_rotation_audit");
+            if(axis!="beta"&&axis!="gamma")Fail("rotation audit expects beta or gamma.","choose beta or gamma.");
+            if(args.IsCatched("mirror_gamma")||args.IsCatched("haar_mirror_audit")||IntValue(args,"sobol_seed")>2147483647/2)
+                Fail("rotation audit requires an undoubled non-mirror sample.","remove mirror options and reduce N.");
+        }
+    }
+    for(const char* key:{"fullauto_local","fullauto_ratios","fullauto_phi_recheck","fullauto_polar_controls","fullauto_final_audit","fullauto_physics_audit","fullauto_depth_share"})if(args.IsCatched(key)){
+        const std::string value=args.GetStringValue(key);
+        if(value!="on"&&value!="off"&&!(std::string(key)=="fullauto_local"&&value=="auto"))Fail(std::string("--")+key+" expects on or off (local orientations also accept auto).","choose a supported mode.");
+        if(!args.IsCatched("fullauto"))Fail(std::string("--")+key+" requires --fullauto.","select --fullauto EPS or remove the modifier.");
+    }
+    if(args.IsCatched("paired_depth")){
+        RequirePositiveInt(args,"paired_depth");
+        if(!args.IsCatched("sobol_seed")||!args.IsCatched("haar_alpha")||config.method!=RunMethod::PhysicalOptics||IntValue(args,"paired_depth")>=config.maxReflections)
+            Fail("--paired-depth requires PO seeded Haar Sobol and LOWER < --max-reflections.","set a smaller positive LOWER or remove the modifier.");
     }
     if (args.IsCatched("fullauto_angular_cache"))
     {
@@ -1965,6 +2030,7 @@ const char *OrientationModeName(OrientationMode orientation)
     case OrientationMode::Sobol: return "Sobol";
     case OrientationMode::SO3Quaternion: return "symmetry-reduced SO(3)";
     case OrientationMode::SO3FullQuaternion: return "full SO(3) quaternion audit";
+    case OrientationMode::SO3Rule: return "full SO(3) weighted rule";
     case OrientationMode::SobolSeed: return "seeded Sobol";
     case OrientationMode::SobolRing: return "Sobol ring";
     case OrientationMode::Hammersley: return "Hammersley";

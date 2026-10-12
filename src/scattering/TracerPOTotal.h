@@ -15,6 +15,9 @@ public:
 	int m_analyticReturnOrder = 1;
 	bool m_haarAlpha = false;
     bool m_haarMirrorAudit = false;
+    std::string m_haarRotationAudit;
+    unsigned int m_sobolOffset = 0;
+    int m_pairedDepth = 0;
 	bool m_analyticFacetAverage = false;
 	bool m_analyticFacetSamples = false;
 	bool m_analyticAzimuthGaussian = false;
@@ -71,6 +74,7 @@ public:
                                 const std::vector<int> &rowNphi,
                                 int outputNphi);
     void TraceFromSO3FullQuaternion(int nOrient);
+    void TraceFromSO3RuleFile(const std::string& path);
     void TraceFromSobolSeed(int nOrient, unsigned int seed,
                             double betaSym, double gammaSym);
     void TraceFromSobolRing(int nBeta, int nGamma,

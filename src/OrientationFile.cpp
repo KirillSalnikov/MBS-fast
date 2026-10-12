@@ -23,6 +23,25 @@ std::runtime_error FileError(const std::string &path, int lineNumber,
 
 } // namespace
 
+std::vector<WeightedEulerOrientationRadians> ReadSO3RuleDegrees(const std::string& path)
+{
+    std::ifstream input(path.c_str());if(!input)throw FileError(path,0,"cannot open file");
+    std::vector<WeightedEulerOrientationRadians> rule;std::string text;int number=0;double sum=0;
+    while(std::getline(input,text)){
+        ++number;size_t comment=text.find('#');if(comment!=std::string::npos)text.erase(comment);
+        std::istringstream row(text);row>>std::ws;if(row.eof())continue;
+        double beta,gamma,alpha,weight;std::string extra;
+        if(!(row>>beta>>gamma>>alpha>>weight)||(row>>extra))
+            throw FileError(path,number,"expected BETA_DEG GAMMA_DEG ALPHA_DEG WEIGHT");
+        if(!std::isfinite(beta+gamma+alpha+weight)||beta<0||beta>180||gamma<0||gamma>360||alpha<0||alpha>360||weight<0)
+            throw FileError(path,number,"SO(3) angles outside their degree ranges or negative/nonfinite weight");
+        rule.push_back({DegToRad(beta),DegToRad(gamma),DegToRad(alpha),weight});sum+=weight;
+    }
+    if(rule.empty()||std::fabs(sum-1)>1e-10)
+        throw FileError(path,0,"SO(3) rule must be nonempty and weights must sum to one");
+    return rule;
+}
+
 std::vector<EulerOrientationRadians> ReadOrientationFileDegrees(
     const std::string &path)
 {

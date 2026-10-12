@@ -3626,6 +3626,7 @@ void TracerPOTotal::TraceMonteCarlo(const AngleRange &betaRange,
     if (!handlerPO) { std::cerr << "Error: not HandlerPO" << std::endl; return; }
     const bool computeNoShadow = handlerPO->ComputeNoShadow();
 
+
     m_incomingEnergy = 0;
     handlerPO->m_outputEnergy = 0;
     handlerPO->m_extinctionCrossSectionOt = 0;
@@ -5617,6 +5618,13 @@ void TracerPOTotal::TraceFromSO3FullQuaternion(int nOrient)
                               M_PI, 2.0*M_PI);
 }
 
+void TracerPOTotal::TraceFromSO3RuleFile(const std::string& path)
+{
+    const auto rule=ReadSO3RuleDegrees(path);std::vector<WeightedOrientation> orientations;orientations.reserve(rule.size());
+    for(const auto& row:rule){orientations.emplace_back(row.beta,row.gamma,row.weight);orientations.back().alpha=row.alpha;}
+    TraceWeightedOrientations(orientations,"weighted full SO(3) Haar rule",M_PI,2*M_PI);
+}
+
 void TracerPOTotal::TraceFromSobolSeed(int nOrient, unsigned int seed,
                                        double betaSym, double gammaSym)
 {
@@ -5642,20 +5650,27 @@ void TracerPOTotal::TraceFromSobolSeed(int nOrient, unsigned int seed,
         if((m_mirrorGamma||m_haarMirrorAudit)&&!HasBodyXZMirror(*m_particle))
             throw std::runtime_error("Haar mirror: geometry has no verified body xz reflection; use full gamma.");
         const int baseCount=nOrient;
-        if(m_haarMirrorAudit){
+        const bool rotationAudit=!m_haarRotationAudit.empty();
+        if(m_haarMirrorAudit||rotationAudit){
             if(nOrient>std::numeric_limits<int>::max()/2)throw std::invalid_argument("Haar mirror audit count overflows");
             nOrient*=2;orientations.resize(nOrient);}
         const double sampledGamma=(m_haarMirrorAudit||m_mirrorGamma)?.5*gammaSym:gammaSym;
         Sobol3D haar(seed);
+        haar.seek(m_sobolOffset);
         for (int i=0;i<baseCount;++i)
         {
             double u,v,w;haar.next(u,v,w);
-            const int index=m_haarMirrorAudit?2*i:i;
+            const int index=(m_haarMirrorAudit||rotationAudit)?2*i:i;
             orientations[index]=WeightedOrientation(std::acos(1-(1-cosBetaSym)*u),sampledGamma*v,1./nOrient);
             orientations[index].alpha=2*M_PI*w;
             if(m_haarMirrorAudit){orientations[index+1]=orientations[index];
                 orientations[index+1].gamma=gammaSym-orientations[index].gamma;
                 orientations[index+1].alpha=-orientations[index].alpha;}
+            if(rotationAudit){orientations[index+1]=orientations[index];
+                if(m_haarRotationAudit=="gamma")orientations[index+1].gamma+=gammaSym;
+                else{orientations[index+1].beta=M_PI-orientations[index].beta;
+                    orientations[index+1].gamma=-orientations[index].gamma;
+                    orientations[index+1].alpha+=M_PI;}}
         }
         if(m_mpiRank==0)
             std::cout << "Full Haar alpha: third Owen-Sobol dimension, uniform alpha in [0,360) deg" << std::endl;
@@ -5667,6 +5682,7 @@ void TracerPOTotal::TraceFromSobolSeed(int nOrient, unsigned int seed,
 
     std::ostringstream label;
     label << "Sobol Owen(seed=" << seed << ")";
+    if(m_sobolOffset)label<<" offset="<<m_sobolOffset;
     TraceWeightedOrientations(orientations, label.str(), betaSym,gammaSym);
 }
 
@@ -5915,6 +5931,10 @@ void TracerPOTotal::TraceWeightedOrientations(
         throw std::exception();
     }
     const bool computeNoShadow = handlerPO->ComputeNoShadow();
+    if(m_pairedDepth&&(m_particle->IsConcave()||m_particle->isAggregated||m_mpiSize!=1||computeNoShadow||m_analyticFacetSamples||m_analyticBackscatter||m_analyticAzimuthGaussian
+       ||!handlerPO->isCoh||m_scattering->m_traceCutoffJRel>0||m_scattering->m_traceCutoffAreaRel>0||m_scattering->m_traceCutoffImportanceRel>0))
+        throw std::runtime_error("paired-depth cache unsupported for this geometry/pruning/diagnostic mode; use independent traces");
+
 
     std::unique_ptr<AnalyticBackscatter::ReturnControl> analyticControl;
     int backwardIndex = -1;
@@ -6054,13 +6074,16 @@ void TracerPOTotal::TraceWeightedOrientations(
     // the diffraction loops in parallel with local Mueller accumulators.
     int nAz = handlerPO->m_sphere.nAzimuth;
     int nZen = handlerPO->m_sphere.nZenith;
+    std::unique_ptr<Arr2D> pairedMatrices;
+    if(m_pairedDepth){pairedMatrices.reset(new Arr2D(nAz+1,nZen+1,4,4));pairedMatrices->ClearArr();}
+
 
     const long long availMB = EffectiveMemAvailableMb();
     int maximumChunk = std::max(1, std::min(4096, myCount));
     if (m_sobolChunkSize > 0)
         maximumChunk = std::max(1, std::min(maximumChunk, m_sobolChunkSize));
     const bool pipeline=m_orientationPipeline && handlerPO->IsGpuEnabled();
-    PreparedChunkController memoryChunks(maximumChunk,pipeline ? 2:1);
+    PreparedChunkController memoryChunks(maximumChunk,(pipeline ? 2:1)*(m_pairedDepth?2:1));
     int nThreads = 1;
 #ifdef _OPENMP
     #pragma omp parallel
@@ -6098,6 +6121,7 @@ void TracerPOTotal::TraceWeightedOrientations(
     {
         int start=0,count=0;
         std::vector<PreparedOrientation> prepared;
+        std::vector<PreparedOrientation> lower;
         std::vector<double> energies,outputEnergies;
         std::vector<std::array<AnalyticBackscatter::Vec,3>> frames;
         double seconds=0,rotation=0,trace=0,prepare=0;
@@ -6105,6 +6129,7 @@ void TracerPOTotal::TraceWeightedOrientations(
     auto prepareBlock = [&](int iStart,int thisChunk)
     {
         PreparedBlock block;block.start=iStart;block.count=thisChunk;
+        if(m_pairedDepth)block.lower.resize(thisChunk);
         if(facetControl)
         {
             block.frames.resize(thisChunk);
@@ -6183,8 +6208,20 @@ void TracerPOTotal::TraceWeightedOrientations(
                 }
                 if (ok)
                 {
+                    // Relative output thresholds depend on the beam set. If
+                    // their maxima differ, prepare the lower raw subset on
+                    // its own before upper preparation mutates polarization.
+                    std::vector<Beam> lowerRaw;bool reusePrepared=true;
+                    if(m_pairedDepth){double upperMax[3]={},lowerMax[3]={};
+                        for(const auto& beam:localBeams){if(beam.nActs<=m_pairedDepth||beam.lastFacetId==__INT_MAX__)lowerRaw.push_back(beam);
+                            if(beam.lastFacetId==__INT_MAX__)continue;const double j=beam.J.Norm(),a=beam.Area();const double value[3]={j,a,j*a};
+                            for(int k=0;k<3;++k){upperMax[k]=std::max(upperMax[k],value[k]);if(beam.nActs<=m_pairedDepth)lowerMax[k]=std::max(lowerMax[k],value[k]);}}
+                        for(int k=0;k<3;++k)reusePrepared=reusePrepared&&upperMax[k]==lowerMax[k];
+                        if(!reusePrepared)localHandler.PrepareBeams(lowerRaw,weight,block.lower[i]);}
                     double beforeOutput = localHandler.m_outputEnergy;
                     localHandler.PrepareBeams(localBeams, weight, chunkPrepared[i]);
+                    if(m_pairedDepth&&reusePrepared){auto& lower=block.lower[i];lower.sinZenith=weight;
+                        for(const auto& beam:chunkPrepared[i].beams)if(beam.nActs<=m_pairedDepth||beam.isExternal)lower.beams.push_back(beam);}
                     block.outputEnergies[i] = localHandler.m_outputEnergy - beforeOutput;
                 }
                 else
@@ -6467,6 +6504,26 @@ void TracerPOTotal::TraceWeightedOrientations(
                 }
             }
         }
+        if(m_pairedDepth){
+            Arr2D lower(nAz+1,nZen+1,4,4),dummy(nAz+1,nZen+1,4,4);lower.ClearArr();dummy.ClearArr();
+            if(handlerPO->IsGpuEnabled()){
+                for(int start=0;start<thisChunk;){const int count=handlerPO->SelectGpuOrientationBatchSize(block.lower,start,thisChunk-start);
+                    if(!handlerPO->HandleOrientationsToLocalGpu(block.lower,start,count,lower,dummy))throw std::runtime_error("paired-depth GPU diffraction failed");start+=count;}
+            }else{
+                #pragma omp parallel
+                {
+                    Arr2D local(nAz+1,nZen+1,4,4);local.ClearArr();std::vector<Arr2DC> fields;
+                    Arr2DC field(nAz+1,nZen+1,2,2);field.ClearArr();fields.push_back(field);
+                    #pragma omp for schedule(dynamic,1)
+                    for(int i=0;i<thisChunk;++i){handlerPO->HandleBeamsToLocal(block.lower[i],local,fields,nullptr);
+                        HandlerPO::AddToMuellerLocal(fields,block.lower[i].sinZenith,local,nAz,nZen);fields[0].ClearArr();}
+                    #pragma omp critical
+                    {for(int p=0;p<nAz;++p)for(int t=0;t<=nZen;++t)lower.insert(p,t,local(p,t));}
+                }
+            }
+            for(int p=0;p<nAz;++p)for(int t=0;t<=nZen;++t)pairedMatrices->insert(p,t,lower(p,t));
+            memoryChunks.Update(block.lower,"Paired depth",m_mpiRank);
+        }
         phase2_total += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - tp2).count();
 
         memoryChunks.Update(chunkPrepared, "Orientation average", m_mpiRank);
@@ -6566,6 +6623,19 @@ void TracerPOTotal::TraceWeightedOrientations(
         }
     }
 
+    if(m_pairedDepth){
+        if(m_mirrorGamma)ApplyMirrorGammaMueller(*pairedMatrices,nAz,nZen);
+        std::string lowerName=m_resultDirName+"_depth"+std::to_string(m_pairedDepth);
+        if(facetControl){std::ofstream summary((lowerName+"_analytic_facets.tsv").c_str());summary<<std::setprecision(17)
+            <<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n";
+            for(int t=0;t<facetRows;++t){const auto known=facetControl->Mean(t);double raw=0,ref=0,shadow=0;const double wr=facetWeights[t][0],ws=facetWeights[t][1];
+                for(int p=0;p<nAz;++p){const size_t cell=static_cast<size_t>(p)*facetRows+t;raw+=(*pairedMatrices)(p,t,0,0)/nAz;ref+=facetReflectionCells[cell]/nAz;shadow+=facetShadowCells[cell]/nAz;
+                    (*pairedMatrices)(p,t,0,0)+=wr*(known.reflection-facetReflectionCells[cell])+(shadowOff?0:ws*(known.shadow-facetShadowCells[cell]));}
+                summary<<RadToDeg(facetTheta[t])<<'\t'<<raw<<'\t'<<known.reflection<<'\t'<<(shadowOff?0:known.shadow)<<'\t'<<ref<<'\t'<<(shadowOff?0:shadow)<<'\t'<<raw-wr*ref-(shadowOff?0:ws*shadow)<<'\t'<<raw+wr*(known.reflection-ref)+(shadowOff?0:ws*(known.shadow-shadow))<<'\t'<<facetControl->RefinementError()<<'\t'<<facetSetupSeconds<<'\t'<<wr<<'\t'<<ws<<'\n';}
+            summary.flush();if(!summary)throw std::runtime_error("cannot write paired-depth control summary");}
+        std::swap(handlerPO->M,*pairedMatrices);handlerPO->WriteMatricesToFile(lowerName,m_incomingEnergy);std::swap(handlerPO->M,*pairedMatrices);
+        std::cout<<"Paired depth "<<m_pairedDepth<<": coherent field recomputed from shared convex trace; "<<lowerName<<".dat"<<std::endl;
+    }
     std::vector<double> facetRawMeans,facetHybridMeans;
     if(facetControl)
     {

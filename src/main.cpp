@@ -18,6 +18,7 @@
 #include <memory>
 #include <new>
 #include <limits>
+#include "math/RotationSymmetry.h"
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <fcntl.h>
@@ -2688,6 +2689,7 @@ int main(int argc, const char* argv[])
         }
         else if (args.IsCatched("sobol") || args.IsCatched("so3_quat")
               || args.IsCatched("so3_full_quat")
+              || args.IsCatched("so3_rule")
               || args.IsCatched("sobol_seed")
               || args.IsCatched("sobol_ring")
               || args.IsCatched("hammersley") || args.IsCatched("lattice")
@@ -2850,8 +2852,12 @@ int main(int argc, const char* argv[])
             tracer->m_analyticBackscatter = args.IsCatched("analytic_backscatter");
             tracer->m_analyticReturnOrder = args.IsCatched("analytic_return_order")
                 ? args.GetIntValue("analytic_return_order",0) : 1;
-            tracer->m_haarAlpha = args.IsCatched("haar_alpha");
+            tracer->m_haarAlpha = args.IsCatched("haar_alpha") || args.IsCatched("so3_rule");
+            tracer->m_pairedDepth = args.IsCatched("paired_depth")?args.GetIntValue("paired_depth"):0;
             tracer->m_haarMirrorAudit = args.IsCatched("haar_mirror_audit");
+            tracer->m_haarRotationAudit = args.IsCatched("haar_rotation_audit")?args.GetStringValue("haar_rotation_audit"):"";
+            tracer->m_sobolOffset = args.IsCatched("sobol_offset")
+                ? static_cast<unsigned int>(args.GetIntValue("sobol_offset")) : 0;
             tracer->m_analyticFacetAverage = args.IsCatched("analytic_facet_average");
             tracer->m_analyticFacetSamples = args.IsCatched("analytic_facet_samples");
             tracer->m_analyticAzimuthGaussian = args.IsCatched("analytic_azimuth_gaussian");
@@ -2924,6 +2930,13 @@ int main(int argc, const char* argv[])
 
             double betaSym = particle->GetSymmetry().beta;
             double gammaSym = particle->GetSymmetry().gamma;
+            if(args.IsCatched("verified_rotation")){
+                Particle body=*particle;body.Rotate(0,0,0);std::vector<RotationSymmetry::Face> faces;bool eligible=!body.isAggregated;
+                for(int f=0;f<body.nFacets;++f){RotationSymmetry::Face face;eligible=eligible&&body.facets[f].isVisibleIn&&body.facets[f].isVisibleOut;
+                    for(int v=0;v<body.facets[f].nVertices;++v){const auto& p=body.facets[f].arr[v];face.push_back({{p.cx,p.cy,p.cz}});}faces.push_back(face);}
+                const auto factors=eligible?RotationSymmetry::Detect(faces):std::array<int,2>{{1,1}};betaSym=M_PI/factors[0];gammaSym=2*M_PI/factors[1];
+                cout<<"Verified body rotation factors: "<<factors[0]<<" "<<factors[1]<<endl;
+            }
 
             if (tracer->m_analyticBackscatter)
             {
@@ -3197,6 +3210,8 @@ int main(int argc, const char* argv[])
                         epsEuler, betaSym, gammaSym, maxOrientUser,
                         nBeta, nGamma, true);
                 }
+                else if (args.IsCatched("so3_rule"))
+                    tracer->TraceFromSO3RuleFile(args.GetStringValue("so3_rule"));
                 else if (useSO3Quat)
                 {
                     if (args.IsCatched("multigrid"))
@@ -3671,6 +3686,7 @@ int main(int argc, const char* argv[])
             && !HasDiffractionOrientation(args) && !args.IsCatched("sobol")
             && !args.IsCatched("so3_quat")
             && !args.IsCatched("so3_full_quat")
+            && !args.IsCatched("so3_rule")
             && !args.IsCatched("sobol_seed")
             && !args.IsCatched("sobol_ring")
             && !args.IsCatched("hammersley") && !args.IsCatched("lattice")
@@ -3688,6 +3704,7 @@ int main(int argc, const char* argv[])
                  << "    --sobol N             Quasi-random orientations\n"
                  << "    --so3_quat N          Symmetry-reduced SO(3), alpha via scattering phi\n"
                  << "    --so3_full_quat N     Full SO(3) quaternion audit\n"
+                 << "    --so3-rule FILE      Weighted full SO(3) Euler rule\n"
                  << "    --sobol_seed N S      Sobol with nested Owen scramble seed\n"
                  << "    --sobol_ring B G      Sobol beta x uniform gamma ring\n"
                  << "    --hammersley N        Hammersley orientations\n"

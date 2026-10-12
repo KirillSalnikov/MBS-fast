@@ -164,6 +164,18 @@ int VisibleGpuDeviceCount()
 #endif
 }
 
+bool QueryVisibleGpuMemory(int device,long long& freeBytes,long long& totalBytes,std::string& error){
+#ifndef USE_CUDA
+    (void)device;freeBytes=totalBytes=0;error="CUDA support is not compiled";return false;
+#else
+    int previous=0;cudaGetDevice(&previous);const auto selected=cudaSetDevice(device);
+    if(selected!=cudaSuccess){error=cudaGetErrorString(selected);return false;}
+    size_t freeValue=0,totalValue=0;const auto result=cudaMemGetInfo(&freeValue,&totalValue);cudaSetDevice(previous);
+    if(result!=cudaSuccess){error=cudaGetErrorString(result);return false;}
+    freeBytes=freeValue;totalBytes=totalValue;error.clear();return true;
+#endif
+}
+
 std::string FormatGpuInfo(const GpuDeviceInfo &info)
 {
     std::ostringstream out;

@@ -1,4 +1,5 @@
 #include "FullAuto.h"
+#include "math/RotationSymmetry.h"
 #include <cmath>
 #include <fstream>
 #include <iomanip>
@@ -37,14 +38,29 @@ int main(int argc,char** argv) {
     std::vector<double> x={0,.1,.7,1.9,3.};Matrix y(x.size());
     for(size_t i=0;i<x.size();++i)for(int j=0;j<16;++j)y[i][j]=(j+1)*(2+3*x[i]-x[i]*x[i]+.4*x[i]*x[i]*x[i]);
     std::vector<double> q={0,.05,.4,1.,2.4,3.};auto a=CubicInterpolate(x,y,q);
+    auto local=LocalCubicInterpolate(x,y,q);
     for(size_t i=0;i<q.size();++i)for(int j=0;j<16;++j)if(std::fabs(a[i][j]-(j+1)*(2+3*q[i]-q[i]*q[i]+.4*q[i]*q[i]*q[i]))>1e-11)throw std::runtime_error("cubic reproduction failed");
+    for(size_t i=0;i<q.size();++i)for(int j=0;j<16;++j)if(std::fabs(local[i][j]-(j+1)*(2+3*q[i]-q[i]*q[i]+.4*q[i]*q[i]*q[i]))>1e-10)throw std::runtime_error("local cubic reproduction failed");
     Samples s(8,Matrix(1));for(int k=0;k<8;++k){s[k][0][0]=10+.1*k;s[k][0][1]=.2*k;}
     auto stats=Estimate(s);double expected=2.3646242510102993*std::sqrt(.06/8)/10.35;
     if(std::fabs(stats.interval[0][0]-expected)>1e-14)throw std::runtime_error("confidence convention mismatch");
+    auto proportional=s;for(auto& sample:proportional)sample[0][1]=2*sample[0][0];
+    auto paired=Estimate(proportional);if(paired.ratioInterval[0][1]>1e-12)throw std::runtime_error("ratio covariance was lost");
     auto delta=s;for(int k=0;k<8;++k)delta[k][0][0]=1+.01*k;
     auto budgets=Allocate({s,delta},{1.,10.},{16,16},stats.mean,.01);
     if(budgets[0]<=budgets[1] || budgets[0]<=0)throw std::runtime_error("allocation failed");
     bool rejected=false;try{CubicInterpolate(x,y,{-1});}catch(const std::exception&){rejected=true;}
     if(!rejected)throw std::runtime_error("extrapolation allowed");
     std::cout<<"fullauto numerical tests passed\n";
+    // A real six-sided prism: oriented top/bottom and side polygons.
+    std::vector<RotationSymmetry::Face> faces;RotationSymmetry::Face top,bottom;
+    const double pi=std::acos(-1.);
+    for(int i=0;i<6;++i){top.push_back({{std::cos(i*pi/3),std::sin(i*pi/3),1}});
+        bottom.push_back({{std::cos((5-i)*pi/3),std::sin((5-i)*pi/3),-1}});}
+    faces.push_back(top);faces.push_back(bottom);
+    for(int i=0;i<6;++i){const int j=(i+1)%6;faces.push_back({{{top[i][0],top[i][1],-1}},{{top[j][0],top[j][1],-1}},top[j],top[i]});}
+    if(RotationSymmetry::Detect(faces)!=std::array<int,2>{{2,6}})throw std::runtime_error("hexagonal rotation detection failed");
+    faces[0][0][0]+=.01;
+    if(RotationSymmetry::Detect(faces)!=std::array<int,2>{{1,1}})throw std::runtime_error("asymmetric geometry was reduced");
+    std::cout<<"oriented-facet rotation tests passed\n";
 }

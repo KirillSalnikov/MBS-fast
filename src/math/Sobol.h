@@ -41,6 +41,8 @@ class Sobol3D
 {
 public:
     explicit Sobol3D(uint32_t seed=0, bool scramble=true);
+    // Resume before point offset+1 without generating the preceding points.
+    void seek(uint32_t offset);
     void next(double &x, double &y, double &z);
 private:
     uint32_t index, seed, state[3], directions[3][32];

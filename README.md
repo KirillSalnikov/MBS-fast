@@ -502,6 +502,49 @@ and two on input/worker/cache failures. It is distinct from legacy `--autofull`.
 See the [Russian HTML manual with actual independent audit results](docs/FULLAUTO_RU.html)
 for commands, outputs, resume rules and the scope of these error estimates.
 
+The [adaptive update manual](docs/FULLAUTO_ADAPTIVE_RU.html) explains per-angle
+budgets, cost-gated grouping, coherent shared-depth tracing, paired ratio
+intervals, polarization control variates and fresh-seed final validation.
+Small grids retain common budgets automatically. `--fullauto-physics-audit on`
+adds depth/cutoff sensitivity checks without changing requested physics.
+`scripts/run_fullauto_service.sh` installs a restartable native service; it
+does not perform any numerical parameter selection.
+
+Native fullauto now saves large production Sobol prefixes in power-of-two
+blocks (`--fullauto-incremental on`, default; `--fullauto-orientation-block
+65536`). Extending a prefix reuses its completed blocks and computes the tail.
+`--sobol-offset INDEX` exposes the same exact prefix seek for seeded Haar
+Sobol runs. An interrupted block must be rerun; completed block matrices and
+their checked dependencies remain available. This changes work reuse, not
+the orientation measure or the requested physical reflection depth.
+
+Experimental high-order full-SO(3) rules can be tested independently of
+fullauto. `--so3-rule FILE` reads `BETA_DEG GAMMA_DEG ALPHA_DEG WEIGHT`, with
+nonnegative weights summing to one, for `Rz(alpha) Ry(beta) Rz(gamma)`.
+The rule covers the full rotation group and requires `--symmetry 1 1` when
+an explicit symmetry override is given; mirror reconstruction is rejected.
+Prepare Lebedev sphere × Fourier alpha rules or Gauss/Fourier rules exact
+for Wigner mean modes, including algebraic degree 131:
+
+```bash
+python3 scripts/generate_so3_rules.py --method lebedev --degree 31 \
+    --replicas 8 --output rules/lebedev_31
+bin/mbs_po --method po --backend cpu --particle 1 1 1 --ri 1.3116 0 \
+    --wavelength-um .532 --max-reflections 6 --symmetry 1 1 \
+    --so3-rule rules/lebedev_31/replica_0.rule --phi-points 4 \
+    --scattering-grid 0 180 4 36 --output results/lebedev_probe --close
+```
+
+Rule generation needs NumPy and SciPy 1.16 or newer. Use `--method wigner`
+for Gauss-Legendre beta × periodic alpha/gamma quadrature: it projects onto
+the constant Wigner mode; it does not reconstruct all spectral coefficients.
+High algebraic exactness alone does not guarantee faster convergence of
+visibility boundaries or oscillatory scattering fields. Fullauto continues
+to use its measured Sobol estimator; these alternative rules are experimental.
+`scripts/prepare_so3_comparison.py`, `run_so3_comparison.py` and
+`report_so3_comparison.py` retain matched parameters, eight independent
+scrambles/global Haar rotations, all 16 matrix elements, timings and logs.
+
 Analytic mean preparation uses OpenMP across independent theta rows. The
 `--threads N` worker setting also controls this preparation; sums inside each
 row and the convergence reduction retain their serial order. This acceleration
@@ -776,3 +819,5 @@ Report reproducible defects through the
 [GitHub issue tracker](https://github.com/KirillSalnikov/MBS-fast/issues) with
 the full command, binary precision, compiler/CUDA versions, hardware, and the
 generated log.
+
+Native fullauto also benchmarks worker threads/chunks and estimates saved orientation-block size (`--fullauto-resources auto`), verifies fixed-axis body rotations (`--fullauto-rotation-symmetry auto`), and compares cutoff presets with an uncut reference plus a fresh-seed final audit (`--fullauto-cutoffs auto`). Explicit settings win; unsupported geometry remains on full SO(3). Opt into visible-device benchmarking with `--fullauto-gpus auto`. Decisions and the exact resumable recipe are saved in the output directory. See [the adaptive manual](docs/FULLAUTO_ADAPTIVE_RU.html).

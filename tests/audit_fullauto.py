@@ -45,6 +45,10 @@ def matrix(path):
 
 
 def run(root, reference, dense=False, dense_workers=1):
+    state=json.loads((root/'fullauto_status.json').read_text())
+    if state.get('adaptive_schema')==2:
+        from audit_fullauto_v2 import run as run_v2
+        report=run_v2(root,reference,dense,dense_workers);print(json.dumps(report,indent=2));return report
     spec = importlib.util.spec_from_file_location('python_campaign_reference', reference)
     py = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(py)
@@ -70,6 +74,7 @@ def run(root, reference, dense=False, dense_workers=1):
             assert int(log.split(label, 1)[1].split()[0]) == 0, folder
         n, seed = map(int, option(args, '--sobol-seed', 2))
         jobs.append(dict(folder=folder, args=args, count=n, seed=seed,
+                         offset=int(option(args, '--sobol-offset') or 0),
                          depth=int(option(args, '--max-reflections')),
                          phi=int(option(args, '--phi-points')),
                          weighted=option(args, '--analytic-control-weights') is not None,
@@ -80,7 +85,7 @@ def run(root, reference, dense=False, dense_workers=1):
     def select(seeds, count, depth, phi, weighted, angles):
         selected = []
         for seed in seeds:
-            found = [j for j in jobs if j['seed'] == seed and j['count'] == count
+            found = [j for j in jobs if j['seed'] == seed and j['count'] == count and j['offset'] == 0
                      and j['depth'] == depth and j['phi'] == phi and j['weighted'] == weighted
                      and ('--analytic-facet-average' in j['args']) == state.get('analytic_controls', bool(calibration['weights']))
                      and ('--mirror-gamma' in j['args']) == state.get('mirror_gamma', False)
