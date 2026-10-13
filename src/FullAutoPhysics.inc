@@ -41,6 +41,26 @@ DepthResidual DepthDifference(const Samples& first,const Samples& second,bool go
 double PhysicalDepthBound(const Samples& first,const Samples& second,const Matrix& reference,bool go,size_t bins,bool ratios){
     return DepthDifference(first,second,go,bins,ratios,&reference).upper;
 }
+void PrepareDepthStartup(Engine& e){
+    if(!e.autoDepth||e.go||e.depthOrder=="depth-first"||(e.depthOrder=="auto"&&!e.config.useGpu))return;
+    const std::string checkpoint=e.root+"/depth_startup.tsv";
+    if(Exists(checkpoint)){
+        const auto text=Read(checkpoint);const auto split=text.find('\n');const auto payload=text.substr(split+1);Require(Hash(payload)==text.substr(0,split),"depth startup changed");
+        std::istringstream input(payload);std::string signature;Require(bool(input>>signature>>e.phi>>e.kernel.block>>e.kernel.pipeline>>e.kernel.warp>>e.controls)&&signature==e.signature,"depth startup inputs changed");
+        e.startupKernel=true;e.SetMirror(false);e.WarmCache();return;
+    }
+    std::vector<double> x;const size_t size=std::min(size_t(9),std::min(e.theta.size(),size_t(e.maxTheta)));
+    for(size_t row=0;row<size;++row)x.push_back(e.theta[row*(e.theta.size()-1)/(size-1)]);
+    const int oldPilot=e.pilot,oldKernel=e.kernelCount;e.pilot=std::min(e.pilot,64);e.kernelCount=std::min(e.kernelCount,64);
+    const double begin=Seconds();e.State("startup_sampling_tuning",0,{e.pilot},x.size(),0,0,0);
+    try{e.Calibrate(x);}catch(const std::exception& error){
+        if(!e.DisableUnsupportedControls(error)){e.pilot=oldPilot;e.kernelCount=oldKernel;throw;}e.Calibrate(x);
+    }
+    e.pilot=oldPilot;e.kernelCount=oldKernel;e.startupKernel=true;
+    std::ostringstream payload;payload<<e.signature<<' '<<e.phi<<' '<<e.kernel.block<<' '<<e.kernel.pipeline<<' '<<e.kernel.warp<<' '<<e.controls<<'\n';
+    Atomic(checkpoint,Hash(payload.str())+"\n"+payload.str());
+    e.Record(e.root+"/depth_startup.json","{\"order\":\"sampling-first\",\"phi\":"+Number(e.phi)+",\"kernel_pipeline\":"+(e.kernel.pipeline?std::string("true"):"false")+",\"pilot_count\":"+Number(std::min(oldPilot,64))+",\"theta_rows\":"+Number(x.size())+",\"seconds\":"+Number(Seconds()-begin)+",\"scope\":\"cheap kernel/phi training before paired depth; final estimator is refitted at selected depth\"}");
+}
 void SelectAutomaticDepth(Engine& e){
     if(!e.autoDepth){e.Record(e.root+"/depth_selection.json","{\"automatic\":false,\"target_depth\":"+Number(e.target)+",\"explicit_target_preserved\":true}");return;}
     const std::string checkpoint=e.root+"/automatic_depth.tsv";
@@ -56,10 +76,10 @@ void SelectAutomaticDepth(Engine& e){
     else{const size_t size=std::min(size_t(65),std::min(e.theta.size(),size_t(e.maxTheta)));for(size_t row=0;row<size;++row)x.push_back(e.theta[row*(e.theta.size()-1)/(size-1)]);}
     WriteGrid(e.root+"/depth_pilot_theta.csv",x);
     const bool savedControls=e.controls;e.controls=false;
-    int count=e.initial,selected=e.depthStart;DepthResidual residual;bool passed=false;
+    int count=e.depthPilot,selected=e.depthStart;DepthResidual residual;bool passed=false;
     try{
         for(int depth=e.depthStart;;depth=std::min(e.depthMaximum,depth+2)){
-            unsigned seeds[8];for(int i=0;i<8;++i){seeds[i]=1600000000u+unsigned(e.depthStart)*1024u+unsigned(i)*17u;
+            unsigned seeds[8];for(int i=0;i<8;++i){seeds[i]=1700000000u+unsigned(e.depthStart)*1024u+unsigned(i)*17u;
                 Require(std::find(e.seeds.begin(),e.seeds.end(),seeds[i])==e.seeds.end(),"depth pilot/production seed overlap");}
             for(int attempt=0;;++attempt){
                 e.target=depth;e.State("selecting_depth",attempt,{count},x.size(),0,0,0);

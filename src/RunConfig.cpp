@@ -868,6 +868,18 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
             Fail(CliCanonicalFlag(spec.key)+" is incompatible with --fullauto.","remove this option or run the corresponding standalone mode; fullauto must not silently ignore it.");
         if(config.useFft)
             Fail("--fullauto requires a direct solver.","remove FFT.");
+        if(args.IsCatched("fullauto_initial_model")){
+            const auto mode=args.GetStringValue("fullauto_initial_model");if(mode!="empirical"&&mode!="xi")Fail("fullauto-initial-model expects empirical or xi.","choose a supported model.");
+        }
+        if(args.IsCatched("fullauto_depth_pilot")){RequirePositiveInt(args,"fullauto_depth_pilot");RequirePowerOfTwo(args,"fullauto_depth_pilot");
+            if(args.IsCatched("n"))Fail("depth pilot is unused with explicit max-reflections.","remove the pilot setting.");}
+        if((args.IsCatched("n")||(args.IsCatched("fullauto_depth_search")&&args.GetStringValue("fullauto_depth_search")=="off"))
+            &&(args.IsCatched("fullauto_depth_pilot")||args.IsCatched("fullauto_depth_order")))
+            Fail("depth pilot/order are unused when physical depth search is fixed or off.","remove the depth tuning settings or enable automatic depth.");
+        if(args.IsCatched("fullauto_depth_order")){
+            const auto mode=args.GetStringValue("fullauto_depth_order");if(mode!="auto"&&mode!="sampling-first"&&mode!="depth-first")Fail("fullauto-depth-order expects auto, sampling-first or depth-first.","choose a supported order.");
+            if(config.method==RunMethod::GeometricalOptics&&mode=="sampling-first")Fail("GO has analytic alpha and fixed bins; use depth-first.","remove the sampling-first setting.");
+        }
         if(args.IsCatched("fullauto_depth_search")){
             const auto policy=args.GetStringValue("fullauto_depth_search");
             if(policy!="on"&&policy!="off")Fail("fullauto-depth-search expects on or off.","use on or off.");

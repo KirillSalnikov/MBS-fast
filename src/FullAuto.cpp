@@ -283,7 +283,8 @@ struct Engine {
     bool depthSharing=true,depthVerified=false;
     bool completedCheckpoint=false;
     bool autoDepth=false;int depthStart=6,depthMaximum=18;double depthBudget=0,maximumEdge=0,maximumDiameter=0,particleVolume=0;
-    double estimatedOrientations=0,estimatedBeta=0,estimatedGamma=0;std::string initialSource="explicit";
+    double estimatedOrientations=0,estimatedBeta=0,estimatedGamma=0,empiricalFinal=0;
+    int depthPilot=512;std::string initialModel="empirical",depthOrder="auto";bool startupKernel=false;std::string initialSource="explicit";
     bool collecting=false;bool go=false;std::string workQueuePolicy="auto";
     std::vector<Job> pendingJobs;
     std::vector<std::vector<std::string>> pendingCommands;
@@ -312,7 +313,7 @@ struct Engine {
         for(size_t i=0;i<base.size();++i)out<<(i?",":"")<<Quoted(base[i]);
         out<<"],\"epsilon\":"<<Number(eps)<<",\"interpolation_budget\":"<<Number(interpolation)<<",\"statistical_budget\":"<<Number(statistical)
             <<",\"pilot_count\":"<<pilot<<",\"kernel_pilot_count\":"<<kernelCount<<",\"dense_theta_pilot_count\":"<<thetaAuditCount
-            <<",\"initial_source\":"<<Quoted(initialSource)<<",\"maximum_edge_um\":"<<Number(maximumEdge)<<",\"maximum_diameter_um\":"<<Number(maximumDiameter)<<",\"oldauto_N_beta_estimate\":"<<Number(estimatedBeta)<<",\"oldauto_N_gamma_estimate\":"<<Number(estimatedGamma)<<",\"oldauto_orientation_estimate\":"<<Number(estimatedOrientations)<<",\"initial_count\":"<<initial<<",\"minimum_correction_count\":"<<minimum<<",\"max_count\":"<<maxCount<<",\"max_rounds\":"<<roundLimit
+            <<",\"initial_model\":"<<Quoted(initialModel)<<",\"estimated_final_orientation_count\":"<<Number(empiricalFinal)<<",\"depth_pilot_count\":"<<depthPilot<<",\"depth_search_order\":"<<Quoted(depthOrder)<<",\"initial_source\":"<<Quoted(initialSource)<<",\"maximum_edge_um\":"<<Number(maximumEdge)<<",\"maximum_diameter_um\":"<<Number(maximumDiameter)<<",\"oldauto_N_beta_estimate\":"<<Number(estimatedBeta)<<",\"oldauto_N_gamma_estimate\":"<<Number(estimatedGamma)<<",\"oldauto_orientation_estimate\":"<<Number(estimatedOrientations)<<",\"initial_count\":"<<initial<<",\"minimum_correction_count\":"<<minimum<<",\"max_count\":"<<maxCount<<",\"max_rounds\":"<<roundLimit
             <<",\"initial_theta_support\":"<<startTheta<<",\"max_theta_evaluations\":"<<maxTheta<<",\"min_phi\":"<<minPhi<<",\"max_phi\":"<<maxPhi
             <<",\"stable_passes\":"<<stablePasses<<",\"automatic_depth\":"<<(autoDepth?"true":"false")<<",\"depth_start\":"<<depthStart<<",\"depth_maximum\":"<<depthMaximum<<",\"depth_budget\":"<<Number(depthBudget)<<",\"physical_target_depth\":"<<target<<",\"phi\":"<<phi
             <<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
@@ -399,15 +400,9 @@ struct Engine {
             estimatedGamma=std::max(3.,std::ceil(2*3.14159265358979323846/gammaFactor/step));
             estimatedOrientations=estimatedBeta*estimatedGamma;
         }
-        if(!args.IsCatched("fullauto_initial")&&!config.adaptive.loadedFromFile){
-            Require(maximumEdge>0,"cannot determine geometric sampling estimate; supply fullauto-initial");
-            Require(maxCount>=512,"automatic initial count needs max-orientations >=512 or an explicit fullauto-initial");
-            // Leave room for the two default stability refinements. Explicit
-            // initial remains exact, even if it exhausts the chosen cap.
-            const int cap=std::max(512,maxCount/4);
-            initial=Power2(int(std::min(double(cap),std::max(512.,estimatedOrientations))));
-            initialSource="max(512, oldauto beta*gamma at xi/16), limited for stability refinements";
-        }else initialSource=args.IsCatched("fullauto_initial")?"explicit CLI":"adaptive-config";
+        initialModel=args.IsCatched("fullauto_initial_model")?args.GetStringValue("fullauto_initial_model"):"empirical";
+        depthOrder=args.IsCatched("fullauto_depth_order")?args.GetStringValue("fullauto_depth_order"):"auto";
+        initialSource=args.IsCatched("fullauto_initial")?"explicit CLI":(config.adaptive.loadedFromFile?"adaptive-config":"pending empirical geometry model");
 
         controlPolicy=args.IsCatched("fullauto_controls")?args.GetStringValue("fullauto_controls"):((args.IsCatched("analytic_facet_average")||args.IsCatched("analytic_shadow_control"))?"on":"auto");
         if(controlPolicy=="auto"&&(args.IsCatched("analytic_facet_average")||args.IsCatched("analytic_shadow_control")))controlPolicy="on";
@@ -461,6 +456,31 @@ struct Engine {
             }
             if(args.IsCatched("grid")){unsigned count=args.GetArgNumber("grid");lo=count==3?180-args.GetDoubleValue("grid"):args.GetDoubleValue("grid");hi=count==3?180:args.GetDoubleValue("grid",1);intervals=args.GetIntValue("grid",count-1);}
             Require(hi>lo&&intervals>0,"fullauto needs a nonzero theta range");for(int i=0;i<=intervals;++i)theta.push_back(lo+(hi-lo)*i/intervals);}
+        if(!args.IsCatched("fullauto_initial")&&!config.adaptive.loadedFromFile){
+            Require(maximumEdge>0,"cannot determine geometric sampling estimate; supply fullauto-initial");
+            Require(maxCount>=512,"automatic initial count needs max-orientations >=512 or an explicit fullauto-initial");
+            double proposed=512;
+            if(initialModel=="xi"){proposed=std::max(512.,estimatedOrientations);initialSource="legacy max(512, beta*gamma at xi/16)";}
+            else if(go||!coherent){
+                // With real index GO is invariant to uniform body scaling.
+                // Absorption introduces an optical path / wavelength scale.
+                const double tau=4*3.14159265358979323846*std::fabs(config.refractiveImag)*maximumDiameter/config.wavelengthUm;
+                proposed=512*(1+std::sqrt(std::max(0.,tau)));empiricalFinal=proposed*16;initialSource=go?"GO scale invariance; optical-depth pilot":"incoherent fallback: bounded optical-depth pilot";
+            }else{
+                const bool prism=args.IsCatched("p")&&args.GetIntValue("p")==1;
+                const double relative=maximumEdge/config.wavelengthUm;
+                // empirical-v1: 234 completed records, 73 unique coherent
+                // settings, measured variance removes excessive old floors.
+                const double score=8.512893398898298+2.026426731719961*std::log2(1+relative/8)
+                    +.6416260243693346*(theta.back()>90)+4.040351838305495*(theta.back()-theta.front()>90)
+                    +.8222766179222369*(!controls)-2.703521520753631*(!prism);
+                empiricalFinal=std::pow(2.,score)*std::pow(.01/eps,2);
+                proposed=std::max(512.,empiricalFinal/16);initialSource="empirical-v1: completed-data variance model, predicted final/16";
+            }
+            const int cap=std::max(512,maxCount/4);initial=Power2(int(std::min(double(cap),proposed)));
+        }
+        depthPilot=Int("fullauto_depth_pilot",std::min(512,initial));
+        Require(depthPilot>0&&depthPilot<=maxCount&&(depthPilot&(depthPilot-1))==0,"depth pilot must be a power of two within max-orientations");
         // The generated reference grid already bounds the angular search.
         // Prepare its analytic means once, including large grids: per-row
         // storage is linear and the radial kernel depends on the maximum
@@ -988,7 +1008,7 @@ struct Engine {
     #include "FullAutoTuning.inc"
     void Calibrate(const std::vector<double>& x,bool working=false) {
         const int previousPhi=phi;weightTheta=x;weights.clear();polarWeights.clear();phi=fixedPhi?fixedPhi:4;Matrix ref;double fastest=std::numeric_limits<double>::max();Kernel winner=kernel;
-        if(config.useGpu&&!working){std::vector<Kernel> candidates(5);candidates[1].pipeline=candidates[2].pipeline=candidates[3].pipeline=candidates[4].pipeline=true;candidates[2].block=128;candidates[3].block=256;candidates[4].warp="thread";
+        if(config.useGpu&&!working&&!startupKernel){std::vector<Kernel> candidates(5);candidates[1].pipeline=candidates[2].pipeline=candidates[3].pipeline=candidates[4].pipeline=true;candidates[2].block=128;candidates[3].block=256;candidates[4].warp="thread";
             for(auto k:candidates){
                 if(fixedPipeline&&!k.pipeline)continue;if(fixedBlock)k.block=kernel.block;if(fixedWarp)k.warp=kernel.warp;
                 kernel=k;unsigned seed=4001;auto jobs=Stage(kernelCount,&seed,1,target,x,false);if(ref.empty())ref=jobs[0].matrix;
@@ -1101,7 +1121,7 @@ int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],do
         e.Record(e.root+"/explicit_options.json",e.requestedOptions);e.Record(e.root+"/fullauto_parameters.json",e.Parameters("{}"));
         WriteGrid(e.root+"/requested_theta.csv",e.theta);Directory(e.root+"/jobs");
         try {
-            SelectAutomaticDepth(e);e.Record(e.root+"/fullauto_parameters.json",e.Parameters("{}"));
+            PrepareDepthStartup(e);SelectAutomaticDepth(e);e.Record(e.root+"/fullauto_parameters.json",e.Parameters("{}"));
             const int result=e.go?RunGO(e):RunAdaptive(e);
             if(!PromoteAutomaticDepth(e,result))return result;
         }catch(...) {

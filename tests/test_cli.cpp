@@ -441,6 +441,9 @@ int main()
     }
     {
         auto automatic=std::vector<std::string>{"--method","po","--backend","cpu","--particle","1",".2",".1","--ri","1.31","0","--wavelength-um","1","--fullauto",".01"};
+        auto model=automatic;model.insert(model.end(),{"--fullauto-initial-model","empirical","--fullauto-depth-pilot","512","--fullauto-depth-order","sampling-first"});ExpectSuccess("empirical size hint and cheap startup tuning",model);
+        auto oldmodel=automatic;oldmodel.insert(oldmodel.end(),{"--fullauto-initial-model","xi","--fullauto-depth-order","depth-first"});ExpectSuccess("explicit legacy proxy and depth-first order",oldmodel);
+        auto badmodel=automatic;badmodel.insert(badmodel.end(),{"--fullauto-initial-model","bad"});ExpectFailure("invalid initial model",badmodel,"expects empirical or xi");
         auto search=automatic;search.insert(search.end(),{"--fullauto-depth-search","on","--fullauto-depth-start","6","--fullauto-depth-max","18"});ExpectSuccess("automatic physical depth search",search);
         auto fixed=automatic;fixed.insert(fixed.end(),{"--max-reflections","8","--fullauto-depth-search","off"});ExpectSuccess("explicit depth remains fixed",fixed);
         auto conflict=fixed;conflict.back()="on";ExpectFailure("explicit depth rejects forced search",conflict,"explicit max-reflections fixes depth");

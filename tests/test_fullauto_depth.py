@@ -18,12 +18,12 @@ def main():
     records = []
     # Each one-round run computes real matrices and deliberately stops before
     # stability certification. This measures the controller's actual start.
-    for name, height, fixed in [('small', '.2', None), ('larger', '1', None),
+    for name, height, fixed in [('small', '.2', None), ('larger', '100', None),
                                 ('explicit', '1', '256')]:
         result = output/name
         command = [str(args.binary.resolve()), '--method', 'po', '--backend', 'cpu',
             '--particle', '1', height, str(float(height)/2), '--ri', '1.31', '0',
-            '--wavelength-um', '1', '--max-reflections', '1', '--fullauto', '.1',
+            '--wavelength-um', '1', '--max-reflections', '1', '--fullauto', '.01',
             '--scattering-grid', '0', '25', '1', '2', '--fullauto-theta-start', '3',
             '--fullauto-max-rounds', '1', '--max-orientations', '262144',
             '--fullauto-analytic-controls', 'off', '--fullauto-resources', 'off',
@@ -39,7 +39,9 @@ def main():
         edge = parameters['maximum_edge_um'];step = .69/edge/16
         beta, gamma = max(3, math.ceil(math.pi/step)), max(3, math.ceil(2*math.pi/step))
         desired = max(512, beta*gamma)
-        expected = int(fixed) if fixed else 2**math.ceil(math.log2(min(desired, 262144//4)))
+        score=8.512893398898298+2.026426731719961*math.log2(1+edge/8)+.8222766179222369
+        empirical=2**score
+        expected=int(fixed)if fixed else 2**math.ceil(math.log2(min(max(512,empirical/16),262144//4)))
         assert parameters['initial_count'] == expected
         assert parameters['oldauto_N_beta_estimate'] == beta
         assert parameters['oldauto_N_gamma_estimate'] == gamma
