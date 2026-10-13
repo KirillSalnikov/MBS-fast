@@ -259,6 +259,8 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
         {"oldautofull", "diffraction-autofull", 1, "EPS", "Orientation",
          "Jointly converge reflection depth, phi, theta, N_beta, and N_gamma; finish on a regular Euler quadrature grid.",
          false, {"oldfullauto"}},
+        {"fullauto_work_queue", "fullauto-work-queue", 1, "MODE", "Orientation",
+         "Dispatch independent orientation blocks, angle groups and levels in one GPU queue: auto (default; multiple GPUs), on, off. Sampling and tolerances are unchanged."},
         {"fullauto_incremental", "fullauto-incremental", 1, "MODE", "Orientation",
          "Reuse exact Owen-Sobol prefixes and checkpoint completed orientation blocks: on (default), off."},
         {"fullauto_orientation_block", "fullauto-orientation-block", 1, "N", "Orientation",
@@ -485,7 +487,7 @@ std::string CliCanonicalFlag(const std::string &keyOrAlias)
 
 const char *FullAutoOptionPolicy(const std::string &key)
 {
-    static const std::set<std::string> controller={"fullauto","fullauto_pilot","fullauto_kernel","fullauto_initial","fullauto_correction","fullauto_rounds","fullauto_theta_range","fullauto_theta_audit","fullauto_theta_start","fullauto_gpus","fullauto_resources","fullauto_rotation","fullauto_cutoffs","fullauto_mirror","fullauto_angular_cache","fullauto_controls","fullauto_incremental","fullauto_orientation_block","fullauto_local","fullauto_ratios","fullauto_phi_recheck","fullauto_polar_controls","fullauto_final_audit","fullauto_physics_audit","fullauto_depth_share"};
+    static const std::set<std::string> controller={"fullauto","fullauto_pilot","fullauto_kernel","fullauto_initial","fullauto_correction","fullauto_rounds","fullauto_theta_range","fullauto_theta_audit","fullauto_theta_start","fullauto_gpus","fullauto_resources","fullauto_rotation","fullauto_cutoffs","fullauto_mirror","fullauto_angular_cache","fullauto_controls","fullauto_work_queue","fullauto_incremental","fullauto_orientation_block","fullauto_local","fullauto_ratios","fullauto_phi_recheck","fullauto_polar_controls","fullauto_final_audit","fullauto_physics_audit","fullauto_depth_share"};
     if(controller.count(key))return "controller";
     static const std::set<std::string> fixed={"method","po","go","incoh","karczewski","legacy_sign","p","pf","rs","k_eq","ri","w","n","abs","abs_points","sym","geometry","forced_nonconvex","forced_convex","r","haar_alpha","analytic_facet_average","analytic_shadow_control","analytic_mean_cache","mirror_gamma","grid","tgrid","nphi","backend","gpu","cpu","threads","chunk","orientation_pipeline","gpu_trace","no_gpu_trace","trace_prefilter","no_trace_prefilter","trace_prefilter_margin","trace_prefilter_stats","cutoff_profile","beam_cutoff","beam_cutoff_j","beam_cutoff_area","beam_cutoff_importance","trace_cutoff","trace_cutoff_j","trace_cutoff_area","trace_cutoff_importance","trace_max_beams","trace_limit_retries","trace_retry_factor","o","close","log","shadow_off","full_only","save_geometry","ot_phase_avg","ot_phase_shift","ot_ping","allow_experimental_environment","owen_seeds"};
     static const std::set<std::string> limits={"maxorient","max_theta_points","max_phi_points","convergence_passes","adaptive_config"};

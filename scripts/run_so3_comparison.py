@@ -37,6 +37,8 @@ def main():
     p.add_argument('--threads',type=int,default=4)
     p.add_argument('--cases',nargs='+')
     p.add_argument('--limit',type=int,default=0)
+    p.add_argument('--shard-index',type=int,default=0)
+    p.add_argument('--shard-count',type=int,default=1)
     p.add_argument('--wait-lock',action='store_true',help='Queue behind another benchmark using this device/backend.')
     a=p.parse_args();root=a.root.resolve();binary=a.binary.resolve()
     manifest=json.loads((root/'manifest.json').read_text());binary_sha=sha(binary)
@@ -49,6 +51,8 @@ def main():
         progress=dict(state='running',pid=os.getpid(),binary_sha256=binary_sha,
                       backend=a.backend,gpu=a.gpu,completed=0,reused=0,total=0)
         jobs=[j for j in manifest['jobs'] if not a.cases or j['case'] in a.cases]
+        if a.shard_count<1 or not 0<=a.shard_index<a.shard_count:raise ValueError('invalid shard index/count')
+        jobs=[job for index,job in enumerate(jobs) if index%a.shard_count==a.shard_index]
         if a.limit:jobs=jobs[:a.limit]
         progress['total']=len(jobs)
         child=[None]

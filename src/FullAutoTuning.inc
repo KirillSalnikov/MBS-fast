@@ -36,7 +36,7 @@ void SaveTuning(){
     std::ostringstream s;s<<std::setprecision(17)<<signature<<'\n'<<workerThreads<<' '<<workerChunk<<' '<<orientationBlock<<' '
         <<rotationBeta<<' '<<rotationGamma<<' '<<rotationError<<' '<<selectedCutoff<<' '<<cutoffError<<' '<<tuneCutoffs<<' '<<depthSharing<<' '<<hostBudgetMb<<'\n';
     s<<gpus.size()<<'\n';for(const auto& v:gpus)s<<v<<'\n';s<<base.size()<<'\n';for(const auto& v:base){Require(v.find('\n')==std::string::npos,"newline in worker argument");s<<v<<'\n';}
-    Atomic(root+"/execution_tuning.tsv","1 "+Hash(s.str())+"\n"+s.str());
+    Record(root+"/execution_tuning.tsv","1 "+Hash(s.str())+"\n"+s.str());
 }
 bool RestoreTuning(){
     if(!Exists(root+"/execution_tuning.tsv"))return false;
@@ -81,12 +81,14 @@ void TuneResources(const std::vector<double>& x){
         threads.insert(workerThreads);
         for(int t:threads){workerThreads=t;auto jobs=DirectStage(n,seedSet,2,target,x,false);const double seconds=jobs[0].seconds+jobs[1].seconds;
             const double error=std::max(Difference(jobs[0].matrix,baseline[0].matrix,reference),Difference(jobs[1].matrix,baseline[1].matrix,reference));
+            Log("resource_candidate","{\"threads\":"+Number(workerThreads)+",\"chunk\":"+Number(workerChunk)+",\"seconds\":"+Number(seconds)+",\"all16_difference_scaled_M11\":"+Number(error)+",\"budget\":"+Number(std::min(1e-7,eps/1024))+",\"numerically_accepted\":"+(error<std::min(1e-7,eps/1024)?"true":"false")+"}");
             report<<",{\"threads\":"<<t<<",\"chunk\":"<<workerChunk<<",\"seconds\":"<<Number(seconds)<<",\"all16_difference\":"<<Number(error)<<"}";
             if(error<std::min(1e-7,eps/1024)&&seconds<best*.95){best=seconds;chosenThreads=t;}}
         workerThreads=chosenThreads;
         if(!args.IsCatched("chunk"))for(int chunk:{64,256,1024,4096})if(chunk<=n||chunk==64){workerChunk=chunk;
             auto jobs=DirectStage(n,seedSet,2,target,x,false);const double seconds=jobs[0].seconds+jobs[1].seconds;
             const double error=std::max(Difference(jobs[0].matrix,baseline[0].matrix,reference),Difference(jobs[1].matrix,baseline[1].matrix,reference));
+            Log("resource_candidate","{\"threads\":"+Number(workerThreads)+",\"chunk\":"+Number(workerChunk)+",\"seconds\":"+Number(seconds)+",\"all16_difference_scaled_M11\":"+Number(error)+",\"budget\":"+Number(std::min(1e-7,eps/1024))+",\"numerically_accepted\":"+(error<std::min(1e-7,eps/1024)?"true":"false")+"}");
             report<<",{\"threads\":"<<workerThreads<<",\"chunk\":"<<chunk<<",\"seconds\":"<<Number(seconds)<<",\"all16_difference\":"<<Number(error)<<"}";
             if(error<std::min(1e-7,eps/1024)&&seconds<best*.95){best=seconds;chosenChunk=chunk;}}
     }
@@ -106,11 +108,11 @@ void TuneResources(const std::vector<double>& x){
         <<",\"search_amortized\":"<<(amortized?"true":"false")<<",\"forecast_native_production_seconds\":"<<Number(forecastNative)<<",\"forecast_search_seconds\":"<<Number(predictedSearch)
         <<",\"explicit_threads_preserved\":"<<(args.IsCatched("threads")?"true":"false")<<",\"explicit_chunk_preserved\":"<<(args.IsCatched("chunk")?"true":"false")
         <<",\"block_model\":\"measured startup/native phases; aim <=5% overhead and <=120s native work, bounded by 4096..1048576 and max orientations\",\"baseline_threads\":"<<baselineThreads<<",\"baseline_chunk\":"<<baselineChunk<<"}";
-    Atomic(root+"/resource_calibration.json",report.str());
+    Record(root+"/resource_calibration.json",report.str());
 }
 void TuneRotations(const std::vector<double>& x){
-    if(args.IsCatched("sym")){rotationBeta=args.GetIntValue("sym",0);rotationGamma=args.GetIntValue("sym",1);Atomic(root+"/rotation_verification.json","{\"explicit_override\":true}");return;}
-    if(rotationPolicy=="off"){SetRotation(1,1);Atomic(root+"/rotation_verification.json","{\"enabled\":false,\"reason\":\"disabled\"}");return;}
+    if(args.IsCatched("sym")){rotationBeta=args.GetIntValue("sym",0);rotationGamma=args.GetIntValue("sym",1);Record(root+"/rotation_verification.json","{\"explicit_override\":true}");return;}
+    if(rotationPolicy=="off"){SetRotation(1,1);Record(root+"/rotation_verification.json","{\"enabled\":false,\"reason\":\"disabled\"}");return;}
     RemoveOption("--symmetry",2);base.push_back("--verified-rotation-symmetry");const unsigned probe=8101;
     auto job=DirectStage(16,&probe,1,target,x,false);const std::string log=Read(job[0].folder+"/stdout.log"),marker="Verified body rotation factors: ";const auto pos=log.find(marker);
     Require(pos!=std::string::npos,"missing verified rotation factors");std::istringstream factors(log.substr(pos+marker.size()));int beta,gamma;Require(bool(factors>>beta>>gamma),"invalid rotation factors");SetRotation(beta,gamma);
@@ -124,7 +126,7 @@ void TuneRotations(const std::vector<double>& x){
         else rotationError+=bound;
     }
     report<<"],\"selected_beta_factor\":"<<rotationBeta<<",\"selected_gamma_factor\":"<<rotationGamma<<",\"estimated_error\":"<<Number(rotationError)<<",\"budget\":"<<Number(eps/256)
-        <<",\"scope\":\"oriented-facet bijection around body origin plus equivalent-rotation paired pilot; fixed axes only\"}";Atomic(root+"/rotation_verification.json",report.str());
+        <<",\"scope\":\"oriented-facet bijection around body origin plus equivalent-rotation paired pilot; fixed axes only\"}";Record(root+"/rotation_verification.json",report.str());
 }
 Samples ProfilePilot(const std::vector<double>& x,int n,const unsigned* seeds,double& cost){
     std::vector<int> depths;for(int d:{std::max(1,target-4),std::max(1,target-2),target})if(depths.empty()||depths.back()!=d)depths.push_back(d);
@@ -148,10 +150,10 @@ void IncludeBackscatter(std::vector<double>& x)const{
 void TuneCutoffs(const std::vector<double>& input){
     std::vector<double> x=input;IncludeBackscatter(x);
     bool explicitCutoff=args.IsCatched("r");for(const char* key:{"cutoff_profile","beam_cutoff","beam_cutoff_j","beam_cutoff_area","beam_cutoff_importance","trace_cutoff","trace_cutoff_j","trace_cutoff_area","trace_cutoff_importance"})explicitCutoff=explicitCutoff||args.IsCatched(key);
-    if(cutoffPolicy=="off"||explicitCutoff){Atomic(root+"/cutoff_calibration.json","{\"enabled\":false,\"explicit_settings_preserved\":"+std::string(explicitCutoff?"true":"false")+"}");return;}
+    if(cutoffPolicy=="off"||explicitCutoff){Record(root+"/cutoff_calibration.json","{\"enabled\":false,\"explicit_settings_preserved\":"+std::string(explicitCutoff?"true":"false")+"}");return;}
     if(x.size()>size_t(maxTheta)){
         tuneCutoffs=true;SetCutoff("off");
-        Atomic(root+"/cutoff_calibration.json","{\"enabled\":true,\"selected\":\"off\",\"reason\":\"explicit theta limit cannot fit cutoff guards\"}");return;
+        Record(root+"/cutoff_calibration.json","{\"enabled\":true,\"selected\":\"off\",\"reason\":\"explicit theta limit cannot fit cutoff guards\"}");return;
     }
     tuneCutoffs=true;SetCutoff("off");const bool sharing=depthSharing;const unsigned seeds[8]={9001,9007,9011,9013,9029,9041,9043,9049};
     double best=0;auto reference=ProfilePilot(x,std::min(std::min(pilot,2048),maxCount),seeds,best);const bool supportedSharing=depthSharing;std::string winner="off";double winnerBias=0;
@@ -160,23 +162,24 @@ void TuneCutoffs(const std::vector<double>& input){
         nativePilot+=job.traceSeconds+job.diffractionSeconds;}
     const double forecastGain=.25*nativePilot*double(initial)/std::min(std::min(pilot,2048),maxCount);
     if(best<30&&forecastGain<3*best){
-        Atomic(root+"/cutoff_calibration.json","{\"enabled\":true,\"selected\":\"off\",\"reference\":\"off\",\"search_amortized\":false,\"baseline_seconds\":"+Number(best)+",\"forecast_gain_seconds\":"+Number(forecastGain)+",\"reason\":\"extra preset pilots cost more than forecast savings on this short workload\"}");
+        Record(root+"/cutoff_calibration.json","{\"enabled\":true,\"selected\":\"off\",\"reference\":\"off\",\"search_amortized\":false,\"baseline_seconds\":"+Number(best)+",\"forecast_gain_seconds\":"+Number(forecastGain)+",\"reason\":\"extra preset pilots cost more than forecast savings on this short workload\"}");
         depthSharing=supportedSharing&&sharing;depthVerified=false;return;
     }
     std::ostringstream report;report<<"{\"enabled\":true,\"reference\":\"off\",\"budget\":"<<Number(eps/8)<<",\"candidates\":[{\"profile\":\"off\",\"seconds\":"<<Number(best)<<",\"bias95\":0,\"shared_depths\":"<<(supportedSharing?"true":"false")<<"}";
     for(const char* profile:{"safe","balanced","fast"}){SetCutoff(profile);depthSharing=false;double seconds=0;auto candidate=ProfilePilot(x,std::min(std::min(pilot,2048),maxCount),seeds,seconds);
-        double bias=PairedBias(candidate,reference);report<<",{\"profile\":"<<Quoted(profile)<<",\"seconds\":"<<Number(seconds)<<",\"bias95\":"<<Number(bias)<<",\"shared_depths\":false}";
+        double bias=PairedBias(candidate,reference);
+        Log("cutoff_candidate","{\"profile\":"+Quoted(profile)+",\"seconds\":"+Number(seconds)+",\"bias95\":"+Number(bias)+",\"budget\":"+Number(eps/8)+",\"within_bias_budget\":"+(bias<=eps/8?"true":"false")+",\"ten_percent_faster\":"+(seconds<best*.90?"true":"false")+"}");report<<",{\"profile\":"<<Quoted(profile)<<",\"seconds\":"<<Number(seconds)<<",\"bias95\":"<<Number(bias)<<",\"shared_depths\":false}";
         if(bias<=eps/8&&seconds<best*.90){best=seconds;winner=profile;winnerBias=bias;}}
     SetCutoff(winner);cutoffError=winnerBias;depthSharing=winner=="off"?supportedSharing&&sharing:false;depthVerified=false;
     report<<"],\"selected\":"<<Quoted(winner)<<",\"final_fresh_seed_audit_required\":"<<(winner=="off"?"false":"true")<<",\"scope\":\"all16 raw and ratios; measured multilevel workload including shared-depth eligibility; representative theta\"}";
-    Atomic(root+"/cutoff_calibration.json",report.str());
+    Record(root+"/cutoff_calibration.json",report.str());
 }
 void PrepareTuning(const std::vector<double>& angles){
     if(RestoreTuning())return;
-    Atomic(root+"/automatic_cutoff_validation.json","{\"enabled\":false}");
+    Record(root+"/automatic_cutoff_validation.json","{\"enabled\":false}");
     std::vector<double> x;const size_t rows=std::min(size_t(17),angles.size());for(size_t i=0;i<rows;++i)x.push_back(angles[i*(angles.size()-1)/(rows-1)]);
     const bool oldControls=controls;controls=false;SetMirror(false);phi=fixedPhi?fixedPhi:4;
-    if(resourcePolicy=="auto"||autoGpus)TuneResources(x);else Atomic(root+"/resource_calibration.json","{\"policy\":\"off\"}");
+    if(resourcePolicy=="auto"||autoGpus)TuneResources(x);else Record(root+"/resource_calibration.json","{\"policy\":\"off\"}");
     TuneRotations(x);
     TuneCutoffs(x);controls=oldControls;SetMirror(false);SaveTuning();
 }
@@ -191,7 +194,7 @@ bool AuditAutomaticCutoffs(const std::vector<double>& angles,int n,int round){
     for(int attempt=0;attempt<3;++attempt){auto requested=DirectStage(n,seedSet,8,target,x,false);SetCutoff("off");auto reference=DirectStage(n,seedSet,8,target,x,false);SetCutoff(profile);
         error=PairedBias(Data(requested),Data(reference));if(error<=eps/8||n>=maxCount||attempt==2)break;n=std::min(maxCount,n>maxCount/2?maxCount:2*n);}
     controls=oldControls;SetMirror(mirror);cutoffError=error;const bool pass=error<=eps/8;
-    Atomic(root+"/automatic_cutoff_validation.json","{\"passed\":"+std::string(pass?"true":"false")+",\"profile\":"+Quoted(profile)+",\"bias95\":"+Number(error)+",\"budget\":"+Number(eps/8)+",\"count_per_seed\":"+Number(n)+",\"theta_count\":"+Number(x.size())+",\"fresh_seeds\":true,\"fallback_to_off\":"+(pass?"false":"true")+"}");
+    Record(root+"/automatic_cutoff_validation.json","{\"passed\":"+std::string(pass?"true":"false")+",\"profile\":"+Quoted(profile)+",\"bias95\":"+Number(error)+",\"budget\":"+Number(eps/8)+",\"count_per_seed\":"+Number(n)+",\"theta_count\":"+Number(x.size())+",\"fresh_seeds\":true,\"fallback_to_off\":"+(pass?"false":"true")+"}");
     if(!pass){SetCutoff("off");cutoffError=0;depthSharing=coherent&&On("fullauto_depth_share");depthVerified=false;weights.clear();polarWeights.clear();weightTheta.clear();SetMirror(mirror);SaveTuning();}
     SaveTuning();return pass;
 }

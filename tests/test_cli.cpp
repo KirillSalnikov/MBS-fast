@@ -998,6 +998,9 @@ int main()
     for(const std::string flag:{"--fullauto-ratio-accuracy","--fullauto-phi-recheck","--fullauto-polarization-controls","--fullauto-final-audit","--fullauto-physics-audit","--fullauto-depth-sharing"}){
         auto valid=localAuto;valid.insert(valid.end(),{flag,"on"});ExpectSuccess("native fullauto modifier "+flag,valid);
         auto invalid=localAuto;invalid.insert(invalid.end(),{flag,"maybe"});ExpectFailure("native fullauto invalid modifier "+flag,invalid,"expects on or off");}
+    for(const std::string mode:{"auto","on","off"}){auto valid=localAuto;valid.insert(valid.end(),{"--fullauto-work-queue",mode});ExpectSuccess("native work queue "+mode,valid);}
+    auto invalidQueue=localAuto;invalidQueue.insert(invalidQueue.end(),{"--fullauto-work-queue","maybe"});ExpectFailure("invalid native work queue",invalidQueue,"must be auto, on or off");
+    auto queueNoCache=localAuto;queueNoCache.insert(queueNoCache.end(),{"--fullauto-work-queue","on","--fullauto-angular-cache","off"});ExpectFailure("queue requires angle cache",queueNoCache,"requires --fullauto-angular-cache on");
     auto joint=std::vector<std::string>{"--method","po","--backend","cpu","--particle","1","1","1","--ri","1.3116","0","--wavelength-um","1","--max-reflections","4","--sobol-seed","64","11","--haar-alpha","--paired-depth","2"};
     ExpectSuccess("coherent depth sharing CLI",joint);joint.back()="4";ExpectFailure("paired depth must be lower",joint,"LOWER <");
     if (failures != 0)

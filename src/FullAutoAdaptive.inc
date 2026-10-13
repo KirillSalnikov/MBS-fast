@@ -17,7 +17,7 @@ void GateLocalCost(Engine& e,Budgets& proposed,const std::vector<int>& depths,co
             global=maximum*(trace+diffraction*ids.size());
             if(grouped>global*1.10){for(size_t id:ids)proposed[l][id]=maximum;unified=true;}}
         report<<(l?",":"")<<"{\"level\":"<<l<<",\"observations\":"<<observations<<",\"projected_local_seconds_per_seed\":"<<Number(grouped)<<",\"projected_global_seconds_per_seed\":"<<Number(global)<<",\"unified\":"<<(unified?"true":"false")<<"}";
-    }report<<"]}";Atomic(e.root+"/local_cost_gate.json",report.str());
+    }report<<"]}";e.Record(e.root+"/local_cost_gate.json",report.str());
 }
 std::vector<size_t> AdaptiveGuards(const std::vector<size_t>& knots,size_t size,bool final=false){
     if(final)return Guards(knots,size);
@@ -26,6 +26,13 @@ std::vector<size_t> AdaptiveGuards(const std::vector<size_t>& knots,size_t size,
 }
 AdaptiveData EvaluateBudget(Engine& e,const std::vector<int>& depths,const Budgets& counts,const std::vector<size_t>& ids,const unsigned* seeds){
     const auto x=Angles(e.theta,ids);AdaptiveData result;result.analytic.assign(ids.size(),0);std::ostringstream sources;
+    std::vector<Engine::WorkRequest> requests;
+    for(size_t level=0;level<depths.size();++level){std::map<int,std::vector<double>> groups;
+        for(size_t row=0;row<ids.size();++row)groups[counts[level][ids[row]]].push_back(x[row]);
+        for(auto& group:groups){auto& subset=group.second;if(subset.size()==1){subset.push_back(x[0]==subset[0]?x.back():x[0]);std::sort(subset.begin(),subset.end());}
+            requests.push_back(Engine::WorkRequest{group.first,0,depths[level],level&&e.depthSharing?depths[level-1]:0,subset});
+            if(level&&!e.depthSharing)requests.push_back(Engine::WorkRequest{group.first,0,depths[level-1],0,subset});}}
+    e.Prefetch(requests,seeds);
     for(size_t level=0;level<depths.size();++level){Samples data(8,Matrix(ids.size()));std::vector<double> cost(ids.size());std::map<int,std::vector<size_t>> groups;
         for(size_t r=0;r<ids.size();++r)groups[counts[level][ids[r]]].push_back(r);
         for(const auto& group:groups){std::vector<double> subset;for(size_t r:group.second)subset.push_back(x[r]);
@@ -52,6 +59,20 @@ std::vector<int> AllocateRow(const Engine& e,const AdaptiveData& data,const Budg
     return proposed;
 }
 struct AdaptiveState {int round=0,streak=0;std::vector<size_t> knots;Budgets counts;Matrix previous;std::vector<bool> valid,coarse;};
+std::string SaveRoundDiagnostics(Engine& e,const AdaptiveState& state,const AdaptiveData& stage,const Statistics& stats,const std::vector<size_t>& ids,const std::vector<double>& errors,const std::vector<double>& x){
+    const std::string folder=e.root+"/round_snapshots/round"+Number(state.round)+"_"+Hash(stage.sources);
+    Directory(folder);WriteMatrix(folder+"/mueller_evaluated.dat",x,stats.mean);WriteGrid(folder+"/theta_support.csv",Angles(e.theta,state.knots));
+    Atomic(folder+"/stage_sources.tsv",stage.sources);
+    std::ostringstream table;table<<"theta_deg,is_support,interpolation_residual95,previous_available,half_prefix_stable";
+    for(size_t l=0;l<state.counts.size();++l)table<<",N_level"<<l;
+    for(int j=0;j<16;++j)table<<",estimated95_M"<<j/4+1<<j%4+1<<"_scaled_M11";
+    for(int j=1;j<16;++j)table<<",estimated95_M"<<j/4+1<<j%4+1<<"_over_M11";table<<'\n';
+    for(size_t r=0;r<ids.size();++r){const size_t id=ids[r];table<<Number(x[r])<<','<<std::binary_search(state.knots.begin(),state.knots.end(),id)<<','<<Number(errors[r])<<','<<state.valid[id]<<','<<state.coarse[id];
+        for(const auto& level:state.counts)table<<','<<level[id];for(double v:stats.interval[r])table<<','<<Number(v);for(int j=1;j<16;++j)table<<','<<Number(stats.ratioInterval[r][j]);table<<'\n';}
+    Atomic(folder+"/parameters_accuracy.csv",table.str());
+    e.Log("round_diagnostics","{\"round\":"+Number(state.round)+",\"folder\":"+Quoted(folder)+",\"sources_fnv1a64\":"+Quoted(Hash(stage.sources))+"}");
+    return folder;
+}
 void SaveAdaptive(Engine& e,const AdaptiveState& state,const std::string& phase="active"){
     std::ostringstream payload;payload<<std::setprecision(17)<<e.signature<<' '<<phase<<' '<<state.round<<' '<<state.streak<<' '<<e.phi<<' '<<e.controls<<' '<<e.sharedMeans<<' '<<e.mirror<<' '<<e.mirrorError<<' '<<e.kernel.block<<' '<<e.kernel.pipeline<<' '<<e.kernel.warp<<'\n';
     payload<<e.depthSharing<<' '<<e.depthVerified<<' '<<e.local<<'\n';payload<<e.weightTheta.size()<<'\n';for(size_t r=0;r<e.weightTheta.size();++r){payload<<e.weightTheta[r];
@@ -61,6 +82,12 @@ void SaveAdaptive(Engine& e,const AdaptiveState& state,const std::string& phase=
     for(size_t i=0;i<e.theta.size();++i)if(state.valid[i])saved.insert(i);
     payload<<state.counts.size()<<' '<<saved.size()<<'\n';for(size_t i:saved){payload<<i<<' '<<state.valid[i]<<' '<<state.coarse[i];for(const auto& level:state.counts)payload<<' '<<level[i];for(double v:state.previous[i])payload<<' '<<v;payload<<'\n';}
     Atomic(e.root+"/adaptive_checkpoint.tsv","2 "+Hash(payload.str())+"\n"+payload.str());
+    std::ostringstream history;history<<"{\"phase\":"<<Quoted(phase)<<",\"round\":"<<state.round<<",\"pass_streak\":"<<state.streak<<",\"phi\":"<<e.phi<<",\"theta_support_indices\":[";
+    for(size_t i=0;i<state.knots.size();++i)history<<(i?",":"")<<state.knots[i];history<<"],\"counts_by_level\":[";
+    for(size_t level=0;level<state.counts.size();++level){if(level)history<<',';std::map<int,std::vector<size_t>> groups;for(size_t id:saved)groups[state.counts[level][id]].push_back(id);
+        history<<'[';bool first=true;for(const auto& group:groups){history<<(first?"":",")<<"{\"count_per_seed\":"<<group.first<<",\"theta_indices\":[";
+            for(size_t i=0;i<group.second.size();++i)history<<(i?",":"")<<group.second[i];history<<"]}";first=false;}history<<']';}
+    history<<"]}";e.Log("allocation_checkpoint",history.str());
 }
 bool RestoreAdaptive(Engine& e,AdaptiveState& state){
     const std::string path=e.root+"/adaptive_checkpoint.tsv";if(!Exists(path))return false;
@@ -136,7 +163,7 @@ InterpolationResult CommonPrefixInterpolation(Engine& e,const AdaptiveState& sta
 }
 void SaveReplicaMatrices(Engine& e,const std::string& label,const Samples& data,const std::vector<double>& x,const unsigned* seeds){Directory(e.root+"/replicas");for(int s=0;s<8;++s)WriteMatrix(e.root+"/replicas/"+label+"_seed"+Number(seeds[s])+".dat",x,data[s]);}
 bool IndependentAudit(Engine& e,AdaptiveState& state,const std::vector<int>& depths,const Samples& productionSamples,const std::vector<size_t>& productionIds){
-    if(!e.finalAudit){Atomic(e.root+"/independent_final_validation.json","{\"enabled\":false,\"passed\":false}");return true;}
+    if(!e.finalAudit){e.Record(e.root+"/independent_final_validation.json","{\"enabled\":false,\"passed\":false}");return true;}
     auto ids=AdaptiveGuards(state.knots,e.theta.size(),true);
     if(e.theta.size()<=size_t(std::min(4097,e.maxTheta))){ids.resize(e.theta.size());for(size_t i=0;i<ids.size();++i)ids[i]=i;}
     for(size_t i:ids)if(!std::binary_search(productionIds.begin(),productionIds.end(),i)){
@@ -156,7 +183,7 @@ bool IndependentAudit(Engine& e,AdaptiveState& state,const std::vector<int>& dep
             validationCounts[l].assign(e.theta.size(),n);chosen.push_back(n);}
         std::cout<<"fullauto independent audit: attempt="<<attempt<<" theta="<<ids.size()<<" counts=";for(int n:chosen)std::cout<<n<<' ';std::cout<<std::endl;
         auto data=EvaluateBudget(e,depths,validationCounts,ids,seeds.data());const Samples combined=Combine(data.levels);const auto stats=Estimate(combined);auto interp=InterpolateBudget(e,state.knots,ids,combined);
-        Atomic(e.root+"/interpolation_validation_mode.json","{\"common_prefix\":false,\"uniform_level_budgets\":true}");
+        e.Record(e.root+"/interpolation_validation_mode.json","{\"common_prefix\":false,\"uniform_level_budgets\":true}");
         const auto outputStats=Estimate(interp.output);
         Matrix matched;for(size_t id:productionIds){size_t r=std::lower_bound(ids.begin(),ids.end(),id)-ids.begin();matched.push_back(stats.mean[r]);}
         const double change=Difference(production,matched,production);
@@ -166,7 +193,7 @@ bool IndependentAudit(Engine& e,AdaptiveState& state,const std::vector<int>& dep
         for(int s=0;s<8;++s)report<<(s?",":"")<<seeds[s];
         report<<"],\"counts_per_seed\":[";for(size_t l=0;l<chosen.size();++l)report<<(l?",":"")<<chosen[l];
         report<<"],\"allocation_from_production\":true,\"attempt\":"<<attempt<<",\"max_pointwise95_scaled_M11\":"<<Number(std::max(stats.maxInterval,outputStats.maxInterval))<<",\"max_ratio95\":"<<Number(std::max(stats.maxRatioInterval,outputStats.maxRatioInterval))<<",\"max_interpolation_residual95\":"<<Number(interp.maximum)<<",\"difference_to_production_scaled_M11\":"<<Number(change)<<",\"checked_theta\":"<<ids.size()<<",\"scope\":\"fresh-seed frozen-estimator pointwise validation; all requested nodes up to 4097, otherwise quarter interval guards; no simultaneous-confidence claim\"}";
-        Atomic(e.root+"/independent_final_validation.json",report.str());Atomic(e.root+"/independent_final_validation_attempt"+Number(attempt)+".json",report.str());
+        e.Record(e.root+"/independent_final_validation.json",report.str());e.Record(e.root+"/independent_final_validation_attempt"+Number(attempt)+".json",report.str());
         Atomic(e.root+"/independent_final_sources.tsv",data.sources);SaveReplicaMatrices(e,"validation_evaluated",combined,Angles(e.theta,ids),seeds.data());
         WriteGrid(e.root+"/independent_theta.csv",Angles(e.theta,ids));
         std::ostringstream budgets;budgets<<"theta_deg";for(size_t l=0;l<chosen.size();++l)budgets<<",N_level"<<l;budgets<<'\n';
@@ -182,7 +209,7 @@ bool IndependentAudit(Engine& e,AdaptiveState& state,const std::vector<int>& dep
 }
 
 bool PhysicsAudit(Engine& e,const AdaptiveState& state,const std::vector<size_t>& evaluated,const Matrix& reference){
-    if(!e.physicsAudit){Atomic(e.root+"/physics_validation.json","{\"enabled\":false,\"passed\":false,\"requested_physics_retained\":true}");return true;}
+    if(!e.physicsAudit){e.Record(e.root+"/physics_validation.json","{\"enabled\":false,\"passed\":false,\"requested_physics_retained\":true}");return true;}
     std::vector<size_t> selected;const size_t size=std::min(size_t(65),evaluated.size());for(size_t r=0;r<size;++r)selected.push_back(evaluated[r*(evaluated.size()-1)/(size-1)]);
     const auto x=Angles(e.theta,selected);Matrix scale;for(size_t id:selected)scale.push_back(reference[std::lower_bound(evaluated.begin(),evaluated.end(),id)-evaluated.begin()]);
     std::array<unsigned,8> seeds;for(int s=0;s<8;++s){seeds[s]=1500000000u+unsigned(state.round)*1024u+unsigned(s)*17u;Require(std::find(e.seeds.begin(),e.seeds.end(),seeds[s])==e.seeds.end(),"physics/production seed overlap");}
@@ -197,7 +224,7 @@ bool PhysicsAudit(Engine& e,const AdaptiveState& state,const std::vector<size_t>
         catch(...){e.base=original;e.selectedCutoff=savedCutoff;e.SetMirror(e.mirror);throw;}
         pass=depthError<=e.eps&&cutoffError<=e.eps;if(pass||count>=e.maxCount||attempt==4)break;count=std::min(e.maxCount,count>e.maxCount/2?e.maxCount:2*count);
     }
-    Atomic(e.root+"/physics_validation.json","{\"enabled\":true,\"passed\":"+std::string(pass?"true":"false")+",\"depth_plus2_residual95_scaled_M11\":"+Number(depthError)+",\"cutoffs_off_residual95_scaled_M11\":"+Number(cutoffError)+",\"count_per_seed\":"+Number(count)+",\"checked_theta\":"+Number(x.size())+",\"requested_physics_retained\":true,\"scope\":\"representative angles; depth+2 and no-cutoff sensitivity estimates; no ADDA or infinite-depth guarantee\"}");return pass;
+    e.Record(e.root+"/physics_validation.json","{\"enabled\":true,\"passed\":"+std::string(pass?"true":"false")+",\"depth_plus2_residual95_scaled_M11\":"+Number(depthError)+",\"cutoffs_off_residual95_scaled_M11\":"+Number(cutoffError)+",\"count_per_seed\":"+Number(count)+",\"checked_theta\":"+Number(x.size())+",\"requested_physics_retained\":true,\"scope\":\"representative angles; depth+2 and no-cutoff sensitivity estimates; no ADDA or infinite-depth guarantee\"}");return pass;
 }
 int RunAdaptive(Engine& e){
     std::vector<int> depths;for(int d:{std::max(1,e.target-4),std::max(1,e.target-2),e.target})if(depths.empty()||depths.back()!=d)depths.push_back(d);
@@ -205,6 +232,8 @@ int RunAdaptive(Engine& e){
     state.previous=Matrix(e.theta.size());state.valid.assign(e.theta.size(),false);state.coarse.assign(e.theta.size(),false);
     std::vector<double> tuningAngles;const size_t tuningRows=std::min(e.theta.size(),size_t(std::min(33,e.maxTheta)));
     for(size_t i=0;i<tuningRows;++i)tuningAngles.push_back(e.theta[i*(e.theta.size()-1)/(tuningRows-1)]);
+    std::ostringstream levels;levels<<"{\"depths\":[";for(size_t i=0;i<depths.size();++i)levels<<(i?",":"")<<depths[i];levels<<"],\"seeds\":[";
+    for(size_t i=0;i<e.seeds.size();++i)levels<<(i?",":"")<<e.seeds[i];levels<<"]}";e.Log("multilevel_definition",levels.str());
     e.PrepareTuning(tuningAngles);
     const bool resumed=RestoreAdaptive(e,state);
     if(e.completedCheckpoint){
@@ -239,7 +268,7 @@ int RunAdaptive(Engine& e){
             for(size_t k=0;k<check.size();++k){const size_t r=std::lower_bound(ids.begin(),ids.end(),check[k])-ids.begin();double change=0;for(int j=0;j<16;++j)change=std::max(change,std::fabs(cm[r][j]-pm[k][j])/stats.mean[r][0]);state.coarse[check[k]]=change<=e.statistical;}}
         auto interp=InterpolateBudget(e,state.knots,ids,data);
         const bool common=e.local&&VaryingBudgets(state.counts,ids);
-        Atomic(e.root+"/interpolation_production_mode.json","{\"common_prefix\":"+std::string(common?"true":"false")+"}");
+        e.Record(e.root+"/interpolation_production_mode.json","{\"common_prefix\":"+std::string(common?"true":"false")+"}");
         if(common){auto checked=CommonPrefixInterpolation(e,state,depths,ids,e.seeds.data());interp.errors=checked.errors;interp.maximum=checked.maximum;interp.bad=checked.bad;}
         bool positive=true;for(const auto& m:Mean(interp.output))positive=positive&&m[0]>0;
         std::vector<Matrix> levelVariance;for(const auto& level:stage.levels)levelVariance.push_back(Variance(level));
@@ -247,7 +276,18 @@ int RunAdaptive(Engine& e){
         double change=0;bool previous=true,coarse=true;for(size_t r=0;r<ids.size();++r){const size_t id=ids[r];previous=previous&&state.valid[id];coarse=coarse&&state.coarse[id];if(state.valid[id])for(int j=0;j<16;++j)change=std::max(change,std::fabs(stats.mean[r][j]-state.previous[id][j])/stats.mean[r][0]);}
         if(!previous)change=1e100;
         const bool pass=StatisticalError(e,stats)<=e.statistical&&outputCI<=e.statistical&&interp.maximum<=e.interpolation&&change<=e.statistical&&coarse;
+        const std::string roundSnapshot=SaveRoundDiagnostics(e,state,stage,stats,ids,interp.errors,x);
+        e.Log("round_decision","{\"round\":"+Number(state.round)+",\"statistics_pass\":"+(StatisticalError(e,stats)<=e.statistical?"true":"false")
+            +",\"output_statistics_pass\":"+(outputCI<=e.statistical?"true":"false")+",\"interpolation_pass\":"+(interp.maximum<=e.interpolation?"true":"false")
+            +",\"stability_pass\":"+(change<=e.statistical?"true":"false")+",\"half_prefix_pass\":"+(coarse?"true":"false")+",\"previous_available\":"+(previous?"true":"false")
+            +",\"output_positive_M11\":"+(positive?"true":"false")+",\"statistical95\":"+Number(StatisticalError(e,stats))+",\"output_statistical95\":"+Number(outputCI)
+            +",\"interpolation_residual95\":"+Number(interp.maximum)+",\"change_scaled_M11\":"+Number(change)+",\"statistical_budget\":"+Number(e.statistical)+",\"interpolation_budget\":"+Number(e.interpolation)+"}");
         state.streak=pass?state.streak+1:0;lastCI=std::max(stats.maxInterval,positive?output.maxInterval:1e100);lastInterpolation=interp.maximum;e.lastRatio=std::max(stats.maxRatioInterval,positive?output.maxRatioInterval:1e100);
+        e.Record(e.root+"/intermediate_current.json","{\"converged\":false,\"round\":"+Number(state.round)+",\"snapshot_folder\":"+Quoted(roundSnapshot)
+            +",\"matrix\":"+Quoted(roundSnapshot+"/mueller_evaluated.dat")+",\"accuracy_and_parameters\":"+Quoted(roundSnapshot+"/parameters_accuracy.csv")
+            +",\"statistical95\":"+Number(StatisticalError(e,stats))+",\"output_statistical95\":"+Number(outputCI)+",\"interpolation_residual95\":"+Number(interp.maximum)
+            +",\"numerical_round_passed\":"+(pass?"true":"false")+",\"pass_streak\":"+Number(state.streak)+",\"required_stable_passes\":"+Number(e.stablePasses)+"}");
+        e.State("active",state.round,PeakBudgets(state.counts),ids.size(),lastCI,lastInterpolation,state.streak);
         BudgetFile(e,state,ids);Atomic(e.root+"/final_stage_sources.tsv",stage.sources);
         std::ostringstream record;record<<state.round<<' '<<PeakBudgets(state.counts)[0]<<' '<<ids.size()<<' '<<state.knots.size()<<' '<<Number(stats.maxInterval)<<' '<<Number(outputCI)<<' '<<Number(interp.maximum)<<' '<<Number(change)<<' '<<state.streak;HistoryRecord(e,state.round,record.str());
         if(state.streak>=e.stablePasses){e.State("validating",state.round,PeakBudgets(state.counts),ids.size(),lastCI,lastInterpolation,state.streak);
@@ -263,7 +303,7 @@ int RunAdaptive(Engine& e){
                 guards<<"theta_deg,is_support,M11,estimated_guard_error_plus95_scaled_M11\n";for(size_t r=0;r<ids.size();++r)guards<<Number(x[r])<<','<<std::binary_search(state.knots.begin(),state.knots.end(),ids[r])<<','<<Number(stats.mean[r][0])<<','<<Number(interp.errors[r])<<'\n';
                 Atomic(e.root+"/all_mueller_confidence.csv",accuracy.str());Atomic(e.root+"/normalized_mueller_confidence.csv",ratio.str());Atomic(e.root+"/theta_validation.csv",guards.str());
                 const bool physics=PhysicsAudit(e,state,ids,stats.mean);
-                Atomic(e.root+"/precision_contract.json","{\"statistics\":\"eight-scramble pointwise Student-t estimates\",\"normalized_ratios\":\"paired-covariance Fieller intervals for ratios of means\",\"interpolation_budget\":"+Number(e.interpolation)+",\"execution_budget\":"+Number((e.resourcePolicy=="auto"||e.config.useGpu)?e.eps/1024:0)+",\"rotation_budget\":"+Number((e.rotationBeta>1||e.rotationGamma>1)?e.eps/256:0)+",\"cutoff_budget\":"+Number(e.selectedCutoff!="requested"&&e.selectedCutoff!="off"?e.eps/8:0)+",\"selected_cutoff\":"+Quoted(e.selectedCutoff)+",\"automatic_cutoff_audit\":"+std::string(e.tuneCutoffs&&e.selectedCutoff!="off"?"true":"false")+",\"physical_depth\":"+Number(e.target)+",\"physical_accuracy_audited\":"+std::string(e.physicsAudit?"true":"false")+",\"analytic_mean_error\":\"reported internal refinement, not an absolute bound\",\"global_simultaneous_confidence\":false}");
+                e.Record(e.root+"/precision_contract.json","{\"statistics\":\"eight-scramble pointwise Student-t estimates\",\"normalized_ratios\":\"paired-covariance Fieller intervals for ratios of means\",\"interpolation_budget\":"+Number(e.interpolation)+",\"execution_budget\":"+Number((e.resourcePolicy=="auto"||e.config.useGpu)?e.eps/1024:0)+",\"rotation_budget\":"+Number((e.rotationBeta>1||e.rotationGamma>1)?e.eps/256:0)+",\"cutoff_budget\":"+Number(e.selectedCutoff!="requested"&&e.selectedCutoff!="off"?e.eps/8:0)+",\"selected_cutoff\":"+Quoted(e.selectedCutoff)+",\"automatic_cutoff_audit\":"+std::string(e.tuneCutoffs&&e.selectedCutoff!="off"?"true":"false")+",\"physical_depth\":"+Number(e.target)+",\"physical_accuracy_audited\":"+std::string(e.physicsAudit?"true":"false")+",\"analytic_mean_error\":\"reported internal refinement, not an absolute bound\",\"global_simultaneous_confidence\":false}");
                 if(!physics){SaveAdaptive(e,state,"physics_validation_failed");e.State("physics_validation_failed",state.round,PeakBudgets(state.counts),ids.size(),lastCI,lastInterpolation,state.streak);return 4;}
                 std::ostringstream finalHashes;for(const char* path:{"mueller_fullauto.dat","mueller_evaluated.dat","all_mueller_confidence.csv","normalized_mueller_confidence.csv","theta_support.csv","theta_evaluated.csv","orientation_budget.csv","final_stage_sources.tsv","independent_final_validation.json","precision_contract.json","physics_validation.json","execution_tuning.tsv","resource_calibration.json","rotation_verification.json","cutoff_calibration.json","automatic_cutoff_validation.json"})finalHashes<<path<<' '<<Hash(Read(e.root+"/"+path))<<'\n';if(e.finalAudit)finalHashes<<"independent_orientation_budget.csv "<<Hash(Read(e.root+"/independent_orientation_budget.csv"))<<'\n';Atomic(e.root+"/final_outputs.fnv",finalHashes.str());
                 SaveAdaptive(e,state,"converged");e.State("converged",state.round,PeakBudgets(state.counts),ids.size(),lastCI,lastInterpolation,state.streak);return 0;

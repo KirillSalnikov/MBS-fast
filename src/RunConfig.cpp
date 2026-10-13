@@ -1110,6 +1110,12 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
         if (value=="off" && args.IsCatched("mirror_gamma"))
             Fail("--fullauto-mirror off conflicts with --mirror-gamma.","remove one of the conflicting options.");
     }
+    if(args.IsCatched("fullauto_work_queue")&&args.GetStringValue("fullauto_work_queue")=="on"&&args.IsCatched("fullauto_angular_cache")&&args.GetStringValue("fullauto_angular_cache")=="off")
+        Fail("--fullauto-work-queue on requires --fullauto-angular-cache on.","enable the angular cache or disable the work queue.");
+    if(args.IsCatched("fullauto_work_queue")){
+        const std::string value=args.GetStringValue("fullauto_work_queue");
+        if(value!="auto"&&value!="on"&&value!="off")Fail("--fullauto-work-queue must be auto, on or off.","choose auto, on or off.");
+    }
     if(args.IsCatched("fullauto_incremental")){
         const std::string value=args.GetStringValue("fullauto_incremental");
         if(value!="on"&&value!="off")Fail("--fullauto-incremental must be on or off.","choose on or off.");
