@@ -401,6 +401,26 @@ int main()
         "--fullauto-theta-start", "3", "--max-theta-points", "9",
         "--max-phi-points", "4", "--backend", "cpu"
     });
+    {
+        auto core=std::vector<std::string>{"--method","po","--backend","cpu","--particle","1",".2",".1","--ri","1.31","0","-w","1","--fullauto",".01"};
+        auto inc=core;inc.push_back("--incoherent");ExpectSuccess("fullauto incoherent sampling",inc);
+        auto impossible=inc;impossible.insert(impossible.end(),{"--fullauto-analytic-controls","on"});ExpectFailure("incoherent fullauto rejects coherent analytic controls",impossible,"incoherent fullauto");
+        auto pairedInc=inc;pairedInc.insert(pairedInc.end(),{"--fullauto-depth-sharing","on"});ExpectFailure("incoherent fullauto rejects coherent depth sharing",pairedInc,"incoherent fullauto");
+        auto cache=core;cache.insert(cache.end(),{"--analytic-mean-cache","provided.cache","--analytic-shadow-control","facets","--checkpoint"});ExpectSuccess("fullauto owns analytic controls and checkpoint",cache);
+        auto phi=core;phi.insert(phi.end(),{"--scattering-grid","0","180","7","32","--phi-points","3","--max-phi-points","4"});ExpectSuccess("explicit phi overrides embedded grid phi",phi);
+        auto conflict=core;conflict.insert(conflict.end(),{"--scattering-grid","0","180","7","32","--max-phi-points","4"});ExpectFailure("fixed grid phi contradicts explicit phi limit",conflict,"fixed phi count exceeds");
+        for(const auto& extra:std::vector<std::vector<std::string>>{{"--ring-points","3"},{"--pole"},{"--no-shadow-output"},{"--auto-phi"},{"--analytic-azimuth-gaussian"}}){
+            auto bad=core;bad.insert(bad.end(),extra.begin(),extra.end());ExpectFailure("fullauto rejects unused "+extra[0],bad,"incompatible with --fullauto");}
+        auto over=core;over.insert(over.end(),{"--fullauto-initial","256","--max-orientations","128"});ExpectFailure("fullauto explicit initial conflicts with explicit cap",over,"exceeds explicit");
+        auto noBlocks=core;noBlocks.insert(noBlocks.end(),{"--fullauto-incremental","off","--fullauto-orientation-block","256"});ExpectFailure("fullauto rejects unused block",noBlocks,"requires incremental sampling on");
+        auto tooDeep=core;tooDeep.insert(tooDeep.end(),{"--max-reflections","30","--fullauto-physics-audit","on"});ExpectFailure("fullauto rejects unsupported audit depth",tooDeep,"depth+2 physics audit");
+        auto rounded=core;rounded.insert(rounded.end(),{"--fullauto-initial","17"});ExpectFailure("fullauto must not silently round explicit initial",rounded,"power of two");
+        auto passes=core;passes.insert(passes.end(),{"--convergence-passes","1"});ExpectSuccess("explicit fullauto stability pass count",passes);
+        for(const auto& spec:GetCliOptionSpecs()){
+            const std::string policy=FullAutoOptionPolicy(spec.key);
+            if(policy!="fixed"&&policy!="limit"&&policy!="controller"&&policy!="native equivalent"&&policy!="help"&&policy!="unsupported")throw std::runtime_error("missing fullauto policy for "+spec.key);
+        }
+    }
     ExpectFailure("fullauto budget invalid", {
         "--method", "po", "--particle", "1", "1", "1", "--ri", "1.31", "0",
         "-w", "1", "--fullauto", "0", "--backend", "cpu"

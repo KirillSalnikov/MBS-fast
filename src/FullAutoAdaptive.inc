@@ -138,7 +138,7 @@ void SaveReplicaMatrices(Engine& e,const std::string& label,const Samples& data,
 bool IndependentAudit(Engine& e,AdaptiveState& state,const std::vector<int>& depths,const Samples& productionSamples,const std::vector<size_t>& productionIds){
     if(!e.finalAudit){Atomic(e.root+"/independent_final_validation.json","{\"enabled\":false,\"passed\":false}");return true;}
     auto ids=AdaptiveGuards(state.knots,e.theta.size(),true);
-    if(e.theta.size()<=4097){ids.resize(e.theta.size());for(size_t i=0;i<ids.size();++i)ids[i]=i;}
+    if(e.theta.size()<=size_t(std::min(4097,e.maxTheta))){ids.resize(e.theta.size());for(size_t i=0;i<ids.size();++i)ids[i]=i;}
     for(size_t i:ids)if(!std::binary_search(productionIds.begin(),productionIds.end(),i)){
         auto upper=std::upper_bound(productionIds.begin(),productionIds.end(),i);const size_t right=upper==productionIds.end()?productionIds.back():*upper,left=upper==productionIds.begin()?productionIds.front():*(upper-1);
         for(auto& level:state.counts)level[i]=std::max(level[left],level[right]);}
@@ -203,7 +203,7 @@ int RunAdaptive(Engine& e){
     std::vector<int> depths;for(int d:{std::max(1,e.target-4),std::max(1,e.target-2),e.target})if(depths.empty()||depths.back()!=d)depths.push_back(d);
     AdaptiveState state;state.counts=Budgets(depths.size(),std::vector<int>(e.theta.size(),e.minimum));state.counts[0].assign(e.theta.size(),e.initial);
     state.previous=Matrix(e.theta.size());state.valid.assign(e.theta.size(),false);state.coarse.assign(e.theta.size(),false);
-    std::vector<double> tuningAngles;const size_t tuningRows=std::min(e.theta.size(),size_t(33));
+    std::vector<double> tuningAngles;const size_t tuningRows=std::min(e.theta.size(),size_t(std::min(33,e.maxTheta)));
     for(size_t i=0;i<tuningRows;++i)tuningAngles.push_back(e.theta[i*(e.theta.size()-1)/(tuningRows-1)]);
     e.PrepareTuning(tuningAngles);
     const bool resumed=RestoreAdaptive(e,state);
@@ -215,7 +215,7 @@ int RunAdaptive(Engine& e){
         auto ids=AdaptiveGuards(state.knots,e.theta.size());auto x=Angles(e.theta,ids);e.State("calibrating",0,PeakBudgets(state.counts),ids.size(),0,0,0);
         auto calibrate=[&](){e.PrepareMirror(x);e.Calibrate(x);if(!e.VerifyMirror(x)){e.SetMirror(false);e.Calibrate(x);}};
         try{calibrate();if(e.thetaAuditCount)state.knots=e.AuditThetaSupport(state.knots);}catch(const std::exception& error){if(!e.DisableUnsupportedControls(error))throw;calibrate();if(e.thetaAuditCount)state.knots=e.AuditThetaSupport(state.knots);}
-        ids=AdaptiveGuards(state.knots,e.theta.size());if(e.phiRecheck&&!e.args.IsCatched("nphi")&&ids.size()>2*x.size()){
+        ids=AdaptiveGuards(state.knots,e.theta.size());if(e.phiRecheck&&!e.fixedPhi&&ids.size()>2*x.size()){
             Atomic(e.root+"/initial_calibration.json",Read(e.root+"/calibration.json"));e.Calibrate(WorkingGrid(e,ids),true);if(!e.VerifyMirror(WorkingGrid(e,ids))){e.SetMirror(false);e.Calibrate(WorkingGrid(e,ids),true);}}
         // On small grids startup, matrix assembly and tracing dominate. The
         // measured regressions do not justify grouping there; retain a

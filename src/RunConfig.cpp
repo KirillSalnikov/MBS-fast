@@ -863,6 +863,38 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
         if (spec.key.compare(0, 9, "fullauto_") == 0 && args.IsCatched(spec.key)
             && !args.IsCatched("fullauto"))
             Fail(CliCanonicalFlag(spec.key) + " requires --fullauto EPS.", "select --fullauto or remove the controller setting.");
+    if(args.IsCatched("fullauto")){
+        for(const auto& spec:GetCliOptionSpecs())if(args.IsCatched(spec.key)&&std::string(FullAutoOptionPolicy(spec.key))=="unsupported")
+            Fail(CliCanonicalFlag(spec.key)+" is incompatible with --fullauto.","remove this option or run the corresponding standalone mode; fullauto must not silently ignore it.");
+        if(config.method!=RunMethod::PhysicalOptics||config.useFft)
+            Fail("--fullauto requires direct PO.","use --method po without FFT.");
+        if(args.IsCatched("n")&&config.maxReflections==0)
+            Fail("--fullauto does not support --max-reflections 0.","use a standalone fixed-depth PO run at zero or choose a positive fullauto target.");
+        for(const char* key:{"fullauto_pilot","fullauto_kernel","fullauto_initial","fullauto_correction"})if(args.IsCatched(key)){RequirePositiveInt(args,key);RequirePowerOfTwo(args,key);}
+        for(const char* key:{"fullauto_rounds","fullauto_theta_start"})if(args.IsCatched(key))RequirePositiveInt(args,key);
+        if(args.IsCatched("fullauto_theta_audit")){RequireNonnegativeInt(args,"fullauto_theta_audit");if(IntValue(args,"fullauto_theta_audit")>0)RequirePowerOfTwo(args,"fullauto_theta_audit");}
+        if(args.IsCatched("maxorient"))for(const char* key:{"fullauto_initial","fullauto_correction"})if(args.IsCatched(key)&&IntValue(args,key)>IntValue(args,"maxorient"))
+            Fail(CliCanonicalFlag(key)+" exceeds explicit --max-orientations.","remove or adjust one of the conflicting explicit settings.");
+        if(args.IsCatched("fullauto_theta_start")&&args.IsCatched("max_theta_points")&&IntValue(args,"fullauto_theta_start")>IntValue(args,"max_theta_points"))
+            Fail("initial theta support exceeds explicit --max-theta-points.","reduce the support or increase the limit.");
+        if(args.IsCatched("fullauto_incremental")&&args.GetStringValue("fullauto_incremental")=="off"&&args.IsCatched("fullauto_orientation_block"))
+            Fail("--fullauto-orientation-block requires incremental sampling on.","remove the block option or enable incremental sampling.");
+        if(args.IsCatched("fullauto_physics_audit")&&args.GetStringValue("fullauto_physics_audit")=="on"&&config.maxReflections>28)
+            Fail("depth+2 physics audit exceeds the supported depth 30.","use target depth <=28 or disable the physics audit.");
+        if(args.IsCatched("fullauto_polar_controls")&&args.GetStringValue("fullauto_polar_controls")=="on"&&(args.IsCatched("incoh")||(args.IsCatched("fullauto_controls")&&args.GetStringValue("fullauto_controls")=="off")))
+            Fail("polarization controls require coherent analytic controls.","remove the polarization modifier or enable coherent controls.");
+        const int fixedPhi=args.IsCatched("nphi")?IntValue(args,"nphi"):(args.IsCatched("grid")?IntValue(args,"grid",args.GetArgNumber("grid")-2):0);
+        if(fixedPhi&&args.IsCatched("max_phi_points")&&fixedPhi>IntValue(args,"max_phi_points"))
+            Fail("fixed phi count exceeds --max-phi-points.","remove the conflicting explicit limit or increase it.");
+        if(args.IsCatched("incoh")){
+            if(args.IsCatched("analytic_facet_average")||args.IsCatched("analytic_shadow_control")||args.IsCatched("analytic_mean_cache")||(args.IsCatched("fullauto_controls")&&args.GetStringValue("fullauto_controls")=="on"))
+                Fail("incoherent fullauto cannot use coherent analytic facet controls.","remove analytic modifiers or use --fullauto-analytic-controls off/auto.");
+            if(args.IsCatched("fullauto_depth_share")&&args.GetStringValue("fullauto_depth_share")=="on")
+                Fail("incoherent fullauto cannot use coherent paired-depth sharing.","use --fullauto-depth-sharing off or remove the modifier.");
+        }
+        if(args.IsCatched("fullauto_controls")&&args.GetStringValue("fullauto_controls")=="off"&&(args.IsCatched("analytic_shadow_control")||args.IsCatched("analytic_mean_cache")))
+            Fail("analytic modifiers conflict with --fullauto-analytic-controls off.","remove the analytic modifiers or enable controls.");
+    }
     if (args.IsCatched("haar_alpha"))
     {
         if (config.method!=RunMethod::PhysicalOptics
@@ -876,7 +908,7 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
                  "remove multi-size/adaptive/mirror-gamma modifiers or run this size independently.");
     }
     if ((args.IsCatched("analytic_shadow_control") || args.IsCatched("analytic_facet_samples") || args.IsCatched("analytic_mean_cache") || args.IsCatched("analytic_mean_reference") || args.IsCatched("analytic_azimuth_gaussian") || args.IsCatched("analytic_control_weights"))
-        && !args.IsCatched("analytic_facet_average"))
+        && !args.IsCatched("analytic_facet_average") && !args.IsCatched("fullauto"))
         Fail("analytic facet controls/output require --analytic-facet-average.",
              "add --analytic-facet-average or remove its modifiers.");
     if (args.IsCatched("analytic_facet_average"))
@@ -1193,7 +1225,7 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
     {
         const bool supported = mode == OrientationMode::File
             || mode == OrientationMode::DiffractionGrid
-            || mode == OrientationMode::EulerGrid;
+            || mode == OrientationMode::EulerGrid || args.IsCatched("fullauto");
         if (config.method != RunMethod::PhysicalOptics || !supported)
             Fail("--checkpoint is not implemented for the selected orientation mode.",
                  "remove it or use PO with --orientation-file, --diffraction-grid, or --euler-grid.");
@@ -1754,12 +1786,12 @@ RunConfig RunConfig::FromCommandLine(const ArgPP &args,
     RequirePositiveInt(args, "convergence_passes");
     if (args.IsCatched("max_theta_points")
         && IntValue(args, "max_theta_points", 0) < (args.IsCatched("fullauto") ? 2 : 17))
-        Fail("--max-theta-points must be at least 17.",
-             "use 17 or a larger safety limit; the default is 4097.");
+        Fail(args.IsCatched("fullauto")?"--max-theta-points must be at least 2.":"--max-theta-points must be at least 17.",
+             "increase the explicit limit.");
     if (args.IsCatched("max_phi_points")
         && IntValue(args, "max_phi_points", 0) < (args.IsCatched("fullauto") ? 1 : 12))
-        Fail("--max-phi-points must be at least 12.",
-             "use 12 or a larger safety limit; the default is 2400.");
+        Fail(args.IsCatched("fullauto")?"--max-phi-points must be at least 1.":"--max-phi-points must be at least 12.",
+             "increase the explicit limit.");
     if (args.IsCatched("max_phi_points")
         && IntValue(args, "max_phi_points", 0)
             > (std::numeric_limits<int>::max() - 6) / 2)

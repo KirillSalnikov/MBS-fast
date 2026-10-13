@@ -30,6 +30,8 @@ struct CliOptionSpec
 const std::vector<CliOptionSpec> &GetCliOptionSpecs();
 const CliOptionSpec *FindCliOptionSpec(const std::string &keyOrAlias);
 std::string CliCanonicalFlag(const std::string &keyOrAlias);
+// fullauto checks every registered option; unknown/unused settings are rejected.
+const char *FullAutoOptionPolicy(const std::string &key);
 void RegisterCliOptions(ArgPP &parser);
 void PrintGeneratedHelp(bool includeDebugOptions);
 

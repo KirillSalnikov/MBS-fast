@@ -258,6 +258,7 @@ struct Engine {
     bool local=true,ratios=true,phiRecheck=true,polarControls=true,finalAudit=true,physicsAudit=false;
     std::vector<std::array<Mueller,2>> polarWeights;
     double lastRatio=0,lastAnalyticError=0;bool independentPassed=false,independentNeedsSampling=true;
+    int fixedPhi=0;std::string requestedMeanCache;bool coherent=true,fixedPipeline=false,fixedBlock=false,fixedWarp=false;
     bool depthSharing=true,depthVerified=false;
     bool completedCheckpoint=false;
     std::string localPolicy="auto";
@@ -265,8 +266,8 @@ struct Engine {
     int Int(const std::string& key,int fallback){return args.IsCatched(key)?args.GetIntValue(key):fallback;}
     bool On(const char* key,bool fallback=true){return args.IsCatched(key)?args.GetStringValue(key)=="on":fallback;}
     void Init(int argc,const char* argv[]) {
-        Require(config.method==RunMethod::PhysicalOptics&&!config.useFft,"requires coherent direct PO");
-        for(const char* key:{"incoh","analytic_mean_reference","haar_mirror_audit","multigrid","multikeq","multikeq_list","gpu_trace","orientfile_dedup","analytic_facet_samples","analytic_control_weights","analytic_backscatter","analytic_azimuth_gaussian","owen_avg","checkpoint"})
+        Require(config.method==RunMethod::PhysicalOptics&&!config.useFft,"requires direct PO");
+        for(const char* key:{"analytic_mean_reference","haar_mirror_audit","multigrid","multikeq","multikeq_list","orientfile_dedup","analytic_facet_samples","analytic_control_weights","analytic_backscatter","analytic_azimuth_gaussian","owen_avg"})
             Require(!args.IsCatched(key),std::string("unsupported modifier --")+key+"; run one coherent size without external controls");
         const RuntimeEnvironmentSnapshot environment=QueryRuntimeEnvironmentSnapshot();
         Require(environment.experimental.empty() || args.IsCatched("allow_experimental_environment"),"unset experimental MBS_* variables or acknowledge --allow-experimental-environment");
@@ -278,7 +279,12 @@ struct Engine {
         eps=args.GetDoubleValue("fullauto");interpolation=eps*.25;statistical=eps-interpolation;
         localPolicy=args.IsCatched("fullauto_local")?args.GetStringValue("fullauto_local"):"auto";local=localPolicy!="off";ratios=On("fullauto_ratios");phiRecheck=On("fullauto_phi_recheck");
         polarControls=On("fullauto_polar_controls");finalAudit=On("fullauto_final_audit");physicsAudit=On("fullauto_physics_audit",false);
-        depthSharing=On("fullauto_depth_share");
+        coherent=!args.IsCatched("incoh");depthSharing=coherent&&On("fullauto_depth_share");
+        fixedPhi=args.IsCatched("nphi")?args.GetIntValue("nphi"):(args.IsCatched("grid")?args.GetIntValue("grid",args.GetArgNumber("grid")-2):0);
+        fixedPipeline=args.IsCatched("orientation_pipeline");kernel.pipeline=fixedPipeline;
+        if(const char* v=getenv("MBS_GPU_BLOCK")){int n=std::atoi(v);Require(std::string(v)==std::to_string(n)&&(n==64||n==128||n==256),"MBS_GPU_BLOCK must be 64, 128 or 256");kernel.block=n;fixedBlock=true;}
+        if(const char* v=getenv("MBS_GPU_WARP_BEAMS")){Require(std::string(v)=="0"||std::string(v)=="1","MBS_GPU_WARP_BEAMS must be 0 or 1");kernel.warp=std::string(v)=="1"?"warp":"thread";fixedWarp=true;}
+        if(args.IsCatched("analytic_mean_cache"))requestedMeanCache=args.GetStringValue("analytic_mean_cache");
         angularCache=!args.IsCatched("fullauto_angular_cache")||args.GetStringValue("fullauto_angular_cache")!="off";
         incremental=!args.IsCatched("fullauto_incremental")||args.GetStringValue("fullauto_incremental")!="off";
         orientationBlock=Int("fullauto_orientation_block",65536);
@@ -293,7 +299,7 @@ struct Engine {
         Require(thetaAuditCount>=0&&thetaAuditCount<=2147483646,"invalid theta audit count");
         minimum=Int("fullauto_correction",256);maxCount=Int("maxorient",67108864);roundLimit=Int("fullauto_rounds",32);startTheta=Int("fullauto_theta_start",33);
         for(int v:{pilot,kernelCount,initial,minimum,maxCount})Require(v>0&&v<2147483647,"counts must fit positive signed32bit");
-        Require(initial<=maxCount&&minimum<=maxCount&&roundLimit>0&&startTheta>=2,"invalid count/round/theta limits");
+        Require(roundLimit>0&&startTheta>=2,"invalid round/theta limits");
         if(config.adaptive.loadedFromFile){
             pilot=Int("fullauto_pilot",std::max(config.adaptive.minPilotOrientations,std::min(512,config.adaptive.maxPilotOrientations)));
             initial=Int("fullauto_initial",config.adaptive.minOrientations);
@@ -304,13 +310,21 @@ struct Engine {
         }
         if(args.IsCatched("max_theta_points"))maxTheta=config.adaptive.maxThetaPoints;
         if(args.IsCatched("max_phi_points"))maxPhi=config.adaptive.maxPhiPoints;
-        stablePasses=std::max(2,config.adaptive.stablePasses);
+        if(fixedPhi){minPhi=fixedPhi;if(!args.IsCatched("max_phi_points"))maxPhi=fixedPhi;}
+        if(!args.IsCatched("fullauto_theta_start"))startTheta=std::min(startTheta,std::max(2,(maxTheta<1000?(maxTheta+3)/4:33)));
+        Require(startTheta<=maxTheta,"initial theta support exceeds explicit theta limit");
+        stablePasses=config.adaptive.stablePasses;
+        if(!args.IsCatched("fullauto_initial"))initial=std::min(initial,maxCount);
+        if(!args.IsCatched("fullauto_correction"))minimum=std::min(minimum,maxCount);
+        if(!args.IsCatched("fullauto_pilot"))pilot=std::min(pilot,maxCount);
+        if(!args.IsCatched("fullauto_kernel"))kernelCount=std::min(kernelCount,maxCount);
         initial=Power2(initial);minimum=Power2(minimum);Require(initial<=maxCount&&minimum<=maxCount,"rounded counts exceed max-orientations");
         for(int v:{pilot,kernelCount,initial,minimum,maxCount})Require(v>0&&v<2147483647,"invalid configured counts");
         Require(roundLimit>0&&startTheta>=2&&maxTheta>=2&&minPhi>0&&maxPhi>=minPhi,"invalid configured limits");
         target=args.IsCatched("n")?config.maxReflections:12;Require(target>0,"target depth must be positive");
-        controlPolicy=args.IsCatched("fullauto_controls")?args.GetStringValue("fullauto_controls"):(args.IsCatched("analytic_facet_average")?"on":"auto");
-        controls=controlPolicy!="off"&&config.refractiveReal>=1.;
+        controlPolicy=args.IsCatched("fullauto_controls")?args.GetStringValue("fullauto_controls"):((args.IsCatched("analytic_facet_average")||args.IsCatched("analytic_shadow_control"))?"on":"auto");
+        if(controlPolicy=="auto"&&(args.IsCatched("analytic_facet_average")||args.IsCatched("analytic_shadow_control")))controlPolicy="on";
+        controls=coherent&&controlPolicy!="off"&&config.refractiveReal>=1.;
         Require(controlPolicy!="on"||controls,"analytic facet controls require refractive REAL>=1");
         SetMirror(false);
         seeds.assign(production,production+8);if(args.IsCatched("owen_seeds")){Require(args.GetArgNumber("owen_seeds")==8,"need exactly eight production seeds");
@@ -368,7 +382,7 @@ struct Engine {
             while(std::getline(f,v,',')){size_t pos=0;int id=std::stoi(v,&pos);Require(pos==v.size()&&id>=0&&id<count&&used.insert(id).second,"invalid/duplicate visible GPU index");gpus.push_back(visible.empty()?v:visible.at(id));}
         Require(!gpus.empty(),"empty GPU list");}else{Require(!args.IsCatched("fullauto_gpus"),"GPU list requires CUDA backend");gpus.push_back("");}
         workerThreads=config.threads>0?config.threads:std::max(1,std::min(16,QueryRuntimeResourceSnapshot().physicalCores/int(gpus.size())));
-        std::set<std::string> drop={"fullauto","autofull","o","n","grid","tgrid","nphi","haar_alpha","mirror_gamma","analytic_facet_average","analytic_shadow_control","analytic_mean_cache","analytic_control_weights","close","profile_phases","orientation_pipeline","maxorient","max_theta_points","max_phi_points","adaptive_config","owen_seeds","convergence_passes","threads","chunk"};
+        std::set<std::string> drop={"fullauto","autofull","o","n","grid","tgrid","nphi","haar_alpha","mirror_gamma","analytic_facet_average","analytic_shadow_control","analytic_mean_cache","analytic_control_weights","close","profile_phases","orientation_pipeline","checkpoint","maxorient","max_theta_points","max_phi_points","adaptive_config","owen_seeds","convergence_passes","threads","chunk"};
         std::ostringstream fingerprint;fingerprint<<binaryHash<<'\n';for(int i=1;i<argc;++i)fingerprint<<argv[i]<<'\n';
         // Canonical reconstruction avoids shell quoting and option aliases.
         std::set<std::string> seen;for(const auto& spec:GetCliOptionSpecs())if(args.IsCatched(spec.key)&&seen.insert(spec.key).second){
@@ -387,6 +401,11 @@ struct Engine {
         const char* visible=getenv("CUDA_VISIBLE_DEVICES");fingerprint<<"visible="<<(visible?visible:"")<<'\n';
         for(const auto& gpu:gpus)fingerprint<<"gpu="<<gpu<<'\n';
         signature=Hash(fingerprint.str());
+        std::ostringstream supplied;supplied<<"{\"priority\":\"explicit CLI > config file > automatic selection\",\"options\":[";bool first=true;
+        for(const auto& spec:GetCliOptionSpecs())if(args.IsCatched(spec.key)){
+            supplied<<(first?"":",")<<"{\"flag\":"<<Quoted(CliCanonicalFlag(spec.key))<<",\"policy\":"<<Quoted(FullAutoOptionPolicy(spec.key))<<",\"values\":[";
+            for(unsigned i=0;i<args.GetArgNumber(spec.key);++i)supplied<<(i?",":"")<<Quoted(args.GetStringValue(spec.key,i));supplied<<"]}";first=false;
+        }supplied<<"]}";Atomic(root+"/explicit_options.json",supplied.str());
     }
     void State(const std::string& status,int round,const std::vector<int>& counts,size_t nodes,double ci,double ie,int streak) {
         std::ostringstream s;s<<std::setprecision(17)<<"{\n\"status\":"<<Quoted(status)<<",\"configuration_fnv1a64\":"<<Quoted(signature)
@@ -406,7 +425,7 @@ struct Engine {
             <<",\"execution_budget\":"<<((resourcePolicy=="auto"||config.useGpu)?eps/1024:0)<<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
             <<",\"rotation_beta_factor\":"<<rotationBeta<<",\"rotation_gamma_factor\":"<<rotationGamma<<",\"rotation_budget\":"<<((rotationBeta>1||rotationGamma>1)?eps/256:0)
             <<",\"selected_cutoff\":"<<Quoted(selectedCutoff)<<",\"cutoff_budget\":"<<(selectedCutoff!="requested"&&selectedCutoff!="off"?eps/8:0)<<",\"max_cutoff_residual95\":"<<cutoffError
-            <<",\"scope\":\"eight-seed pointwise intervals; interpolation guards on requested grid; mirror paired pilot when enabled; fixed target physics; no global simultaneous confidence claim\"}\n";
+            <<",\"coherent\":"<<(coherent?"true":"false")<<",\"fixed_phi\":"<<fixedPhi<<",\"scope\":\"eight-seed pointwise intervals; interpolation guards on requested grid; mirror paired pilot when enabled; fixed target physics; no global simultaneous confidence claim\"}\n";
         Atomic(root+"/fullauto_status.json",s.str());std::cout<<"fullauto "<<status<<" round="<<round<<" theta="<<nodes<<" ci="<<ci<<" interpolation="<<ie<<" streak="<<streak<<std::endl;
     }
     Job Load(Job j) {
@@ -450,6 +469,7 @@ struct Engine {
             double t=(q-weightTheta[k])/(weightTheta[k+1]-weightTheta[k]);f<<q;for(int j=0;j<2;++j)f<<' '<<((1-t)*weights[k][j]+t*weights[k+1][j]);f<<'\n';}
         std::string path=root+"/weights_"+Hash(f.str())+".tsv";Atomic(path,f.str());return path;
     }
+    std::string MeanCache(const std::string& gridHash)const{return requestedMeanCache.empty()?(sharedMeans?root+"/means_shared.cache":root+"/mean_"+gridHash+".cache"):requestedMeanCache;}
     void SetSampling(Job& j,int n,unsigned seed,int depth,const std::vector<double>& x,bool paired){
         j.executionHash=ExecutionHash();j.count=n;j.seed=seed;j.depth=depth;j.phi=phi;j.block=kernel.block;j.pipeline=kernel.pipeline;j.warp=kernel.warp;
         j.mirrored=mirror&&!paired;j.paired=paired;j.inputAngles=x;j.hasControls=controls;
@@ -459,7 +479,7 @@ struct Engine {
             &&j.pipeline==kernel.pipeline&&j.warp==kernel.warp&&j.mirrored==mirror&&!j.paired&&j.hasControls==controls;
     }
     std::vector<Job> DirectStage(int n,unsigned const* seedSet,size_t ns,int depth,const std::vector<double>& x,bool weighted=true,bool pairedMirror=false,int offset=0,int pairedDepth=0) {
-        Require(Hash(Read(exe))==binaryHash,"binary changed during run");std::ostringstream angles;for(double q:x)angles<<Number(q)<<'\n';std::string gridHash=Hash(angles.str());
+        Require(x.size()<=size_t(maxTheta),"explicit theta evaluation limit exceeded");Require(Hash(Read(exe))==binaryHash,"binary changed during run");std::ostringstream angles;for(double q:x)angles<<Number(q)<<'\n';std::string gridHash=Hash(angles.str());
         std::string grid=root+"/theta_"+gridHash+".csv";Atomic(grid,angles.str());std::string wf=weighted?WriteWeights(x):"";
         std::vector<Job> result(ns);std::vector<std::vector<std::string>> commands(ns);std::vector<size_t> todo;
         for(size_t s=0;s<ns;++s){std::vector<std::string> command=base;
@@ -468,7 +488,7 @@ struct Engine {
             if(offset){command.push_back("--sobol-offset");command.push_back(std::to_string(offset));}
             if(pairedDepth){command.push_back("--paired-depth");command.push_back(std::to_string(pairedDepth));}
             command.push_back("--profile-phases");
-            if(controls){command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(sharedMeans?root+"/means_shared.cache":root+"/mean_"+gridHash+".cache");if(sharedMeans){command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");}}
+            if(controls){command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache(gridHash));if(sharedMeans){command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");}}
             if(workerChunk>0){command.push_back("--orientation-chunk");command.push_back(Number(workerChunk));}
             if(kernel.pipeline)command.push_back("--orientation-pipeline");
             if(!wf.empty()){command.push_back("--analytic-control-weights");command.push_back(wf);}
@@ -519,7 +539,7 @@ struct Engine {
         std::ostringstream coordinates;for(double v:x)coordinates<<Number(v)<<'\n';const std::string grid=root+"/theta_"+Hash(coordinates.str())+".csv";Atomic(grid,coordinates.str());
         std::vector<std::string> command=base;for(const auto& v:std::vector<std::string>{"--max-reflections",Number(job.depth),"--sobol-seed",Number(job.count),Number(job.seed),"--haar-alpha","--theta-grid-file",grid,"--phi-points",Number(phi),"--threads",Number(workerThreads),"--close"})command.push_back(v);
         if(job.offset){command.push_back("--sobol-offset");command.push_back(Number(job.offset));}if(mirror)command.push_back("--mirror-gamma");
-        if(controls){command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(root+"/means_shared.cache");command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");const auto wf=WriteWeights(x);if(!wf.empty()){command.push_back("--analytic-control-weights");command.push_back(wf);}}
+        if(controls){command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache("shared"));command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");const auto wf=WriteWeights(x);if(!wf.empty()){command.push_back("--analytic-control-weights");command.push_back(wf);}}
         if(workerChunk>0){command.push_back("--orientation-chunk");command.push_back(Number(workerChunk));}
         command.push_back("--output");command.push_back(job.folder+"/result");std::ostringstream recipe;recipe<<exe<<'\n';for(const auto& v:command)recipe<<v<<'\n';return recipe.str();
     }
@@ -614,7 +634,7 @@ struct Engine {
             if(mirror)command.push_back("--mirror-gamma");
             if(workerChunk>0){command.push_back("--orientation-chunk");command.push_back(Number(workerChunk));}
             if(kernel.pipeline)command.push_back("--orientation-pipeline");
-            if(controls){command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(root+"/means_shared.cache");command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");}
+            if(controls){command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache("shared"));command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");}
             if(!wf.empty()){command.push_back("--analytic-control-weights");command.push_back(wf);}command.push_back("--output");command.push_back(j.folder+"/result");
             std::string recipe=exe+"\n";for(const auto& v:command)recipe+=v+"\n";Atomic(j.folder+"/command.args",recipe);
             Atomic(j.folder+"/stdout.log","Controller exact Sobol-prefix assembly; command.args is a full-prefix replay recipe.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");
@@ -640,7 +660,7 @@ struct Engine {
     }
     std::vector<Job> Stage(int n,unsigned const* seedSet,size_t ns,int depth,const std::vector<double>& x,bool weighted=true,bool pairedMirror=false,int offset=0){
         if(!angularCache||pairedMirror)return offset?DirectStage(n,seedSet,ns,depth,x,weighted,pairedMirror,offset):PrefixStage(n,seedSet,ns,depth,x,weighted,pairedMirror);
-        Require(Hash(Read(exe))==binaryHash,"binary changed during run");
+        Require(x.size()<=size_t(maxTheta),"explicit theta evaluation limit exceeded");Require(Hash(Read(exe))==binaryHash,"binary changed during run");
         const std::string wf=weighted?WriteWeights(x):"",weightHash=Hash(wf.empty()?"":Read(wf));
         typedef std::pair<const Job*,size_t> SourceRow;std::vector<std::map<double,SourceRow>> rows(ns);
         std::vector<Job> exactJobs(ns);
@@ -707,7 +727,7 @@ struct Engine {
             if(offset){command.push_back("--sobol-offset");command.push_back(std::to_string(offset));}
             if(workerChunk>0){command.push_back("--orientation-chunk");command.push_back(Number(workerChunk));}
             if(kernel.pipeline)command.push_back("--orientation-pipeline");
-            if(controls){command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(sharedMeans?root+"/means_shared.cache":root+"/mean_"+gridHash+".cache");if(sharedMeans){command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");}}
+            if(controls){command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache(gridHash));if(sharedMeans){command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");}}
             if(!wf.empty()){command.push_back("--analytic-control-weights");command.push_back(wf);}command.push_back("--output");command.push_back(j.folder+"/result");
             std::string recipe=exe+"\n";for(const auto& v:command)recipe+=v+"\n";Atomic(j.folder+"/command.args",recipe);
             Atomic(j.folder+"/stdout.log","Controller angular assembly; command.args is a reproducible full-grid recipe, not a launched worker.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");
@@ -791,6 +811,10 @@ struct Engine {
     }
     std::vector<size_t> AuditThetaSupport(std::vector<size_t> knots){
         if(!thetaAuditCount)return knots;
+        if(theta.size()>size_t(maxTheta)){
+            Require(!args.IsCatched("fullauto_theta_audit"),"explicit dense theta pilot exceeds explicit theta limit");
+            Atomic(root+"/dense_theta_pilot.json","{\"enabled\":false,\"reason\":\"explicit theta limit\"}\n");return knots;
+        }
         std::cout<<"fullauto: independent dense theta pilot N="<<thetaAuditCount<<" rows="<<theta.size()<<std::endl;
         auto jobs=DirectStage(thetaAuditCount,angularValidation,8,target,theta);Samples data=Data(jobs);Matrix reference=Mean(data);
         for(const auto& r:reference)Require(r[0]>0,"mean M11 must be positive in theta pilot");
@@ -812,19 +836,21 @@ struct Engine {
     void Calibrate(const std::vector<double>& x,bool working=false) {
         const int previousPhi=phi;weightTheta=x;weights.clear();polarWeights.clear();phi=4;Matrix ref;double fastest=std::numeric_limits<double>::max();Kernel winner=kernel;
         if(config.useGpu&&!working){std::vector<Kernel> candidates(5);candidates[1].pipeline=candidates[2].pipeline=candidates[3].pipeline=candidates[4].pipeline=true;candidates[2].block=128;candidates[3].block=256;candidates[4].warp="thread";
-            for(const auto& k:candidates){kernel=k;unsigned seed=4001;auto jobs=Stage(kernelCount,&seed,1,target,x,false);if(ref.empty())ref=jobs[0].matrix;
+            for(auto k:candidates){
+                if(fixedPipeline&&!k.pipeline)continue;if(fixedBlock)k.block=kernel.block;if(fixedWarp)k.warp=kernel.warp;
+                kernel=k;unsigned seed=4001;auto jobs=Stage(kernelCount,&seed,1,target,x,false);if(ref.empty())ref=jobs[0].matrix;
                 Matrix scale=ref;if(controls)for(size_t r=0;r<scale.size();++r)scale[r][0]=jobs[0].controls[r][0];
                 double error=Difference(jobs[0].matrix,ref,scale);if(error<=eps/1024&&jobs[0].seconds<fastest){fastest=jobs[0].seconds;winner=k;}}
             Require(fastest<std::numeric_limits<double>::max(),"no validated GPU kernel");kernel=winner;}
         double best=std::numeric_limits<double>::max();int chosen=4;std::vector<std::array<double,2>> selected;
         std::vector<std::array<Mueller,2>> selectedPolar;std::vector<int> phiCandidates;
         for(int p:{1,2,4,8,16,32,64})if(p>=minPhi&&p<=maxPhi)phiCandidates.push_back(p);
-        if(working&&!args.IsCatched("nphi")){
+        if(working&&!fixedPhi){
             std::vector<int> nearby;for(int p:phiCandidates)if(p==previousPhi||p==previousPhi/2||p==previousPhi*2||p==minPhi)nearby.push_back(p);
             if(!nearby.empty())phiCandidates=nearby;
         }
         if(phiCandidates.empty())phiCandidates.push_back(std::max(1,minPhi));
-        if(args.IsCatched("nphi"))phiCandidates={args.GetIntValue("nphi")};
+        if(fixedPhi)phiCandidates={fixedPhi};
         std::ostringstream candidatesJson;candidatesJson<<'[';bool first=true;
         const int depth=working?target:std::max(1,target-4);
         for(int candidate:phiCandidates){Require(candidate>=minPhi&&candidate<=maxPhi,"phi outside configured limits");phi=candidate;

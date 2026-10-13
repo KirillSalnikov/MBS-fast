@@ -149,6 +149,10 @@ void TuneCutoffs(const std::vector<double>& input){
     std::vector<double> x=input;IncludeBackscatter(x);
     bool explicitCutoff=args.IsCatched("r");for(const char* key:{"cutoff_profile","beam_cutoff","beam_cutoff_j","beam_cutoff_area","beam_cutoff_importance","trace_cutoff","trace_cutoff_j","trace_cutoff_area","trace_cutoff_importance"})explicitCutoff=explicitCutoff||args.IsCatched(key);
     if(cutoffPolicy=="off"||explicitCutoff){Atomic(root+"/cutoff_calibration.json","{\"enabled\":false,\"explicit_settings_preserved\":"+std::string(explicitCutoff?"true":"false")+"}");return;}
+    if(x.size()>size_t(maxTheta)){
+        tuneCutoffs=true;SetCutoff("off");
+        Atomic(root+"/cutoff_calibration.json","{\"enabled\":true,\"selected\":\"off\",\"reason\":\"explicit theta limit cannot fit cutoff guards\"}");return;
+    }
     tuneCutoffs=true;SetCutoff("off");const bool sharing=depthSharing;const unsigned seeds[8]={9001,9007,9011,9013,9029,9041,9043,9049};
     double best=0;auto reference=ProfilePilot(x,std::min(std::min(pilot,2048),maxCount),seeds,best);const bool supportedSharing=depthSharing;std::string winner="off";double winnerBias=0;
     double nativePilot=0;for(const auto& entry:cache){const auto& job=entry.second;
@@ -171,7 +175,7 @@ void PrepareTuning(const std::vector<double>& angles){
     if(RestoreTuning())return;
     Atomic(root+"/automatic_cutoff_validation.json","{\"enabled\":false}");
     std::vector<double> x;const size_t rows=std::min(size_t(17),angles.size());for(size_t i=0;i<rows;++i)x.push_back(angles[i*(angles.size()-1)/(rows-1)]);
-    const bool oldControls=controls;controls=false;SetMirror(false);phi=args.IsCatched("nphi")?args.GetIntValue("nphi"):4;
+    const bool oldControls=controls;controls=false;SetMirror(false);phi=fixedPhi?fixedPhi:4;
     if(resourcePolicy=="auto"||autoGpus)TuneResources(x);else Atomic(root+"/resource_calibration.json","{\"policy\":\"off\"}");
     TuneRotations(x);
     TuneCutoffs(x);controls=oldControls;SetMirror(false);SaveTuning();
@@ -188,6 +192,6 @@ bool AuditAutomaticCutoffs(const std::vector<double>& angles,int n,int round){
         error=PairedBias(Data(requested),Data(reference));if(error<=eps/8||n>=maxCount||attempt==2)break;n=std::min(maxCount,n>maxCount/2?maxCount:2*n);}
     controls=oldControls;SetMirror(mirror);cutoffError=error;const bool pass=error<=eps/8;
     Atomic(root+"/automatic_cutoff_validation.json","{\"passed\":"+std::string(pass?"true":"false")+",\"profile\":"+Quoted(profile)+",\"bias95\":"+Number(error)+",\"budget\":"+Number(eps/8)+",\"count_per_seed\":"+Number(n)+",\"theta_count\":"+Number(x.size())+",\"fresh_seeds\":true,\"fallback_to_off\":"+(pass?"false":"true")+"}");
-    if(!pass){SetCutoff("off");cutoffError=0;depthSharing=On("fullauto_depth_share");depthVerified=false;weights.clear();polarWeights.clear();weightTheta.clear();SetMirror(mirror);SaveTuning();}
+    if(!pass){SetCutoff("off");cutoffError=0;depthSharing=coherent&&On("fullauto_depth_share");depthVerified=false;weights.clear();polarWeights.clear();weightTheta.clear();SetMirror(mirror);SaveTuning();}
     SaveTuning();return pass;
 }
