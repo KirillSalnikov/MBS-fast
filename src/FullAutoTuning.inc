@@ -141,7 +141,12 @@ Samples ProfilePilot(const std::vector<double>& x,int n,const unsigned* seeds,do
         final=upper;
     }return Data(final);
 }
-void TuneCutoffs(const std::vector<double>& x){
+void IncludeBackscatter(std::vector<double>& x)const{
+    for(double angle:{170.,175.,178.,179.,179.5,180.})if(angle>=theta.front()&&angle<=theta.back())x.push_back(angle);
+    std::sort(x.begin(),x.end());x.erase(std::unique(x.begin(),x.end()),x.end());
+}
+void TuneCutoffs(const std::vector<double>& input){
+    std::vector<double> x=input;IncludeBackscatter(x);
     bool explicitCutoff=args.IsCatched("r");for(const char* key:{"cutoff_profile","beam_cutoff","beam_cutoff_j","beam_cutoff_area","beam_cutoff_importance","trace_cutoff","trace_cutoff_j","trace_cutoff_area","trace_cutoff_importance"})explicitCutoff=explicitCutoff||args.IsCatched(key);
     if(cutoffPolicy=="off"||explicitCutoff){Atomic(root+"/cutoff_calibration.json","{\"enabled\":false,\"explicit_settings_preserved\":"+std::string(explicitCutoff?"true":"false")+"}");return;}
     tuneCutoffs=true;SetCutoff("off");const bool sharing=depthSharing;const unsigned seeds[8]={9001,9007,9011,9013,9029,9041,9043,9049};
@@ -174,6 +179,7 @@ void PrepareTuning(const std::vector<double>& angles){
 bool AuditAutomaticCutoffs(const std::vector<double>& angles,int n,int round){
     if(!tuneCutoffs||selectedCutoff=="off"||selectedCutoff=="requested")return true;
     std::vector<double> x;const size_t rows=std::min(size_t(65),angles.size());for(size_t i=0;i<rows;++i)x.push_back(angles[i*(angles.size()-1)/(rows-1)]);
+    IncludeBackscatter(x);
     unsigned seedSet[8];for(int s=0;s<8;++s){seedSet[s]=1600000000u+unsigned(round)*1024u+17u*s;
         Require(std::find(seeds.begin(),seeds.end(),seedSet[s])==seeds.end(),"cutoff audit/production seed overlap");}
     n=std::min(n,std::max(minimum,std::min(pilot,4096)));

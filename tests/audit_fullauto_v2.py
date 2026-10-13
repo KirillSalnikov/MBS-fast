@@ -148,8 +148,12 @@ def run(root,reference,dense=False,dense_workers=1):
             right=min(np.searchsorted(evaluated,angle),len(evaluated)-1);left=max(0,right-1)
             if abs(evaluated[right]-angle)<1e-10:vb[i]=budget[right,1:]
             else:vb[i]=np.maximum(budget[left,1:],budget[right,1:])
+        if (root/'independent_orientation_budget.csv').exists():
+            frozen=np.loadtxt(root/'independent_orientation_budget.csv',delimiter=',',skiprows=1,ndmin=2)
+            assert np.allclose(frozen[:,0],angles,rtol=0,atol=1e-10)
+            vb=frozen[:,1:].astype(int)
         vlevels,vseen,_=reconstruct(root,state,angles,vb,root/'independent_final_sources.tsv',validation['seeds']);seen.update(vseen)
-        values=vlevels.sum(0);vm,vci,vri=intervals(values);vid=np.searchsorted(angles,support)
+        values=vlevels.sum(0);validation_values=values.copy();vm,vci,vri=intervals(values);vid=np.searchsorted(angles,support)
         vs=local_spline(support,values[:,vid]);delta=vs(angles)-values
         bound=interpolation_bounds(vs(angles),values,state['ratio_accuracy'])
         if json.loads((root/'interpolation_validation_mode.json').read_text())['common_prefix']:
@@ -201,7 +205,7 @@ def run(root,reference,dense=False,dense_workers=1):
                             for j in range(1,16):values[:,j]+=np.interp(raw[:,0],coefficients[:,0],coefficients[:,1+2*j])*(c[:,2]-c[:,4])+np.interp(raw[:,0],coefficients[:,0],coefficients[:,2+2*j])*(c[:,3]-c[:,5])
                         rows=nearest_rows(raw[:,0],requested[target]);full[state['seeds'].index(seed),target]+=sign*values[rows]
         dm=full.mean(0);delta=output-full;bound=interpolation_bounds(output,full,state['ratio_accuracy'])
-        if json.loads((root/'interpolation_validation_mode.json').read_text())['common_prefix']:
+        if json.loads((root/'interpolation_production_mode.json').read_text())['common_prefix']:
             # The actual heterogeneous estimator's sampling difference is
             # already covered by its statistical budget. The interpolation
             # bias is audited on common prefixes over each local stencil.
@@ -212,7 +216,12 @@ def run(root,reference,dense=False,dense_workers=1):
             for i,angle in enumerate(angles):
                 right=min(np.searchsorted(evaluated,angle),len(evaluated)-1);left=max(0,right-1)
                 vb[i]=budget[right,1:] if abs(evaluated[right]-angle)<1e-10 else np.maximum(budget[left,1:],budget[right,1:])
-            bound,checked=common_bounds(root,state,'validation',angles,support,validation['seeds'],vb);seen.update(checked)
+            if json.loads((root/'interpolation_validation_mode.json').read_text())['common_prefix']:
+                bound,checked=common_bounds(root,state,'validation',angles,support,validation['seeds'],vb);seen.update(checked)
+            else:
+                vid=np.searchsorted(angles,support)
+                predicted=local_spline(support,validation_values[:,vid])(angles)
+                bound=interpolation_bounds(predicted,validation_values,state['ratio_accuracy'])
         report['independent_dense']=dict(matrix_error_scaled_M11=float(np.max(abs(output_mean-dm)/dm[:,0,None])),residual_plus95_scaled_M11=float(bound.max()),all_requested_nodes_pass=bool(np.all(bound<=state['interpolation_budget'])),scope='interpolation bias on common prefixes, sampling variability checked separately')
         assert report['independent_dense']['all_requested_nodes_pass'],report['independent_dense']
     (root/'independent_fullauto_audit.json').write_text(json.dumps(report,indent=2)+'\n');return report

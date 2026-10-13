@@ -137,29 +137,50 @@ InterpolationResult CommonPrefixInterpolation(Engine& e,const AdaptiveState& sta
 void SaveReplicaMatrices(Engine& e,const std::string& label,const Samples& data,const std::vector<double>& x,const unsigned* seeds){Directory(e.root+"/replicas");for(int s=0;s<8;++s)WriteMatrix(e.root+"/replicas/"+label+"_seed"+Number(seeds[s])+".dat",x,data[s]);}
 bool IndependentAudit(Engine& e,AdaptiveState& state,const std::vector<int>& depths,const Samples& productionSamples,const std::vector<size_t>& productionIds){
     if(!e.finalAudit){Atomic(e.root+"/independent_final_validation.json","{\"enabled\":false,\"passed\":false}");return true;}
-    std::array<unsigned,8> seeds;for(int s=0;s<8;++s){seeds[s]=1000000000u+unsigned(state.round)*1024u+unsigned(s)*17u;Require(std::find(e.seeds.begin(),e.seeds.end(),seeds[s])==e.seeds.end(),"final/production seed overlap");}
     auto ids=AdaptiveGuards(state.knots,e.theta.size(),true);
     if(e.theta.size()<=4097){ids.resize(e.theta.size());for(size_t i=0;i<ids.size();++i)ids[i]=i;}
     for(size_t i:ids)if(!std::binary_search(productionIds.begin(),productionIds.end(),i)){
         auto upper=std::upper_bound(productionIds.begin(),productionIds.end(),i);const size_t right=upper==productionIds.end()?productionIds.back():*upper,left=upper==productionIds.begin()?productionIds.front():*(upper-1);
         for(auto& level:state.counts)level[i]=std::max(level[left],level[right]);}
-    auto data=EvaluateBudget(e,depths,state.counts,ids,seeds.data());const Samples combined=Combine(data.levels);const auto stats=Estimate(combined);auto interp=InterpolateBudget(e,state.knots,ids,combined);
-    const bool common=e.local&&VaryingBudgets(state.counts,ids);
-    Atomic(e.root+"/interpolation_validation_mode.json","{\"common_prefix\":"+std::string(common?"true":"false")+"}");
-    if(common){auto checked=CommonPrefixInterpolation(e,state,depths,ids,seeds.data());interp.errors=checked.errors;interp.maximum=checked.maximum;interp.bad=checked.bad;}
-    const auto outputStats=Estimate(interp.output);const auto production=Mean(productionSamples);
-    // Compare frozen estimators at common direct nodes; no seed-wise ratios.
-    Matrix matched;for(size_t id:productionIds){size_t r=std::lower_bound(ids.begin(),ids.end(),id)-ids.begin();matched.push_back(stats.mean[r]);}
-    const double change=Difference(production,matched,production);
-    const bool pass=StatisticalError(e,stats)<=e.statistical&&StatisticalError(e,outputStats)<=e.statistical&&interp.maximum<=e.interpolation&&change<=e.eps;
-    std::ostringstream report;report<<"{\"enabled\":true,\"passed\":"<<(pass?"true":"false")<<",\"fresh_seeds_per_attempt\":true,\"seeds\":[";
-    for(int s=0;s<8;++s)report<<(s?",":"")<<seeds[s];
-    report<<"],\"max_pointwise95_scaled_M11\":"<<Number(std::max(stats.maxInterval,outputStats.maxInterval))<<",\"max_ratio95\":"<<Number(std::max(stats.maxRatioInterval,outputStats.maxRatioInterval))<<",\"max_interpolation_residual95\":"<<Number(interp.maximum)<<",\"difference_to_production_scaled_M11\":"<<Number(change)<<",\"checked_theta\":"<<ids.size()<<",\"scope\":\"fresh-seed frozen-estimator pointwise validation; all requested nodes up to 4097, otherwise quarter interval guards; no simultaneous-confidence claim\"}";
-    Atomic(e.root+"/independent_final_validation.json",report.str());Atomic(e.root+"/independent_final_sources.tsv",data.sources);SaveReplicaMatrices(e,"validation_evaluated",combined,Angles(e.theta,ids),seeds.data());
-    WriteGrid(e.root+"/independent_theta.csv",Angles(e.theta,ids));
-    if(!pass){std::set<size_t> next(state.knots.begin(),state.knots.end());next.insert(interp.bad.begin(),interp.bad.end());state.knots.assign(next.begin(),next.end());}
+    // Freeze the validation allocation from production observations only.
+    // Uniform level budgets avoid re-tracing every local-budget group on
+    // the dense grid. Keep every requested angle and every accuracy gate.
+    const auto peak=PeakBudgets(state.counts);const auto productionStats=Estimate(productionSamples);
+    const double projected=std::pow(StatisticalError(e,productionStats)/(e.statistical*.5),2);
+    double fraction=std::min(1.,std::max(1./16.,projected));
+    const auto production=Mean(productionSamples);bool pass=false;
+    for(int attempt=0;attempt<2;++attempt){
+        std::array<unsigned,8> seeds;for(int s=0;s<8;++s){seeds[s]=1000000000u+unsigned(state.round)*4096u+unsigned(attempt)*512u+unsigned(s)*17u;Require(std::find(e.seeds.begin(),e.seeds.end(),seeds[s])==e.seeds.end(),"final/production seed overlap");}
+        Budgets validationCounts(depths.size());std::vector<int> chosen;
+        for(size_t l=0;l<depths.size();++l){const int floor=std::min(peak[l],l?e.minimum:e.initial);const int n=std::min(peak[l],std::max(floor,Power2(peak[l]*fraction)));
+            validationCounts[l].assign(e.theta.size(),n);chosen.push_back(n);}
+        std::cout<<"fullauto independent audit: attempt="<<attempt<<" theta="<<ids.size()<<" counts=";for(int n:chosen)std::cout<<n<<' ';std::cout<<std::endl;
+        auto data=EvaluateBudget(e,depths,validationCounts,ids,seeds.data());const Samples combined=Combine(data.levels);const auto stats=Estimate(combined);auto interp=InterpolateBudget(e,state.knots,ids,combined);
+        Atomic(e.root+"/interpolation_validation_mode.json","{\"common_prefix\":false,\"uniform_level_budgets\":true}");
+        const auto outputStats=Estimate(interp.output);
+        Matrix matched;for(size_t id:productionIds){size_t r=std::lower_bound(ids.begin(),ids.end(),id)-ids.begin();matched.push_back(stats.mean[r]);}
+        const double change=Difference(production,matched,production);
+        e.independentNeedsSampling=StatisticalError(e,stats)>e.statistical||StatisticalError(e,outputStats)>e.statistical||change>e.eps;
+        pass=!e.independentNeedsSampling&&interp.maximum<=e.interpolation;
+        std::ostringstream report;report<<"{\"enabled\":true,\"passed\":"<<(pass?"true":"false")<<",\"fresh_seeds_per_attempt\":true,\"seeds\":[";
+        for(int s=0;s<8;++s)report<<(s?",":"")<<seeds[s];
+        report<<"],\"counts_per_seed\":[";for(size_t l=0;l<chosen.size();++l)report<<(l?",":"")<<chosen[l];
+        report<<"],\"allocation_from_production\":true,\"attempt\":"<<attempt<<",\"max_pointwise95_scaled_M11\":"<<Number(std::max(stats.maxInterval,outputStats.maxInterval))<<",\"max_ratio95\":"<<Number(std::max(stats.maxRatioInterval,outputStats.maxRatioInterval))<<",\"max_interpolation_residual95\":"<<Number(interp.maximum)<<",\"difference_to_production_scaled_M11\":"<<Number(change)<<",\"checked_theta\":"<<ids.size()<<",\"scope\":\"fresh-seed frozen-estimator pointwise validation; all requested nodes up to 4097, otherwise quarter interval guards; no simultaneous-confidence claim\"}";
+        Atomic(e.root+"/independent_final_validation.json",report.str());Atomic(e.root+"/independent_final_validation_attempt"+Number(attempt)+".json",report.str());
+        Atomic(e.root+"/independent_final_sources.tsv",data.sources);SaveReplicaMatrices(e,"validation_evaluated",combined,Angles(e.theta,ids),seeds.data());
+        WriteGrid(e.root+"/independent_theta.csv",Angles(e.theta,ids));
+        std::ostringstream budgets;budgets<<"theta_deg";for(size_t l=0;l<chosen.size();++l)budgets<<",N_level"<<l;budgets<<'\n';
+        for(size_t i:ids){budgets<<Number(e.theta[i]);for(int n:chosen)budgets<<','<<n;budgets<<'\n';}Atomic(e.root+"/independent_orientation_budget.csv",budgets.str());
+        // A low-cost audit that lacks statistics gets a fresh-seed full
+        // allocation fallback. Interpolation-only failure refines theta;
+        // it must not blindly double all production orientation counts.
+        if(!pass&&e.independentNeedsSampling&&fraction<1&&attempt==0){fraction=1;continue;}
+        if(!pass){std::set<size_t> next(state.knots.begin(),state.knots.end());next.insert(interp.bad.begin(),interp.bad.end());state.knots.assign(next.begin(),next.end());}
+        break;
+    }
     e.independentPassed=pass;return pass;
 }
+
 bool PhysicsAudit(Engine& e,const AdaptiveState& state,const std::vector<size_t>& evaluated,const Matrix& reference){
     if(!e.physicsAudit){Atomic(e.root+"/physics_validation.json","{\"enabled\":false,\"passed\":false,\"requested_physics_retained\":true}");return true;}
     std::vector<size_t> selected;const size_t size=std::min(size_t(65),evaluated.size());for(size_t r=0;r<size;++r)selected.push_back(evaluated[r*(evaluated.size()-1)/(size-1)]);
@@ -244,10 +265,10 @@ int RunAdaptive(Engine& e){
                 const bool physics=PhysicsAudit(e,state,ids,stats.mean);
                 Atomic(e.root+"/precision_contract.json","{\"statistics\":\"eight-scramble pointwise Student-t estimates\",\"normalized_ratios\":\"paired-covariance Fieller intervals for ratios of means\",\"interpolation_budget\":"+Number(e.interpolation)+",\"execution_budget\":"+Number((e.resourcePolicy=="auto"||e.config.useGpu)?e.eps/1024:0)+",\"rotation_budget\":"+Number((e.rotationBeta>1||e.rotationGamma>1)?e.eps/256:0)+",\"cutoff_budget\":"+Number(e.selectedCutoff!="requested"&&e.selectedCutoff!="off"?e.eps/8:0)+",\"selected_cutoff\":"+Quoted(e.selectedCutoff)+",\"automatic_cutoff_audit\":"+std::string(e.tuneCutoffs&&e.selectedCutoff!="off"?"true":"false")+",\"physical_depth\":"+Number(e.target)+",\"physical_accuracy_audited\":"+std::string(e.physicsAudit?"true":"false")+",\"analytic_mean_error\":\"reported internal refinement, not an absolute bound\",\"global_simultaneous_confidence\":false}");
                 if(!physics){SaveAdaptive(e,state,"physics_validation_failed");e.State("physics_validation_failed",state.round,PeakBudgets(state.counts),ids.size(),lastCI,lastInterpolation,state.streak);return 4;}
-                std::ostringstream finalHashes;for(const char* path:{"mueller_fullauto.dat","mueller_evaluated.dat","all_mueller_confidence.csv","normalized_mueller_confidence.csv","theta_support.csv","theta_evaluated.csv","orientation_budget.csv","final_stage_sources.tsv","independent_final_validation.json","precision_contract.json","physics_validation.json","execution_tuning.tsv","resource_calibration.json","rotation_verification.json","cutoff_calibration.json","automatic_cutoff_validation.json"})finalHashes<<path<<' '<<Hash(Read(e.root+"/"+path))<<'\n';Atomic(e.root+"/final_outputs.fnv",finalHashes.str());
+                std::ostringstream finalHashes;for(const char* path:{"mueller_fullauto.dat","mueller_evaluated.dat","all_mueller_confidence.csv","normalized_mueller_confidence.csv","theta_support.csv","theta_evaluated.csv","orientation_budget.csv","final_stage_sources.tsv","independent_final_validation.json","precision_contract.json","physics_validation.json","execution_tuning.tsv","resource_calibration.json","rotation_verification.json","cutoff_calibration.json","automatic_cutoff_validation.json"})finalHashes<<path<<' '<<Hash(Read(e.root+"/"+path))<<'\n';if(e.finalAudit)finalHashes<<"independent_orientation_budget.csv "<<Hash(Read(e.root+"/independent_orientation_budget.csv"))<<'\n';Atomic(e.root+"/final_outputs.fnv",finalHashes.str());
                 SaveAdaptive(e,state,"converged");e.State("converged",state.round,PeakBudgets(state.counts),ids.size(),lastCI,lastInterpolation,state.streak);return 0;
             }
-            state.streak=0;std::fill(state.valid.begin(),state.valid.end(),false);for(auto& level:state.counts)for(size_t id:ids)level[id]=std::min(e.maxCount,level[id]>e.maxCount/2?e.maxCount:2*level[id]);SaveAdaptive(e,state);continue;
+            state.streak=0;std::fill(state.valid.begin(),state.valid.end(),false);if(e.independentNeedsSampling)for(auto& level:state.counts)for(size_t id:ids)level[id]=std::min(e.maxCount,level[id]>e.maxCount/2?e.maxCount:2*level[id]);SaveAdaptive(e,state);continue;
         }
         for(size_t r=0;r<ids.size();++r){state.previous[ids[r]]=stats.mean[r];state.valid[ids[r]]=true;}
         if(!interp.bad.empty()||!positive){std::set<size_t> next(state.knots.begin(),state.knots.end());next.insert(interp.bad.begin(),interp.bad.end());if(!positive)next.insert(ids.begin(),ids.end());

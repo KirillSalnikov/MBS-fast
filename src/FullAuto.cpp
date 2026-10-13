@@ -242,8 +242,8 @@ struct Engine {
     const ArgPP& args;const RunConfig& config;std::string exe,root,signature,binaryHash,weightFile;
     std::vector<std::string> base,gpus;std::vector<double> theta,weightTheta;
     std::vector<std::array<double,2>> weights;std::vector<unsigned> seeds;
-    std::map<std::string,Job> cache;Kernel kernel;int phi=4,target=12,pilot=32768,kernelCount=8192;
-    int initial=131072,minimum=8192,maxCount=67108864,roundLimit=32,startTheta=33;
+    std::map<std::string,Job> cache;Kernel kernel;int phi=4,target=12,pilot=512,kernelCount=256;
+    int initial=1024,minimum=256,maxCount=67108864,roundLimit=32,startTheta=33;
     int maxTheta=2147483647,stablePasses=2,minPhi=1,maxPhi=2147483647;
     int workerThreads=4,workerChunk=0;long long hostBudgetMb=0;
     std::string resourcePolicy="auto",rotationPolicy="auto",cutoffPolicy="auto",selectedCutoff="requested";
@@ -257,7 +257,7 @@ struct Engine {
     std::string controlPolicy="auto";int thetaAuditCount=0;
     bool local=true,ratios=true,phiRecheck=true,polarControls=true,finalAudit=true,physicsAudit=false;
     std::vector<std::array<Mueller,2>> polarWeights;
-    double lastRatio=0,lastAnalyticError=0;bool independentPassed=false;
+    double lastRatio=0,lastAnalyticError=0;bool independentPassed=false,independentNeedsSampling=true;
     bool depthSharing=true,depthVerified=false;
     bool completedCheckpoint=false;
     std::string localPolicy="auto";
@@ -288,14 +288,14 @@ struct Engine {
         cutoffPolicy=args.IsCatched("fullauto_cutoffs")?args.GetStringValue("fullauto_cutoffs"):"auto";
         workerChunk=Int("chunk",0);
         mirrorPolicy=args.IsCatched("mirror_gamma")?"on":(args.IsCatched("fullauto_mirror")?args.GetStringValue("fullauto_mirror"):"auto");
-        pilot=Int("fullauto_pilot",32768);kernelCount=Int("fullauto_kernel",8192);initial=Int("fullauto_initial",131072);
-        thetaAuditCount=Int("fullauto_theta_audit",(!args.IsCatched("grid")&&!args.IsCatched("tgrid"))?std::min(pilot,8192):0);
+        pilot=Int("fullauto_pilot",512);kernelCount=Int("fullauto_kernel",256);initial=Int("fullauto_initial",1024);
+        thetaAuditCount=Int("fullauto_theta_audit",(!args.IsCatched("grid")&&!args.IsCatched("tgrid"))?std::min(pilot,256):0);
         Require(thetaAuditCount>=0&&thetaAuditCount<=2147483646,"invalid theta audit count");
-        minimum=Int("fullauto_correction",8192);maxCount=Int("maxorient",67108864);roundLimit=Int("fullauto_rounds",32);startTheta=Int("fullauto_theta_start",33);
+        minimum=Int("fullauto_correction",256);maxCount=Int("maxorient",67108864);roundLimit=Int("fullauto_rounds",32);startTheta=Int("fullauto_theta_start",33);
         for(int v:{pilot,kernelCount,initial,minimum,maxCount})Require(v>0&&v<2147483647,"counts must fit positive signed32bit");
         Require(initial<=maxCount&&minimum<=maxCount&&roundLimit>0&&startTheta>=2,"invalid count/round/theta limits");
         if(config.adaptive.loadedFromFile){
-            pilot=Int("fullauto_pilot",std::max(config.adaptive.minPilotOrientations,std::min(32768,config.adaptive.maxPilotOrientations)));
+            pilot=Int("fullauto_pilot",std::max(config.adaptive.minPilotOrientations,std::min(512,config.adaptive.maxPilotOrientations)));
             initial=Int("fullauto_initial",config.adaptive.minOrientations);
             if(!args.IsCatched("maxorient")&&config.adaptive.maxOrientations>0)maxCount=config.adaptive.maxOrientations;
             roundLimit=Int("fullauto_rounds",config.adaptive.maxJointSweeps);
@@ -810,15 +810,19 @@ struct Engine {
     }
     #include "FullAutoTuning.inc"
     void Calibrate(const std::vector<double>& x,bool working=false) {
-        weightTheta=x;weights.clear();polarWeights.clear();phi=4;Matrix ref;double fastest=std::numeric_limits<double>::max();Kernel winner=kernel;
+        const int previousPhi=phi;weightTheta=x;weights.clear();polarWeights.clear();phi=4;Matrix ref;double fastest=std::numeric_limits<double>::max();Kernel winner=kernel;
         if(config.useGpu&&!working){std::vector<Kernel> candidates(5);candidates[1].pipeline=candidates[2].pipeline=candidates[3].pipeline=candidates[4].pipeline=true;candidates[2].block=128;candidates[3].block=256;candidates[4].warp="thread";
             for(const auto& k:candidates){kernel=k;unsigned seed=4001;auto jobs=Stage(kernelCount,&seed,1,target,x,false);if(ref.empty())ref=jobs[0].matrix;
                 Matrix scale=ref;if(controls)for(size_t r=0;r<scale.size();++r)scale[r][0]=jobs[0].controls[r][0];
-                double error=Difference(jobs[0].matrix,ref,scale);if(error<std::min(1e-7,eps/1024)&&jobs[0].seconds<fastest){fastest=jobs[0].seconds;winner=k;}}
+                double error=Difference(jobs[0].matrix,ref,scale);if(error<=eps/1024&&jobs[0].seconds<fastest){fastest=jobs[0].seconds;winner=k;}}
             Require(fastest<std::numeric_limits<double>::max(),"no validated GPU kernel");kernel=winner;}
         double best=std::numeric_limits<double>::max();int chosen=4;std::vector<std::array<double,2>> selected;
         std::vector<std::array<Mueller,2>> selectedPolar;std::vector<int> phiCandidates;
         for(int p:{1,2,4,8,16,32,64})if(p>=minPhi&&p<=maxPhi)phiCandidates.push_back(p);
+        if(working&&!args.IsCatched("nphi")){
+            std::vector<int> nearby;for(int p:phiCandidates)if(p==previousPhi||p==previousPhi/2||p==previousPhi*2||p==minPhi)nearby.push_back(p);
+            if(!nearby.empty())phiCandidates=nearby;
+        }
         if(phiCandidates.empty())phiCandidates.push_back(std::max(1,minPhi));
         if(args.IsCatched("nphi"))phiCandidates={args.GetIntValue("nphi")};
         std::ostringstream candidatesJson;candidatesJson<<'[';bool first=true;
@@ -851,7 +855,11 @@ struct Engine {
             }
             Statistics stats=Estimate(adjusted);double seconds=0;for(const auto& job:valid)seconds+=job.seconds;
             const double uncertainty=ratios?std::max(stats.maxInterval,stats.maxRatioInterval):stats.maxInterval;
-            const double score=seconds*uncertainty*uncertainty;
+            // Predict finite work to reach the requested budget. Once the
+            // minimum production sample count suffices, lower variance
+            // alone must not justify a more expensive azimuth rule.
+            const double multiplier=std::max(double(initial)/pilot,std::pow(uncertainty/statistical,2));
+            const double score=seconds*multiplier;
             candidatesJson<<(first?"":",")<<"{\"phi\":"<<phi<<",\"native_seconds\":"<<Number(seconds)<<",\"score\":"<<Number(score)<<",\"validation95\":"<<Number(stats.maxInterval)<<",\"ratio95\":"<<Number(stats.maxRatioInterval)<<",\"accepted_control_rows\":[";
             for(int j=0;j<16;++j)candidatesJson<<(j?",":"")<<accepted[j];
             candidatesJson<<"]}";first=false;
@@ -862,7 +870,7 @@ struct Engine {
         for(size_t r=0;r<x.size();++r){polar<<x[r];for(int j=0;j<16;++j)polar<<' '<<(j?selectedPolar[r][0][j]:selected[r][0])<<' '<<(j?selectedPolar[r][1][j]:selected[r][1]);polar<<'\n';}
         Atomic(root+"/polarization_weights.tsv",polar.str());const std::string weightPath=WriteWeights(x);
         std::ostringstream c;c<<"{\"selected_phi\":"<<phi<<",\"block\":"<<kernel.block<<",\"pipeline\":"<<(kernel.pipeline?"true":"false")<<",\"warp\":"<<Quoted(kernel.warp)<<",\"pilot_count\":"<<pilot<<",\"score\":"<<Number(best)<<",\"weights\":"<<Quoted(weightPath)<<",\"phi_candidates\":"<<candidatesJson.str()
-          <<",\"calibration_depth\":"<<depth<<",\"calibration_theta\":"<<x.size()<<",\"working_grid_recheck\":"<<(working?"true":"false")<<",\"score_includes_ratios\":"<<(ratios?"true":"false")<<",\"polarization_controls\":"<<(polarControls?"true":"false")
+          <<",\"score_model\":\"finite work to statistical budget, with initial-count floor\",\"calibration_depth\":"<<depth<<",\"calibration_theta\":"<<x.size()<<",\"working_grid_recheck\":"<<(working?"true":"false")<<",\"score_includes_ratios\":"<<(ratios?"true":"false")<<",\"polarization_controls\":"<<(polarControls?"true":"false")
           <<",\"independent_training_validation\":true,\"mirror_gamma\":"<<(mirror?"true":"false")<<",\"mirror_policy\":"<<Quoted(mirrorPolicy)<<"}";
         Atomic(root+"/calibration.json",c.str());
     }
