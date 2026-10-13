@@ -430,7 +430,7 @@ void TracerGO::TraceMonteCarlo(const AngleRange &betaRange, const AngleRange &ga
 }
 
 void TracerGO::TraceSobol(int nOrientations, unsigned int seed,
-                          double betaMax, double gammaMax)
+                          double betaMax, double gammaMax, unsigned int offset)
 {
 #ifdef _CHECK_ENERGY_BALANCE
     m_incomingEnergy = 0;
@@ -442,8 +442,12 @@ void TracerGO::TraceSobol(int nOrientations, unsigned int seed,
     OutputStartTime(timer);
 
     Sobol2D sobol(seed);
-    std::vector<double> su, sv;
-    sobol.generate(nOrientations, su, sv);
+    sobol.seek(offset);
+    std::vector<double> su(nOrientations), sv(nOrientations);
+    for (int i = 0; i < nOrientations; ++i)
+        sobol.next(su[i], sv[i]);
+    cout << "GO exact Sobol window: offset=" << offset
+         << " count=" << nOrientations << endl;
 
     const double cosMin = cos(betaMax);
     const double dCos = 1.0 - cosMin;

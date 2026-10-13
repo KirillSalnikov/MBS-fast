@@ -5,6 +5,7 @@
 class HandlerGO : public Handler
 {
 public:
+    bool fullautoOutput=false;
     HandlerGO(Particle *particle, Light *incidentLight, int nTheta,
               double wavelength);
 

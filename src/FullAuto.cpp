@@ -1,3 +1,4 @@
+#include <memory>
 #include "FullAuto.h"
 #include "ArgPP.h"
 #include "CliOptions.h"
@@ -281,7 +282,9 @@ struct Engine {
     int fixedPhi=0;std::string requestedMeanCache;bool coherent=true,fixedPipeline=false,fixedBlock=false,fixedWarp=false;
     bool depthSharing=true,depthVerified=false;
     bool completedCheckpoint=false;
-    bool collecting=false;std::string workQueuePolicy="auto";
+    bool autoDepth=false;int depthStart=6,depthMaximum=18;double depthBudget=0,maximumEdge=0,maximumDiameter=0,particleVolume=0;
+    double estimatedOrientations=0,estimatedBeta=0,estimatedGamma=0;std::string initialSource="explicit";
+    bool collecting=false;bool go=false;std::string workQueuePolicy="auto";
     std::vector<Job> pendingJobs;
     std::vector<std::vector<std::string>> pendingCommands;
     std::string localPolicy="auto";
@@ -295,7 +298,7 @@ struct Engine {
         }
         const double utc=std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
         journal<<"{\"schema\":1,\"unix_seconds\":"<<Number(utc)<<",\"elapsed_seconds\":"<<Number(Seconds()-runStarted)
-            <<",\"controller_pid\":"<<getpid()<<",\"sequence\":"<<++journalSequence<<",\"event\":"<<Quoted(event)<<",\"data\":"<<CompactJson(payload)<<"}\n";
+            <<",\"method\":"<<Quoted(go?"go":"po")<<",\"cpu_workers\":"<<(config.useGpu?0:gpus.size())<<",\"controller_pid\":"<<getpid()<<",\"sequence\":"<<++journalSequence<<",\"event\":"<<Quoted(event)<<",\"data\":"<<CompactJson(payload)<<"}\n";
         journal.flush();Require(bool(journal),"adaptive history write failed");
     }
     void Record(const std::string& path,const std::string& text){
@@ -309,9 +312,9 @@ struct Engine {
         for(size_t i=0;i<base.size();++i)out<<(i?",":"")<<Quoted(base[i]);
         out<<"],\"epsilon\":"<<Number(eps)<<",\"interpolation_budget\":"<<Number(interpolation)<<",\"statistical_budget\":"<<Number(statistical)
             <<",\"pilot_count\":"<<pilot<<",\"kernel_pilot_count\":"<<kernelCount<<",\"dense_theta_pilot_count\":"<<thetaAuditCount
-            <<",\"initial_count\":"<<initial<<",\"minimum_correction_count\":"<<minimum<<",\"max_count\":"<<maxCount<<",\"max_rounds\":"<<roundLimit
+            <<",\"initial_source\":"<<Quoted(initialSource)<<",\"maximum_edge_um\":"<<Number(maximumEdge)<<",\"maximum_diameter_um\":"<<Number(maximumDiameter)<<",\"oldauto_N_beta_estimate\":"<<Number(estimatedBeta)<<",\"oldauto_N_gamma_estimate\":"<<Number(estimatedGamma)<<",\"oldauto_orientation_estimate\":"<<Number(estimatedOrientations)<<",\"initial_count\":"<<initial<<",\"minimum_correction_count\":"<<minimum<<",\"max_count\":"<<maxCount<<",\"max_rounds\":"<<roundLimit
             <<",\"initial_theta_support\":"<<startTheta<<",\"max_theta_evaluations\":"<<maxTheta<<",\"min_phi\":"<<minPhi<<",\"max_phi\":"<<maxPhi
-            <<",\"stable_passes\":"<<stablePasses<<",\"physical_target_depth\":"<<target<<",\"phi\":"<<phi
+            <<",\"stable_passes\":"<<stablePasses<<",\"automatic_depth\":"<<(autoDepth?"true":"false")<<",\"depth_start\":"<<depthStart<<",\"depth_maximum\":"<<depthMaximum<<",\"depth_budget\":"<<Number(depthBudget)<<",\"physical_target_depth\":"<<target<<",\"phi\":"<<phi
             <<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
             <<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"selected_gpus\":[";
         for(size_t i=0;i<gpus.size();++i)out<<(i?",":"")<<Quoted(gpus[i]);
@@ -326,8 +329,9 @@ struct Engine {
     }
     int Int(const std::string& key,int fallback){return args.IsCatched(key)?args.GetIntValue(key):fallback;}
     bool On(const char* key,bool fallback=true){return args.IsCatched(key)?args.GetStringValue(key)=="on":fallback;}
-    void Init(int argc,const char* argv[]) {
-        Require(config.method==RunMethod::PhysicalOptics&&!config.useFft,"requires direct PO");
+    void Init(int argc,const char* argv[],double edge=0,double diameter=0,double volume=0) {
+        maximumEdge=edge;maximumDiameter=diameter;particleVolume=volume;
+        go=config.method==RunMethod::GeometricalOptics;Require(!config.useFft,"requires a direct solver");
         for(const char* key:{"analytic_mean_reference","haar_mirror_audit","multigrid","multikeq","multikeq_list","orientfile_dedup","analytic_facet_samples","analytic_control_weights","analytic_backscatter","analytic_azimuth_gaussian","owen_avg"})
             Require(!args.IsCatched(key),std::string("unsupported modifier --")+key+"; run one coherent size without external controls");
         const RuntimeEnvironmentSnapshot environment=QueryRuntimeEnvironmentSnapshot();
@@ -340,7 +344,7 @@ struct Engine {
         eps=args.GetDoubleValue("fullauto");interpolation=eps*.25;statistical=eps-interpolation;
         localPolicy=args.IsCatched("fullauto_local")?args.GetStringValue("fullauto_local"):"auto";local=localPolicy!="off";ratios=On("fullauto_ratios");phiRecheck=On("fullauto_phi_recheck");
         polarControls=On("fullauto_polar_controls");finalAudit=On("fullauto_final_audit");physicsAudit=On("fullauto_physics_audit",false);
-        coherent=!args.IsCatched("incoh");depthSharing=coherent&&On("fullauto_depth_share");
+        coherent=!go&&!args.IsCatched("incoh");depthSharing=!go&&coherent&&On("fullauto_depth_share");
         fixedPhi=args.IsCatched("nphi")?args.GetIntValue("nphi"):(args.IsCatched("grid")?args.GetIntValue("grid",args.GetArgNumber("grid")-2):0);
         fixedPipeline=args.IsCatched("orientation_pipeline");kernel.pipeline=fixedPipeline;
         if(const char* v=getenv("MBS_GPU_BLOCK")){int n=std::atoi(v);Require(std::string(v)==std::to_string(n)&&(n==64||n==128||n==256),"MBS_GPU_BLOCK must be 64, 128 or 256");kernel.block=n;fixedBlock=true;}
@@ -383,18 +387,44 @@ struct Engine {
         initial=Power2(initial);minimum=Power2(minimum);Require(initial<=maxCount&&minimum<=maxCount,"rounded counts exceed max-orientations");
         for(int v:{pilot,kernelCount,initial,minimum,maxCount})Require(v>0&&v<2147483647,"invalid configured counts");
         Require(roundLimit>0&&startTheta>=2&&maxTheta>=2&&minPhi>0&&maxPhi>=minPhi,"invalid configured limits");
-        target=args.IsCatched("n")?config.maxReflections:12;Require(target>0,"target depth must be positive");
+        depthStart=Int("fullauto_depth_start",6);depthMaximum=Int("fullauto_depth_max",18);
+        autoDepth=!args.IsCatched("n")&&On("fullauto_depth_search");
+        target=args.IsCatched("n")?config.maxReflections:depthStart;depthBudget=autoDepth?eps/4:0;
+        Require(target>0&&depthStart>0&&depthMaximum>=depthStart&&depthMaximum<=28,"invalid depth search range");
+        if(maximumEdge>0||(args.IsCatched("p")&&args.GetIntValue("p")==1)){
+            if(!(maximumEdge>0)&&args.IsCatched("p")&&args.GetIntValue("p")==1)maximumEdge=std::max(args.GetDoubleValue("p",1),args.GetDoubleValue("p",2)/2);
+            const double xi=.69*config.wavelengthUm/maximumEdge,step=xi/16;
+            const double betaFactor=args.IsCatched("sym")?args.GetDoubleValue("sym",0):1,gammaFactor=args.IsCatched("sym")?args.GetDoubleValue("sym",1):1;
+            estimatedBeta=std::max(3.,std::ceil(3.14159265358979323846/betaFactor/step));
+            estimatedGamma=std::max(3.,std::ceil(2*3.14159265358979323846/gammaFactor/step));
+            estimatedOrientations=estimatedBeta*estimatedGamma;
+        }
+        if(!args.IsCatched("fullauto_initial")&&!config.adaptive.loadedFromFile){
+            Require(maximumEdge>0,"cannot determine geometric sampling estimate; supply fullauto-initial");
+            Require(maxCount>=512,"automatic initial count needs max-orientations >=512 or an explicit fullauto-initial");
+            // Leave room for the two default stability refinements. Explicit
+            // initial remains exact, even if it exhausts the chosen cap.
+            const int cap=std::max(512,maxCount/4);
+            initial=Power2(int(std::min(double(cap),std::max(512.,estimatedOrientations))));
+            initialSource="max(512, oldauto beta*gamma at xi/16), limited for stability refinements";
+        }else initialSource=args.IsCatched("fullauto_initial")?"explicit CLI":"adaptive-config";
+
         controlPolicy=args.IsCatched("fullauto_controls")?args.GetStringValue("fullauto_controls"):((args.IsCatched("analytic_facet_average")||args.IsCatched("analytic_shadow_control"))?"on":"auto");
         if(controlPolicy=="auto"&&(args.IsCatched("analytic_facet_average")||args.IsCatched("analytic_shadow_control")))controlPolicy="on";
-        controls=coherent&&controlPolicy!="off"&&config.refractiveReal>=1.;
+        controls=!go&&coherent&&controlPolicy!="off"&&config.refractiveReal>=1.;
         Require(controlPolicy!="on"||controls,"analytic facet controls require refractive REAL>=1");
+        if(go){angularCache=false;pilot=0;kernelCount=0;thetaAuditCount=0;minimum=0;startTheta=0;controlPolicy="off";resourcePolicy="off";rotationPolicy="off";cutoffPolicy="off";mirrorPolicy="off";
+            interpolation=0;statistical=eps;local=false;localPolicy="off";phi=1;fixedPhi=1;phiRecheck=false;polarControls=false;depthSharing=false;}
         SetMirror(false);
         seeds.assign(production,production+8);if(args.IsCatched("owen_seeds")){Require(args.GetArgNumber("owen_seeds")==8,"need exactly eight production seeds");
             for(int i=0;i<8;++i){int s=args.GetIntValue("owen_seeds",i);Require(s>=0,"negative seed");seeds[i]=s;}}
         std::set<unsigned> unique(seeds.begin(),seeds.end());Require(unique.size()==8,"production seeds must be distinct");
         for(unsigned s:seeds)for(int i=0;i<8;++i)Require(s!=training[i]&&s!=validation[i]&&s!=4001,"production/calibration seed overlap");
         for(unsigned s:seeds){for(unsigned reserved:{8001u,8023u,8101u,8111u,8117u,8123u,8147u,8161u,8167u,8171u,9001u,9007u,9011u,9013u,9029u,9041u,9043u,9049u})Require(s!=reserved,"production/tuning seed overlap");Require(s!=3001&&s!=5003,"production/geometry/mean-provider seed overlap");for(unsigned v:mirrorValidation)Require(s!=v,"production/mirror verification seed overlap");for(unsigned v:angularValidation)Require(s!=v,"production/theta pilot seed overlap");}
-        if(args.IsCatched("tgrid"))theta=ReadGrid(args.GetStringValue("tgrid"));
+        if(go){const int intervals=args.IsCatched("grid")?args.GetIntValue("grid",3):36;
+            Require(intervals>0&&intervals<1000000,"invalid GO bin count");Require(intervals+1<=maxTheta,"GO angular bins exceed explicit theta limit");
+            for(int i=0;i<=intervals;++i)theta.push_back(180.*i/intervals);
+        }else if(args.IsCatched("tgrid"))theta=ReadGrid(args.GetStringValue("tgrid"));
         else {double lo=0,hi=180;int intervals=720;
             if(args.IsCatched("fullauto_theta_range")){lo=args.GetDoubleValue("fullauto_theta_range",0);hi=args.GetDoubleValue("fullauto_theta_range",1);}
             if(!args.IsCatched("grid")){
@@ -403,9 +433,9 @@ struct Engine {
                 // a geometric diameter before the interpolation search.
                 double extent=0,volume=0;
                 if(args.IsCatched("p")){
-                    Require(args.GetIntValue("p")==1,"supply --scattering-grid or --theta-grid-file for this built-in geometry");
-                    double height=args.GetDoubleValue("p",1),diameter=args.GetDoubleValue("p",2);
-                    extent=std::hypot(height,diameter);volume=3*std::sqrt(3.)*diameter*diameter*height/8.;
+                    if(args.GetIntValue("p")==1){double height=args.GetDoubleValue("p",1),diameter=args.GetDoubleValue("p",2);
+                        extent=std::hypot(height,diameter);volume=3*std::sqrt(3.)*diameter*diameter*height/8.;
+                    }else{Require(maximumDiameter>0,"supply a scattering grid for this built-in geometry");extent=maximumDiameter;volume=particleVolume;}
                 }else{
                     std::istringstream input(Read(args.GetStringValue("pf")));std::string line;int header=0;
                     std::array<double,3> loBox={{1e300,1e300,1e300}},hiBox={{-1e300,-1e300,-1e300}};
@@ -442,7 +472,7 @@ struct Engine {
             std::string list=args.IsCatched("fullauto_gpus")?args.GetStringValue("fullauto_gpus"):"0";autoGpus=list=="auto";if(autoGpus){list="";for(int i=0;i<std::min(count,8);++i)list+=(i?",":"")+std::to_string(i);}
             std::istringstream f(list);std::string v;std::set<int> used;
             while(std::getline(f,v,',')){size_t pos=0;int id=std::stoi(v,&pos);Require(pos==v.size()&&id>=0&&id<count&&used.insert(id).second,"invalid/duplicate visible GPU index");gpus.push_back(visible.empty()?v:visible.at(id));}
-        Require(!gpus.empty(),"empty GPU list");}else{Require(!args.IsCatched("fullauto_gpus"),"GPU list requires CUDA backend");gpus.push_back("");}
+        Require(!gpus.empty(),"empty GPU list");}else{Require(!args.IsCatched("fullauto_gpus"),"GPU list requires CUDA backend");gpus.assign(size_t(Int("fullauto_cpu_workers",1)),"");}
         workerThreads=config.threads>0?config.threads:std::max(1,std::min(16,QueryRuntimeResourceSnapshot().physicalCores/int(gpus.size())));
         std::set<std::string> drop={"fullauto","autofull","o","n","grid","tgrid","nphi","haar_alpha","mirror_gamma","analytic_facet_average","analytic_shadow_control","analytic_mean_cache","analytic_control_weights","close","profile_phases","orientation_pipeline","checkpoint","maxorient","max_theta_points","max_phi_points","adaptive_config","owen_seeds","convergence_passes","threads","chunk"};
         std::ostringstream fingerprint;fingerprint<<binaryHash<<'\n';for(int i=1;i<argc;++i)fingerprint<<argv[i]<<'\n';
@@ -471,12 +501,12 @@ struct Engine {
     }
     void State(const std::string& status,int round,const std::vector<int>& counts,size_t nodes,double ci,double ie,int streak) {
         std::ostringstream s;s<<std::setprecision(17)<<"{\n\"status\":"<<Quoted(status)<<",\"configuration_fnv1a64\":"<<Quoted(signature)
-            <<",\"controller_pid\":"<<getpid()<<",\"round\":"<<round<<",\"counts_per_seed\":[";
+            <<",\"method\":"<<Quoted(go?"go":"po")<<",\"cpu_workers\":"<<(config.useGpu?0:gpus.size())<<",\"controller_pid\":"<<getpid()<<",\"round\":"<<round<<",\"counts_per_seed\":[";
         for(size_t i=0;i<counts.size();++i)s<<(i?",":"")<<counts[i];
         s<<"],\"seeds\":[";
         for(size_t i=0;i<seeds.size();++i)s<<(i?",":"")<<seeds[i];
         s<<"],\"phi\":"<<phi<<",\"target_depth\":"<<target<<",\"requested_theta\":"<<theta.size()<<",\"evaluated_theta\":"<<nodes
-            <<",\"statistical_budget\":"<<statistical<<",\"interpolation_budget\":"<<interpolation<<",\"max_pointwise95_scaled_M11\":"<<ci
+            <<",\"automatic_depth\":"<<(autoDepth?"true":"false")<<",\"depth_budget\":"<<depthBudget<<",\"statistical_budget\":"<<statistical<<",\"interpolation_budget\":"<<interpolation<<",\"max_pointwise95_scaled_M11\":"<<ci
             <<",\"max_guard_residual95_scaled_M11\":"<<ie<<",\"pass_streak\":"<<streak<<",\"pipeline\":"<<(kernel.pipeline?"true":"false")
             <<",\"block\":"<<kernel.block<<",\"warp\":"<<Quoted(kernel.warp)
             <<",\"mirror_gamma\":"<<(mirror?"true":"false")<<",\"mirror_policy\":"<<Quoted(mirrorPolicy)
@@ -487,7 +517,7 @@ struct Engine {
             <<",\"execution_budget\":"<<((resourcePolicy=="auto"||config.useGpu)?eps/1024:0)<<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
             <<",\"rotation_beta_factor\":"<<rotationBeta<<",\"rotation_gamma_factor\":"<<rotationGamma<<",\"rotation_budget\":"<<((rotationBeta>1||rotationGamma>1)?eps/256:0)
             <<",\"selected_cutoff\":"<<Quoted(selectedCutoff)<<",\"cutoff_budget\":"<<(selectedCutoff!="requested"&&selectedCutoff!="off"?eps/8:0)<<",\"max_cutoff_residual95\":"<<cutoffError
-            <<",\"coherent\":"<<(coherent?"true":"false")<<",\"fixed_phi\":"<<fixedPhi<<",\"scope\":\"eight-seed pointwise intervals; interpolation guards on requested grid; mirror paired pilot when enabled; fixed target physics; no global simultaneous confidence claim\"}\n";
+            <<",\"coherent\":"<<(coherent?"true":"false")<<",\"fixed_phi\":"<<fixedPhi<<",\"scope\":\"eight-seed pointwise intervals; interpolation guards on requested grid; mirror paired pilot when enabled; current target physics; automatic depth has fresh paired validation; no global simultaneous confidence claim\"}\n";
         Record(root+"/fullauto_status.json",s.str());
         if(status=="converged")Record(root+"/final_parameters.json",Parameters(s.str()));
         std::cout<<"fullauto "<<status<<" round="<<round<<" theta="<<nodes<<" ci="<<ci<<" interpolation="<<ie<<" streak="<<streak<<std::endl;
@@ -544,15 +574,17 @@ struct Engine {
             &&j.pipeline==kernel.pipeline&&j.warp==kernel.warp&&j.mirrored==mirror&&!j.paired&&j.hasControls==controls&&j.executionHash==ExecutionHash();
     }
     std::vector<Job> DirectStage(int n,unsigned const* seedSet,size_t ns,int depth,const std::vector<double>& x,bool weighted=true,bool pairedMirror=false,int offset=0,int pairedDepth=0) {
-        Require(x.size()<=size_t(maxTheta),"explicit theta evaluation limit exceeded");Require(FileHash(exe)==binaryHash,"binary changed during run");std::ostringstream angles;for(double q:x)angles<<Number(q)<<'\n';std::string gridHash=Hash(angles.str());
+        Require(x.size()<=size_t(maxTheta)+(go?2:0),"explicit theta evaluation limit exceeded");Require(FileHash(exe)==binaryHash,"binary changed during run");std::ostringstream angles;for(double q:x)angles<<Number(q)<<'\n';std::string gridHash=Hash(angles.str());
         std::string grid=root+"/theta_"+gridHash+".csv";Atomic(grid,angles.str());std::string wf=weighted?WriteWeights(x):"";
         std::vector<Job> result(ns);std::vector<std::vector<std::string>> commands(ns);std::vector<size_t> todo;
         for(size_t s=0;s<ns;++s){std::vector<std::string> command=base;
-            for(const std::string& v:std::vector<std::string>{"--max-reflections",std::to_string(depth),"--sobol-seed",std::to_string(n),std::to_string(seedSet[s]),"--haar-alpha","--theta-grid-file",grid,"--phi-points",std::to_string(phi),"--threads",std::to_string(workerThreads),"--close"})command.push_back(v);
+            for(const std::string& v:std::vector<std::string>{"--max-reflections",std::to_string(depth),"--sobol-seed",std::to_string(n),std::to_string(seedSet[s]),"--threads",std::to_string(workerThreads),"--close"})command.push_back(v);
+            if(go){for(const auto& v:std::vector<std::string>{"--scattering-grid","0","180","1",Number(theta.size()-1),"--go-fullauto-worker"})command.push_back(v);}
+            else{for(const auto& v:std::vector<std::string>{"--haar-alpha","--theta-grid-file",grid,"--phi-points",std::to_string(phi)})command.push_back(v);}
             if(pairedMirror)command.push_back("--haar-mirror-audit");else if(mirror)command.push_back("--mirror-gamma");
             if(offset){command.push_back("--sobol-offset");command.push_back(std::to_string(offset));}
             if(pairedDepth){command.push_back("--paired-depth");command.push_back(std::to_string(pairedDepth));}
-            command.push_back("--profile-phases");
+            if(!go)command.push_back("--profile-phases");
             if(controls){command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache(gridHash));if(sharedMeans){command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");}}
             if(workerChunk>0){command.push_back("--orientation-chunk");command.push_back(Number(workerChunk));}
             if(kernel.pipeline)command.push_back("--orientation-pipeline");
@@ -610,7 +642,7 @@ struct Engine {
                     +",\"diffraction_and_controls_seconds\":"+Number(j.diffractionSeconds)+",\"analytic_setup_seconds\":"+Number(j.controlSetup)+",\"return_code\":0}");
         }
     }
-    bool QueueEnabled()const{return angularCache&&workQueuePolicy!="off"&&(workQueuePolicy=="on"||gpus.size()>1);}
+    bool QueueEnabled()const{return (go||angularCache)&&workQueuePolicy!="off"&&(workQueuePolicy=="on"||gpus.size()>1);}
     struct WorkRequest {int count,offset,depth,pairedDepth;std::vector<double> angles;};
     void Prefetch(const std::vector<WorkRequest>& requests,const unsigned* seedSet){
         if(!QueueEnabled()||requests.empty())return;
@@ -885,7 +917,7 @@ struct Engine {
         if(correctPolar&&controls&&!polarWeights.empty())for(size_t r=0;r<m.size();++r){const auto b=Polar(job.angles[r]);const auto& c=job.controls[r];
             for(int j=1;j<16;++j)m[r][j]+=b[0][j]*(c[1]-c[3])+b[1][j]*(c[2]-c[4]);}s.push_back(m);}return s;}
     double Cost(const std::vector<Job>& j,int n){double s=0;for(const auto& v:j)s+=v.seconds;return s/j.size()/n;}
-    void SetMirror(bool value){if(mirror!=value)mirrorError=0;mirror=value;statistical=eps-interpolation-(mirror?eps/256:0)-(controls?eps/64:0)-((rotationBeta>1||rotationGamma>1)?eps/256:0)-(selectedCutoff!="requested"&&selectedCutoff!="off"?eps/8:0)-((resourcePolicy=="auto"||config.useGpu)?eps/1024:0);}
+    void SetMirror(bool value){if(mirror!=value)mirrorError=0;mirror=value;statistical=eps-interpolation-depthBudget-(mirror?eps/256:0)-(controls?eps/64:0)-((rotationBeta>1||rotationGamma>1)?eps/256:0)-(selectedCutoff!="requested"&&selectedCutoff!="off"?eps/8:0)-((resourcePolicy=="auto"||config.useGpu)?eps/1024:0);}
     void PrepareMirror(const std::vector<double>& x){
         if(mirrorPolicy=="off")return;
         SetMirror(true);unsigned seed=3001;
@@ -1042,20 +1074,43 @@ Samples Support(const Samples& s,const std::vector<size_t>& evaluated,const std:
 }
 }
 
+namespace { double PhysicalDepthBound(const Samples&,const Samples&,const Matrix&,bool,size_t,bool); }
 #include "FullAutoAdaptive.inc"
+#include "FullAutoGO.inc"
+#include "FullAutoPhysics.inc"
 
-int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[]) {
-    Engine e(args,config);e.Init(argc,argv);Lock lock(e.root+"/controller.lock");
-    const std::string identity=e.root+"/configuration.txt";
-    if(Exists(identity))Require(Read(identity)==e.signature+"\n","resume inputs/binary/environment changed; choose a new output directory");else Atomic(identity,e.signature+"\n");
-    e.Record(e.root+"/explicit_options.json",e.requestedOptions);e.Record(e.root+"/fullauto_parameters.json",e.Parameters("{}"));
-    WriteGrid(e.root+"/requested_theta.csv",e.theta);Directory(e.root+"/jobs");
+int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],double maximumEdge,double maximumDiameter,double volume) {
+    std::unique_ptr<Engine> controller(new Engine(args,config));controller->Init(argc,argv,maximumEdge,maximumDiameter,volume);
+    Lock lock(controller->root+"/controller.lock");
+    const std::string identity=controller->root+"/configuration.txt";
+    if(Exists(identity))Require(Read(identity)==controller->signature+"\n","resume inputs/binary/environment changed; choose a new output directory");else Atomic(identity,controller->signature+"\n");
+    char originalDirectory[4096];Require(getcwd(originalDirectory,sizeof(originalDirectory))!=nullptr,"cannot capture original working directory");
+    std::ostringstream replay;replay<<"{\"schema\":1,\"executable\":"<<Quoted(controller->exe)<<",\"cwd\":"<<Quoted(originalDirectory)<<",\"argv\":[";
+    for(int i=1;i<argc;++i)replay<<(i>1?",":"")<<Quoted(argv[i]);replay<<"],\"environment\":{";
+    bool firstVariable=true;
+    for(char** variable=environ;*variable;++variable){std::string value=*variable;const auto equal=value.find('=');const auto name=value.substr(0,equal);
+        if(name.compare(0,4,"MBS_")!=0&&name!="CUDA_VISIBLE_DEVICES"&&name!="LD_LIBRARY_PATH"&&name!="OMP_NUM_THREADS")continue;
+        replay<<(firstVariable?"":",")<<Quoted(name)<<':'<<Quoted(value.substr(equal+1));firstVariable=false;}
+    replay<<"}}";
+    const std::string commandFile=controller->root+"/controller_command.json";
+    // Environment iteration order is not stable across exec/reboots. Keep
+    // the original JSON; signature validation checks result-affecting values.
+    if(!Exists(commandFile))Atomic(commandFile,replay.str());
     signal(SIGTERM,StopWorkers);signal(SIGINT,StopWorkers);
-    try {return RunAdaptive(e);}catch(...) {
-        if(Exists(e.root+"/fullauto_status.json")){std::string text=Read(e.root+"/fullauto_status.json");const size_t key=text.find("\"status\":\"");
-            if(key!=std::string::npos){const size_t begin=key+10,end=text.find('"',begin);text.replace(begin,end-begin,"failed");Atomic(e.root+"/fullauto_status.json",text);}}
-        else {e.State("failed",0,{},0,0,0,0);}
-        throw;
+    for(;;){Engine& e=*controller;
+        e.Record(e.root+"/explicit_options.json",e.requestedOptions);e.Record(e.root+"/fullauto_parameters.json",e.Parameters("{}"));
+        WriteGrid(e.root+"/requested_theta.csv",e.theta);Directory(e.root+"/jobs");
+        try {
+            SelectAutomaticDepth(e);e.Record(e.root+"/fullauto_parameters.json",e.Parameters("{}"));
+            const int result=e.go?RunGO(e):RunAdaptive(e);
+            if(!PromoteAutomaticDepth(e,result))return result;
+        }catch(...) {
+            if(Exists(e.root+"/fullauto_status.json")){std::string text=Read(e.root+"/fullauto_status.json");const size_t key=text.find("\"status\":\"");
+                if(key!=std::string::npos){const size_t begin=key+10,end=text.find('"',begin);text.replace(begin,end-begin,"failed");Atomic(e.root+"/fullauto_status.json",text);}}
+            else e.State("failed",0,{},0,0,0,0);
+            throw;
+        }
+        controller.reset(new Engine(args,config));controller->Init(argc,argv,maximumEdge,maximumDiameter,volume);
     }
 }
 }

@@ -22,5 +22,6 @@ std::vector<int> Allocate(const std::vector<Samples>& levels,
                           const std::vector<double>& costs,
                           const std::vector<int>& counts,
                           const Matrix& reference, double tolerance);
-int Run(const ArgPP& args, const RunConfig& config, int argc, const char* argv[]);
+int Run(const ArgPP& args, const RunConfig& config, int argc, const char* argv[],
+        double maximumEdge=0,double maximumDiameter=0,double particleVolume=0);
 }

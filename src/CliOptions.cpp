@@ -221,13 +221,23 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
         {"autofull", "autofull", 1, "EPS", "Orientation",
          "Legacy joint convergence of reflection depth, phi, theta, and Sobol orientations to EPS."},
         {"fullauto", "fullauto", 1, "EPS", "Orientation",
-         "Self-contained Haar/MLMC controller with explicit-setting priority. Coherent PO uses optional analytic controls; --incoherent uses sampled Mueller accumulation. Eight scrambles, interpolation checks and durable recovery."},
+         "Self-contained adaptive controller with explicit-setting priority. PO uses Haar/MLMC and interpolation; GO uses CPU, fixed solid-angle bins and analytic alpha. Eight scrambles and durable recovery."},
+        {"go_fullauto_worker", "go-fullauto-worker", 0, "", "Output",
+         "Internal GO controller product: full-precision finite bins and separate full Mueller delta matrices.", true},
+        {"fullauto_depth_search", "fullauto-depth-search", 1, "MODE", "Orientation",
+         "Select reflection depth with paired comparisons: on by default when max-reflections is omitted; off fixes the start depth. Explicit max-reflections remains fixed."},
+        {"fullauto_depth_start", "fullauto-depth-start", 1, "N", "Orientation",
+         "Automatic depth search start, default 6; requires no explicit max-reflections."},
+        {"fullauto_depth_max", "fullauto-depth-max", 1, "N", "Orientation",
+         "Automatic depth search ceiling, default 18, at most 28. Validation also evaluates ceiling+2."},
+        {"fullauto_cpu_workers", "fullauto-cpu-workers", 1, "N", "Orientation",
+         "Fullauto CPU worker processes, 1..8, default 1. Threads are per process; requires CPU backend."},
         {"fullauto_pilot", "fullauto-pilot", 1, "N", "Orientation",
          "Fullauto independent training/validation samples per seed; power of two, default 512."},
         {"fullauto_kernel", "fullauto-kernel-count", 1, "N", "Orientation",
          "Fullauto GPU tuning sample count; power of two, default 256."},
         {"fullauto_initial", "fullauto-initial", 1, "N", "Orientation",
-         "Fullauto initial main-level samples per seed; power of two, default 1024."},
+         "Fixed fullauto initial samples per seed, power of two. Default max(512, oldauto beta*gamma estimate at xi/16), bounded by the orientation cap."},
         {"fullauto_correction", "fullauto-min-correction", 1, "N", "Orientation",
          "Fullauto minimum samples per correction and seed; power of two, default 256."},
         {"fullauto_rounds", "fullauto-max-rounds", 1, "N", "Orientation",
@@ -260,7 +270,7 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
          "Jointly converge reflection depth, phi, theta, N_beta, and N_gamma; finish on a regular Euler quadrature grid.",
          false, {"oldfullauto"}},
         {"fullauto_work_queue", "fullauto-work-queue", 1, "MODE", "Orientation",
-         "Dispatch independent orientation blocks, angle groups and levels in one GPU queue: auto (default; multiple GPUs), on, off. Sampling and tolerances are unchanged."},
+         "Dispatch independent orientation blocks, angle groups and levels in one worker queue: auto (default; multiple workers), on, off. Sampling and tolerances are unchanged."},
         {"fullauto_incremental", "fullauto-incremental", 1, "MODE", "Orientation",
          "Reuse exact Owen-Sobol prefixes and checkpoint completed orientation blocks: on (default), off."},
         {"fullauto_orientation_block", "fullauto-orientation-block", 1, "N", "Orientation",
@@ -487,7 +497,7 @@ std::string CliCanonicalFlag(const std::string &keyOrAlias)
 
 const char *FullAutoOptionPolicy(const std::string &key)
 {
-    static const std::set<std::string> controller={"fullauto","fullauto_pilot","fullauto_kernel","fullauto_initial","fullauto_correction","fullauto_rounds","fullauto_theta_range","fullauto_theta_audit","fullauto_theta_start","fullauto_gpus","fullauto_resources","fullauto_rotation","fullauto_cutoffs","fullauto_mirror","fullauto_angular_cache","fullauto_controls","fullauto_work_queue","fullauto_incremental","fullauto_orientation_block","fullauto_local","fullauto_ratios","fullauto_phi_recheck","fullauto_polar_controls","fullauto_final_audit","fullauto_physics_audit","fullauto_depth_share"};
+    static const std::set<std::string> controller={"fullauto","fullauto_depth_search","fullauto_depth_start","fullauto_depth_max","fullauto_cpu_workers","fullauto_pilot","fullauto_kernel","fullauto_initial","fullauto_correction","fullauto_rounds","fullauto_theta_range","fullauto_theta_audit","fullauto_theta_start","fullauto_gpus","fullauto_resources","fullauto_rotation","fullauto_cutoffs","fullauto_mirror","fullauto_angular_cache","fullauto_controls","fullauto_work_queue","fullauto_incremental","fullauto_orientation_block","fullauto_local","fullauto_ratios","fullauto_phi_recheck","fullauto_polar_controls","fullauto_final_audit","fullauto_physics_audit","fullauto_depth_share"};
     if(controller.count(key))return "controller";
     static const std::set<std::string> fixed={"method","po","go","incoh","karczewski","legacy_sign","p","pf","rs","k_eq","ri","w","n","abs","abs_points","sym","geometry","forced_nonconvex","forced_convex","r","haar_alpha","analytic_facet_average","analytic_shadow_control","analytic_mean_cache","mirror_gamma","grid","tgrid","nphi","backend","gpu","cpu","threads","chunk","orientation_pipeline","gpu_trace","no_gpu_trace","trace_prefilter","no_trace_prefilter","trace_prefilter_margin","trace_prefilter_stats","cutoff_profile","beam_cutoff","beam_cutoff_j","beam_cutoff_area","beam_cutoff_importance","trace_cutoff","trace_cutoff_j","trace_cutoff_area","trace_cutoff_importance","trace_max_beams","trace_limit_retries","trace_retry_factor","o","close","log","shadow_off","full_only","save_geometry","ot_phase_avg","ot_phase_shift","ot_ping","allow_experimental_environment","owen_seeds"};
     static const std::set<std::string> limits={"maxorient","max_theta_points","max_phi_points","convergence_passes","adaptive_config"};

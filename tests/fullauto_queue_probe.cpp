@@ -12,6 +12,22 @@ int main(int argc,const char* argv[]){
             FullAuto::Require(FullAuto::FileHash(path)!=digest,"same-size mutation with restored mtime escaped validation");
             std::remove(path.c_str());std::cout<<"{\"uncached_seconds\":"<<cold<<",\"cached_seconds\":"<<cached<<",\"mutation_rejected\":true}\n";return 0;
         }
+        if(argc==3&&std::string(argv[1])=="--test-depth-promotion"){
+            ArgPP args;RunConfig config;FullAuto::Engine e(args,config);
+            e.root=argv[2];e.signature="test_physics_checkpoint";e.autoDepth=true;e.target=6;e.depthStart=6;e.depthMaximum=18;e.depthBudget=.0025;
+            FullAuto::Directory(e.root);FullAuto::Directory(e.root+"/jobs");
+            FullAuto::Atomic(e.root+"/physics_validation.json","{\"depth_pass\":false,\"cutoff_pass\":true}");
+            FullAuto::Atomic(e.root+"/adaptive_checkpoint.tsv","allocation_at_n6");
+            FullAuto::Atomic(e.root+"/execution_tuning.tsv","tuning_at_n6");
+            FullAuto::Require(FullAuto::PromoteAutomaticDepth(e,4)&&e.target==8,"failed to promote automatic depth");
+            FullAuto::Require(!FullAuto::Exists(e.root+"/adaptive_checkpoint.tsv")&&FullAuto::Read(e.root+"/depth_attempts/n6/adaptive_checkpoint.tsv")=="allocation_at_n6","old estimator was reused or lost");
+            FullAuto::Require(!FullAuto::Exists(e.root+"/execution_tuning.tsv"),"old depth tuning remained live");
+            FullAuto::Atomic(e.root+"/physics_validation.json","{\"depth_pass\":false,\"cutoff_pass\":false}");
+            FullAuto::Require(!FullAuto::PromoteAutomaticDepth(e,4)&&e.target==8,"unrelated cutoff failure changed depth");
+            e.target=18;FullAuto::Require(!FullAuto::PromoteAutomaticDepth(e,4),"automatic depth exceeded ceiling");
+            e.target=6;e.autoDepth=false;FullAuto::Require(!FullAuto::PromoteAutomaticDepth(e,4),"explicit target changed");
+            std::cout<<"Automatic depth promotion archives old allocations and respects explicit physics and ceiling\n";return 0;
+        }
         ArgPP args;RegisterCliOptions(args);args.Parse(argc,argv);
 #ifdef USE_CUDA
         const bool cuda=true;

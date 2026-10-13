@@ -3,6 +3,7 @@
 #include <iostream>
 #include <cmath>
 #include <stdexcept>
+#include <iomanip>
 
 #include "Mueller.hpp"
 
@@ -189,6 +190,7 @@ void HandlerGO::WriteToFile(ContributionGO &contrib, double norm,
                 "M31 M32 M33 M34 "\
                 "M41 M42 M43 M44";
 
+    if(fullautoOutput)allFile<<std::setprecision(17);
     double radius = m_sphere.zenithEnd - m_sphere.zenithStart;
     const double thetaStepDeg = contrib.thetaStep;
     const double thetaStepRad = DegToRad(contrib.thetaStep);

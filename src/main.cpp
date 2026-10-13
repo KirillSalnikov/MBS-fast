@@ -266,6 +266,161 @@ enum class ParticleType : int
     CertainAggregate = 999
 };
 
+
+static std::unique_ptr<Particle> CreateConfiguredParticle(const ArgPP& args,
+        const ::complex& refrIndex,double wave,std::string& additionalSummary)
+{
+    Particle *particle = nullptr;
+    std::unique_ptr<Particle> particleOwner;
+
+
+    additionalSummary += "Particle: ";
+
+    if (args.IsCatched("pf"))
+    {
+        std::string filename = args.GetStringValue("pf", 0);
+        particleOwner.reset(new Particle());
+        particle = particleOwner.get();
+        particle->SetFromFile(filename);
+        particle->SetRefractiveIndex(refrIndex);
+
+        double origDMax = particle->MaximalDimention();
+        additionalSummary += "from file: " + filename + "\n";
+        additionalSummary += "\tOriginal Dmax: " + std::to_string(origDMax);
+
+        if (args.IsCatched("rs"))
+        {
+//            std::string dimension = args.GetStringValue("resize", 0);
+            double newSize = args.GetDoubleValue("rs", 0);
+
+//            if (dimension == "d")
+//            {
+                particle->Resize(newSize);
+//            }
+//            else if (dimension == "v")
+//            {
+//                double oldV = particle->Volume();
+//                double ratio = newSize/oldV;
+//                ratio = pow(ratio, 1.0/3);
+//                particle->Scale(ratio);
+//            }
+        }
+
+        double newDMax = particle->MaximalDimention();
+        additionalSummary += ", new Dmax: " + std::to_string(newDMax)
+                + ", resize factor: " + std::to_string(newDMax/origDMax) + '\n';
+    }
+    else
+    {
+        ParticleType type = (ParticleType)args.GetIntValue("p", 0);
+        double height;
+        double diameter;
+
+        double sup;
+        int num;
+
+        switch (type)
+        {
+        case ParticleType::Hexagonal:
+            height = args.GetDoubleValue("p", 1);
+            diameter = args.GetDoubleValue("p", 2);
+            particleOwner.reset(new Hexagonal(refrIndex, diameter, height));
+            particle = particleOwner.get();
+            break;
+        case ParticleType::Bullet:
+            height = args.GetDoubleValue("p", 1);
+            diameter = args.GetDoubleValue("p", 2);
+            sup = (diameter*sqrt(3)*tan(DegToRad(62)))/4;
+            particleOwner.reset(new Bullet(refrIndex, diameter, height, sup));
+            particle = particleOwner.get();
+            break;
+        case ParticleType::BulletRosette:
+            height = args.GetDoubleValue("p", 1);
+            diameter = args.GetDoubleValue("p", 2);
+            sup = (args.GetArgNumber("p") == 4)
+                    ? args.GetDoubleValue("p", 3)
+                    : diameter*sqrt(3)*tan(DegToRad(62))/4;
+            particleOwner.reset(new BulletRosette(refrIndex, diameter, height, sup));
+            particle = particleOwner.get();
+            break;
+        case ParticleType::Droxtal:
+            sup = args.GetDoubleValue(
+                "p", args.GetArgNumber("p") == 2 ? 1 : 3);
+            particleOwner.reset(new Droxtal(
+                refrIndex, DegToRad(32.35), DegToRad(71.81), sup));
+            particle = particleOwner.get();
+            break;
+//		case ParticleType::TiltedHexagonal:
+//			sup = parser.argToValue<double>(vec[3]);
+//			particle = new TiltedHexagonal(r, hh, ri, sup);
+//			break;
+        case ParticleType::ConcaveHexagonal:
+            height = args.GetDoubleValue("p", 1);
+            diameter = args.GetDoubleValue("p", 2);
+            sup = args.GetDoubleValue("p", 3);
+            particleOwner.reset(new ConcaveHexagonal(
+                refrIndex, diameter, height, sup));
+            particle = particleOwner.get();
+            break;
+        case ParticleType::HexagonalAggregate:
+            height = args.GetDoubleValue("p", 1);
+            diameter = args.GetDoubleValue("p", 2);
+            num = args.GetIntValue("p", 3);
+            particleOwner.reset(new HexagonalAggregate(
+                refrIndex, diameter, height, num));
+            particle = particleOwner.get();
+            break;
+        case ParticleType::CertainAggregate:
+            sup = args.GetDoubleValue("p", 1);
+            particleOwner.reset(new CertainAggregate(refrIndex, sup));
+            particle = particleOwner.get();
+            break;
+        default:
+            assert(false && "ERROR! Incorrect type of particle.");
+            break;
+        }
+    }
+
+    if (args.IsCatched("k_eq"))
+    {
+        double targetKEq = args.GetDoubleValue("k_eq", 0);
+        if (targetKEq <= 0)
+        {
+            std::cerr << "ERROR: --k_eq must be positive." << std::endl;
+            throw std::runtime_error("cannot apply --k-eq to this particle");
+        }
+        if (wave <= 0)
+        {
+            std::cerr << "ERROR: --k_eq requires positive wavelength (-w)." << std::endl;
+            throw std::runtime_error("cannot apply --k-eq to this particle");
+        }
+
+        double currentVolume = particle->Volume();
+        double currentReq = (currentVolume > 0)
+            ? pow(3.0 * currentVolume / (4.0 * M_PI), 1.0 / 3.0)
+            : 0.0;
+        if (currentReq <= DBL_EPSILON)
+        {
+            std::cerr << "ERROR: cannot apply --k_eq because current equivalent radius is zero.\n"
+                      << "  Fix: use a closed particle with nonzero volume, or remove --k-eq."
+                      << std::endl;
+            throw std::runtime_error("cannot apply --k-eq to this particle");
+        }
+
+        double targetReq = targetKEq * wave / (2.0 * M_PI);
+        double ratio = targetReq / currentReq;
+        double oldDMax = particle->MaximalDimention();
+        particle->Resize(oldDMax * ratio);
+        additionalSummary += "\tResized by k_eq: target " + std::to_string(targetKEq)
+                + ", old r_eq: " + std::to_string(currentReq)
+                + ", new Dmax: " + std::to_string(particle->MaximalDimention())
+                + ", resize factor: " + std::to_string(ratio) + "\n";
+    }
+
+    return particleOwner;
+}
+
+
 static int FinishWithCode(int code)
 {
 #ifdef USE_MPI
@@ -1588,7 +1743,11 @@ int main(int argc, const char* argv[])
 
     if (args.IsCatched("fullauto"))
     {
-        try { return FullAuto::Run(args, config, argc, argv); }
+        try {
+            std::string shapeSummary;
+            auto shape=CreateConfiguredParticle(args,::complex(config.refractiveReal,config.refractiveImag),config.wavelengthUm,shapeSummary);
+            return FullAuto::Run(args,config,argc,argv,shape->MaximumEdgeLength(),shape->MaximalDimention(),shape->Volume());
+        }
         catch (const std::exception& error)
         {
             PrintCommandLineError(error.what());
@@ -1718,152 +1877,8 @@ int main(int argc, const char* argv[])
 
     // TODO: AggregateBuilder
 
-    Particle *particle = nullptr;
-    std::unique_ptr<Particle> particleOwner;
-
-
-    additionalSummary += "Particle: ";
-
-    if (args.IsCatched("pf"))
-    {
-        std::string filename = args.GetStringValue("pf", 0);
-        particleOwner.reset(new Particle());
-        particle = particleOwner.get();
-        particle->SetFromFile(filename);
-        particle->SetRefractiveIndex(refrIndex);
-
-        double origDMax = particle->MaximalDimention();
-        additionalSummary += "from file: " + filename + "\n";
-        additionalSummary += "\tOriginal Dmax: " + std::to_string(origDMax);
-
-        if (args.IsCatched("rs"))
-        {
-//            std::string dimension = args.GetStringValue("resize", 0);
-            double newSize = args.GetDoubleValue("rs", 0);
-
-//            if (dimension == "d")
-//            {
-                particle->Resize(newSize);
-//            }
-//            else if (dimension == "v")
-//            {
-//                double oldV = particle->Volume();
-//                double ratio = newSize/oldV;
-//                ratio = pow(ratio, 1.0/3);
-//                particle->Scale(ratio);
-//            }
-        }
-
-        double newDMax = particle->MaximalDimention();
-        additionalSummary += ", new Dmax: " + std::to_string(newDMax)
-                + ", resize factor: " + std::to_string(newDMax/origDMax) + '\n';
-    }
-    else
-    {
-        ParticleType type = (ParticleType)args.GetIntValue("p", 0);
-        double height;
-        double diameter;
-
-        double sup;
-        int num;
-
-        switch (type)
-        {
-        case ParticleType::Hexagonal:
-            height = args.GetDoubleValue("p", 1);
-            diameter = args.GetDoubleValue("p", 2);
-            particleOwner.reset(new Hexagonal(refrIndex, diameter, height));
-            particle = particleOwner.get();
-            break;
-        case ParticleType::Bullet:
-            height = args.GetDoubleValue("p", 1);
-            diameter = args.GetDoubleValue("p", 2);
-            sup = (diameter*sqrt(3)*tan(DegToRad(62)))/4;
-            particleOwner.reset(new Bullet(refrIndex, diameter, height, sup));
-            particle = particleOwner.get();
-            break;
-        case ParticleType::BulletRosette:
-            height = args.GetDoubleValue("p", 1);
-            diameter = args.GetDoubleValue("p", 2);
-            sup = (args.GetArgNumber("p") == 4)
-                    ? args.GetDoubleValue("p", 3)
-                    : diameter*sqrt(3)*tan(DegToRad(62))/4;
-            particleOwner.reset(new BulletRosette(refrIndex, diameter, height, sup));
-            particle = particleOwner.get();
-            break;
-        case ParticleType::Droxtal:
-            sup = args.GetDoubleValue(
-                "p", args.GetArgNumber("p") == 2 ? 1 : 3);
-            particleOwner.reset(new Droxtal(
-                refrIndex, DegToRad(32.35), DegToRad(71.81), sup));
-            particle = particleOwner.get();
-            break;
-//		case ParticleType::TiltedHexagonal:
-//			sup = parser.argToValue<double>(vec[3]);
-//			particle = new TiltedHexagonal(r, hh, ri, sup);
-//			break;
-        case ParticleType::ConcaveHexagonal:
-            height = args.GetDoubleValue("p", 1);
-            diameter = args.GetDoubleValue("p", 2);
-            sup = args.GetDoubleValue("p", 3);
-            particleOwner.reset(new ConcaveHexagonal(
-                refrIndex, diameter, height, sup));
-            particle = particleOwner.get();
-            break;
-        case ParticleType::HexagonalAggregate:
-            height = args.GetDoubleValue("p", 1);
-            diameter = args.GetDoubleValue("p", 2);
-            num = args.GetIntValue("p", 3);
-            particleOwner.reset(new HexagonalAggregate(
-                refrIndex, diameter, height, num));
-            particle = particleOwner.get();
-            break;
-        case ParticleType::CertainAggregate:
-            sup = args.GetDoubleValue("p", 1);
-            particleOwner.reset(new CertainAggregate(refrIndex, sup));
-            particle = particleOwner.get();
-            break;
-        default:
-            assert(false && "ERROR! Incorrect type of particle.");
-            break;
-        }
-    }
-
-    if (args.IsCatched("k_eq"))
-    {
-        double targetKEq = args.GetDoubleValue("k_eq", 0);
-        if (targetKEq <= 0)
-        {
-            std::cerr << "ERROR: --k_eq must be positive." << std::endl;
-            return 1;
-        }
-        if (wave <= 0)
-        {
-            std::cerr << "ERROR: --k_eq requires positive wavelength (-w)." << std::endl;
-            return 1;
-        }
-
-        double currentVolume = particle->Volume();
-        double currentReq = (currentVolume > 0)
-            ? pow(3.0 * currentVolume / (4.0 * M_PI), 1.0 / 3.0)
-            : 0.0;
-        if (currentReq <= DBL_EPSILON)
-        {
-            std::cerr << "ERROR: cannot apply --k_eq because current equivalent radius is zero.\n"
-                      << "  Fix: use a closed particle with nonzero volume, or remove --k-eq."
-                      << std::endl;
-            return 1;
-        }
-
-        double targetReq = targetKEq * wave / (2.0 * M_PI);
-        double ratio = targetReq / currentReq;
-        double oldDMax = particle->MaximalDimention();
-        particle->Resize(oldDMax * ratio);
-        additionalSummary += "\tResized by k_eq: target " + std::to_string(targetKEq)
-                + ", old r_eq: " + std::to_string(currentReq)
-                + ", new Dmax: " + std::to_string(particle->MaximalDimention())
-                + ", resize factor: " + std::to_string(ratio) + "\n";
-    }
+    std::unique_ptr<Particle> particleOwner = CreateConfiguredParticle(args,refrIndex,wave,additionalSummary);
+    Particle* particle = particleOwner.get();
 
     additionalSummary += "\tRefractive index: " + to_string(re);
 
@@ -3503,6 +3518,7 @@ int main(int argc, const char* argv[])
 
         tracer.m_summary = additionalSummary;
         ScatteringRange grid = SetConus(args);
+        handler->fullautoOutput = args.IsCatched("go_fullauto_worker");
         handler->isCoh = !args.IsCatched("incoh");
             handler->m_legacySign = args.IsCatched("legacy_sign");
         ApplyNphiOverride(args, grid);
@@ -3648,6 +3664,8 @@ int main(int argc, const char* argv[])
                 : 42u;
             double betaMax = particle->GetSymmetry().beta;
             double gammaMax = particle->GetSymmetry().gamma;
+            if(args.IsCatched("sym")){betaMax=M_PI/args.GetIntValue("sym",0);gammaMax=2*M_PI/args.GetIntValue("sym",1);}
+
             if (args.IsCatched("mirror_gamma"))
                 gammaMax *= 0.5;
 
@@ -3655,7 +3673,7 @@ int main(int argc, const char* argv[])
                                          : ", Sobol quasi-random\n\n";
             cout << additionalSummary;
             tracer.m_summary = additionalSummary;
-            tracer.TraceSobol(nOr, seed, betaMax, gammaMax);
+            tracer.TraceSobol(nOr, seed, betaMax, gammaMax, args.IsCatched("sobol_offset")?static_cast<unsigned int>(args.GetIntValue("sobol_offset")):0u);
         }
 
     }

@@ -17,6 +17,9 @@ public:
     /// Reset state to beginning of sequence
     void reset();
 
+    /// Seek to the state preceding point offset, without generating a prefix.
+    void seek(uint32_t offset);
+
     /// Generate next point in [0,1]^2
     void next(double &x, double &y);
 

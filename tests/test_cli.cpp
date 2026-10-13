@@ -421,6 +421,32 @@ int main()
             if(policy!="fixed"&&policy!="limit"&&policy!="controller"&&policy!="native equivalent"&&policy!="help"&&policy!="unsupported")throw std::runtime_error("missing fullauto policy for "+spec.key);
         }
     }
+    {
+        auto go=std::vector<std::string>{"--method","go","--backend","cpu","--particle","1",".2",".1","--ri","1.31","0","--wavelength-um","1","--fullauto",".01"};
+        ExpectSuccess("GO native fullauto",go);
+        auto rich=go;rich.insert(rich.end(),{"--scattering-grid","0","180","1","36","--symmetry","1","1","--fullauto-cpu-workers","4","--threads","2","--max-reflections","8","--fullauto-physics-audit","on"});
+        ExpectSuccess("GO fullauto fixed bins and CPU workers",rich);
+        for(const auto& extra:std::vector<std::vector<std::string>>{{"--fullauto-pilot","32"},{"--fullauto-min-correction","32"},{"--fullauto-theta-start","9"},{"--analytic-facet-average"},{"--haar-alpha"},{"--mirror-gamma"},{"--orientation-pipeline"}}){
+            auto bad=go;bad.insert(bad.end(),extra.begin(),extra.end());ExpectFailure("GO rejects unused "+extra[0],bad,"not used by GO fullauto");}
+        for(const auto& flag:std::vector<std::string>{"--fullauto-mirror","--fullauto-resources","--fullauto-cutoffs","--fullauto-analytic-controls","--fullauto-local-orientations","--fullauto-depth-sharing"}){
+            auto bad=go;bad.insert(bad.end(),{flag,"on"});ExpectFailure("GO rejects active "+flag,bad,"must be off for GO fullauto");
+            auto valid=go;valid.insert(valid.end(),{flag,"off"});ExpectSuccess("GO explicit off "+flag,valid);}
+        auto preset=go;preset.insert(preset.end(),{"--cutoff-profile","balanced"});ExpectFailure("GO fullauto rejects PO cutoff presets",preset,"individual trace cutoffs");
+        auto phi=go;phi.insert(phi.end(),{"--phi-points","4"});ExpectFailure("GO analytic alpha rejects phi sampling",phi,"phi-points must be 1");
+        auto grid=go;grid.insert(grid.end(),{"--scattering-grid","170","180","1","10"});ExpectFailure("GO fullauto rejects partial bins",grid,"requires --scattering-grid");
+        for(const std::string count:{"0","9"}){auto bad=go;bad.insert(bad.end(),{"--fullauto-cpu-workers",count});ExpectFailure("GO CPU worker count "+count,bad,"count in 1..8");}
+        auto direct=std::vector<std::string>{"--method","go","--backend","cpu","--particle","1",".2",".1","--ri","1.31","0","--wavelength-um","1","--sobol-seed","32","11","--sobol-offset","32","--go-fullauto-worker","--symmetry","1","1"};
+        ExpectSuccess("GO exact Sobol offset worker",direct);
+        auto gpu=go;gpu[3]="cuda";ExpectFailureForBuild("GO fullauto remains CPU",gpu,false,true,"geometrical optics does not use the CUDA");
+    }
+    {
+        auto automatic=std::vector<std::string>{"--method","po","--backend","cpu","--particle","1",".2",".1","--ri","1.31","0","--wavelength-um","1","--fullauto",".01"};
+        auto search=automatic;search.insert(search.end(),{"--fullauto-depth-search","on","--fullauto-depth-start","6","--fullauto-depth-max","18"});ExpectSuccess("automatic physical depth search",search);
+        auto fixed=automatic;fixed.insert(fixed.end(),{"--max-reflections","8","--fullauto-depth-search","off"});ExpectSuccess("explicit depth remains fixed",fixed);
+        auto conflict=fixed;conflict.back()="on";ExpectFailure("explicit depth rejects forced search",conflict,"explicit max-reflections fixes depth");
+        for(const auto& extra:std::vector<std::vector<std::string>>{{"--fullauto-depth-start","19"},{"--fullauto-depth-max","29"},{"--fullauto-depth-search","auto"}}){auto bad=automatic;bad.insert(bad.end(),extra.begin(),extra.end());ExpectFailure("invalid depth setting "+extra[0],bad,"depth");}
+        auto unused=fixed;unused.insert(unused.end(),{"--fullauto-depth-max","18"});ExpectFailure("fixed depth rejects unused ceiling",unused,"unused with explicit");
+    }
     ExpectFailure("fullauto budget invalid", {
         "--method", "po", "--particle", "1", "1", "1", "--ri", "1.31", "0",
         "-w", "1", "--fullauto", "0", "--backend", "cpu"

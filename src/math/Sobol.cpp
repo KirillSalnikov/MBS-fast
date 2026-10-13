@@ -16,6 +16,19 @@ void Sobol2D::reset()
     m_state[1] = 0;
 }
 
+void Sobol2D::seek(uint32_t offset)
+{
+    m_index = offset;
+    const uint32_t gray = offset ^ (offset >> 1);
+    for (int dimension = 0; dimension < 2; ++dimension)
+    {
+        m_state[dimension] = 0;
+        for (int bit = 0; bit < 32; ++bit)
+            if ((gray >> bit) & 1u)
+                m_state[dimension] ^= m_directions[dimension][bit];
+    }
+}
+
 uint32_t Sobol2D::hash(uint32_t seed, uint32_t dim, uint32_t level,
                        uint32_t prefix) const
 {

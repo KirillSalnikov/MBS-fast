@@ -852,7 +852,7 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
             Fail("--so3-rule requires full orientation symmetry 1 1.","use --symmetry 1 1.");
     }
     if(args.IsCatched("sobol_offset")){
-        if(mode!=OrientationMode::SobolSeed || !args.IsCatched("haar_alpha"))
+        if(mode!=OrientationMode::SobolSeed || (config.method!=RunMethod::GeometricalOptics&&!args.IsCatched("haar_alpha")))
             Fail("--sobol-offset requires --sobol-seed and --haar-alpha.","select seeded Haar Sobol or remove the offset.");
         RequireNonnegativeInt(args,"sobol_offset");
         const long long end=static_cast<long long>(IntValue(args,"sobol_offset"))+IntValue(args,"sobol_seed",0);
@@ -866,8 +866,35 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
     if(args.IsCatched("fullauto")){
         for(const auto& spec:GetCliOptionSpecs())if(args.IsCatched(spec.key)&&std::string(FullAutoOptionPolicy(spec.key))=="unsupported")
             Fail(CliCanonicalFlag(spec.key)+" is incompatible with --fullauto.","remove this option or run the corresponding standalone mode; fullauto must not silently ignore it.");
-        if(config.method!=RunMethod::PhysicalOptics||config.useFft)
-            Fail("--fullauto requires direct PO.","use --method po without FFT.");
+        if(config.useFft)
+            Fail("--fullauto requires a direct solver.","remove FFT.");
+        if(args.IsCatched("fullauto_depth_search")){
+            const auto policy=args.GetStringValue("fullauto_depth_search");
+            if(policy!="on"&&policy!="off")Fail("fullauto-depth-search expects on or off.","use on or off.");
+            if(args.IsCatched("n")&&policy=="on")Fail("explicit max-reflections fixes depth and conflicts with depth-search on.","remove the explicit target or disable depth search.");
+        }
+        const int depthStart=args.IsCatched("fullauto_depth_start")?IntValue(args,"fullauto_depth_start"):6;
+        const int depthMax=args.IsCatched("fullauto_depth_max")?IntValue(args,"fullauto_depth_max"):18;
+        if(depthStart<1||depthMax<depthStart||depthMax>28)Fail("invalid fullauto depth search range.","use 1 <= start <= max <=28; max+2 is checked independently.");
+        if(args.IsCatched("n")&&(args.IsCatched("fullauto_depth_start")||args.IsCatched("fullauto_depth_max")))
+            Fail("depth start/max are unused with explicit max-reflections.","remove the search settings or the fixed target.");
+        if(args.IsCatched("fullauto_cpu_workers")){
+            const int workers=IntValue(args,"fullauto_cpu_workers");
+            if(config.useGpu||workers<1||workers>8)Fail("--fullauto-cpu-workers requires CPU and a count in 1..8.","select CPU and a valid worker count.");
+        }
+        if(config.method==RunMethod::GeometricalOptics){
+            for(const char* key:{"analytic_facet_average","analytic_shadow_control","analytic_mean_cache","haar_alpha","mirror_gamma","orientation_pipeline","gpu_trace","no_gpu_trace","fullauto_angular_cache","fullauto_pilot","fullauto_kernel","fullauto_correction","fullauto_theta_start","fullauto_theta_audit","fullauto_theta_range","tgrid","max_phi_points","chunk"})
+                if(args.IsCatched(key))Fail(CliCanonicalFlag(key)+" is not used by GO fullauto.","remove this PO-specific/grid modifier.");
+            for(const char* key:{"fullauto_controls","fullauto_depth_share","fullauto_polar_controls","fullauto_phi_recheck","fullauto_mirror","fullauto_rotation","fullauto_cutoffs","fullauto_resources","fullauto_local"})
+                if(args.IsCatched(key)&&args.GetStringValue(key)!="off")Fail(CliCanonicalFlag(key)+" must be off for GO fullauto.","GO uses fixed finite bins, analytic alpha and explicit trace cutoffs.");
+            if(args.IsCatched("cutoff_profile")&&args.GetStringValue("cutoff_profile")!="off")
+                Fail("GO fullauto uses individual trace cutoffs or cutoff-profile off.","remove the PO cutoff preset and set trace-cutoff thresholds explicitly.");
+            if(args.IsCatched("nphi")&&IntValue(args,"nphi")!=1)Fail("GO fullauto has analytic alpha; phi-points must be 1.","remove phi-points or set 1.");
+            if(args.IsCatched("grid")){
+                if(args.GetArgNumber("grid")!=4||DoubleValue(args,"grid",0)!=0||DoubleValue(args,"grid",1)!=180||IntValue(args,"grid",2)!=1)
+                    Fail("GO fullauto requires --scattering-grid 0 180 1 NTHETA.","use a full-sphere uniform bin grid; default 36 intervals.");
+            }
+        }
         if(args.IsCatched("n")&&config.maxReflections==0)
             Fail("--fullauto does not support --max-reflections 0.","use a standalone fixed-depth PO run at zero or choose a positive fullauto target.");
         for(const char* key:{"fullauto_pilot","fullauto_kernel","fullauto_initial","fullauto_correction"})if(args.IsCatched(key)){RequirePositiveInt(args,key);RequirePowerOfTwo(args,key);}
@@ -1156,6 +1183,8 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
         if(value!="on"&&value!="off"&&!(std::string(key)=="fullauto_local"&&value=="auto"))Fail(std::string("--")+key+" expects on or off (local orientations also accept auto).","choose a supported mode.");
         if(!args.IsCatched("fullauto"))Fail(std::string("--")+key+" requires --fullauto.","select --fullauto EPS or remove the modifier.");
     }
+    if(args.IsCatched("go_fullauto_worker")&&(config.method!=RunMethod::GeometricalOptics||mode!=OrientationMode::SobolSeed||args.IsCatched("fullauto")))
+        Fail("--go-fullauto-worker is a seeded GO worker option.","use only a GO controller worker recipe.");
     if(args.IsCatched("paired_depth")){
         RequirePositiveInt(args,"paired_depth");
         if(!args.IsCatched("sobol_seed")||!args.IsCatched("haar_alpha")||config.method!=RunMethod::PhysicalOptics||IntValue(args,"paired_depth")>=config.maxReflections)
@@ -1196,8 +1225,8 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
         Fail("--so3-mirror-audit explicitly traces the reflected half and cannot be combined with --mirror-gamma.",
              "compare two separate runs: full N with --so3-mirror-audit and mirror N/2 with --mirror-gamma.");
     if (args.IsCatched("sym")
-        && (config.method != RunMethod::PhysicalOptics
-            || !SupportsSymmetryOverride(mode)))
+        && !((config.method==RunMethod::PhysicalOptics&&SupportsSymmetryOverride(mode))
+             || (config.method==RunMethod::GeometricalOptics&&(mode==OrientationMode::Sobol||mode==OrientationMode::SobolSeed||args.IsCatched("fullauto")))))
         Fail("--symmetry is not consumed by the selected orientation implementation.",
              "remove it or select a Sobol, lattice, quadrature, or adaptive PO orientation mode.");
     if (args.IsCatched("auto_tgrid") && !SupportsAdaptiveTheta(mode))
@@ -1706,7 +1735,8 @@ RunConfig RunConfig::FromCommandLine(const ArgPP &args,
             || config.orientation == OrientationMode::MonteCarlo
             || config.orientation == OrientationMode::DiffractionGrid
             || config.orientation == OrientationMode::Sobol
-            || config.orientation == OrientationMode::SobolSeed;
+            || config.orientation == OrientationMode::SobolSeed
+            || args.IsCatched("fullauto");
         if (!supported)
             Fail(std::string(OrientationModeName(config.orientation)) + " orientation mode is not implemented for GO.",
                  "use --fixed-orientation, --euler-grid, --monte-carlo, --diffraction-grid, --sobol, or --sobol-seed.");
