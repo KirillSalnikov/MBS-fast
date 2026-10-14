@@ -284,10 +284,30 @@ struct Job {
     int offset=0,pairedDepth=0;
     std::string folder,data,summary,identity,weightHash,executionHash;
     Matrix matrix;std::vector<double> angles,inputAngles;std::vector<std::array<double,5>> controls;
-    double seconds=0,controlRefinement=0,controlSetup=0,traceSeconds=0,diffractionSeconds=0;pid_t pid=-1;
+    double seconds=0,controlRefinement=0,controlSetup=0,traceSeconds=0,diffractionSeconds=0,processingSeconds=-1;pid_t pid=-1;
     int count=0,depth=0,phi=0,block=0;unsigned seed=0;
     bool pipeline=false,mirrored=false,paired=false,assembled=false,hasControls=false;std::string warp;
+    // Phase sums overlap in the producer/consumer pipeline. Only the measured
+    // processing wall clock can separate worker launch/output costs from work.
+    double NativeWall()const{return processingSeconds>=0?processingSeconds:traceSeconds+diffractionSeconds;}
+    double OutsideProcessing()const{return std::max(0.,seconds-NativeWall());}
+    double OverlapFraction()const{
+        const double smaller=std::min(traceSeconds,diffractionSeconds);
+        return pipeline&&processingSeconds>=0&&smaller>0
+            ?std::max(0.,std::min(1.,(traceSeconds+diffractionSeconds-processingSeconds)/smaller)):0.;
+    }
 };
+void ReadPhaseTimings(Job& j,const std::string& text){
+    std::istringstream profile(text);std::string line;std::getline(profile,line);
+    while(std::getline(profile,line)){
+        std::istringstream row(line);std::string phase,clock;double seconds;
+        if(!(row>>phase>>seconds)||!std::isfinite(seconds)||seconds<0)continue;
+        row>>clock;
+        if(phase=="trace_prepare")j.traceSeconds=seconds;
+        if(phase=="diffraction_and_controls")j.diffractionSeconds=seconds;
+        if(phase=="processing"&&clock=="wall")j.processingSeconds=seconds;
+    }
+}
 void ValidateStoredJob(const std::string& folder,std::set<std::string>& visited){
     if(!visited.insert(folder).second)return;
     std::istringstream metadata(Read(folder+"/complete.txt"));std::string id,dataHash,summaryHash,sourceHash;double seconds=0;
@@ -625,8 +645,7 @@ struct Engine {
         }Require(j.controls.size()==j.matrix.size(),"incomplete controls");}
         const std::string log=Read(j.folder+"/stdout.log");for(const char* label:{"Hard tree-limit hits:","Orientations still incomplete:"}){
             size_t pos=log.find(label);Require(pos!=std::string::npos,"missing tree diagnostics");std::istringstream r(log.substr(pos+std::string(label).size()));int n=-1;r>>n;Require(n==0,"worker tree limit or incomplete orientation");}
-        if(Exists(j.folder+"/result/result_phase_timings.tsv")){std::istringstream profile(Read(j.folder+"/result/result_phase_timings.tsv"));std::string line;std::getline(profile,line);
-            while(std::getline(profile,line)){std::istringstream row(line);std::string phase;double seconds;if(!(row>>phase>>seconds))continue;if(phase=="trace_prepare")j.traceSeconds=seconds;if(phase=="diffraction_and_controls")j.diffractionSeconds=seconds;}}
+        if(Exists(j.folder+"/result/result_phase_timings.tsv"))ReadPhaseTimings(j,Read(j.folder+"/result/result_phase_timings.tsv"));
         std::ostringstream index;index<<signature<<' '<<j.identity<<' '<<j.count<<' '<<j.offset<<' '<<j.seed<<' '<<j.depth<<' '<<j.phi<<' '<<j.block<<' '<<j.pipeline<<' '<<j.mirrored<<' '<<j.paired<<' '<<j.assembled<<' '<<j.hasControls<<' '<<j.pairedDepth<<' '<<j.warp<<' '<<j.weightHash<<' '<<j.executionHash<<'\n';
         for(double angle:j.inputAngles)index<<Number(angle)<<'\n';
         Atomic(j.folder+"/sampling.index",index.str());Atomic(j.folder+"/sampling.index.fnv",Hash(index.str()));
@@ -730,7 +749,9 @@ struct Engine {
                     manifest<<name+".dat"<<' '<<FileHash(name+".dat")<<'\n';if(controls)manifest<<name+"_analytic_facets.tsv"<<' '<<FileHash(name+"_analytic_facets.tsv")<<'\n';Atomic(j.folder+"/paired_depth.tsv",manifest.str());pairHash=" "+Hash(manifest.str());}
                 Atomic(j.folder+"/complete.txt",j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+pairHash+"\n");CacheJob(j);++completed;
                 Log("worker_complete","{\"folder\":"+Quoted(j.folder)+",\"seconds\":"+Number(j.seconds)+",\"trace_prepare_seconds\":"+Number(j.traceSeconds)
-                    +",\"diffraction_and_controls_seconds\":"+Number(j.diffractionSeconds)+",\"analytic_setup_seconds\":"+Number(j.controlSetup)+",\"return_code\":0}");
+                    +",\"diffraction_and_controls_seconds\":"+Number(j.diffractionSeconds)+",\"processing_wall_seconds\":"+Number(j.NativeWall())
+                    +",\"processing_wall_measured\":"+(j.processingSeconds>=0?"true":"false")+",\"outside_processing_seconds\":"+Number(j.OutsideProcessing())
+                    +",\"analytic_setup_seconds\":"+Number(j.controlSetup)+",\"return_code\":0}");
         }
     }
     bool QueueEnabled()const{return (go||angularCache)&&workQueuePolicy!="off"&&(workQueuePolicy=="on"||gpus.size()>1);}

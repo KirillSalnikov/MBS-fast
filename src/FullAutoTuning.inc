@@ -72,7 +72,7 @@ void TuneResources(const std::vector<double>& x){
     gpus={selected.front()};auto baseline=DirectStage(n,seedSet,2,target,x,false);
     reference=baseline[0].matrix;double best=baseline[0].seconds+baseline[1].seconds;int chosenThreads=workerThreads,chosenChunk=workerChunk;
     report<<"],\"resource_candidates\":[{\"threads\":"<<workerThreads<<",\"chunk\":"<<workerChunk<<",\"seconds\":"<<Number(best)<<",\"all16_difference\":0}";
-    double nativePilot=0;for(const auto& job:baseline)nativePilot+=job.traceSeconds+job.diffractionSeconds;
+    double nativePilot=0;for(const auto& job:baseline)nativePilot+=job.NativeWall();
     const double forecastNative=nativePilot*double(initial+4LL*minimum)/n*4/std::max(size_t(1),selected.size());
     const double predictedSearch=best*10;
     const bool amortized=forecastNative*.25>=predictedSearch;
@@ -93,8 +93,8 @@ void TuneResources(const std::vector<double>& x){
             if(error<std::min(1e-7,eps/1024)&&seconds<best*.95){best=seconds;chosenChunk=chunk;}}
     }
     workerThreads=chosenThreads;workerChunk=chosenChunk;auto chosen=DirectStage(n,seedSet,2,target,x,false);
-    double overhead=0,perOrientation=0;for(const auto& job:chosen){const double native=job.traceSeconds+job.diffractionSeconds;
-        overhead+=std::max(0.,job.seconds-native);perOrientation+=native/n;}
+    double overhead=0,perOrientation=0;bool processingMeasured=true;for(const auto& job:chosen){
+        overhead+=job.OutsideProcessing();perOrientation+=job.NativeWall()/n;processingMeasured=processingMeasured&&job.processingSeconds>=0;}
     overhead/=2;perOrientation/=2;
     if(resourcePolicy=="auto"&&!args.IsCatched("fullauto_orientation_block")&&perOrientation>0){
         const int lower=std::min(4096,maxCount),upper=std::min(1048576,maxCount);
@@ -107,7 +107,9 @@ void TuneResources(const std::vector<double>& x){
     report<<"],\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"selected_threads\":"<<workerThreads<<",\"selected_chunk\":"<<workerChunk<<",\"selected_orientation_block\":"<<orientationBlock
         <<",\"search_amortized\":"<<(amortized?"true":"false")<<",\"forecast_native_production_seconds\":"<<Number(forecastNative)<<",\"forecast_search_seconds\":"<<Number(predictedSearch)
         <<",\"explicit_threads_preserved\":"<<(args.IsCatched("threads")?"true":"false")<<",\"explicit_chunk_preserved\":"<<(args.IsCatched("chunk")?"true":"false")
-        <<",\"block_model\":\"measured startup/native phases; aim <=5% overhead and <=120s native work, bounded by 4096..1048576 and max orientations\",\"baseline_threads\":"<<baselineThreads<<",\"baseline_chunk\":"<<baselineChunk<<"}";
+        <<",\"outside_processing_seconds_per_worker\":"<<Number(overhead)<<",\"processing_seconds_per_orientation\":"<<Number(perOrientation)
+        <<",\"processing_wall_measured\":"<<(processingMeasured?"true":"false")
+        <<",\"block_model\":\"worker wall minus processing wall (overlapping phases are not summed); aim <=5% outside-processing overhead and <=120s processing work, bounded by 4096..1048576 and max orientations\",\"baseline_threads\":"<<baselineThreads<<",\"baseline_chunk\":"<<baselineChunk<<"}";
     Record(root+"/resource_calibration.json",report.str());
 }
 void TuneRotations(const std::vector<double>& x){
@@ -159,7 +161,7 @@ void TuneCutoffs(const std::vector<double>& input){
     double best=0;auto reference=ProfilePilot(x,std::min(std::min(pilot,2048),maxCount),seeds,best);const bool supportedSharing=depthSharing;std::string winner="off";double winnerBias=0;
     double nativePilot=0;for(const auto& entry:cache){const auto& job=entry.second;
         if(job.executionHash!=ExecutionHash()||job.assembled||job.count!=std::min(std::min(pilot,2048),maxCount)||std::find(seeds,seeds+8,job.seed)==seeds+8)continue;
-        nativePilot+=job.traceSeconds+job.diffractionSeconds;}
+        nativePilot+=job.NativeWall();}
     const double forecastGain=.25*nativePilot*double(initial)/std::min(std::min(pilot,2048),maxCount);
     if(best<30&&forecastGain<3*best){
         Record(root+"/cutoff_calibration.json","{\"enabled\":true,\"selected\":\"off\",\"reference\":\"off\",\"search_amortized\":false,\"baseline_seconds\":"+Number(best)+",\"forecast_gain_seconds\":"+Number(forecastGain)+",\"reason\":\"extra preset pilots cost more than forecast savings on this short workload\"}");

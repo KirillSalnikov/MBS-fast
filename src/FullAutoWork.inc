@@ -3,7 +3,7 @@
 struct WorkForecast {double seconds=0;size_t jobs=0;bool profiled=true;};
 class AdditionalWork {
     const Engine& e;std::array<unsigned,8> seeds;
-    struct Profile {double trace=0,diffraction=0,setup=0;size_t observations=0;};
+    struct Profile {double trace=0,diffraction=0,setup=0,overlap=0;size_t observations=0;};
     using Depth=std::pair<int,int>;
     using Slot=std::array<uint64_t,5>; // N, offset, depth, paired depth, seed
     std::map<Depth,Profile> profiles;
@@ -29,11 +29,12 @@ public:
             // CPU/older logs can lack a split. Their measured total remains a
             // useful conservative trace profile, with no invented theta gain.
             if(j.traceSeconds+j.diffractionSeconds>0){p.trace+=j.traceSeconds/j.count;p.diffraction+=j.diffractionSeconds/j.count/j.inputAngles.size();
-                p.setup+=std::max(0.,j.seconds-j.traceSeconds-j.diffractionSeconds);}
+                const double overlap=j.OverlapFraction();p.overlap+=overlap;
+                p.setup+=std::max(0.,j.seconds-(j.traceSeconds+j.diffractionSeconds-overlap*std::min(j.traceSeconds,j.diffractionSeconds)));}
             else p.trace+=j.seconds/j.count;
             ++p.observations;
         }
-        for(auto& item:profiles){auto& p=item.second;p.trace/=p.observations;p.diffraction/=p.observations;p.setup/=p.observations;}
+        for(auto& item:profiles){auto& p=item.second;p.trace/=p.observations;p.diffraction/=p.observations;p.setup/=p.observations;p.overlap/=p.observations;}
     }
     WorkForecast Forecast(const std::vector<Engine::WorkRequest>& requests){
         std::ostringstream name;for(const auto& r:requests){name<<r.count<<':'<<r.depth<<':'<<r.pairedDepth<<':';for(double q:r.angles)name<<Number(q)<<',';name<<';';}
@@ -62,7 +63,8 @@ public:
                 // even when another seed of the batch was interrupted.
                 bool exact=false;if(!e.controls)for(const auto& item:e.SamplingCandidates(r.count,seed,r.depth,r.offset)){
                     const Job& j=*item.second;exact=exact||(!j.assembled&&j.pairedDepth==r.pairedDepth&&j.inputAngles==missing&&e.SameSampling(j,r.count,seed,r.depth,r.offset));}
-                if(!exact){++result.jobs;if(profile!=profiles.end()){const auto& p=profile->second;result.seconds+=p.setup+r.count*(p.trace+p.diffraction*missing.size());}}
+                if(!exact){++result.jobs;if(profile!=profiles.end()){const auto& p=profile->second;const double trace=r.count*p.trace,diffraction=r.count*p.diffraction*missing.size();
+                    result.seconds+=p.setup+trace+diffraction-p.overlap*std::min(trace,diffraction);}}
                 // Prefetch prepares paired and standalone jobs separately;
                 // LowerView becomes available only during the later Stage.
                 if(!e.QueueEnabled()){

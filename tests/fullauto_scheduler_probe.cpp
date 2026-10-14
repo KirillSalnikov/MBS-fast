@@ -17,6 +17,19 @@ void ProfileJob(Engine& e,int count,int offset,int depth,int paired,unsigned see
 }
 int main(int argc,char** argv){try{
     Require(argc==3,"expected output directory and saved level fixture");Directory(argv[1]);
+    // Actual epyc1 replay: adding overlapping phases (2.2616 s) to a
+    // 2.1188 s worker incorrectly reported zero launch/output overhead.
+    Job timed;timed.pipeline=true;timed.seconds=2.1187703609466553;
+    ReadPhaseTimings(timed,"phase\tseconds\tclock\ntrace_prepare\t1.733824431\tstage_wall_sum\n"
+        "diffraction_and_controls\t0.527801716\tstage_wall_sum\nprocessing\t1.770477349\twall\n");
+    Near(timed.NativeWall(),1.770477349,"overlapping phases substituted for processing wall");
+    Near(timed.OutsideProcessing(),.3482930119466552,"lost launch/output overhead under overlap");
+    Near(timed.traceSeconds+timed.diffractionSeconds-timed.OverlapFraction()*std::min(timed.traceSeconds,timed.diffractionSeconds),
+        timed.NativeWall(),"overlap model does not reproduce measured work");
+    Job legacy;ReadPhaseTimings(legacy,"phase seconds\ntrace_prepare 2\ndiffraction_and_controls 3\n");
+    Near(legacy.NativeWall(),5,"legacy phase logs no longer load");
+    ReadPhaseTimings(legacy,"phase seconds clock\nprocessing 9 summed_cpu_wall\nprocessing -1 wall\n");
+    Require(legacy.processingSeconds<0,"invalid or CPU-summed processing clock accepted");
     for(size_t n:{size_t(2),size_t(3),size_t(4),size_t(7)}){std::vector<double>x(n);Matrix y(n);
         for(size_t i=0;i<n;++i){x[i]=i*i+.7*i;for(int j=0;j<16;++j)y[i][j]=std::sin(3*i+.4*j);}
         for(int r=0;r<=100;++r){const double q=x.back()*r/100;const auto ws=LocalCubicWeights(x,q);Mueller value{};double sum=0;
@@ -24,6 +37,11 @@ int main(int argc,char** argv){try{
             Near(sum,1,"spline weights do not preserve constants");const auto reference=LocalCubicInterpolate(x,y,{q});for(int j=0;j<16;++j)Near(value[j],reference[0][j],"spline covariance uses a different interpolant");}
         if(n==7)Require(LocalCubicWeights(x,(x[2]+x[3])*.5).size()==5,"lost fifth support node");}
     ArgPP args;RunConfig config;Engine e(args,config);AdaptiveState state;InitTest(e,std::string(argv[1])+"/work",3,3,state);
+    {Engine clockEngine(args,config);AdaptiveState clockState;InitTest(clockEngine,std::string(argv[1])+"/clock",3,1,clockState);
+        clockEngine.kernel.pipeline=true;clockEngine.workQueuePolicy="on";clockEngine.orientationBlock=4096;
+        clockEngine.SetSampling(timed,4096,999,14,{170,175},false);timed.identity="measured_pipeline";timed.folder="measured_pipeline";clockEngine.CacheJob(timed);
+        AdditionalWork cost(clockEngine,clockEngine.seeds.data());const auto work=cost.Forecast({{4096,0,14,0,{170,175}}});
+        Require(work.profiled&&work.jobs==8,"pipeline profile not used");Near(work.seconds,8*timed.seconds,"forecast double-counted overlap or lost outside-processing time");}
     e.workQueuePolicy="on";e.orientationBlock=64;
     ProfileJob(e,64,0,6,0,999,{170,175},"profile");
     std::vector<Engine::WorkRequest> requests={{128,0,6,0,{170,175}},{64,0,6,0,{175,180}}};
