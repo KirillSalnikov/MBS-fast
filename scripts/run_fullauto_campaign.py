@@ -59,7 +59,13 @@ def main():
         previous = statuses.get(identifier, {})
         if previous.get('status') in ('converged', 'failed'):
             continue
-        command = [binary] + job['arguments']
+        job_binary = job.get('binary', binary)
+        job_digest = job.get('binary_sha256', manifest['binary_sha256'])
+        if hashlib.sha256(Path(job_binary).read_bytes()).hexdigest() != job_digest:
+            raise RuntimeError('Job executable changed; checkpoint replay refused')
+        command = [job_binary] + job['arguments']
+        if previous.get('command') and previous['command'] != command:
+            raise RuntimeError('Interrupted job command changed; checkpoint replay refused')
         output = Path(job['output'])
         output.parent.mkdir(parents=True, exist_ok=True)
         prior_seconds = previous.get('elapsed_seconds', 0)
@@ -68,7 +74,8 @@ def main():
         statuses[identifier] = {'status': 'running', 'attempt': attempt,
                                 'started_unix': begin,
                                 'elapsed_seconds': prior_seconds,
-                                'output': str(output), 'command': command}
+                                'output': str(output), 'command': command,
+                                'binary_sha256': job_digest}
         save('running', identifier)
         print('START {} attempt={} gpus={}'.format(identifier, attempt,
                                                    manifest['gpus']), flush=True)
@@ -96,7 +103,9 @@ def main():
         save('running')
         print('END {} returncode={} status={}'.format(identifier,
               process.returncode, statuses[identifier]['status']), flush=True)
-    failures = sum(x.get('status') == 'failed' for x in statuses.values())
+    failures = sum(x.get('status') == 'failed' and
+                   statuses.get(x.get('retry_job_id'), {}).get('status') != 'converged'
+                   for x in statuses.values())
     save('completed_with_failures' if failures else 'completed')
 
 
