@@ -1,6 +1,7 @@
 <!doctype html><html lang="ru"><meta charset="utf-8"><title>Прямая GPU-цепочка MBS-fast</title>
 <style>body{font:17px system-ui;line-height:1.5;max-width:1050px;margin:30px auto;padding:0 18px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #bbb;padding:8px}pre{background:#eee;padding:15px;overflow:auto}</style>
 <h1>GPU-трассировка → GPU-подготовка → GPU-дифракция</h1>
+<p>Продолжение: <a href="GPU_HYBRID_PIPELINE_EXPERIMENT_RU.html">параллельная CPU + GPU-трассировка с повторным использованием буферов</a>. На пакетах по 16 384 ориентации на карту гибрид дополнительно ускорил прямой GPU-путь в 1,10 раза.</p>
 <p>Проверено 14 октября 2026 на epyc1, четыре V100-SXM2 16 GB, FP64 sm_70. Это продолжение <a href="GPU_RESIDENT_TRACE_EXPERIMENT_RU.html">эксперимента с резидентной очередью</a>: сырые выходные пучки теперь остаются на устройстве.</p>
 <p><strong>Полный пакет четырёх задач ускорился в 1,42 раза: 2,536 → 1,782 с.</strong> По 4096 одинаковых ориентаций на каждую карту, медианы трёх повторов. Все 16 элементов матриц и интегральные характеристики проверены. Максимальное расхождение элементов на всей тестовой серии — 3,72·10⁻⁹ от M11 CPU-трассировщика с GPU-дифракцией.</p>
 <table><tr><th>Режим</th><th>CPU-потоков на карту</th><th>Время, с</th><th>Средний GPU utilization, %</th><th>Пик VRAM, MiB</th></tr>

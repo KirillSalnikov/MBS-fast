@@ -33,6 +33,7 @@
 #include <stdexcept>
 #include <future>
 #include <condition_variable>
+#include <deque>
 #include <algorithm>
 #include <iterator>
 #include <limits>
@@ -6132,7 +6133,7 @@ void TracerPOTotal::TraceWeightedOrientations(
         std::unique_ptr<Arr2D> residentFull,residentNS;
         double seconds=0,rotation=0,trace=0,prepare=0,residentConsumer=0,residentTraceKernel=0;
     };
-    auto prepareBlock = [&](int iStart,int thisChunk)
+    auto prepareBlock = [&](int iStart,int thisChunk,bool allowResident,int prepareThreads)
     {
         PreparedBlock block;block.start=iStart;block.count=thisChunk;
         if(m_pairedDepth)block.lower.resize(thisChunk);
@@ -6161,11 +6162,11 @@ void TracerPOTotal::TraceWeightedOrientations(
         ParallelExceptionState parallelError;
 
 #ifdef USE_CUDA
-        const bool directRequested=EnvEnabled("MBS_GPU_TRACE_CONVEX_DIRECT");
+        const bool directRequested=allowResident && EnvEnabled("MBS_GPU_TRACE_CONVEX_DIRECT");
         const bool directModeEligible=!m_pairedDepth && !facetControl && !analyticControl
             && !m_analyticFacetSamples && !m_analyticAzimuthGaussian
             && handlerPO->CanHandleResidentConvexGpu();
-        const bool residentQueue=handlerPO->IsGpuEnabled()
+        const bool residentQueue=allowResident && handlerPO->IsGpuEnabled()
             && EnvEnabled("MBS_GPU_TRACE_CONVEX_QUEUE")
             && dynamic_cast<ScatteringConvex*>(m_scattering)!=nullptr
             && (!directRequested||directModeEligible);
@@ -6182,7 +6183,7 @@ void TracerPOTotal::TraceWeightedOrientations(
             const auto traceStarted=std::chrono::steady_clock::now();
             std::vector<GpuConvexQueue::Input> inputs(thisChunk);
             residentBeams.resize(thisChunk);
-            #pragma omp parallel num_threads(nThreads)
+            #pragma omp parallel num_threads(prepareThreads)
             {
                 Particle particle=*m_particle;
                 std::unique_ptr<Scattering> scatter(m_scattering->CloneFor(&particle,&m_incidentLight));
@@ -6217,7 +6218,7 @@ void TracerPOTotal::TraceWeightedOrientations(
                         external.push_back(item);}}
                 block.residentFull.reset(new Arr2D(nAz+1,nZen+1,4,4));block.residentFull->ClearArr();
                 block.residentNS.reset(new Arr2D(nAz+1,nZen+1,4,4));block.residentNS->ClearArr();
-                const bool success=packed&&GpuConvexQueue::Trace(inputs,residentOutput,residentOrder,status,metrics,nThreads,&external,
+                const bool success=packed&&GpuConvexQueue::Trace(inputs,residentOutput,residentOrder,status,metrics,prepareThreads,&external,
                     [&](const GpuConvexQueue::Input* deviceInputs,const GpuConvexQueue::Output* raw,size_t beamCount){
                         const auto consumerStart=std::chrono::steady_clock::now();
                         const bool ok=handlerPO->HandleResidentConvexGpu(deviceInputs,raw,beamCount,weights,
@@ -6238,7 +6239,7 @@ void TracerPOTotal::TraceWeightedOrientations(
                 std::cerr << "GPU convex resident direct: complete chunk fallback; no partial matrices accepted" << std::endl;
             }else if(directRequested)std::cerr << "GPU convex resident direct: unsupported mode; using existing preparation" << std::endl;
             bool any=std::find(residentReady.begin(),residentReady.end(),char(1))!=residentReady.end();
-            bool traced=!directRequested&&any&&GpuConvexQueue::Trace(inputs,residentOutput,residentOrder,status,metrics,nThreads);
+            bool traced=!directRequested&&any&&GpuConvexQueue::Trace(inputs,residentOutput,residentOrder,status,metrics,prepareThreads);
             int accepted=0;int failures[5]={};
             for(int i=0;i<thisChunk;++i){
                 if(traced&&status[i].failure>=1&&status[i].failure<=4)++failures[status[i].failure];
@@ -6265,11 +6266,12 @@ void TracerPOTotal::TraceWeightedOrientations(
 
         // std::async workers do not inherit the calling thread's OpenMP ICV.
         // Keep four concurrent GPU jobs within the requested CPU budget.
-        #pragma omp parallel num_threads(nThreads)
+        #pragma omp parallel num_threads(prepareThreads)
         {
             // Thread-local copies of all mutable tracing/preprocessing state.
             Particle localParticle = *m_particle;
             Scattering *localScatter = m_scattering->CloneFor(&localParticle, &m_incidentLight);
+            if(!allowResident)localScatter->m_gpuTracePrefilter=false;
 
             HandlerPO localHandler(&localParticle, &m_incidentLight,
                                    handlerPO->nTheta, m_scattering->m_wave);
@@ -6734,7 +6736,129 @@ void TracerPOTotal::TraceWeightedOrientations(
 
         ++chunkNumber;
     };
-    if(pipeline && myStart<myEnd)
+    bool hybrid=false;
+#ifdef USE_CUDA
+    hybrid=pipeline && nThreads>=2 && EnvEnabled("MBS_GPU_TRACE_HYBRID")
+        && EnvEnabled("MBS_GPU_TRACE_CONVEX_QUEUE") && EnvEnabled("MBS_GPU_TRACE_CONVEX_DIRECT")
+        && handlerPO->CanHandleResidentConvexGpu() && dynamic_cast<ScatteringConvex*>(m_scattering)
+        && !m_pairedDepth && !facetControl && !analyticControl && !m_analyticFacetSamples && !m_analyticAzimuthGaussian
+        && imag(m_particle->GetRefractiveIndex())==0;
+#endif
+    if(hybrid && myStart<myEnd)
+    {
+        // A bounded CPU producer runs beside the resident GPU path. With its
+        // own CUDA consumer, it queues completed matrix blocks; otherwise it
+        // queues prepared beams for the caller. The shared cursor assigns each
+        // orientation exactly once without changing its weight.
+        const bool producerCuda=EnvInt("MBS_GPU_HYBRID_PRODUCER_CUDA",1)!=0;
+        const int reserve=std::max(1,std::min(8,EnvInt("MBS_GPU_HYBRID_RESERVE",2)));
+        const int gpuThreads=std::max(1,std::min(nThreads-1,EnvInt("MBS_GPU_HYBRID_GPU_THREADS",std::min(2,nThreads-1))));
+        const int cpuThreads=std::max(1,std::min(nThreads,EnvInt("MBS_GPU_HYBRID_CPU_THREADS",std::min(8,nThreads-gpuThreads))));
+        if(cpuThreads+gpuThreads>nThreads)
+            throw std::runtime_error("hybrid CPU and GPU-seed thread counts exceed --threads; lower the overrides or raise --threads");
+        const int cpuChunk=std::max(1,std::min(maximumChunk,EnvInt("MBS_GPU_HYBRID_CPU_CHUNK",256)));
+        PreparedChunkController cpuMemory(cpuChunk,reserve+2);
+        std::mutex mutex;std::condition_variable condition;
+        std::deque<std::unique_ptr<PreparedBlock>> ready;
+        bool stop=false,producerDone=false;int nextStart=myStart,peakReady=0;
+        long long cpuOrientations=0,gpuOrientations=0;
+        double emptyWait=0,producerBlocked=0;
+        std::exception_ptr failure;
+        std::ofstream assignments((m_resultDirName+"_hybrid_ranges_rank"+std::to_string(m_mpiRank)+".tsv").c_str());
+        if(!assignments)throw std::runtime_error("cannot open hybrid orientation assignment log");
+        assignments << std::setprecision(17) << "producer\tstart\tcount\tcpu_threads\tprepare_wall_s\tgpu_consumer_s\tweight\n";
+        const auto recordAssignment=[&](const char* owner,const PreparedBlock& block,int threads){
+            double weight=0;for(const auto& o:block.prepared)weight+=o.sinZenith;
+            assignments << owner << '\t' << block.start << '\t' << block.count << '\t' << threads
+                << '\t' << block.seconds-block.residentConsumer << '\t' << block.residentConsumer << '\t' << weight << '\n';
+        };
+        std::cout << "GPU hybrid pipeline: CPU_threads=" << cpuThreads << " GPU_seed_threads=" << gpuThreads
+            << " CPU_chunk_max=" << cpuChunk << " reserve_blocks=" << reserve << " producer_CUDA=" << producerCuda
+            << "; disjoint orientation ranges, shared cursor" << std::endl;
+        auto producer=std::async(std::launch::async,[&]()
+        {
+#ifdef _OPENMP
+            // std::async does not inherit the caller's OpenMP ICV; this also
+            // bounds the producer's CUDA host-packing parallel loops.
+            omp_set_num_threads(cpuThreads);
+#endif
+            try {
+                for(;;){
+                    int start,size;
+                    {
+                        std::unique_lock<std::mutex> lock(mutex);
+                        const auto waitStarted=std::chrono::steady_clock::now();
+                        condition.wait(lock,[&](){return stop || nextStart>=myEnd || int(ready.size())<reserve;});
+                        producerBlocked+=std::chrono::duration<double>(std::chrono::steady_clock::now()-waitStarted).count();
+                        if(stop || nextStart>=myEnd)break;
+                        start=nextStart;size=cpuMemory.Next(myEnd-start);nextStart+=size;
+                    }
+                    PreparedBlock block=prepareBlock(start,size,false,cpuThreads);
+                    cpuMemory.Update(block.prepared,"Hybrid CPU reserve",m_mpiRank);
+                    if(producerCuda){
+                        // Producer-owned CUDA workspace: packing and H2D no
+                        // longer stop the caller's resident tracing pipeline.
+                        const auto cudaStarted=std::chrono::steady_clock::now();
+                        block.residentFull.reset(new Arr2D(nAz+1,nZen+1,4,4));block.residentFull->ClearArr();
+                        block.residentNS.reset(new Arr2D(nAz+1,nZen+1,4,4));block.residentNS->ClearArr();
+                        for(int first=0;first<size;){
+                            const int batch=handlerPO->SelectGpuOrientationBatchSize(block.prepared,first,size-first);
+                            if(!handlerPO->HandleOrientationsToLocalGpu(block.prepared,first,batch,
+                                *block.residentFull,*block.residentNS))
+                                throw std::runtime_error("hybrid producer GPU diffraction failed");
+                            first+=batch;
+                        }
+                        block.residentConsumer=std::chrono::duration<double>(std::chrono::steady_clock::now()-cudaStarted).count();
+                        block.seconds+=block.residentConsumer;
+                        for(auto& orientation:block.prepared)std::vector<PreparedBeam>().swap(orientation.beams);
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(mutex);
+                        ready.emplace_back(new PreparedBlock(std::move(block)));
+                        peakReady=std::max(peakReady,int(ready.size()));condition.notify_all();
+                    }
+                }
+            }catch(...){std::lock_guard<std::mutex> lock(mutex);failure=std::current_exception();}
+            {std::lock_guard<std::mutex> lock(mutex);producerDone=true;condition.notify_all();}
+        });
+        const auto shutdown=[&](){
+            {std::lock_guard<std::mutex> lock(mutex);stop=true;condition.notify_all();}
+            producer.get();
+        };
+        try {
+            for(;;){
+                std::unique_ptr<PreparedBlock> block;int start=-1,size=0;
+                {
+                    std::unique_lock<std::mutex> lock(mutex);
+                    if(failure)std::rethrow_exception(failure);
+                    if(!ready.empty()){
+                        block=std::move(ready.front());ready.pop_front();condition.notify_all();
+                    }else if(nextStart<myEnd){
+                        start=nextStart;size=memoryChunks.Next(myEnd-start);nextStart+=size;
+                    }else if(producerDone)break;
+                    else {
+                        const auto waitStarted=std::chrono::steady_clock::now();
+                        condition.wait(lock,[&](){return failure || producerDone || !ready.empty();});
+                        emptyWait+=std::chrono::duration<double>(std::chrono::steady_clock::now()-waitStarted).count();
+                        continue;
+                    }
+                }
+                if(block){cpuOrientations+=block->count;processBlock(*block);recordAssignment("CPU",*block,cpuThreads);}
+                else {PreparedBlock gpuBlock=prepareBlock(start,size,true,gpuThreads);
+                    gpuOrientations+=size;processBlock(gpuBlock);recordAssignment("GPU",gpuBlock,gpuThreads);}
+            }
+            shutdown();
+        }catch(...){shutdown();throw;}
+        assignments.flush();if(!assignments)throw std::runtime_error("cannot write hybrid orientation assignment log");
+        if(cpuOrientations+gpuOrientations!=myCount || count!=myCount)
+            throw std::runtime_error("hybrid pipeline orientation accounting mismatch");
+        std::ostringstream log;
+        log << "GPU hybrid summary: CPU_orientations=" << cpuOrientations << " GPU_assigned_orientations=" << gpuOrientations
+            << " total=" << count << " peak_reserve_blocks=" << peakReady << " empty_wait_s=" << emptyWait
+            << " producer_blocked_s=" << producerBlocked;
+        std::cout << log.str() << std::endl;AppendTextLog(log.str()+"\n");
+    }
+    else if(pipeline && myStart<myEnd)
     {
         std::cout << (EnvEnabled("MBS_GPU_TRACE_CONVEX_DIRECT")
             ? "Weighted orientation pipeline: resident producer performs CUDA tracing, preparation and diffraction"
@@ -6757,7 +6881,7 @@ void TracerPOTotal::TraceWeightedOrientations(
                 }
                 try
                 {
-                    PreparedBlock block=prepareBlock(start,size);
+                    PreparedBlock block=prepareBlock(start,size,true,nThreads);
                     std::lock_guard<std::mutex> lock(mutex);
                     ready.reset(new PreparedBlock(std::move(block)));condition.notify_all();
                 }
@@ -6807,7 +6931,7 @@ void TracerPOTotal::TraceWeightedOrientations(
     else for(int start=myStart;start<myEnd;)
     {
         const int size=memoryChunks.Next(myEnd-start);
-        PreparedBlock block=prepareBlock(start,size);processBlock(block);start+=size;
+        PreparedBlock block=prepareBlock(start,size,true,nThreads);processBlock(block);start+=size;
     }
     const double processingWall=std::chrono::duration<double>(std::chrono::steady_clock::now()-processingStarted).count();
 

@@ -2,6 +2,7 @@
 // their polygon integral, Jones transform and Mueller conventions.
 #include "GpuConvexQueueMath.cuh"
 #include <climits>
+#include <map>
 #include "geometry/Intersection.h"
 namespace {
 struct ResidentSummary {
@@ -124,12 +125,48 @@ __global__ void residentExtinction(const GpuBeam* beams,const int* offsets,const
     // GPU Jones amplitudes omit the CPU factor 1/2 (Mueller applies 1/4).
     summary[i].extinction=.5*par.wavelength*forward*weights[i];
 }
+struct ResidentPool {
+    struct Slot {void* pointer=nullptr;size_t bytes=0;};
+    std::vector<Slot> slots;
+    int device=0;
+    explicit ResidentPool(int d):device(d){}
+    ~ResidentPool(){int previous=0;cudaGetDevice(&previous);cudaSetDevice(device);
+        for(const auto& slot:slots)cudaFree(slot.pointer);cudaSetDevice(previous);}
+};
 struct ResidentAllocations {
     std::vector<void*> pointers;
-    ~ResidentAllocations(){cudaDeviceSynchronize();for(void* p:pointers)cudaFree(p);}
+    ResidentPool* pool=nullptr;size_t next=0;
+    ResidentAllocations(){
+        const char* enabled=std::getenv("MBS_GPU_RESIDENT_REUSE");
+        const char* hybrid=std::getenv("MBS_GPU_TRACE_HYBRID");
+        const bool reuse=enabled?(enabled[0]=='1'&&enabled[1]=='\0')
+            :(hybrid&&hybrid[0]=='1'&&hybrid[1]=='\0');
+        if(reuse){
+            int device=0;if(cudaGetDevice(&device)!=cudaSuccess)return;
+            static thread_local std::map<int,std::unique_ptr<ResidentPool>> pools;
+            auto& item=pools[device];if(!item)item.reset(new ResidentPool(device));pool=item.get();
+        }
+    }
+    ~ResidentAllocations(){cudaStreamSynchronize(0);for(void* p:pointers)cudaFree(p);}
     template<typename T> bool make(T*& p,size_t n,bool zero=false){
-        p=nullptr;if(cudaMalloc(&p,std::max(size_t(1),n)*sizeof(T))!=cudaSuccess)return false;
-        pointers.push_back(p);return !zero||cudaMemset(p,0,n*sizeof(T))==cudaSuccess;}
+        p=nullptr;const size_t bytes=std::max(size_t(1),n)*sizeof(T);
+        if(pool){
+            if(next==pool->slots.size())pool->slots.emplace_back();
+            auto& slot=pool->slots[next++];
+            if(slot.bytes<bytes){
+                // Free the superseded buffer before growth. Prior calls have
+                // completed their D2H copies; no live batch references it.
+                cudaFree(slot.pointer);slot.pointer=nullptr;slot.bytes=0;
+                if(cudaMalloc(&slot.pointer,bytes)!=cudaSuccess)return false;
+                slot.bytes=bytes;
+            }
+            p=static_cast<T*>(slot.pointer);
+        }else{
+            if(cudaMalloc(&p,bytes)!=cudaSuccess)return false;pointers.push_back(p);
+        }
+        return !zero||cudaMemset(p,0,n*sizeof(T))==cudaSuccess;
+    }
+    size_t cachedBytes() const {size_t n=0;if(pool)for(const auto& slot:pool->slots)n+=slot.bytes;return n;}
 };
 } // namespace
 
@@ -183,7 +220,7 @@ bool HandlerPO::HandleResidentConvexGpu(const GpuConvexQueue::Input* inputs,
     residentOffsets<<<1,1>>>(kept,offsets,count);
     if(beamCount)residentPrepare<<<(beamCount+127)/128,128>>>(inputs,raw,beamCount,par,maxima,offsets,kept,prepared,w,summary,invalid);
     if(!gpu_report_cuda_error(cudaGetLastError(),"resident prepare launch")
-        ||!gpu_report_cuda_error(cudaDeviceSynchronize(),"resident prepare sync"))return false;
+        ||!gpu_report_cuda_error(cudaStreamSynchronize(0),"resident prepare sync"))return false;
     const double prepareSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
     int bad=0;if(cudaMemcpy(&bad,invalid,sizeof(int),cudaMemcpyDeviceToHost)!=cudaSuccess||bad)return false;
     residentExtinction<<<(count+63)/64,64>>>(prepared,offsets,kept,count,par,w,summary);
@@ -214,9 +251,9 @@ bool HandlerPO::HandleResidentConvexGpu(const GpuConvexQueue::Input* inputs,
     for(int p=0;p<nAz;++p)for(int t=0;t<=nZen;++t){size_t g=size_t(p)*(nZen+1)+t;
         double* cell=full.RawCell(p,t);for(int k=0;k<16;++k)cell[k]+=hm[g*16+k];
         if(ComputeNoShadow()){double* ns=noShadow.RawCell(p,t);for(int k=0;k<16;++k)ns[k]+=hns[g*16+k];}}
-    std::fprintf(stderr,"GPU resident direct: orientations=%d raw_beams=%zu retained=%llu prepare_s=%.6f diffraction_download_s=%.6f raw_download_bytes=0 prepared_MiB=%.3f\n",
+    std::fprintf(stderr,"GPU resident direct: orientations=%d raw_beams=%zu retained=%llu prepare_s=%.6f diffraction_download_s=%.6f raw_download_bytes=0 prepared_MiB=%.3f cached_MiB=%.3f\n",
         count,beamCount,candidates-rejected,prepareSeconds,
         std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count()-prepareSeconds,
-        beamCount*sizeof(GpuBeam)/1048576.);
+        beamCount*sizeof(GpuBeam)/1048576.,alloc.cachedBytes()/1048576.);
     return true;
 }
