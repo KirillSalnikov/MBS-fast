@@ -337,6 +337,26 @@ int RunAdaptive(Engine& e){
             const size_t id=ids[worst];size_t chosen=0;double largest=-1;for(size_t l=0;l<stage.levels.size();++l){double v=0;for(int j=0;j<16;++j)v=std::max(v,levelVariance[l][worst][j]);if(v>largest){largest=v;chosen=l;}}
             auto grow=[&](size_t i){proposed[chosen][i]=std::min(e.maxCount,state.counts[chosen][i]>e.maxCount/2?e.maxCount:2*state.counts[chosen][i]);};if(e.local)grow(id);else for(size_t i:ids)grow(i);
         }
+        // A correction may dominate uncertainty while the base already has
+        // millions of samples. Do not pay for another huge base before the
+        // cheap correction has supplied a more informative variance estimate.
+        size_t deferred=0;double jointWork=0,stagedWork=0;std::ostringstream priorityRows;
+        priorityRows<<"theta_deg,level,current_count,joint_proposal,staged_proposal,represented_seconds_per_orientation\n";
+        for(size_t r=0;r<ids.size();++r){const size_t id=ids[r];std::vector<Samples> values;
+            std::vector<double> costs;std::vector<int> current,next;
+            for(size_t l=0;l<depths.size();++l){Samples row(8,Matrix(1));for(int s=0;s<8;++s)row[s][0]=stage.levels[l][s][r];
+                values.push_back(row);costs.push_back(stage.costs[l][r]);current.push_back(state.counts[l][id]);next.push_back(proposed[l][id]);}
+            const auto selected=PrioritizeAllocation(values,costs,current,next,e.statistical,e.ratios);
+            for(size_t l=0;l<depths.size();++l){jointWork+=costs[l]*(next[l]-current[l]);stagedWork+=costs[l]*(selected[l]-current[l]);
+                if(selected!=next)priorityRows<<Number(e.theta[id])<<','<<l<<','<<current[l]<<','<<next[l]<<','<<selected[l]<<','<<Number(costs[l])<<'\n';
+                deferred+=selected[l]<next[l];proposed[l][id]=selected[l];}
+        }
+        if(!e.local)for(auto& level:proposed){int maximum=0;for(size_t id:ids)maximum=std::max(maximum,level[id]);for(size_t id:ids)level[id]=maximum;}
+        const std::string priorityFile="level_growth_priority_round"+Number(state.round)+"_"+Hash(priorityRows.str())+".csv";
+        Atomic(e.root+"/"+priorityFile,priorityRows.str());
+        e.Record(e.root+"/level_growth_priority.json","{\"policy\":\"cheap dominant correction first\",\"details\":"+Quoted(priorityFile)+",\"deferred_level_rows\":"+Number(deferred)
+            +",\"joint_row_cost_proxy\":"+Number(jointWork)+",\"staged_row_cost_proxy\":"+Number(stagedWork)
+            +",\"proxy_scope\":\"before shared tracing and local cost gate; not wall time\",\"minimum_efficiency_ratio\":8,\"accuracy_gates_unchanged\":true}");
         GateLocalCost(e,proposed,depths,ids);
         if(proposed==state.counts)break;
         state.counts=proposed;SaveAdaptive(e,state);

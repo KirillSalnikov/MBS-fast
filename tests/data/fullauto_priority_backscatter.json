@@ -1,0 +1,13 @@
+{
+  "description": "Saved production level estimates, not synthetic functions",
+  "wavelength_um": 0.532,
+  "refractive_index": [1.3116, 0],
+  "depths": [14, 16, 18],
+  "seeds": [11, 23, 37, 53, 71, 89, 107, 131],
+  "rows": [
+    {"height_um": 446.7, "diameter_um": 147.1, "theta_deg": 173.38193600648034, "snapshot": "round4_f570804826865303", "expected_joint": [33554432, 65536, 65536], "expected_staged": [8388608, 65536, 16384]},
+    {"height_um": 501.2, "diameter_um": 155.8, "theta_deg": 173.10595065312046, "snapshot": "round7_f55a97ee7debc576", "expected_joint": [16777216, 16384, 16384], "expected_staged": [4194304, 16384, 4096]}
+  ],
+  "sample_layout": "rows tolerance; for each row: theta; for each level: N cost_per_orientation then eight rows of 16 Mueller values; levels 1 and 2 are paired differences",
+  "archive": "/home/user/BEM-CUDA/artifacts/fullauto_cache_acceleration_20261014/current_levels.npz"
+}

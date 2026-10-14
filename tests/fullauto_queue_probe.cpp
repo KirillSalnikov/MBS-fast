@@ -40,6 +40,7 @@ int main(int argc,const char* argv[]){
         FullAuto::WriteGrid(e.root+"/requested_theta.csv",e.theta);FullAuto::Directory(e.root+"/jobs");
         signal(SIGTERM,FullAuto::StopWorkers);signal(SIGINT,FullAuto::StopWorkers);
         e.phi=args.GetIntValue("nphi");e.depthSharing=e.coherent&&e.On("fullauto_depth_share",false);e.kernel.pipeline=args.IsCatched("orientation_pipeline");
+        if(getenv("TASK_MBS_WARM_CACHE"))e.WarmCache();
         const std::vector<int> depths={1,2,config.maxReflections};FullAuto::Budgets counts(3,std::vector<int>(e.theta.size()));std::vector<size_t> ids;
         for(size_t i=0;i<e.theta.size();++i){ids.push_back(i);counts[0][i]=e.initial;counts[1][i]=i%2?e.initial/2:e.initial/4;counts[2][i]=e.initial/4;}
         const double begin=FullAuto::Seconds();auto result=FullAuto::EvaluateBudget(e,depths,counts,ids,e.seeds.data());

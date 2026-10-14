@@ -232,6 +232,39 @@ std::vector<int> Allocate(const std::vector<Samples>& levels,const std::vector<d
     std::vector<int> result;for(double n:maximum)result.push_back(Power2(n));return result;
 }
 
+// Schedule, never accept, an estimator. First learn from a cheap dominant
+// correction before multiplying a much larger prefix whose noise is small.
+// The 1/N work model affects only the order of refinements; all observed
+// confidence, prefix, interpolation and independent-final gates remain live.
+std::vector<int> PrioritizeAllocation(const std::vector<Samples>& levels,
+        const std::vector<double>& costs,const std::vector<int>& counts,
+        const std::vector<int>& proposed,double tolerance,bool ratios){
+    Require(levels.size()==costs.size()&&levels.size()==counts.size()&&levels.size()==proposed.size()
+            &&tolerance>0,"invalid priority allocation dimensions");
+    if(levels.size()<2)return proposed;
+    const auto stats=Estimate(Combine(levels));Require(stats.mean.size()==1,"priority allocation needs one angular row");
+    int element=0;bool ratio=false;double worst=0;
+    for(int j=0;j<16;++j){if(stats.interval[0][j]>worst){worst=stats.interval[0][j];element=j;ratio=false;}
+        if(ratios&&stats.ratioInterval[0][j]>worst){worst=stats.ratioInterval[0][j];element=j;ratio=true;}}
+    if(worst<=tolerance)return proposed; // Retain stability/interpolation work.
+    const double r=ratio?stats.mean[0][element]/stats.mean[0][0]:0;
+    std::vector<double> variance(levels.size()),score(levels.size());double sum=0;
+    size_t best=0;
+    for(size_t l=0;l<levels.size();++l){
+        Require(counts[l]>0&&proposed[l]>=counts[l]&&costs[l]>0&&std::isfinite(costs[l]),"invalid priority work estimate");
+        double mean=0;for(const auto& s:levels[l])mean+=(s[0][element]-r*s[0][0])/8;
+        for(const auto& s:levels[l])variance[l]+=std::pow(s[0][element]-r*s[0][0]-mean,2)/7;
+        sum+=variance[l];
+        if(proposed[l]>counts[l])score[l]=variance[l]*(1-double(counts[l])/proposed[l])/(costs[l]*(proposed[l]-counts[l]));
+        if(score[l]>score[best])best=l;
+    }
+    auto result=proposed;
+    if(score[best]>0&&variance[best]>.5*sum)
+        for(size_t l=0;l<levels.size();++l)
+            if(l!=best&&score[l]*8<score[best]&&variance[l]<.25*sum)result[l]=counts[l];
+    return result;
+}
+
 namespace {
 struct Kernel {bool pipeline=false;int block=64;std::string warp="auto";};
 struct Job {
@@ -264,6 +297,32 @@ struct Engine {
     std::vector<std::string> base,gpus;std::vector<double> theta,weightTheta;
     std::vector<std::array<double,2>> weights;std::vector<unsigned> seeds;
     std::map<std::string,Job> cache;Kernel kernel;int phi=4,target=12,pilot=512,kernelCount=256;
+    // This is only a candidate index. SameSampling still verifies all optical
+    // and execution options. Keep identity order identical to the old map scan:
+    // overlapping angular rows must select the very same saved estimator.
+    using SamplingKey=std::array<uint64_t,4>;
+    using JobBucket=std::map<std::string,const Job*>;
+    std::map<SamplingKey,JobBucket> samplingIndex;
+    std::map<std::string,const Job*> folderIndex;
+    static SamplingKey SamplingSlot(int n,unsigned seed,int depth,int offset){
+        return {{uint64_t(n),uint64_t(seed),uint64_t(depth),uint64_t(offset)}};
+    }
+    void CacheJob(const Job& job){
+        const auto key=SamplingSlot(job.count,job.seed,job.depth,job.offset);
+        auto found=cache.find(job.identity);
+        if(found!=cache.end()){
+            const auto& old=found->second;
+            Require(SamplingSlot(old.count,old.seed,old.depth,old.offset)==key&&old.folder==job.folder,
+                    "cached identity changed sampling coordinates");
+        }
+        Job& stored=cache[job.identity];stored=job;
+        samplingIndex[key][job.identity]=&stored;folderIndex[job.folder]=&stored;
+    }
+    const JobBucket& SamplingCandidates(int n,unsigned seed,int depth,int offset=0)const{
+        static const JobBucket empty;
+        const auto found=samplingIndex.find(SamplingSlot(n,seed,depth,offset));
+        return found==samplingIndex.end()?empty:found->second;
+    }
     int initial=1024,minimum=256,maxCount=67108864,roundLimit=32,startTheta=33;
     int maxTheta=2147483647,stablePasses=2,minPhi=1,maxPhi=2147483647;
     int workerThreads=4,workerChunk=0;long long hostBudgetMb=0;
@@ -571,7 +630,7 @@ struct Engine {
             double angle;while(input>>angle)j.inputAngles.push_back(angle);Require(input.eof()&&j.inputAngles.size()>=2,"invalid indexed grid");
             j.folder=folder;j.data=folder+"/result/result.dat";j.summary=folder+"/result/result_analytic_facets.tsv";
             ValidateStoredJob(folder,visited);std::istringstream meta(Read(folder+"/complete.txt"));std::string identity;meta>>identity>>j.seconds;Require(identity==j.identity,"sampling identity changed");
-            j=Load(j);Require(j.angles.size()==j.inputAngles.size(),"sampling coordinates changed");for(size_t r=0;r<j.angles.size();++r)Require(std::fabs(j.angles[r]-j.inputAngles[r])<1e-10,"sampling coordinates changed");cache[j.identity]=j;
+            j=Load(j);Require(j.angles.size()==j.inputAngles.size(),"sampling coordinates changed");for(size_t r=0;r<j.angles.size();++r)Require(std::fabs(j.angles[r]-j.inputAngles[r])<1e-10,"sampling coordinates changed");CacheJob(j);
         }
         Log("cache_restored","{\"verified_jobs\":"+Number(cache.size())+"}");
         std::cout<<"fullauto restored verified cached jobs: "<<cache.size()<<std::endl;
@@ -615,7 +674,7 @@ struct Engine {
             const std::string meta=j.folder+"/complete.txt";
             if(Exists(meta)){std::istringstream m(Read(meta));std::string id,dataHash,summaryHash;m>>id>>j.seconds>>dataHash>>summaryHash;
                 Require(id==j.identity&&j.seconds>0&&std::isfinite(j.seconds)&&FileHash(j.data)==dataHash&&(!controls||FileHash(j.summary)==summaryHash),"cached job changed; do not reuse corrupted files");
-                if(pairedDepth){std::set<std::string> visited;ValidateStoredJob(j.folder,visited);}j=Load(j);correctAngles(j);cache[j.identity]=j;result[s]=j;Log("worker_cache_reuse","{\"folder\":"+Quoted(j.folder)+",\"verified_from_disk\":true}");continue;}
+                if(pairedDepth){std::set<std::string> visited;ValidateStoredJob(j.folder,visited);}j=Load(j);correctAngles(j);CacheJob(j);result[s]=j;Log("worker_cache_reuse","{\"folder\":"+Quoted(j.folder)+",\"verified_from_disk\":true}");continue;}
             if(Exists(j.folder+"/worker.pid"))Require(!WorkerAlive(j.folder+"/worker.pid"),"an incomplete cached worker is still running; avoid duplicate launch");
             if(Exists(j.folder+"/result")){std::string saved=j.folder+"/result_incomplete_"+std::to_string(getpid())+"_"+std::to_string(s);
                 Require(rename((j.folder+"/result").c_str(),saved.c_str())==0,"cannot preserve incomplete worker output");}
@@ -656,7 +715,7 @@ struct Engine {
                 j=Load(j);Require(j.matrix.size()==j.inputAngles.size(),"worker returned wrong theta count");for(size_t r=0;r<j.inputAngles.size();++r)Require(std::fabs(j.angles[r]-j.inputAngles[r])<1e-10,"worker returned wrong theta coordinates");
                 std::string pairHash;if(j.pairedDepth){const std::string name=j.folder+"/result/result_depth"+std::to_string(j.pairedDepth);std::ostringstream manifest;
                     manifest<<name+".dat"<<' '<<FileHash(name+".dat")<<'\n';if(controls)manifest<<name+"_analytic_facets.tsv"<<' '<<FileHash(name+"_analytic_facets.tsv")<<'\n';Atomic(j.folder+"/paired_depth.tsv",manifest.str());pairHash=" "+Hash(manifest.str());}
-                Atomic(j.folder+"/complete.txt",j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+pairHash+"\n");cache[j.identity]=j;++completed;
+                Atomic(j.folder+"/complete.txt",j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+pairHash+"\n");CacheJob(j);++completed;
                 Log("worker_complete","{\"folder\":"+Quoted(j.folder)+",\"seconds\":"+Number(j.seconds)+",\"trace_prepare_seconds\":"+Number(j.traceSeconds)
                     +",\"diffraction_and_controls_seconds\":"+Number(j.diffractionSeconds)+",\"analytic_setup_seconds\":"+Number(j.controlSetup)+",\"return_code\":0}");
         }
@@ -689,9 +748,10 @@ struct Engine {
                 for(auto& entry:leaves){auto& request=entry.second;auto& x=request.angles;std::sort(x.begin(),x.end());x.erase(std::unique(x.begin(),x.end()),x.end());
                     if(x.size()>size_t(maxTheta))continue; // Existing per-group execution respects the explicit cap.
                     std::vector<std::set<double>> covered(8);
-                    for(const auto& item:cache){const Job& job=item.second;if(!SameSampling(job,request.count,job.seed,request.depth,request.offset))continue;
+                    for(size_t s=0;s<8;++s)for(const auto& item:SamplingCandidates(request.count,seedSet[s],request.depth,request.offset)){
+                        const Job& job=*item.second;if(!SameSampling(job,request.count,seedSet[s],request.depth,request.offset))continue;
                         if(request.pairedDepth&&job.pairedDepth!=request.pairedDepth)continue;
-                        const auto found=std::find(seedSet,seedSet+8,job.seed);if(found==seedSet+8)continue;covered[found-seedSet].insert(job.inputAngles.begin(),job.inputAngles.end());}
+                        covered[s].insert(job.inputAngles.begin(),job.inputAngles.end());}
                     std::vector<double> missing;for(double angle:x){bool complete=true;for(const auto& rows:covered)complete=complete&&rows.count(angle);if(!complete)missing.push_back(angle);}
                     if(missing.size()==1){missing.push_back(x.front()==missing.front()?x.back():x.front());std::sort(missing.begin(),missing.end());}
                     if(!missing.empty())DirectStage(request.count,seedSet,8,request.depth,missing,true,false,request.offset,request.pairedDepth);
@@ -720,7 +780,7 @@ struct Engine {
             Atomic(job.folder+"/stdout.log","Validated paired-depth view; standalone replay recipe.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");
             const std::string sources=source.folder+"\t"+FileHash(source.folder+"/complete.txt")+"\n";Atomic(job.folder+"/angular_sources.tsv",sources);
             Atomic(job.folder+"/complete.txt",job.identity+" "+Number(job.seconds)+" "+FileHash(job.data)+" "+(controls?FileHash(job.summary):"none")+" "+Hash(sources)+"\n");}
-        std::set<std::string> visited;ValidateStoredJob(job.folder,visited);job=Load(job);cache[job.identity]=job;return job;
+        std::set<std::string> visited;ValidateStoredJob(job.folder,visited);job=Load(job);CacheJob(job);return job;
     }
     std::vector<Job> AssemblePairParts(const std::vector<std::vector<Job>>& parts,int n,const std::vector<double>& x,const std::string& tag){
         if(parts.size()==1)return parts[0];
@@ -735,14 +795,15 @@ struct Engine {
                     for(size_t r=0;r<x.size();++r){const auto& c=job.controls[r];const auto& b=coefficients[r];summary<<x[r];for(double v:c)summary<<'\t'<<v;summary<<'\t'<<c[0]-b[0]*c[3]-b[1]*c[4]<<'\t'<<job.matrix[r][0]<<'\t'<<job.controlRefinement<<'\t'<<job.controlSetup<<'\t'<<b[0]<<'\t'<<b[1]<<'\n';}Atomic(job.summary,summary.str());}
                 Atomic(job.folder+"/command.args",Replay(job,x));Atomic(job.folder+"/stdout.log","Exact paired Sobol-prefix assembly.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");Atomic(job.folder+"/angular_sources.tsv",dependencies.str());
                 Atomic(job.folder+"/complete.txt",job.identity+" "+Number(job.seconds)+" "+FileHash(job.data)+" "+(controls?FileHash(job.summary):"none")+" "+Hash(dependencies.str())+"\n");}
-            std::set<std::string> visited;ValidateStoredJob(job.folder,visited);job.matrix.clear();job.controls.clear();job.angles.clear();job=Load(job);cache[job.identity]=job;result[s]=job;
+            std::set<std::string> visited;ValidateStoredJob(job.folder,visited);job.matrix.clear();job.controls.clear();job.angles.clear();job=Load(job);CacheJob(job);result[s]=job;
         }return result;
     }
     std::pair<std::vector<Job>,std::vector<Job>> SharedStage(int n,const unsigned* seedSet,size_t ns,int upper,int lower,const std::vector<double>& x){
         std::vector<std::vector<Job>> uppers,lowers;const int block=incremental?orientationBlock:n;
         for(int offset=0;offset<n;offset+=block){const int count=std::min(block,n-offset);std::vector<std::set<double>> covered(ns);std::vector<const Job*> candidates;
-            for(const auto& entry:cache){const auto& job=entry.second;if(job.pairedDepth!=lower||!SameSampling(job,count,job.seed,upper,offset))continue;
-                const auto found=std::find(seedSet,seedSet+ns,job.seed);if(found==seedSet+ns)continue;const size_t s=found-seedSet;candidates.push_back(&job);covered[s].insert(job.inputAngles.begin(),job.inputAngles.end());}
+            for(size_t s=0;s<ns;++s)for(const auto& entry:SamplingCandidates(count,seedSet[s],upper,offset)){
+                const auto& job=*entry.second;if(job.pairedDepth!=lower||!SameSampling(job,count,seedSet[s],upper,offset))continue;
+                candidates.push_back(&job);covered[s].insert(job.inputAngles.begin(),job.inputAngles.end());}
             for(const auto* job:candidates)LowerView(*job,lower);
             std::vector<double> missing;for(double angle:x){bool complete=true;for(const auto& rows:covered)complete=complete&&rows.count(angle);if(!complete)missing.push_back(angle);}
             if(missing.size()==1){missing.push_back(x.front()==missing.front()?x.back():x.front());std::sort(missing.begin(),missing.end());}
@@ -772,7 +833,7 @@ struct Engine {
             j.folder=root+"/jobs/p"+j.identity;j.data=j.folder+"/result/result.dat";j.summary=j.folder+"/result/result_analytic_facets.tsv";
             if(cache.count(j.identity))j=cache.at(j.identity);
             else if(Exists(j.folder+"/complete.txt")){std::set<std::string> visited;ValidateStoredJob(j.folder,visited);
-                std::istringstream meta(Read(j.folder+"/complete.txt"));std::string id;meta>>id>>j.seconds;Require(id==j.identity,"prefix cache identity changed");j=Load(j);cache[j.identity]=j;
+                std::istringstream meta(Read(j.folder+"/complete.txt"));std::string id;meta>>id>>j.seconds;Require(id==j.identity,"prefix cache identity changed");j=Load(j);CacheJob(j);
             }else{ready=false;j.matrix.assign(x.size(),Mueller{});if(controls)j.controls.assign(x.size(),std::array<double,5>{{0,0,0,0,0}});}
             result[s]=j;
         }
@@ -811,13 +872,13 @@ struct Engine {
             Atomic(j.folder+"/angular_sources.tsv",sources[s].str());
             Atomic(j.folder+"/orientation_reuse.json","{\"kind\":\"exact_sobol_prefix\",\"count\":"+Number(n)+",\"block\":"+Number(orientationBlock)+",\"seconds_scope\":\"represented full native work, including reused blocks\"}\n");
             Atomic(j.folder+"/complete.txt",j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+" "+Hash(sources[s].str())+"\n");
-            j.matrix.clear();j.controls.clear();j.angles.clear();j=Load(j);cache[j.identity]=j;
+            j.matrix.clear();j.controls.clear();j.angles.clear();j=Load(j);CacheJob(j);
         }
         return result;
     }
     double ForecastFullGridCost(int n,unsigned seed,int depth,size_t points,double setup,double conservative)const{
         double sx=0,sy=0,sxx=0,sxy=0;size_t count=0;
-        for(const auto& entry:cache){const Job& j=entry.second;
+        for(const auto& entry:SamplingCandidates(n,seed,depth)){const Job& j=*entry.second;
             if(j.assembled||!SameSampling(j,n,seed,depth))continue;
             const double x=j.inputAngles.size(),y=std::max(1e-9,j.seconds-j.controlSetup);
             sx+=x;sy+=y;sxx+=x*x;sxy+=x*y;++count;
@@ -836,7 +897,7 @@ struct Engine {
         std::vector<Job> exactJobs(ns);
         std::set<double> requested(x.begin(),x.end());bool everySeedHasRows=true,exact=true;
         for(size_t s=0;s<ns;++s){bool exactSeed=false;
-            for(const auto& cached:cache){const Job& j=cached.second;if(!SameSampling(j,n,seedSet[s],depth,offset))continue;
+            for(const auto& cached:SamplingCandidates(n,seedSet[s],depth,offset)){const Job& j=*cached.second;if(!SameSampling(j,n,seedSet[s],depth,offset))continue;
                 if(j.inputAngles==x&&j.weightHash==weightHash){exactSeed=true;exactJobs[s]=j;}
                 for(size_t r=0;r<j.inputAngles.size();++r)if(requested.count(j.inputAngles[r]))rows[s].insert({j.inputAngles[r],{&j,r}});
             }
@@ -856,7 +917,7 @@ struct Engine {
             if(Exists(j.folder+"/complete.txt")){
                 std::set<std::string> visited;ValidateStoredJob(j.folder,visited);
                 std::istringstream meta(Read(j.folder+"/complete.txt"));std::string id;meta>>id>>j.seconds;Require(id==j.identity,"angular cache identity changed");
-                j=Load(j);Require(j.matrix.size()==x.size(),"wrong assembled theta count");cache[j.identity]=j;result[s]=j;
+                j=Load(j);Require(j.matrix.size()==x.size(),"wrong assembled theta count");CacheJob(j);result[s]=j;
             }else{allCached=false;result[s]=j;}
         }
         if(allCached)return result;
@@ -885,7 +946,7 @@ struct Engine {
             if(controls&&!sharedMeans){sources.insert(means.folder);j.controlRefinement=means.controlRefinement;j.controlSetup=means.controlSetup;}
             std::set<std::string> visited;std::ostringstream dependencies;
             for(const std::string& source:sources){ValidateStoredJob(source,visited);dependencies<<source<<'\t'<<FileHash(source+"/complete.txt")<<'\n';
-                for(const auto& c:cache)if(c.second.folder==source){j.seconds+=c.second.seconds;break;}}
+                const auto cached=folderIndex.find(source);if(cached!=folderIndex.end())j.seconds+=cached->second->seconds;}
             Require(j.seconds>0,"missing angular source cost");const double representedSeconds=j.seconds;
             j.seconds=ForecastFullGridCost(n,seedSet[s],depth,x.size(),j.controlSetup,j.seconds);Directory(j.folder+"/result");WriteMatrix(j.data,x,j.matrix);
             if(controls){std::ostringstream table;table<<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n"<<std::setprecision(17);
@@ -905,7 +966,7 @@ struct Engine {
             std::ostringstream provenance;provenance<<"{\"kind\":\"angular_assembly\",\"requested_rows\":"<<x.size()<<",\"reused_rows\":"<<reused<<",\"new_worker_rows\":"<<missing.size()<<",\"cost_scope\":\"full-grid forecast from matching native jobs; not assembly wall time\",\"represented_native_seconds\":"<<Number(representedSeconds)<<",\"forecast_full_grid_seconds\":"<<Number(j.seconds)<<",\"M11_rebased_to_authoritative_full_grid_means\":"<<(controls?"true":"false")<<"}\n";
             Atomic(j.folder+"/angular_reuse.json",provenance.str());
             Atomic(j.folder+"/complete.txt",j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+" "+Hash(dependencies.str())+"\n");
-            j.matrix.clear();j.controls.clear();j.angles.clear();j=Load(j);cache[j.identity]=j;++assembledJobs;reusedRows+=reused;newRows+=missing.size();
+            j.matrix.clear();j.controls.clear();j.angles.clear();j=Load(j);CacheJob(j);++assembledJobs;reusedRows+=reused;newRows+=missing.size();
             std::cout<<"fullauto angular cache: seed="<<seedSet[s]<<" N="<<n<<" depth="<<depth<<" reused="<<reused<<" new="<<missing.size()<<std::endl;
         }
         return result;
@@ -1041,7 +1102,11 @@ struct Engine {
         std::ostringstream candidatesJson;candidatesJson<<'[';bool first=true;
         const int depth=working?target:std::max(1,target-4);
         for(int candidate:phiCandidates){Require(candidate>=minPhi&&candidate<=maxPhi,"phi outside configured limits");phi=candidate;
-            auto train=Stage(pilot,training,8,depth,x,false),valid=Stage(pilot,validation,8,depth,x,false);
+            // Training fits control coefficients only. With controls disabled
+            // its eight native solves were discarded; keep the independent
+            // validation scrambles and the complete accuracy contract.
+            std::vector<Job> train;if(controls)train=Stage(pilot,training,8,depth,x,false);
+            auto valid=Stage(pilot,validation,8,depth,x,false);
             Samples adjusted=Data(valid,false);std::vector<std::array<double,2>> fitted(x.size(),{{0.,0.}});
             std::vector<std::array<Mueller,2>> fittedPolar(x.size());std::array<int,16> accepted{};
             if(controls)for(size_t r=0;r<x.size();++r){
@@ -1095,7 +1160,8 @@ struct Engine {
         Record(root+"/polarization_weights.tsv",polar.str());const std::string weightPath=WriteWeights(x);
         std::ostringstream c;c<<"{\"selected_phi\":"<<phi<<",\"block\":"<<kernel.block<<",\"pipeline\":"<<(kernel.pipeline?"true":"false")<<",\"warp\":"<<Quoted(kernel.warp)<<",\"pilot_count\":"<<pilot<<",\"score\":"<<Number(best)<<",\"weights\":"<<Quoted(weightPath)<<",\"phi_candidates\":"<<candidatesJson.str()
           <<",\"score_model\":\"finite work to statistical budget, with initial-count floor\",\"calibration_depth\":"<<depth<<",\"calibration_theta\":"<<x.size()<<",\"working_grid_recheck\":"<<(working?"true":"false")<<",\"score_includes_ratios\":"<<(ratios?"true":"false")<<",\"polarization_controls\":"<<(polarControls?"true":"false")
-          <<",\"independent_training_validation\":true,\"mirror_gamma\":"<<(mirror?"true":"false")<<",\"mirror_policy\":"<<Quoted(mirrorPolicy)<<"}";
+          <<",\"control_training_required\":"<<(controls?"true":"false")<<",\"training_scrambles_per_phi\":"<<(controls?8:0)
+          <<",\"validation_scrambles_per_phi\":8,\"independent_training_validation\":true,\"mirror_gamma\":"<<(mirror?"true":"false")<<",\"mirror_policy\":"<<Quoted(mirrorPolicy)<<"}";
         Record(root+"/calibration.json",c.str());
     }
 };
