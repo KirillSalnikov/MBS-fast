@@ -5,6 +5,8 @@
 #include "RunConfig.h"
 #include "cuda/GpuSupport.h"
 #include "RuntimeInfo.h"
+#include "WorkerProtocol.h"
+#include <poll.h>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -99,6 +101,8 @@ std::string ProcessStart(pid_t pid){
 bool WorkerAlive(const std::string& path){
     std::istringstream file(Read(path));int pid=0;std::string start,boot;file>>pid>>start>>boot;
     if(pid<=0||kill(pid,0)!=0)return false;
+    const std::string state=Read("/proc/"+std::to_string(pid)+"/stat");const auto stateEnd=state.rfind(')');
+    if(stateEnd!=std::string::npos&&stateEnd+2<state.size()&&state[stateEnd+2]=='Z')return false;
     if(start.empty()||boot.empty())return true; // Legacy record: refuse ambiguous ownership.
     std::string currentBoot=Read("/proc/sys/kernel/random/boot_id");currentBoot.erase(currentBoot.find_last_not_of("\n\r ")+1);
     return boot==currentBoot&&start==ProcessStart(pid);
@@ -324,6 +328,14 @@ void ValidateStoredJob(const std::string& folder,std::set<std::string>& visited)
         }
     }
 }
+struct WorkerService {
+    pid_t pid;int fd;std::string identity;unsigned long long requests=0;
+    WorkerService(pid_t p,int f,const std::string& key):pid(p),fd(f),identity(key){}
+    ~WorkerService(){
+        close(fd);kill(pid,SIGTERM);int status;while(waitpid(pid,&status,0)<0&&errno==EINTR){}
+        for(auto& active:activeWorkers)if(active==pid)active=0;
+    }
+};
 struct Engine {
     const ArgPP& args;const RunConfig& config;std::string exe,root,signature,binaryHash,weightFile;
     std::ofstream journal;std::string requestedOptions;size_t journalSequence=0;double runStarted=Seconds();
@@ -380,6 +392,8 @@ struct Engine {
     bool collecting=false;bool go=false;std::string workQueuePolicy="auto";
     std::vector<Job> pendingJobs;
     std::vector<std::vector<std::string>> pendingCommands;
+    std::string workerPolicy="auto",tracePolicy="auto";
+    std::array<std::unique_ptr<WorkerService>,8> services;
     std::string localPolicy="auto";
     Engine(const ArgPP& a,const RunConfig& c):args(a),config(c){}
     void Log(const std::string& event,const std::string& payload){
@@ -408,7 +422,7 @@ struct Engine {
             <<",\"initial_model\":"<<Quoted(initialModel)<<",\"estimated_final_orientation_count\":"<<Number(empiricalFinal)<<",\"depth_pilot_count\":"<<depthPilot<<",\"depth_search_order\":"<<Quoted(depthOrder)<<",\"initial_source\":"<<Quoted(initialSource)<<",\"maximum_edge_um\":"<<Number(maximumEdge)<<",\"maximum_diameter_um\":"<<Number(maximumDiameter)<<",\"oldauto_N_beta_estimate\":"<<Number(estimatedBeta)<<",\"oldauto_N_gamma_estimate\":"<<Number(estimatedGamma)<<",\"oldauto_orientation_estimate\":"<<Number(estimatedOrientations)<<",\"initial_count\":"<<initial<<",\"minimum_correction_count\":"<<minimum<<",\"max_count\":"<<maxCount<<",\"max_rounds\":"<<roundLimit
             <<",\"initial_theta_support\":"<<startTheta<<",\"max_theta_evaluations\":"<<maxTheta<<",\"min_phi\":"<<minPhi<<",\"max_phi\":"<<maxPhi
             <<",\"stable_passes\":"<<stablePasses<<",\"automatic_depth\":"<<(autoDepth?"true":"false")<<",\"depth_start\":"<<depthStart<<",\"depth_maximum\":"<<depthMaximum<<",\"depth_budget\":"<<Number(depthBudget)<<",\"physical_target_depth\":"<<target<<",\"phi\":"<<phi
-            <<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
+            <<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
             <<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"selected_gpus\":[";
         for(size_t i=0;i<gpus.size();++i)out<<(i?",":"")<<Quoted(gpus[i]);
         out<<"],\"resource_policy\":"<<Quoted(resourcePolicy)<<",\"rotation_policy\":"<<Quoted(rotationPolicy)<<",\"cutoff_policy\":"<<Quoted(cutoffPolicy)
@@ -444,6 +458,9 @@ struct Engine {
         if(const char* v=getenv("MBS_GPU_WARP_BEAMS")){Require(std::string(v)=="0"||std::string(v)=="1","MBS_GPU_WARP_BEAMS must be 0 or 1");kernel.warp=std::string(v)=="1"?"warp":"thread";fixedWarp=true;}
         if(args.IsCatched("analytic_mean_cache"))requestedMeanCache=args.GetStringValue("analytic_mean_cache");
         angularCache=!args.IsCatched("fullauto_angular_cache")||args.GetStringValue("fullauto_angular_cache")!="off";
+        workerPolicy=args.IsCatched("fullauto_workers")?args.GetStringValue("fullauto_workers"):"auto";
+        tracePolicy=args.IsCatched("po_trace_backend")?args.GetStringValue("po_trace_backend"):(args.IsCatched("fullauto_trace")?args.GetStringValue("fullauto_trace"):"auto");
+        if(tracePolicy=="hybrid")kernel.pipeline=fixedPipeline=true;
         workQueuePolicy=args.IsCatched("fullauto_work_queue")?args.GetStringValue("fullauto_work_queue"):"auto";
         incremental=!args.IsCatched("fullauto_incremental")||args.GetStringValue("fullauto_incremental")!="off";
         orientationBlock=Int("fullauto_orientation_block",65536);
@@ -595,6 +612,7 @@ struct Engine {
         // File headers can declare an unverified fundamental domain. Use
         // the full Haar measure for arbitrary files unless explicitly set.
         if(!args.IsCatched("sym")){base.push_back("--symmetry");base.push_back("1");base.push_back("1");fingerprint<<"verified_orientation_domain=full_SO3_initial\n";}
+        if(tracePolicy!="auto"&&!args.IsCatched("po_trace_backend")){base.push_back("--po-trace-backend");base.push_back(tracePolicy);}
         gpuCandidates=gpus;
         hostBudgetMb=std::max(64LL,QueryRuntimeResourceSnapshot().ramAvailableKb*65/100/1024/static_cast<long long>(std::min(gpus.size(),size_t(8))));
         // Result-affecting environment forms part of resume/cache identity.
@@ -625,7 +643,7 @@ struct Engine {
             <<",\"mirror_budget\":"<<(mirror?eps/256:0)<<",\"max_mirror_residual95_scaled_M11\":"<<mirrorError
             <<",\"adaptive_schema\":2,\"local_orientations\":"<<(local?"true":"false")<<",\"ratio_accuracy\":"<<(ratios?"true":"false")<<",\"max_pointwise_ratio95\":"<<lastRatio<<",\"independent_final_validation\":"<<(independentPassed?"true":"false")<<",\"saved_orientation_blocks_this_invocation\":"<<savedOrientationBlocks
             <<",\"analytic_mean_budget\":"<<(controls?eps/64:0)<<",\"max_estimated_analytic_mean_error_scaled_M11\":"<<lastAnalyticError
-            <<",\"execution_budget\":"<<((resourcePolicy=="auto"||config.useGpu)?eps/1024:0)<<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
+            <<",\"execution_budget\":"<<((resourcePolicy=="auto"||config.useGpu)?eps/1024:0)<<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
             <<",\"rotation_beta_factor\":"<<rotationBeta<<",\"rotation_gamma_factor\":"<<rotationGamma<<",\"rotation_budget\":"<<((rotationBeta>1||rotationGamma>1)?eps/256:0)
             <<",\"selected_cutoff\":"<<Quoted(selectedCutoff)<<",\"cutoff_budget\":"<<(selectedCutoff!="requested"&&selectedCutoff!="off"?eps/8:0)<<",\"max_cutoff_residual95\":"<<cutoffError
             <<",\"coherent\":"<<(coherent?"true":"false")<<",\"fixed_phi\":"<<fixedPhi<<",\"scope\":\"eight-seed pointwise intervals; interpolation guards on requested grid; mirror paired pilot when enabled; current target physics; automatic depth has fresh paired validation; no global simultaneous confidence claim\"}\n";
@@ -716,7 +734,10 @@ struct Engine {
         ExecutePrepared(result,commands,todo);
         return result;
     }
+    #include "FullAutoWorkers.inc"
     void ExecutePrepared(std::vector<Job>& result,std::vector<std::vector<std::string>>& commands,const std::vector<size_t>& todo){
+        if(PersistentEnabled()){ExecutePersistent(result,commands,todo);return;}
+        for(auto& service:services)service.reset();
         WorkerCleanup cleanup;
         const size_t slots=std::min(gpus.size(),size_t(8));
         std::vector<int> slotSeed(slots,-1);std::vector<double> begun(result.size());
@@ -744,14 +765,7 @@ struct Engine {
                 size_t s=size_t(slotSeed[slot]);Job& j=result[s];j.pid=-1;activeWorkers[slot]=0;slotSeed[slot]=-1;j.seconds=Seconds()-begun[s];std::remove((j.folder+"/worker.pid").c_str());
                 Require(WIFEXITED(status)&&WEXITSTATUS(status)==0,"worker failed; see "+j.folder+"/stdout.log");
                 if(next<todo.size())launch(slot,todo[next++]);
-                j=Load(j);Require(j.matrix.size()==j.inputAngles.size(),"worker returned wrong theta count");for(size_t r=0;r<j.inputAngles.size();++r)Require(std::fabs(j.angles[r]-j.inputAngles[r])<1e-10,"worker returned wrong theta coordinates");
-                std::string pairHash;if(j.pairedDepth){const std::string name=j.folder+"/result/result_depth"+std::to_string(j.pairedDepth);std::ostringstream manifest;
-                    manifest<<name+".dat"<<' '<<FileHash(name+".dat")<<'\n';if(controls)manifest<<name+"_analytic_facets.tsv"<<' '<<FileHash(name+"_analytic_facets.tsv")<<'\n';Atomic(j.folder+"/paired_depth.tsv",manifest.str());pairHash=" "+Hash(manifest.str());}
-                Atomic(j.folder+"/complete.txt",j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+pairHash+"\n");CacheJob(j);++completed;
-                Log("worker_complete","{\"folder\":"+Quoted(j.folder)+",\"seconds\":"+Number(j.seconds)+",\"trace_prepare_seconds\":"+Number(j.traceSeconds)
-                    +",\"diffraction_and_controls_seconds\":"+Number(j.diffractionSeconds)+",\"processing_wall_seconds\":"+Number(j.NativeWall())
-                    +",\"processing_wall_measured\":"+(j.processingSeconds>=0?"true":"false")+",\"outside_processing_seconds\":"+Number(j.OutsideProcessing())
-                    +",\"analytic_setup_seconds\":"+Number(j.controlSetup)+",\"return_code\":0}");
+                CompleteNative(j);++completed;
         }
     }
     bool QueueEnabled()const{return (go||angularCache)&&workQueuePolicy!="off"&&(workQueuePolicy=="on"||gpus.size()>1);}
@@ -1197,6 +1211,7 @@ struct Engine {
           <<",\"control_training_required\":"<<(controls?"true":"false")<<",\"training_scrambles_per_phi\":"<<(controls?8:0)
           <<",\"validation_scrambles_per_phi\":8,\"independent_training_validation\":true,\"mirror_gamma\":"<<(mirror?"true":"false")<<",\"mirror_policy\":"<<Quoted(mirrorPolicy)<<"}";
         Record(root+"/calibration.json",c.str());
+        if(working)TuneTracing(x);
     }
 };
 std::vector<size_t> Guards(const std::vector<size_t>& knots,size_t size) {

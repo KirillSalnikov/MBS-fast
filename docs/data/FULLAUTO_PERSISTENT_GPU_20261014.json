@@ -1,0 +1,150 @@
+{
+  "runs": [
+    {
+      "stage": "final1",
+      "name": "cpu_process",
+      "seconds": 10.607109785079956,
+      "all16_scaled_M11": 0.0,
+      "ratio_difference": 0.0,
+      "integral_scaled_Csca": 0.0,
+      "mean_util_percent": 28.74019607843137,
+      "peak_vram_MiB": 587.0
+    },
+    {
+      "stage": "final1",
+      "name": "cpu_service",
+      "seconds": 8.685686349868774,
+      "all16_scaled_M11": 4.713557663345785e-16,
+      "ratio_difference": 4.440892098500626e-16,
+      "integral_scaled_Csca": 0.0,
+      "mean_util_percent": 33.833333333333336,
+      "peak_vram_MiB": 587.0
+    },
+    {
+      "stage": "final1",
+      "name": "resident_service",
+      "seconds": 8.251688241958618,
+      "all16_scaled_M11": 2.8389680816964683e-09,
+      "ratio_difference": 2.0147594148589576e-09,
+      "integral_scaled_Csca": 1.191838069588729e-11,
+      "mean_util_percent": 77.34375,
+      "peak_vram_MiB": 3649.0
+    },
+    {
+      "stage": "final1",
+      "name": "hybrid_service",
+      "seconds": 7.274209022521973,
+      "all16_scaled_M11": 2.864559896393256e-09,
+      "ratio_difference": 2.041193797319707e-09,
+      "integral_scaled_Csca": 9.398162841518317e-12,
+      "mean_util_percent": 73.75714285714285,
+      "peak_vram_MiB": 4529.0
+    },
+    {
+      "stage": "final2",
+      "name": "hybrid_service",
+      "seconds": 7.3375184535980225,
+      "all16_scaled_M11": 2.864559624742933e-09,
+      "ratio_difference": 2.041193727930768e-09,
+      "integral_scaled_Csca": 1.0011827794768738e-11,
+      "mean_util_percent": 71.45138888888889,
+      "peak_vram_MiB": 4529.0
+    },
+    {
+      "stage": "final2",
+      "name": "resident_service",
+      "seconds": 8.237743616104126,
+      "all16_scaled_M11": 2.8389680816964683e-09,
+      "ratio_difference": 2.0147593315922308e-09,
+      "integral_scaled_Csca": 1.1918251359146152e-11,
+      "mean_util_percent": 76.9625,
+      "peak_vram_MiB": 3649.0
+    },
+    {
+      "stage": "final2",
+      "name": "cpu_service",
+      "seconds": 8.679177045822144,
+      "all16_scaled_M11": 5.264690597845332e-16,
+      "ratio_difference": 6.661338147750939e-16,
+      "integral_scaled_Csca": 0.0,
+      "mean_util_percent": 34.396341463414636,
+      "peak_vram_MiB": 587.0
+    },
+    {
+      "stage": "final2",
+      "name": "cpu_process",
+      "seconds": 10.357450723648071,
+      "all16_scaled_M11": 0.0,
+      "ratio_difference": 0.0,
+      "integral_scaled_Csca": 0.0,
+      "mean_util_percent": 29.03061224489796,
+      "peak_vram_MiB": 587.0
+    },
+    {
+      "stage": "final3",
+      "name": "resident_service",
+      "seconds": 8.339171171188354,
+      "all16_scaled_M11": 2.8389677194960385e-09,
+      "ratio_difference": 2.0147594426145332e-09,
+      "integral_scaled_Csca": 1.1918251359146152e-11,
+      "mean_util_percent": 75.84756097560975,
+      "peak_vram_MiB": 3649.0
+    },
+    {
+      "stage": "final3",
+      "name": "cpu_process",
+      "seconds": 10.35849142074585,
+      "all16_scaled_M11": 0.0,
+      "ratio_difference": 0.0,
+      "integral_scaled_Csca": 0.0,
+      "mean_util_percent": 30.275510204081634,
+      "peak_vram_MiB": 587.0
+    },
+    {
+      "stage": "final3",
+      "name": "hybrid_service",
+      "seconds": 7.346897602081299,
+      "all16_scaled_M11": 2.0853893689230396e-09,
+      "ratio_difference": 1.928165793696479e-09,
+      "integral_scaled_Csca": 1.0513654350385045e-11,
+      "mean_util_percent": 70.8125,
+      "peak_vram_MiB": 4527.0
+    },
+    {
+      "stage": "final3",
+      "name": "cpu_service",
+      "seconds": 8.835665464401245,
+      "all16_scaled_M11": 5.781290038443084e-16,
+      "ratio_difference": 6.661338147750939e-16,
+      "integral_scaled_Csca": 0.0,
+      "mean_util_percent": 32.607142857142854,
+      "peak_vram_MiB": 587.0
+    }
+  ],
+  "medians": {
+    "cpu_process": {
+      "seconds": 10.35849142074585,
+      "mean_util_percent": 29.03061224489796,
+      "peak_vram_MiB": 587.0
+    },
+    "cpu_service": {
+      "seconds": 8.685686349868774,
+      "mean_util_percent": 33.833333333333336,
+      "peak_vram_MiB": 587.0
+    },
+    "resident_service": {
+      "seconds": 8.251688241958618,
+      "mean_util_percent": 76.9625,
+      "peak_vram_MiB": 3649.0
+    },
+    "hybrid_service": {
+      "seconds": 7.3375184535980225,
+      "mean_util_percent": 71.45138888888889,
+      "peak_vram_MiB": 4529.0
+    }
+  },
+  "speedup": 1.4117158936297414,
+  "max_all16_scaled_M11": 2.864559896393256e-09,
+  "max_ratio_difference": 2.041193797319707e-09,
+  "max_integral_scaled_Csca": 1.191838069588729e-11
+}

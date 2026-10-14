@@ -50,6 +50,11 @@
 #include "RuntimeInfo.h"
 #include "RunConfig.h"
 #include "FullAuto.h"
+#include "WorkerProtocol.h"
+#include "PreparedReuse.h"
+#include <sys/prctl.h>
+#include <map>
+#include <csignal>
 
 #ifdef _OUTPUT_NRG_CONV
 ofstream energyFile("energy.dat", ios::out);
@@ -421,6 +426,8 @@ static std::unique_ptr<Particle> CreateConfiguredParticle(const ArgPP& args,
 }
 
 
+static bool persistentWorker = false;
+
 static int FinishWithCode(int code)
 {
 #ifdef USE_MPI
@@ -429,7 +436,7 @@ static int FinishWithCode(int code)
     MPI_Initialized(&initialized);
     if (initialized)
         MPI_Finalized(&finalized);
-    if (initialized && !finalized)
+    if (initialized && !finalized && !persistentWorker)
         MPI_Finalize();
 #endif
     return code;
@@ -457,8 +464,6 @@ static void PrintCommandLineError(const std::string &msg)
               << "      --max-reflections 8 --orientation-diffraction-sampling 2 \\\n"
               << "      --scattering-grid 0 180 600 180 --close --output out\n";
 }
-
-Tracks trackGroups;
 
 void SetArgRules(ArgPP &parser)
 {
@@ -1665,9 +1670,27 @@ AngleRange GetRange(const ArgPP &parser, const std::string &key,
     return AngleRange(min, max, number);
 }
 
-int main(int argc, const char* argv[])
+static std::string PreparedRecipe(const ArgPP& args){
+    // Observation coordinates and output destinations cannot affect a beam.
+    const std::set<std::string> omit={"o","close","log","profile_phases","grid","tgrid","nphi","trace_cache_mb","threads","chunk","orientation_pipeline"};
+    std::ostringstream key;
+    for(const auto& spec:GetCliOptionSpecs())if(args.IsCatched(spec.key)&&!omit.count(spec.key)){
+        key<<spec.key.size()<<':'<<spec.key;
+        for(unsigned i=0;i<args.GetArgNumber(spec.key);++i){const auto value=args.GetStringValue(spec.key,i);key<<value.size()<<':'<<value;}
+        if(spec.key=="pf"){
+            std::ifstream f(args.GetStringValue(spec.key),std::ios::binary);const std::string text((std::istreambuf_iterator<char>(f)),std::istreambuf_iterator<char>());
+            key<<text.size()<<':'<<text;
+            std::ifstream side(args.GetStringValue(spec.key)+".visibility",std::ios::binary);
+            const std::string visibility((std::istreambuf_iterator<char>(side)),std::istreambuf_iterator<char>());key<<visibility.size()<<':'<<visibility;
+        }
+    }
+    key<<FormatRuntimeEnvironmentReport(QueryRuntimeEnvironmentSnapshot());return key.str();
+}
+
+int RunCalculation(int argc, const char* argv[])
 {
     ConfigureDefaultOpenMP();
+    Tracks trackGroups;
 
     int mpi_rank = 0, mpi_size = 1;
 
@@ -1738,6 +1761,13 @@ int main(int argc, const char* argv[])
         ConfigureOpenMPThreads(config.threads);
     }
 
+    long long cacheMb=args.IsCatched("trace_cache_mb")?args.GetIntValue("trace_cache_mb"):(persistentWorker?256:0);
+    const auto resources=QueryRuntimeResourceSnapshot();cacheMb=std::min(cacheMb,std::max(0LL,resources.ramAvailableKb/1024/32));
+    if(const char* budget=getenv("MBS_HOST_MEM_BUDGET_MB"))cacheMb=std::min(cacheMb,std::max(0LL,std::atoll(budget)/16));
+    PreparedReuse::Configure(size_t(cacheMb)*1024*1024);
+#ifdef USE_CUDA
+    GpuConvexQueue::SetCacheLimit(size_t(cacheMb)*1024*1024);
+#endif
     const bool useGpu = config.useGpu;
     const bool useFft = config.useFft;
 
@@ -1756,7 +1786,8 @@ int main(int argc, const char* argv[])
     }
 
 #ifdef USE_MPI
-    MPI_Init(&argc, const_cast<char***>(&argv));
+    int mpiInitialized=0;MPI_Initialized(&mpiInitialized);
+    if(!mpiInitialized)MPI_Init(&argc, const_cast<char***>(&argv));
     MpiFinalizeGuard mpiFinalizeGuard;
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
@@ -1781,6 +1812,14 @@ int main(int argc, const char* argv[])
                       << std::endl;
         }
         return 2;
+    }
+    if(args.IsCatched("po_trace_backend")) {
+        const auto mode=args.GetStringValue("po_trace_backend");
+        const bool resident=mode!="cpu";
+        for(const char* name:{"MBS_GPU_TRACE_CONVEX_QUEUE","MBS_GPU_TRACE_CONVEX_LEVELS","MBS_GPU_TRACE_CONVEX_DIRECT"})
+            setenv(name,resident?"1":"0",1);
+        setenv("MBS_GPU_TRACE_HYBRID",mode=="hybrid"?"1":"0",1);
+        additionalSummary+="PO tracing backend requested: "+mode+" (unsupported cases retain CPU preparation)\n";
     }
     additionalSummary += FormatRuntimeEnvironmentReport(runtimeEnvironment);
 
@@ -2884,8 +2923,10 @@ int main(int argc, const char* argv[])
                 ? args.GetStringValue("analytic_mean_reference",0) : "";
             tracer->m_analyticControlWeights=args.IsCatched("analytic_control_weights")
                 ? args.GetStringValue("analytic_control_weights",0) : "";
-            tracer->m_orientationPipeline=args.IsCatched("orientation_pipeline");
+            tracer->m_orientationPipeline=args.IsCatched("orientation_pipeline")
+                ||(args.IsCatched("po_trace_backend")&&args.GetStringValue("po_trace_backend")=="hybrid");
             tracer->m_profilePhases=args.IsCatched("profile_phases");
+            if(cacheMb>0)tracer->SetPreparedReuseKey(PreparedRecipe(args));
             tracer->m_scattering->m_wave = wave;
             ApplyTraceCutoffOptions(args, tracer->m_scattering, useGpu);
             tracer->shadowOff = args.IsCatched("shadow_off");
@@ -3744,4 +3785,52 @@ int main(int argc, const char* argv[])
     }
 
     return 0;
+}
+
+
+// A service owns one CUDA context. Every request still constructs fresh physics
+// objects; only explicitly keyed caches and CUDA workspace capacities survive.
+static int RunWorkerService(int fd,const char* executable) {
+    persistentWorker=true;
+    const pid_t parent=getppid();if(parent==1||prctl(PR_SET_PDEATHSIG,SIGTERM)!=0||getppid()!=parent)return 125;
+    extern char** environ;
+    std::map<std::string,std::string> original;
+    for(char** e=environ;*e;++e){std::string entry=*e;auto split=entry.find('=');
+        const auto name=entry.substr(0,split);
+        if(name.compare(0,4,"MBS_")==0||name.compare(0,4,"OMP_")==0)original[name]=entry.substr(split+1);}
+    const auto coutFlags=std::cout.flags(),cerrFlags=std::cerr.flags();
+    const auto coutPrecision=std::cout.precision(),cerrPrecision=std::cerr.precision();
+    unsigned long long serial=0;
+    std::vector<std::string> request;
+    while(WorkerProtocol::Receive(fd,request)&&!request.empty()) {
+        if(request.size()<4){WorkerProtocol::Reply(fd,125);break;}
+        std::vector<std::string> names;
+        for(char** e=environ;*e;++e){std::string name(*e);name=name.substr(0,name.find('='));
+            if(name.compare(0,4,"MBS_")==0||name.compare(0,4,"OMP_")==0)names.push_back(name);}
+        for(const auto& name:names)unsetenv(name.c_str());
+        for(const auto& entry:original)setenv(entry.first.c_str(),entry.second.c_str(),1);
+        setenv("MBS_GPU_BLOCK",request[1].c_str(),1);
+        if(request[2]=="auto")unsetenv("MBS_GPU_WARP_BEAMS");
+        else setenv("MBS_GPU_WARP_BEAMS",request[2]=="warp"?"1":"0",1);
+        std::cout.flush();std::cerr.flush();fflush(nullptr);
+        int log=open(request[0].c_str(),O_WRONLY|O_CREAT|O_TRUNC,0644);
+        if(log<0||dup2(log,1)<0||dup2(log,2)<0){if(log>=0)close(log);WorkerProtocol::Reply(fd,125);break;}close(log);
+        std::cout.clear();std::cerr.clear();std::cout.flags(coutFlags);std::cerr.flags(cerrFlags);
+        std::cout.precision(coutPrecision);std::cerr.precision(cerrPrecision);
+        std::cout<<"Persistent worker: pid="<<getpid()<<" request="<<++serial<<std::endl;
+        std::vector<const char*> args{executable};for(size_t i=3;i<request.size();++i)args.push_back(request[i].c_str());
+        args.push_back(nullptr);
+        const int rc=RunCalculation(int(args.size()-1),args.data());
+        std::cout.flush();std::cerr.flush();fflush(nullptr);
+        if(!WorkerProtocol::Reply(fd,rc)||rc!=0)break; // Never reuse a failed CUDA/physics state.
+    }
+    close(fd);persistentWorker=false;return FinishWithCode(0);
+}
+int main(int argc,const char* argv[]) {
+    if(argc==3&&std::string(argv[1])=="--fullauto-worker-server") {
+        char* end=nullptr;long fd=std::strtol(argv[2],&end,10);
+        if(!end||*end||fd<3||fd>1048576)return 125;
+        return RunWorkerService(int(fd),argv[0]);
+    }
+    return RunCalculation(argc,argv);
 }

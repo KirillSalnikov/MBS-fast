@@ -6,8 +6,13 @@
 #include <cstdio>
 #include <climits>
 #include <cstdlib>
+#include <list>
+#include <mutex>
+#include <memory>
+#include <string>
 
 namespace GpuConvexQueue {
+#include "GpuTraceReuse.cuh"
 namespace {
 __global__ void residentTrace(const Input* inputs,int count,Beam* stacks,
                              Output* output,unsigned* total,unsigned capacity,Status* states) {
@@ -105,6 +110,25 @@ bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vec
     output.clear();order.clear();status.clear();metrics=Metrics();if(inputs.empty())return true;
     const auto started=std::chrono::steady_clock::now();
     GpuProcessLock lock;Buffers b;
+    auto& cache=RawCache();std::unique_lock<std::mutex> cacheLock(cache.mutex);
+    std::string cacheKey;int device=0;cudaGetDevice(&device);
+    if(consumeDevice&&cache.limit){
+        const size_t inputCount=inputs.size(),externalCount=external?external->size():0;
+        cacheKey.append(reinterpret_cast<const char*>(&inputCount),sizeof(inputCount));
+        cacheKey.append(reinterpret_cast<const char*>(inputs.data()),inputs.size()*sizeof(Input));
+        cacheKey.append(reinterpret_cast<const char*>(&externalCount),sizeof(externalCount));
+        if(externalCount)cacheKey.append(reinterpret_cast<const char*>(external->data()),externalCount*sizeof(Output));
+        const char* levels=std::getenv("MBS_GPU_TRACE_CONVEX_LEVELS");cacheKey+=levels?levels:"0";
+        for(auto i=cache.entries.begin();i!=cache.entries.end();++i)if((*i)->device==device&&(*i)->key==cacheKey){
+            auto& saved=**i;status=saved.status;metrics.bytes=saved.bytes;
+            const bool ok=consumeDevice(saved.inputs,saved.output,saved.count);
+            metrics.wallSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+            std::fprintf(stderr,"GPU raw trace reuse: hit orientations=%zu raw_beams=%zu cached_MiB=%.3f\n",inputs.size(),saved.count,cache.bytes/1048576.);
+            if(ok)cache.entries.splice(cache.entries.begin(),cache.entries,i);
+            else{cache.bytes-=saved.bytes;cache.entries.erase(i);}
+            return ok;
+        }
+    }
     size_t freeBytes=0,totalBytes=0;
     const int count=static_cast<int>(inputs.size());
     const char* levelsEnv=std::getenv("MBS_GPU_TRACE_CONVEX_LEVELS");
@@ -162,6 +186,20 @@ bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vec
         cudaFree(b.stacks);b.stacks=nullptr;
         for(int i=0;i<2;++i){cudaFree(b.queues[i]);b.queues[i]=nullptr;}
         const bool ok=consumeDevice(b.inputs,b.output,used);
+        const size_t cacheBytes=inputBytes+size_t(used)*sizeof(Output)+cacheKey.size()+status.size()*sizeof(Status)+sizeof(TraceCacheEntry);
+        if(ok&&!cacheKey.empty()&&cacheBytes<=cache.limit){
+            while(cache.bytes+cacheBytes>cache.limit&&!cache.entries.empty()){cache.bytes-=cache.entries.back()->bytes;cache.entries.pop_back();}
+            Output* compact=nullptr;
+            // Cache allocation is optional and must never invalidate a valid result.
+            if(cudaMalloc(&compact,std::max(size_t(1),size_t(used))*sizeof(Output))==cudaSuccess){
+                if(cudaMemcpy(compact,b.output,size_t(used)*sizeof(Output),cudaMemcpyDeviceToDevice)==cudaSuccess){
+                    std::unique_ptr<TraceCacheEntry> saved(new TraceCacheEntry);
+                    saved->key=std::move(cacheKey);saved->device=device;saved->bytes=cacheBytes;saved->count=used;saved->status=status;
+                    saved->inputs=b.inputs;b.inputs=nullptr;saved->output=compact;cache.bytes+=cacheBytes;
+                    cache.entries.push_front(std::move(saved));
+                }else{cudaFree(compact);cudaGetLastError();}
+            }else cudaGetLastError();
+        }
         metrics.wallSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
         return ok;
     }

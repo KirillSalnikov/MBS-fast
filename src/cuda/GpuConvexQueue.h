@@ -40,6 +40,7 @@ struct Status {
 struct Metrics { double kernelSeconds = 0, wallSeconds = 0, downloadSeconds = 0, sortSeconds = 0; size_t bytes = 0; };
 
 // Device/allocation failures return false, with no accepted partial results.
+void SetCacheLimit(size_t bytes);
 bool Trace(const std::vector<Input>& inputs, std::vector<Output>& output,
            std::vector<size_t>& order, std::vector<Status>& status, Metrics& metrics, int threads,
            const std::vector<Output>* external = nullptr,

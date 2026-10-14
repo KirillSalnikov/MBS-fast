@@ -11,6 +11,7 @@ struct PreparedOrientation;
 class TracerPOTotal : public TracerPO
 {
 public:
+    void SetPreparedReuseKey(const std::string& key){m_preparedReuseKey=key;}
 	bool m_analyticBackscatter = false;
 	int m_analyticReturnOrder = 1;
 	bool m_haarAlpha = false;
@@ -139,6 +140,7 @@ public:
     void ResetConvergenceReport(const std::string &mode, double eps);
 
 private:
+    std::string m_preparedReuseKey;
     struct WeightedOrientation
     {
         double beta;

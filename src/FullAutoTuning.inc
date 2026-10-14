@@ -47,7 +47,9 @@ bool RestoreTuning(){
     size_t n;std::string line;s>>n;std::getline(s,line);gpus.clear();for(size_t i=0;i<n;++i){std::getline(s,line);
         Require(std::find(gpuCandidates.begin(),gpuCandidates.end(),line)!=gpuCandidates.end(),"tuned GPU outside allowed set");gpus.push_back(line);}
     s>>n;std::getline(s,line);base.clear();for(size_t i=0;i<n;++i){Require(bool(std::getline(s,line)),"truncated execution recipe");base.push_back(line);}
-    Require(workerThreads>0&&workerChunk>=0&&orientationBlock>0&&!gpus.empty(),"invalid tuned resources");SetMirror(false);return true;
+    Require(workerThreads>0&&workerChunk>=0&&orientationBlock>0&&!gpus.empty(),"invalid tuned resources");
+    const auto backend=std::find(base.begin(),base.end(),"--po-trace-backend");if(backend!=base.end()&&std::next(backend)!=base.end()&&*std::next(backend)=="hybrid")kernel.pipeline=true;
+    SetMirror(false);return true;
 }
 void TuneResources(const std::vector<double>& x){
     const unsigned seedSet[2]={8001,8023};const int n=std::min(kernelCount,maxCount);
@@ -176,6 +178,39 @@ void TuneCutoffs(const std::vector<double>& input){
     report<<"],\"selected\":"<<Quoted(winner)<<",\"final_fresh_seed_audit_required\":"<<(winner=="off"?"false":"true")<<",\"scope\":\"all16 raw and ratios; measured multilevel workload including shared-depth eligibility; representative theta\"}";
     Record(root+"/cutoff_calibration.json",report.str());
 }
+void TuneTracing(const std::vector<double>& x){
+#ifndef MBS_GPU_FP64
+    return; // Resident convex preparation currently has an FP64 implementation.
+#endif
+    const bool explicitEnvironment=getenv("MBS_GPU_TRACE_CONVEX_QUEUE")||getenv("MBS_GPU_TRACE_CONVEX_DIRECT")||getenv("MBS_GPU_TRACE_HYBRID");
+    if(tracePolicy!="auto"||explicitEnvironment||!config.useGpu||go||!coherent||controls||config.refractiveImag!=0||config.geometry==GeometryClassification::Nonconvex)return;
+    if(std::find(base.begin(),base.end(),"--po-trace-backend")!=base.end())return;
+    if(initial<1024){Record(root+"/trace_backend_calibration.json","{\"selected\":\"cpu\",\"reason\":\"small initial workload; no extra tracing search\"}");return;}
+    const int n=std::min(maxCount,std::min(2048,initial));const bool previousPipeline=kernel.pipeline;kernel.pipeline=true;
+    const auto originalBase=base;
+    RemoveOption("--trace-cache-mib");base.push_back("--trace-cache-mib");base.push_back("0");
+    const unsigned seeds[8]={28001,28019,28027,28031,28051,28057,28069,28081};
+    auto select=[&](const std::string& mode){RemoveOption("--po-trace-backend");base.push_back("--po-trace-backend");base.push_back(mode);};
+    // Warm the persistent CUDA contexts before comparing execution paths.
+    select("cpu");DirectStage(std::min(16,n),seeds,std::min(size_t(8),gpus.size()),target,x,false);
+    const double started=Seconds();auto reference=DirectStage(n,seeds,8,target,x,false);const double cpuSeconds=Seconds()-started;
+    double best=cpuSeconds;std::string chosen="cpu";std::ostringstream report;
+    report<<"{\"count_per_seed\":"<<n<<",\"theta_rows\":"<<x.size()<<",\"phi\":"<<phi<<",\"depth\":"<<target
+          <<",\"tolerance\":"<<Number(std::min(1e-7,eps/1024))<<",\"candidates\":[{\"backend\":\"cpu\",\"wall_seconds\":"<<Number(cpuSeconds)<<",\"error\":0}";
+    for(const char* mode:{"resident","hybrid"}){
+        select(mode);const double begin=Seconds();auto candidate=DirectStage(n,seeds,8,target,x,false);const double wall=Seconds()-begin;
+        double error=0;bool acceptedGpu=false;
+        for(size_t i=0;i<candidate.size();++i){error=std::max(error,Difference(candidate[i].matrix,reference[i].matrix,reference[i].matrix));
+            acceptedGpu=acceptedGpu||Read(candidate[i].folder+"/stdout.log").find("GPU convex resident direct: accepted=")!=std::string::npos;}
+        const bool accepted=acceptedGpu&&error<std::min(1e-7,eps/1024);
+        report<<",{\"backend\":"<<Quoted(mode)<<",\"wall_seconds\":"<<Number(wall)<<",\"error\":"<<Number(error)<<",\"gpu_executed\":"<<(acceptedGpu?"true":"false")<<",\"accepted\":"<<(accepted?"true":"false")<<"}";
+        if(accepted&&wall<best*.95){best=wall;chosen=mode;}
+    }
+    base=originalBase;select(chosen);if(chosen=="cpu")kernel.pipeline=previousPipeline;
+    report<<"],\"selected\":"<<Quoted(chosen)<<",\"speedup\":"<<Number(cpuSeconds/best)<<",\"sampling_unchanged\":true}";
+    Record(root+"/trace_backend_calibration.json",report.str());SaveTuning();
+}
+
 void PrepareTuning(const std::vector<double>& angles){
     if(RestoreTuning())return;
     Record(root+"/automatic_cutoff_validation.json","{\"enabled\":false}");

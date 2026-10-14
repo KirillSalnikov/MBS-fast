@@ -1151,6 +1151,20 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
     }
     if(args.IsCatched("fullauto_work_queue")&&args.GetStringValue("fullauto_work_queue")=="on"&&args.IsCatched("fullauto_angular_cache")&&args.GetStringValue("fullauto_angular_cache")=="off")
         Fail("--fullauto-work-queue on requires --fullauto-angular-cache on.","enable the angular cache or disable the work queue.");
+    if(args.IsCatched("trace_cache_mb"))RequireNonnegativeInt(args,"trace_cache_mb");
+    if(args.IsCatched("fullauto_trace")&&args.IsCatched("po_trace_backend")&&args.GetStringValue("fullauto_trace")!="auto"&&args.GetStringValue("fullauto_trace")!=args.GetStringValue("po_trace_backend"))
+        Fail("conflicting explicit PO tracing backends.","use one backend choice or matching values.");
+    if(args.IsCatched("fullauto_workers")) {
+        const auto value=args.GetStringValue("fullauto_workers");
+        if(value!="auto"&&value!="persistent"&&value!="process")Fail("--fullauto-workers expects auto, persistent or process.","choose a supported worker lifetime.");
+    }
+    for(const char* key:{"fullauto_trace","po_trace_backend"})if(args.IsCatched(key)){
+        const auto value=args.GetStringValue(key);
+        if(value!="cpu"&&value!="resident"&&value!="hybrid"&&!(std::string(key)=="fullauto_trace"&&value=="auto"))
+            Fail("invalid PO trace backend.","choose cpu, resident, hybrid, or auto for fullauto.");
+        if((value=="resident"||value=="hybrid")&&(!config.useGpu||config.method!=RunMethod::PhysicalOptics))
+            Fail("resident/hybrid PO tracing requires --method po --backend cuda.","select cpu tracing for this backend/method.");
+    }
     if(args.IsCatched("fullauto_work_queue")){
         const std::string value=args.GetStringValue("fullauto_work_queue");
         if(value!="auto"&&value!="on"&&value!="off")Fail("--fullauto-work-queue must be auto, on or off.","choose auto, on or off.");

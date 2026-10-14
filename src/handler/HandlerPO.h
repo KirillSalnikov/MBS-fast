@@ -294,7 +294,8 @@ public:
     bool HandleResidentConvexGpu(const GpuConvexQueue::Input* inputs,
         const GpuConvexQueue::Output* beams,size_t beamCount,
         const std::vector<double>& weights,Arr2D& full,Arr2D& noShadow,
-        std::vector<double>& energies,std::vector<double>& extinction);
+        std::vector<double>& energies,std::vector<double>& extinction,
+        int maximumDepth=0,bool recordStatistics=true);
 #endif
     double ComputeForwardExtinctionOtScaled(const PreparedOrientation &prepared,
                                             double scale,

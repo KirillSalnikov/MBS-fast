@@ -1032,6 +1032,11 @@ int main()
     auto queueNoCache=localAuto;queueNoCache.insert(queueNoCache.end(),{"--fullauto-work-queue","on","--fullauto-angular-cache","off"});ExpectFailure("queue requires angle cache",queueNoCache,"requires --fullauto-angular-cache on");
     auto joint=std::vector<std::string>{"--method","po","--backend","cpu","--particle","1","1","1","--ri","1.3116","0","--wavelength-um","1","--max-reflections","4","--sobol-seed","64","11","--haar-alpha","--paired-depth","2"};
     ExpectSuccess("coherent depth sharing CLI",joint);joint.back()="4";ExpectFailure("paired depth must be lower",joint,"LOWER <");
+    for(const std::string mode:{"auto","persistent","process"}){auto a=localAuto;a.insert(a.end(),{"--fullauto-workers",mode});ExpectSuccess("worker lifetime "+mode,a);}
+    for(const std::string mode:{"auto","cpu","resident","hybrid"}){auto a=gpuAuto;a.insert(a.end(),{"--fullauto-trace-backend",mode});ExpectSuccessForBuild("GPU trace policy "+mode,a,false,true);}
+    auto conflict=gpuAuto;conflict.insert(conflict.end(),{"--fullauto-trace-backend","resident","--po-trace-backend","hybrid"});ExpectFailureForBuild("conflicting trace choices",conflict,false,true,"conflicting explicit");
+    auto cacheNegative=localAuto;cacheNegative.insert(cacheNegative.end(),{"--trace-cache-mib","-1"});ExpectFailure("negative trace cache",cacheNegative,"must not be negative");
+    auto wrongBackend=localAuto;wrongBackend.insert(wrongBackend.end(),{"--po-trace-backend","hybrid"});ExpectFailure("CPU cannot select GPU tracing",wrongBackend,"requires --method po --backend cuda");
     if (failures != 0)
     {
         std::cerr << failures << " CLI test(s) failed\n";

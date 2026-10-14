@@ -1,3 +1,4 @@
+#include "PreparedReuse.h"
 #include "TracerPOTotal.h"
 #include "HandlerPOTotal.h"
 #include "HandlerPO.h"
@@ -6130,7 +6131,7 @@ void TracerPOTotal::TraceWeightedOrientations(
         std::vector<PreparedOrientation> lower;
         std::vector<double> energies,outputEnergies;
         std::vector<std::array<AnalyticBackscatter::Vec,3>> frames;
-        std::unique_ptr<Arr2D> residentFull,residentNS;
+        std::unique_ptr<Arr2D> residentFull,residentNS,residentLower;
         double seconds=0,rotation=0,trace=0,prepare=0,residentConsumer=0,residentTraceKernel=0;
     };
     auto prepareBlock = [&](int iStart,int thisChunk,bool allowResident,int prepareThreads)
@@ -6163,7 +6164,7 @@ void TracerPOTotal::TraceWeightedOrientations(
 
 #ifdef USE_CUDA
         const bool directRequested=allowResident && EnvEnabled("MBS_GPU_TRACE_CONVEX_DIRECT");
-        const bool directModeEligible=!m_pairedDepth && !facetControl && !analyticControl
+        const bool directModeEligible=!facetControl && !analyticControl
             && !m_analyticFacetSamples && !m_analyticAzimuthGaussian
             && handlerPO->CanHandleResidentConvexGpu();
         const bool residentQueue=allowResident && handlerPO->IsGpuEnabled()
@@ -6221,7 +6222,14 @@ void TracerPOTotal::TraceWeightedOrientations(
                 const bool success=packed&&GpuConvexQueue::Trace(inputs,residentOutput,residentOrder,status,metrics,prepareThreads,&external,
                     [&](const GpuConvexQueue::Input* deviceInputs,const GpuConvexQueue::Output* raw,size_t beamCount){
                         const auto consumerStart=std::chrono::steady_clock::now();
-                        const bool ok=handlerPO->HandleResidentConvexGpu(deviceInputs,raw,beamCount,weights,
+                        bool lowerOk=true;
+                        if(m_pairedDepth){
+                            block.residentLower.reset(new Arr2D(nAz+1,nZen+1,4,4));block.residentLower->ClearArr();
+                            Arr2D unused(nAz+1,nZen+1,4,4);unused.ClearArr();std::vector<double> lowerEnergy,lowerExtinction;
+                            lowerOk=handlerPO->HandleResidentConvexGpu(deviceInputs,raw,beamCount,weights,
+                                *block.residentLower,unused,lowerEnergy,lowerExtinction,m_pairedDepth,false);
+                        }
+                        const bool ok=lowerOk&&handlerPO->HandleResidentConvexGpu(deviceInputs,raw,beamCount,weights,
                             *block.residentFull,*block.residentNS,block.outputEnergies,extinction);
                         block.residentConsumer=std::chrono::duration<double>(std::chrono::steady_clock::now()-consumerStart).count();
                         return ok;});
@@ -6235,7 +6243,7 @@ void TracerPOTotal::TraceWeightedOrientations(
                         << metrics.kernelSeconds << " block_s=" << block.seconds << std::endl;
                     return block;
                 }
-                block.residentFull.reset();block.residentNS.reset();block.residentConsumer=0;
+                block.residentFull.reset();block.residentNS.reset();block.residentLower.reset();block.residentConsumer=0;
                 std::cerr << "GPU convex resident direct: complete chunk fallback; no partial matrices accepted" << std::endl;
             }else if(directRequested)std::cerr << "GPU convex resident direct: unsupported mode; using existing preparation" << std::endl;
             bool any=std::find(residentReady.begin(),residentReady.end(),char(1))!=residentReady.end();
@@ -6292,6 +6300,15 @@ void TracerPOTotal::TraceWeightedOrientations(
                 int idx = iStart + i;
                 const WeightedOrientation &orientation = orientations[idx];
                 double weight = orientation.weight;
+                std::string reuseKey;
+                if(!m_preparedReuseKey.empty()){
+                    reuseKey=m_preparedReuseKey;
+                    const double pose[]={orientation.beta,orientation.gamma,orientation.alpha,orientation.qx,orientation.qy,orientation.qz,orientation.qw,weight};
+                    reuseKey.append(reinterpret_cast<const char*>(pose),sizeof(pose));reuseKey.push_back(orientation.useQuaternion?'q':'e');
+                    const auto cached=PreparedReuse::Get(reuseKey);
+                    if(cached){chunkPrepared[i]=cached->upper;if(m_pairedDepth)block.lower[i]=cached->lower;
+                        block.energies[i]=cached->incoming;block.outputEnergies[i]=cached->outgoing;continue;}
+                }
                 std::chrono::high_resolution_clock::time_point profileStart;
                 if (profileOrientation)
                     profileStart = std::chrono::high_resolution_clock::now();
@@ -6419,6 +6436,15 @@ void TracerPOTotal::TraceWeightedOrientations(
 #else
                 block.energies[i] = localScatter->GetIncedentEnergy() * weight;
 #endif
+                const size_t reuseBytes=sizeof(PreparedReuse::Value)+PreparedReuse::Value::PreparedBytes(chunkPrepared[i])
+                    +(m_pairedDepth?PreparedReuse::Value::PreparedBytes(block.lower[i]):0);
+                if(ok&&!reuseKey.empty()&&reuseBytes*size_t(nOrient)<=PreparedReuse::Cache().limit){
+                    PreparedReuse::Value value;value.upper=chunkPrepared[i];if(m_pairedDepth)value.lower=block.lower[i];
+                    value.incoming=block.energies[i];value.outgoing=block.outputEnergies[i];
+                    // Avoid streaming large production sets through a cache
+                    // that cannot hold even one complete per-seed job.
+                    PreparedReuse::Put(reuseKey,std::move(value));
+                }
                 localBeams.clear();
                 if (profileOrientation)
                     localPrepareSeconds += std::chrono::duration<double>(
@@ -6707,7 +6733,9 @@ void TracerPOTotal::TraceWeightedOrientations(
                 }
             }
         }
-        if(m_pairedDepth){
+        if(m_pairedDepth&&block.residentLower){
+            for(int p=0;p<nAz;++p)for(int t=0;t<=nZen;++t)pairedMatrices->insert(p,t,(*block.residentLower)(p,t));
+        }else if(m_pairedDepth){
             Arr2D lower(nAz+1,nZen+1,4,4),dummy(nAz+1,nZen+1,4,4);lower.ClearArr();dummy.ClearArr();
             if(handlerPO->IsGpuEnabled()){
                 for(int start=0;start<thisChunk;){const int count=handlerPO->SelectGpuOrientationBatchSize(block.lower,start,thisChunk-start);
@@ -6741,7 +6769,7 @@ void TracerPOTotal::TraceWeightedOrientations(
     hybrid=pipeline && nThreads>=2 && EnvEnabled("MBS_GPU_TRACE_HYBRID")
         && EnvEnabled("MBS_GPU_TRACE_CONVEX_QUEUE") && EnvEnabled("MBS_GPU_TRACE_CONVEX_DIRECT")
         && handlerPO->CanHandleResidentConvexGpu() && dynamic_cast<ScatteringConvex*>(m_scattering)
-        && !m_pairedDepth && !facetControl && !analyticControl && !m_analyticFacetSamples && !m_analyticAzimuthGaussian
+        && !facetControl && !analyticControl && !m_analyticFacetSamples && !m_analyticAzimuthGaussian
         && imag(m_particle->GetRefractiveIndex())==0;
 #endif
     if(hybrid && myStart<myEnd)
@@ -6807,6 +6835,14 @@ void TracerPOTotal::TraceWeightedOrientations(
                                 *block.residentFull,*block.residentNS))
                                 throw std::runtime_error("hybrid producer GPU diffraction failed");
                             first+=batch;
+                        }
+                        if(m_pairedDepth){
+                            block.residentLower.reset(new Arr2D(nAz+1,nZen+1,4,4));block.residentLower->ClearArr();
+                            Arr2D lowerNS(nAz+1,nZen+1,4,4);lowerNS.ClearArr();
+                            for(int first=0;first<size;){const int batch=handlerPO->SelectGpuOrientationBatchSize(block.lower,first,size-first);
+                                if(!handlerPO->HandleOrientationsToLocalGpu(block.lower,first,batch,*block.residentLower,lowerNS))
+                                    throw std::runtime_error("hybrid producer lower-depth diffraction failed");first+=batch;}
+                            for(auto& orientation:block.lower)std::vector<PreparedBeam>().swap(orientation.beams);
                         }
                         block.residentConsumer=std::chrono::duration<double>(std::chrono::steady_clock::now()-cudaStarted).count();
                         block.seconds+=block.residentConsumer;
@@ -6932,6 +6968,12 @@ void TracerPOTotal::TraceWeightedOrientations(
     {
         const int size=memoryChunks.Next(myEnd-start);
         PreparedBlock block=prepareBlock(start,size,true,nThreads);processBlock(block);start+=size;
+    }
+    if(!m_preparedReuseKey.empty()){
+        const auto& reuse=PreparedReuse::Cache();
+        std::ostringstream log;log<<"Prepared trace reuse: hits="<<reuse.hits<<" misses="<<reuse.misses
+            <<" cached_MiB="<<reuse.bytes/1048576.<<" limit_MiB="<<reuse.limit/1048576.;
+        std::cout<<log.str()<<std::endl;AppendTextLog(log.str()+"\n");
     }
     const double processingWall=std::chrono::duration<double>(std::chrono::steady_clock::now()-processingStarted).count();
 

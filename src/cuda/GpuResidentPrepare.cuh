@@ -13,7 +13,7 @@ struct ResidentParameters {
     double k, wavelength, edgeTolerance, cutoff[3];
     GpuConvexQueue::Vec incidentDirection, incidentBasis;
     GpuReal eps1,eps2,cwr,cwi,icwr,icwi;
-    int legacy;
+    int legacy, maximumDepth;
 };
 __device__ void residentMax(double* address,double value) {
     auto* bits=reinterpret_cast<unsigned long long*>(address);
@@ -22,9 +22,11 @@ __device__ void residentMax(double* address,double value) {
         old=atomicCAS(bits,assumed,__double_as_longlong(value));}while(old!=assumed);
 }
 __global__ void residentReferences(const GpuConvexQueue::Output* raw,int total,
-                                    int* counts,double* maxima) {
+                                    int* counts,double* maxima,int maximumDepth) {
     const int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=total)return;
-    const auto& item=raw[i];atomicAdd(counts+item.orientation,1);
+    const auto& item=raw[i];
+    if(maximumDepth>0&&item.beam.facet!=INT_MAX&&item.beam.depth>maximumDepth)return;
+    atomicAdd(counts+item.orientation,1);
     if(item.beam.facet==INT_MAX)return;
     const double j=GpuConvexQueue::jnorm(item.beam),a=GpuConvexQueue::area(item.beam);
     residentMax(maxima+3*item.orientation,j);residentMax(maxima+3*item.orientation+1,a);
@@ -42,6 +44,7 @@ __global__ void residentPrepare(const GpuConvexQueue::Input* inputs,
     const int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=total)return;
     const int orientation=raw[i].orientation;
     GpuConvexQueue::Beam beam=raw[i].beam;const bool shadow=beam.facet==INT_MAX;
+    if(par.maximumDepth>0&&!shadow&&beam.depth>par.maximumDepth)return;
     const double cs=maximum(-1.,minimum(1.,dot(mul(par.incidentDirection,-1),beam.direction)));
     Vec basis;
     if(fabs(1-cs)<=DBL_EPSILON)basis=mul(par.incidentBasis,-1);
@@ -183,7 +186,7 @@ bool HandlerPO::CanHandleResidentConvexGpu() const {
 }
 bool HandlerPO::HandleResidentConvexGpu(const GpuConvexQueue::Input* inputs,
     const GpuConvexQueue::Output* raw,size_t beamCount,const std::vector<double>& weights,
-    Arr2D& full,Arr2D& noShadow,std::vector<double>& energies,std::vector<double>& extinction) {
+    Arr2D& full,Arr2D& noShadow,std::vector<double>& energies,std::vector<double>& extinction,int maximumDepth,bool recordStatistics) {
     if(!CanHandleResidentConvexGpu()||beamCount>INT_MAX)return false;
     const int count=weights.size(),nAz=m_sphere.nAzimuth,nZen=m_sphere.nZenith;
     const size_t gridCount=size_t(nAz)*(nZen+1),mCount=gridCount*16;
@@ -207,7 +210,7 @@ bool HandlerPO::HandleResidentConvexGpu(const GpuConvexQueue::Input* inputs,
     if(!copy(w,hw.data(),count*sizeof(GpuReal))||!copy(st,hst.data(),hst.size()*sizeof(GpuReal))
         ||!copy(ct,hct.data(),hct.size()*sizeof(GpuReal))||!copy(sp,hsp.data(),hsp.size()*sizeof(GpuReal))
         ||!copy(cp,hcp.data(),hcp.size()*sizeof(GpuReal))||!copy(vf,hvf.data(),hvf.size()*sizeof(GpuReal)))return false;
-    ResidentParameters par={};par.k=m_waveIndex;par.wavelength=m_wavelength;
+    ResidentParameters par={};par.maximumDepth=maximumDepth;par.k=m_waveIndex;par.wavelength=m_wavelength;
     par.edgeTolerance=geometry_length_tolerance(m_particle->MaximalDimention());
     par.cutoff[0]=m_beamCutoffJRel>=0?m_beamCutoffJRel:m_targetEps;
     par.cutoff[1]=m_beamCutoffAreaRel>=0?m_beamCutoffAreaRel:m_targetEps;
@@ -216,7 +219,7 @@ bool HandlerPO::HandleResidentConvexGpu(const GpuConvexQueue::Input* inputs,
     par.incidentDirection={d.cx,d.cy,d.cz};par.incidentBasis={b.cx,b.cy,b.cz};
     par.eps1=gpu_effective_eps1(m_eps1);par.eps2=m_eps2;par.legacy=m_legacySign;
     par.cwr=real(m_complWave);par.cwi=imag(m_complWave);par.icwr=real(m_invComplWave);par.icwi=imag(m_invComplWave);
-    if(beamCount)residentReferences<<<(beamCount+127)/128,128>>>(raw,beamCount,kept,maxima);
+    if(beamCount)residentReferences<<<(beamCount+127)/128,128>>>(raw,beamCount,kept,maxima,maximumDepth);
     residentOffsets<<<1,1>>>(kept,offsets,count);
     if(beamCount)residentPrepare<<<(beamCount+127)/128,128>>>(inputs,raw,beamCount,par,maxima,offsets,kept,prepared,w,summary,invalid);
     if(!gpu_report_cuda_error(cudaGetLastError(),"resident prepare launch")
@@ -241,13 +244,14 @@ bool HandlerPO::HandleResidentConvexGpu(const GpuConvexQueue::Input* inputs,
     energies.resize(count);extinction.resize(count);unsigned long long candidates=0,rejected=0;
     for(int i=0;i<count;++i){const auto& s=hs[i];energies[i]=s.energy;extinction[i]=s.extinction;
         candidates+=s.candidates;rejected+=s.rejected;
+        if(!recordStatistics)continue;
         m_beamCutoffStatistics->candidates.fetch_add(s.candidates,std::memory_order_relaxed);
         m_beamCutoffStatistics->kept.fetch_add(s.candidates-s.rejected,std::memory_order_relaxed);
         m_beamCutoffStatistics->rejected.fetch_add(s.rejected,std::memory_order_relaxed);
         m_beamCutoffStatistics->rejectedJones.fetch_add(s.rejectedJones,std::memory_order_relaxed);
         m_beamCutoffStatistics->rejectedArea.fetch_add(s.rejectedArea,std::memory_order_relaxed);
         m_beamCutoffStatistics->rejectedImportance.fetch_add(s.rejectedImportance,std::memory_order_relaxed);}
-    m_beamCutoffStatistics->prepareCalls.fetch_add(count,std::memory_order_relaxed);
+    if(recordStatistics)m_beamCutoffStatistics->prepareCalls.fetch_add(count,std::memory_order_relaxed);
     for(int p=0;p<nAz;++p)for(int t=0;t<=nZen;++t){size_t g=size_t(p)*(nZen+1)+t;
         double* cell=full.RawCell(p,t);for(int k=0;k<16;++k)cell[k]+=hm[g*16+k];
         if(ComputeNoShadow()){double* ns=noShadow.RawCell(p,t);for(int k=0;k<16;++k)ns[k]+=hns[g*16+k];}}

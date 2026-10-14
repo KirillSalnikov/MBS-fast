@@ -288,6 +288,7 @@ int RunAdaptive(Engine& e){
         // measured regressions do not justify grouping there; retain a
         // common budget. Explicit 'on' remains available for experiments.
         if(e.localPolicy=="auto"&&e.theta.size()*size_t(e.phi)<=256)e.local=false;
+        e.TuneTracing(WorkingGrid(e,ids));
         SaveAdaptive(e,state);
     }
     double lastCI=0,lastInterpolation=0;size_t lastNodes=0;
