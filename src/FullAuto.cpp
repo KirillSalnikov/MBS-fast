@@ -207,6 +207,34 @@ Statistics Estimate(const Samples& s) {
         }}
     return r;
 }
+double RotationEquivalenceBound(const Samples& candidate,const Samples& reference,bool ratios){
+    if(candidate.size()!=8||reference.size()!=8||reference[0].empty())return 1e100;
+    double relative=0,largestRatio=0;
+    for(size_t s=0;s<8;++s){
+        if(candidate[s].size()!=reference[0].size()||reference[s].size()!=reference[0].size())return 1e100;
+        for(size_t r=0;r<reference[s].size();++r){
+            const auto& a=candidate[s][r];const auto& b=reference[s][r];
+            for(int j=0;j<16;++j)if(!std::isfinite(a[j])||!std::isfinite(b[j]))return 1e100;
+            if(!(a[0]>0&&b[0]>0)){
+                // Identically dark pairs carry no intensity or ratio bias.
+                bool dark=true;for(int j=0;j<16;++j)dark=dark&&a[j]==0&&b[j]==0;
+                if(dark)continue;
+                return 1e100;
+            }
+            for(int j=0;j<16;++j){
+                relative=std::max(relative,std::fabs(a[j]-b[j])/b[0]);
+                if(j)largestRatio=std::max(largestRatio,std::fabs(b[j])/b[0]);
+            }
+        }
+    }
+    // If |delta Mij| <= e*M11 in every paired block, the same bound holds
+    // for any positive weighted sum of those blocks. Its ratio difference
+    // is bounded by e*(1+max|Mij/M11|)/(1-e), even when the individual
+    // orientation means have unbounded Fieller intervals. Geometry must
+    // independently establish the symmetry; this is a numerical audit only.
+    if(!std::isfinite(relative)||!std::isfinite(largestRatio)||relative>=1)return 1e100;
+    return ratios?std::max(relative,relative*(1+largestRatio)/(1-relative)):relative;
+}
 Matrix LocalCubicInterpolate(const std::vector<double>& x,const Matrix& y,const std::vector<double>& query){
     const size_t n=x.size();Require(n>=2&&y.size()==n,"invalid local spline dimensions");for(size_t i=1;i<n;++i)Require(x[i]>x[i-1],"nonincreasing local spline coordinates");
     Matrix derivative(n);const size_t width=std::min(size_t(4),n);
@@ -370,7 +398,7 @@ struct Engine {
     }
     int initial=1024,minimum=256,maxCount=67108864,roundLimit=32,startTheta=33;
     int maxTheta=2147483647,stablePasses=2,minPhi=1,maxPhi=2147483647;
-    int workerThreads=4,workerChunk=0;long long hostBudgetMb=0;
+    int workerThreads=4,workerChunk=0,analyticMeanThreads=1;long long hostBudgetMb=0;
     std::string resourcePolicy="auto",rotationPolicy="auto",cutoffPolicy="auto",selectedCutoff="requested";
     bool tuneCutoffs=false,autoGpus=false;int rotationBeta=1,rotationGamma=1;double rotationError=0,cutoffError=0;
     std::vector<std::string> gpuCandidates;
@@ -422,7 +450,7 @@ struct Engine {
             <<",\"initial_model\":"<<Quoted(initialModel)<<",\"estimated_final_orientation_count\":"<<Number(empiricalFinal)<<",\"depth_pilot_count\":"<<depthPilot<<",\"depth_search_order\":"<<Quoted(depthOrder)<<",\"initial_source\":"<<Quoted(initialSource)<<",\"maximum_edge_um\":"<<Number(maximumEdge)<<",\"maximum_diameter_um\":"<<Number(maximumDiameter)<<",\"oldauto_N_beta_estimate\":"<<Number(estimatedBeta)<<",\"oldauto_N_gamma_estimate\":"<<Number(estimatedGamma)<<",\"oldauto_orientation_estimate\":"<<Number(estimatedOrientations)<<",\"initial_count\":"<<initial<<",\"minimum_correction_count\":"<<minimum<<",\"max_count\":"<<maxCount<<",\"max_rounds\":"<<roundLimit
             <<",\"initial_theta_support\":"<<startTheta<<",\"max_theta_evaluations\":"<<maxTheta<<",\"min_phi\":"<<minPhi<<",\"max_phi\":"<<maxPhi
             <<",\"stable_passes\":"<<stablePasses<<",\"automatic_depth\":"<<(autoDepth?"true":"false")<<",\"depth_start\":"<<depthStart<<",\"depth_maximum\":"<<depthMaximum<<",\"depth_budget\":"<<Number(depthBudget)<<",\"physical_target_depth\":"<<target<<",\"phi\":"<<phi
-            <<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
+            <<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
             <<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"selected_gpus\":[";
         for(size_t i=0;i<gpus.size();++i)out<<(i?",":"")<<Quoted(gpus[i]);
         out<<"],\"resource_policy\":"<<Quoted(resourcePolicy)<<",\"rotation_policy\":"<<Quoted(rotationPolicy)<<",\"cutoff_policy\":"<<Quoted(cutoffPolicy)
@@ -602,7 +630,15 @@ struct Engine {
             while(std::getline(f,v,',')){size_t pos=0;int id=std::stoi(v,&pos);Require(pos==v.size()&&id>=0&&id<count&&used.insert(id).second,"invalid/duplicate visible GPU index");gpus.push_back(visible.empty()?v:visible.at(id));}
         Require(!gpus.empty(),"empty GPU list");}else{Require(!args.IsCatched("fullauto_gpus"),"GPU list requires CUDA backend");gpus.assign(size_t(Int("fullauto_cpu_workers",1)),"");}
         workerThreads=config.threads>0?config.threads:std::max(1,std::min(16,QueryRuntimeResourceSnapshot().physicalCores/int(gpus.size())));
-        std::set<std::string> drop={"fullauto","autofull","o","n","grid","tgrid","nphi","haar_alpha","mirror_gamma","analytic_facet_average","analytic_shadow_control","analytic_mean_cache","analytic_control_weights","close","profile_phases","orientation_pipeline","checkpoint","maxorient","max_theta_points","max_phi_points","adaptive_config","owen_seeds","convergence_passes","threads","chunk"};
+        // A shared mean cache has one CPU owner per controller, not per GPU.
+        // Reserve the selected GPUs' share of host cores for its independent
+        // theta rows. Small GPU-pilot thread tuning must not shrink this pool.
+        const int physical=std::max(1,QueryRuntimeResourceSnapshot().physicalCores);
+        const int share=config.useGpu?std::max(1,physical*int(gpus.size())/VisibleGpuDeviceCount())
+                                     :std::max(1,physical/int(gpus.size()));
+        analyticMeanThreads=Int("analytic_mean_threads",config.threads>0?config.threads:std::min(32,share));
+        Require(analyticMeanThreads>0,"analytic mean threads must be positive");
+        std::set<std::string> drop={"fullauto","autofull","o","n","grid","tgrid","nphi","haar_alpha","mirror_gamma","analytic_facet_average","analytic_shadow_control","analytic_mean_cache","analytic_control_weights","close","profile_phases","orientation_pipeline","checkpoint","maxorient","max_theta_points","max_phi_points","adaptive_config","owen_seeds","convergence_passes","threads","chunk","analytic_mean_threads"};
         std::ostringstream fingerprint;fingerprint<<binaryHash<<'\n';for(int i=1;i<argc;++i)fingerprint<<argv[i]<<'\n';
         // Canonical reconstruction avoids shell quoting and option aliases.
         std::set<std::string> seen;for(const auto& spec:GetCliOptionSpecs())if(args.IsCatched(spec.key)&&seen.insert(spec.key).second){
@@ -618,7 +654,7 @@ struct Engine {
         // Result-affecting environment forms part of resume/cache identity.
         fingerprint<<FormatRuntimeEnvironmentReport(environment);
         char host[256]={};Require(gethostname(host,sizeof(host)-1)==0,"cannot determine host identity");
-        fingerprint<<"host="<<host<<"\nthreads="<<workerThreads<<'\n';
+        fingerprint<<"host="<<host<<"\nthreads="<<workerThreads<<"\nanalytic_mean_threads="<<analyticMeanThreads<<'\n';
         const char* visible=getenv("CUDA_VISIBLE_DEVICES");fingerprint<<"visible="<<(visible?visible:"")<<'\n';
         for(const auto& gpu:gpus)fingerprint<<"gpu="<<gpu<<'\n';
         signature=Hash(fingerprint.str());
@@ -643,7 +679,7 @@ struct Engine {
             <<",\"mirror_budget\":"<<(mirror?eps/256:0)<<",\"max_mirror_residual95_scaled_M11\":"<<mirrorError
             <<",\"adaptive_schema\":2,\"local_orientations\":"<<(local?"true":"false")<<",\"ratio_accuracy\":"<<(ratios?"true":"false")<<",\"max_pointwise_ratio95\":"<<lastRatio<<",\"independent_final_validation\":"<<(independentPassed?"true":"false")<<",\"saved_orientation_blocks_this_invocation\":"<<savedOrientationBlocks
             <<",\"analytic_mean_budget\":"<<(controls?eps/64:0)<<",\"max_estimated_analytic_mean_error_scaled_M11\":"<<lastAnalyticError
-            <<",\"execution_budget\":"<<((resourcePolicy=="auto"||config.useGpu)?eps/1024:0)<<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
+            <<",\"execution_budget\":"<<((resourcePolicy=="auto"||config.useGpu)?eps/1024:0)<<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
             <<",\"rotation_beta_factor\":"<<rotationBeta<<",\"rotation_gamma_factor\":"<<rotationGamma<<",\"rotation_budget\":"<<((rotationBeta>1||rotationGamma>1)?eps/256:0)
             <<",\"selected_cutoff\":"<<Quoted(selectedCutoff)<<",\"cutoff_budget\":"<<(selectedCutoff!="requested"&&selectedCutoff!="off"?eps/8:0)<<",\"max_cutoff_residual95\":"<<cutoffError
             <<",\"coherent\":"<<(coherent?"true":"false")<<",\"fixed_phi\":"<<fixedPhi<<",\"scope\":\"eight-seed pointwise intervals; interpolation guards on requested grid; mirror paired pilot when enabled; current target physics; automatic depth has fresh paired validation; no global simultaneous confidence claim\"}\n";
@@ -713,7 +749,7 @@ struct Engine {
             if(offset){command.push_back("--sobol-offset");command.push_back(std::to_string(offset));}
             if(pairedDepth){command.push_back("--paired-depth");command.push_back(std::to_string(pairedDepth));}
             if(!go)command.push_back("--profile-phases");
-            if(controls){command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache(gridHash));if(sharedMeans){command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");}}
+            if(controls){command.push_back("--analytic-mean-threads");command.push_back(Number(analyticMeanThreads));command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache(gridHash));if(sharedMeans){command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");}}
             if(workerChunk>0){command.push_back("--orientation-chunk");command.push_back(Number(workerChunk));}
             if(kernel.pipeline)command.push_back("--orientation-pipeline");
             if(!wf.empty()){command.push_back("--analytic-control-weights");command.push_back(wf);}
@@ -814,7 +850,7 @@ struct Engine {
         std::ostringstream coordinates;for(double v:x)coordinates<<Number(v)<<'\n';const std::string grid=root+"/theta_"+Hash(coordinates.str())+".csv";Atomic(grid,coordinates.str());
         std::vector<std::string> command=base;for(const auto& v:std::vector<std::string>{"--max-reflections",Number(job.depth),"--sobol-seed",Number(job.count),Number(job.seed),"--haar-alpha","--theta-grid-file",grid,"--phi-points",Number(phi),"--threads",Number(workerThreads),"--close"})command.push_back(v);
         if(job.offset){command.push_back("--sobol-offset");command.push_back(Number(job.offset));}if(mirror)command.push_back("--mirror-gamma");
-        if(controls){command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache("shared"));command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");const auto wf=WriteWeights(x);if(!wf.empty()){command.push_back("--analytic-control-weights");command.push_back(wf);}}
+        if(controls){command.push_back("--analytic-mean-threads");command.push_back(Number(analyticMeanThreads));command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache("shared"));command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");const auto wf=WriteWeights(x);if(!wf.empty()){command.push_back("--analytic-control-weights");command.push_back(wf);}}
         if(workerChunk>0){command.push_back("--orientation-chunk");command.push_back(Number(workerChunk));}
         command.push_back("--output");command.push_back(job.folder+"/result");std::ostringstream recipe;recipe<<exe<<'\n';for(const auto& v:command)recipe<<v<<'\n';return recipe.str();
     }
@@ -913,7 +949,7 @@ struct Engine {
             if(mirror)command.push_back("--mirror-gamma");
             if(workerChunk>0){command.push_back("--orientation-chunk");command.push_back(Number(workerChunk));}
             if(kernel.pipeline)command.push_back("--orientation-pipeline");
-            if(controls){command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache("shared"));command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");}
+            if(controls){command.push_back("--analytic-mean-threads");command.push_back(Number(analyticMeanThreads));command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache("shared"));command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");}
             if(!wf.empty()){command.push_back("--analytic-control-weights");command.push_back(wf);}command.push_back("--output");command.push_back(j.folder+"/result");
             std::string recipe=exe+"\n";for(const auto& v:command)recipe+=v+"\n";Atomic(j.folder+"/command.args",recipe);
             Atomic(j.folder+"/stdout.log","Controller exact Sobol-prefix assembly; command.args is a full-prefix replay recipe.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");
@@ -1006,7 +1042,7 @@ struct Engine {
             if(offset){command.push_back("--sobol-offset");command.push_back(std::to_string(offset));}
             if(workerChunk>0){command.push_back("--orientation-chunk");command.push_back(Number(workerChunk));}
             if(kernel.pipeline)command.push_back("--orientation-pipeline");
-            if(controls){command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache(gridHash));if(sharedMeans){command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");}}
+            if(controls){command.push_back("--analytic-mean-threads");command.push_back(Number(analyticMeanThreads));command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache(gridHash));if(sharedMeans){command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");}}
             if(!wf.empty()){command.push_back("--analytic-control-weights");command.push_back(wf);}command.push_back("--output");command.push_back(j.folder+"/result");
             std::string recipe=exe+"\n";for(const auto& v:command)recipe+=v+"\n";Atomic(j.folder+"/command.args",recipe);
             Atomic(j.folder+"/stdout.log","Controller angular assembly; command.args is a reproducible full-grid recipe, not a launched worker.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");

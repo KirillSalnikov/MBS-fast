@@ -34,20 +34,20 @@ double PairedBias(const Samples& candidate,const Samples& reference)const{
 }
 void SaveTuning(){
     std::ostringstream s;s<<std::setprecision(17)<<signature<<'\n'<<workerThreads<<' '<<workerChunk<<' '<<orientationBlock<<' '
-        <<rotationBeta<<' '<<rotationGamma<<' '<<rotationError<<' '<<selectedCutoff<<' '<<cutoffError<<' '<<tuneCutoffs<<' '<<depthSharing<<' '<<hostBudgetMb<<'\n';
+        <<rotationBeta<<' '<<rotationGamma<<' '<<rotationError<<' '<<selectedCutoff<<' '<<cutoffError<<' '<<tuneCutoffs<<' '<<depthSharing<<' '<<hostBudgetMb<<' '<<analyticMeanThreads<<'\n';
     s<<gpus.size()<<'\n';for(const auto& v:gpus)s<<v<<'\n';s<<base.size()<<'\n';for(const auto& v:base){Require(v.find('\n')==std::string::npos,"newline in worker argument");s<<v<<'\n';}
-    Record(root+"/execution_tuning.tsv","1 "+Hash(s.str())+"\n"+s.str());
+    Record(root+"/execution_tuning.tsv","2 "+Hash(s.str())+"\n"+s.str());
 }
 bool RestoreTuning(){
     if(!Exists(root+"/execution_tuning.tsv"))return false;
     const auto text=Read(root+"/execution_tuning.tsv");const auto newline=text.find('\n');std::istringstream header(text.substr(0,newline));int version;std::string digest;
-    Require(bool(header>>version>>digest)&&version==1&&Hash(text.substr(newline+1))==digest,"execution tuning changed");
+    Require(bool(header>>version>>digest)&&version==2&&Hash(text.substr(newline+1))==digest,"execution tuning changed");
     std::istringstream s(text.substr(newline+1));std::string id;std::getline(s,id);Require(id==signature,"execution tuning inputs changed");
-    Require(bool(s>>workerThreads>>workerChunk>>orientationBlock>>rotationBeta>>rotationGamma>>rotationError>>selectedCutoff>>cutoffError>>tuneCutoffs>>depthSharing>>hostBudgetMb),"invalid execution tuning");
+    Require(bool(s>>workerThreads>>workerChunk>>orientationBlock>>rotationBeta>>rotationGamma>>rotationError>>selectedCutoff>>cutoffError>>tuneCutoffs>>depthSharing>>hostBudgetMb>>analyticMeanThreads),"invalid execution tuning");
     size_t n;std::string line;s>>n;std::getline(s,line);gpus.clear();for(size_t i=0;i<n;++i){std::getline(s,line);
         Require(std::find(gpuCandidates.begin(),gpuCandidates.end(),line)!=gpuCandidates.end(),"tuned GPU outside allowed set");gpus.push_back(line);}
     s>>n;std::getline(s,line);base.clear();for(size_t i=0;i<n;++i){Require(bool(std::getline(s,line)),"truncated execution recipe");base.push_back(line);}
-    Require(workerThreads>0&&workerChunk>=0&&orientationBlock>0&&!gpus.empty(),"invalid tuned resources");
+    Require(workerThreads>0&&analyticMeanThreads>0&&workerChunk>=0&&orientationBlock>0&&!gpus.empty(),"invalid tuned resources");
     const auto backend=std::find(base.begin(),base.end(),"--po-trace-backend");if(backend!=base.end()&&std::next(backend)!=base.end()&&*std::next(backend)=="hybrid")kernel.pipeline=true;
     SetMirror(false);return true;
 }
@@ -106,7 +106,7 @@ void TuneResources(const std::vector<double>& x){
         orientationBlock=proposed;
     }
     gpus=selected;report<<"],\"selected_gpus\":[";for(size_t i=0;i<gpus.size();++i)report<<(i?",":"")<<Quoted(gpus[i]);
-    report<<"],\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"selected_threads\":"<<workerThreads<<",\"selected_chunk\":"<<workerChunk<<",\"selected_orientation_block\":"<<orientationBlock
+    report<<"],\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"selected_threads\":"<<workerThreads<<",\"selected_chunk\":"<<workerChunk<<",\"selected_orientation_block\":"<<orientationBlock
         <<",\"search_amortized\":"<<(amortized?"true":"false")<<",\"forecast_native_production_seconds\":"<<Number(forecastNative)<<",\"forecast_search_seconds\":"<<Number(predictedSearch)
         <<",\"explicit_threads_preserved\":"<<(args.IsCatched("threads")?"true":"false")<<",\"explicit_chunk_preserved\":"<<(args.IsCatched("chunk")?"true":"false")
         <<",\"outside_processing_seconds_per_worker\":"<<Number(overhead)<<",\"processing_seconds_per_orientation\":"<<Number(perOrientation)
@@ -124,13 +124,13 @@ void TuneRotations(const std::vector<double>& x){
     for(const char* axis:{"gamma","beta"})if((std::string(axis)=="gamma"?rotationGamma:rotationBeta)>1){double worst=0;
         std::set<int> depths={std::max(1,target-4),target};for(int depth:depths){auto reduced=DirectStage(std::min(pilot,128),seeds,8,depth,x,false);
             base.push_back("--haar-rotation-audit");base.push_back(axis);auto paired=DirectStage(std::min(pilot,128),seeds,8,depth,x,false);RemoveOption("--haar-rotation-audit");
-            worst=std::max(worst,PairedBias(Data(reduced),Data(paired)));}
-        const double bound=5*worst;report<<(first?"":",")<<"{\"axis\":"<<Quoted(axis)<<",\"paired_bias95\":"<<Number(bound)<<"}";first=false;
+            worst=std::max(worst,RotationEquivalenceBound(Data(reduced),Data(paired),ratios));}
+        const double bound=5*worst;report<<(first?"":",")<<"{\"axis\":"<<Quoted(axis)<<",\"paired_equivalence_bound\":"<<Number(bound)<<",\"safety_multiplier\":5}";first=false;
         if(bound>eps/512)SetRotation(std::string(axis)=="beta"?1:rotationBeta,std::string(axis)=="gamma"?1:rotationGamma);
         else rotationError+=bound;
     }
     report<<"],\"selected_beta_factor\":"<<rotationBeta<<",\"selected_gamma_factor\":"<<rotationGamma<<",\"estimated_error\":"<<Number(rotationError)<<",\"budget\":"<<Number(eps/256)
-        <<",\"scope\":\"oriented-facet bijection around body origin plus equivalent-rotation paired pilot; fixed axes only\"}";Record(root+"/rotation_verification.json",report.str());
+        <<",\"scope\":\"oriented-facet bijection plus all16 per-block relative equivalence and ratio perturbation bound; no production-convergence gate; fixed axes only\"}";Record(root+"/rotation_verification.json",report.str());
 }
 Samples ProfilePilot(const std::vector<double>& x,int n,const unsigned* seeds,double& cost){
     std::vector<int> depths;for(int d:{std::max(1,target-4),std::max(1,target-2),target})if(depths.empty()||depths.back()!=d)depths.push_back(d);

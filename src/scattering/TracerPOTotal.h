@@ -25,6 +25,7 @@ public:
 	std::string m_analyticShadowControl = "facets";
 	std::string m_analyticMeanCache;
     std::string m_analyticMeanReferenceGrid;
+    int m_analyticMeanThreads = 0;
 	std::string m_analyticControlWeights;
 	bool m_orientationPipeline = false;
 	bool m_profilePhases = false;

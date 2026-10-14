@@ -822,6 +822,26 @@ input hash is checked, writes are atomic and process locks prevent concurrent
 preparation by four GPU jobs. The parent directory must exist. This cache
 saves setup work, not orientation samples or residual accuracy checks.
 
+`--analytic-mean-threads N` sets a separate, positive CPU thread count for
+analytic mean preparation. It does not change the tracing thread count.
+Fullauto honors this explicit value first, then an explicit `--threads N`.
+Otherwise it reserves the selected GPUs' share of physical CPU cores, capped
+at 32 (CPU mode divides cores between CPU workers). Effective parallelism is
+also limited by the number of theta rows. Cache lock waits, missing rows and
+refinement pass timings are logged. Without fullauto or an explicit value,
+the existing OpenMP thread setting is retained. This option requires analytic
+controls; it is rejected with GO, incoherent fullauto, or controls disabled.
+
+Fullauto verifies a rotational symmetry with both a geometric facet bijection
+and paired numerical equality checks. The latter bounds all 16 Mueller
+components and their ratios by M11 on eight paired seed blocks. It does not
+require the individual low-sample pilot means to have bounded Fieller
+intervals: those intervals can be broad even for numerically identical
+rotations. Production confidence intervals, cutoff validation and independent
+final audits retain their existing criteria. See
+[FULLAUTO_SYMMETRY_SETUP_RU.html](FULLAUTO_SYMMETRY_SETUP_RU.html) for the bound,
+real prism validation and measured setup timings.
+
 Use independent seeds with CUDA_VISIBLE_DEVICES=0,1,2,3 in separate processes,
 with distinct output paths and the same mean-cache path. The new Haar alpha
 makes Nphi=1 a valid orientation measure; larger phi grids need separate speed

@@ -6046,7 +6046,7 @@ void TracerPOTotal::TraceWeightedOrientations(
         for(int t=0;t<facetRows;++t)facetTheta.push_back(handlerPO->m_sphere.GetZenith(t));
         const ::complex ri=geometry.GetRefractiveIndex();
         facetControl.reset(new AnalyticFacetAverage::Control(faces,std::complex<double>(real(ri),imag(ri)),
-            m_scattering->m_wave,facetTheta,shadowOff ? "off":m_analyticShadowControl,m_analyticMeanCache,m_analyticMeanReferenceGrid));
+            m_scattering->m_wave,facetTheta,shadowOff ? "off":m_analyticShadowControl,m_analyticMeanCache,m_analyticMeanReferenceGrid,m_analyticMeanThreads));
         if(!facetControl->SupportsDomain(betaSym,gammaSym))
             throw std::runtime_error("analytic facet control cannot verify this orientation symmetry.\n  Fix: use --symmetry 1 1.");
         facetReflectionCells.assign(static_cast<size_t>(facetAz)*facetRows,0);

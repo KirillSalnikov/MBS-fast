@@ -46,6 +46,20 @@ int main(int argc,char** argv) {
     if(std::fabs(stats.interval[0][0]-expected)>1e-14)throw std::runtime_error("confidence convention mismatch");
     auto proportional=s;for(auto& sample:proportional)sample[0][1]=2*sample[0][0];
     auto paired=Estimate(proportional);if(paired.ratioInterval[0][1]>1e-12)throw std::runtime_error("ratio covariance was lost");
+    {
+        #include "data/rotation_prism_fp32.inc"
+        Samples candidate(8,Matrix(1)),reference(8,Matrix(1));
+        for(int k=0;k<8;++k)for(int j=0;j<16;++j){candidate[k][0][j]=rotationFixture[0][k][j];reference[k][0][j]=rotationFixture[1][k][j];}
+        if(Estimate(reference).maxRatioInterval<1e50)throw std::runtime_error("fixture no longer reproduces the failed symmetry gate");
+        const double bound=RotationEquivalenceBound(candidate,reference);
+        if(!(bound>0&&5*bound<.02/512))throw std::runtime_error("equivalent real rotations rejected by noisy mean");
+        // An actual all16 discrepancy must not slip through the new audit.
+        candidate[3][0][5]+=.1*reference[3][0][0];
+        if(RotationEquivalenceBound(candidate,reference)<.1)throw std::runtime_error("rotation M22 bias accepted");
+        candidate=reference;candidate[0][0][0]=-1;
+        if(RotationEquivalenceBound(candidate,reference)<1e50)throw std::runtime_error("invalid rotation intensity accepted");
+        if(RotationEquivalenceBound(reference,reference)!=0)throw std::runtime_error("identical rotations differ");
+    }
     auto delta=s;for(int k=0;k<8;++k)delta[k][0][0]=1+.01*k;
     auto budgets=Allocate({s,delta},{1.,10.},{16,16},stats.mean,.01);
     if(budgets[0]<=budgets[1] || budgets[0]<=0)throw std::runtime_error("allocation failed");

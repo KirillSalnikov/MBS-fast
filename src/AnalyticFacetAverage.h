@@ -35,7 +35,7 @@ public:
     Control(const std::vector<Face>&faces,std::complex<double> index,
             double wavelength,const std::vector<double>&theta,
             const std::string &shadowMode="facets",const std::string &meanCache="",
-            const std::string &meanReferenceGrid="");
+            const std::string &meanReferenceGrid="",int meanThreads=0);
     // Arbitrary incidence and observation; nonzero finite vectors are
     // normalized and the scattering geometry is derived from their pair.
     Components Evaluate(const Vec&source,const Vec&observer) const;
@@ -61,6 +61,7 @@ private:
     std::complex<double> index;
     double wave,refinementError,forwardShadowMean,circleRadius;
     std::string shadowMode;
+    int meanThreads;
     Components EvaluateUnit(const Vec&source,const Vec&observer) const;
     void PrepareMeans(const std::vector<double>&theta);
     void PrepareCachedMeans(const std::vector<double>&theta,const std::string &path);

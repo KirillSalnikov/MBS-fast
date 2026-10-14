@@ -895,7 +895,7 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
             if(config.useGpu||workers<1||workers>8)Fail("--fullauto-cpu-workers requires CPU and a count in 1..8.","select CPU and a valid worker count.");
         }
         if(config.method==RunMethod::GeometricalOptics){
-            for(const char* key:{"analytic_facet_average","analytic_shadow_control","analytic_mean_cache","haar_alpha","mirror_gamma","orientation_pipeline","gpu_trace","no_gpu_trace","fullauto_angular_cache","fullauto_pilot","fullauto_kernel","fullauto_correction","fullauto_theta_start","fullauto_theta_audit","fullauto_theta_range","tgrid","max_phi_points","chunk"})
+            for(const char* key:{"analytic_facet_average","analytic_shadow_control","analytic_mean_cache","analytic_mean_threads","haar_alpha","mirror_gamma","orientation_pipeline","gpu_trace","no_gpu_trace","fullauto_angular_cache","fullauto_pilot","fullauto_kernel","fullauto_correction","fullauto_theta_start","fullauto_theta_audit","fullauto_theta_range","tgrid","max_phi_points","chunk"})
                 if(args.IsCatched(key))Fail(CliCanonicalFlag(key)+" is not used by GO fullauto.","remove this PO-specific/grid modifier.");
             for(const char* key:{"fullauto_controls","fullauto_depth_share","fullauto_polar_controls","fullauto_phi_recheck","fullauto_mirror","fullauto_rotation","fullauto_cutoffs","fullauto_resources","fullauto_local"})
                 if(args.IsCatched(key)&&args.GetStringValue(key)!="off")Fail(CliCanonicalFlag(key)+" must be off for GO fullauto.","GO uses fixed finite bins, analytic alpha and explicit trace cutoffs.");
@@ -926,12 +926,12 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
         if(fixedPhi&&args.IsCatched("max_phi_points")&&fixedPhi>IntValue(args,"max_phi_points"))
             Fail("fixed phi count exceeds --max-phi-points.","remove the conflicting explicit limit or increase it.");
         if(args.IsCatched("incoh")){
-            if(args.IsCatched("analytic_facet_average")||args.IsCatched("analytic_shadow_control")||args.IsCatched("analytic_mean_cache")||(args.IsCatched("fullauto_controls")&&args.GetStringValue("fullauto_controls")=="on"))
+            if(args.IsCatched("analytic_facet_average")||args.IsCatched("analytic_shadow_control")||args.IsCatched("analytic_mean_cache")||args.IsCatched("analytic_mean_threads")||(args.IsCatched("fullauto_controls")&&args.GetStringValue("fullauto_controls")=="on"))
                 Fail("incoherent fullauto cannot use coherent analytic facet controls.","remove analytic modifiers or use --fullauto-analytic-controls off/auto.");
             if(args.IsCatched("fullauto_depth_share")&&args.GetStringValue("fullauto_depth_share")=="on")
                 Fail("incoherent fullauto cannot use coherent paired-depth sharing.","use --fullauto-depth-sharing off or remove the modifier.");
         }
-        if(args.IsCatched("fullauto_controls")&&args.GetStringValue("fullauto_controls")=="off"&&(args.IsCatched("analytic_shadow_control")||args.IsCatched("analytic_mean_cache")))
+        if(args.IsCatched("fullauto_controls")&&args.GetStringValue("fullauto_controls")=="off"&&(args.IsCatched("analytic_shadow_control")||args.IsCatched("analytic_mean_cache")||args.IsCatched("analytic_mean_threads")))
             Fail("analytic modifiers conflict with --fullauto-analytic-controls off.","remove the analytic modifiers or enable controls.");
     }
     if (args.IsCatched("haar_alpha"))
@@ -946,7 +946,9 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
             Fail("--haar-alpha requires a single size and fixed scattering/reflection grids.",
                  "remove multi-size/adaptive/mirror-gamma modifiers or run this size independently.");
     }
-    if ((args.IsCatched("analytic_shadow_control") || args.IsCatched("analytic_facet_samples") || args.IsCatched("analytic_mean_cache") || args.IsCatched("analytic_mean_reference") || args.IsCatched("analytic_azimuth_gaussian") || args.IsCatched("analytic_control_weights"))
+    if(args.IsCatched("analytic_mean_threads")&&IntValue(args,"analytic_mean_threads")<1)
+        Fail("--analytic-mean-threads must be positive.","use a positive CPU thread count.");
+    if ((args.IsCatched("analytic_shadow_control") || args.IsCatched("analytic_facet_samples") || args.IsCatched("analytic_mean_cache") || args.IsCatched("analytic_mean_threads") || args.IsCatched("analytic_mean_reference") || args.IsCatched("analytic_azimuth_gaussian") || args.IsCatched("analytic_control_weights"))
         && !args.IsCatched("analytic_facet_average") && !args.IsCatched("fullauto"))
         Fail("analytic facet controls/output require --analytic-facet-average.",
              "add --analytic-facet-average or remove its modifiers.");

@@ -2923,6 +2923,8 @@ int RunCalculation(int argc, const char* argv[])
                 ? args.GetStringValue("analytic_mean_cache",0) : "";
             tracer->m_analyticMeanReferenceGrid=args.IsCatched("analytic_mean_reference")
                 ? args.GetStringValue("analytic_mean_reference",0) : "";
+            tracer->m_analyticMeanThreads=args.IsCatched("analytic_mean_threads")
+                ? args.GetIntValue("analytic_mean_threads",0) : 0;
             tracer->m_analyticControlWeights=args.IsCatched("analytic_control_weights")
                 ? args.GetStringValue("analytic_control_weights",0) : "";
             tracer->m_orientationPipeline=args.IsCatched("orientation_pipeline")

@@ -21,6 +21,9 @@ struct Statistics {
     double maxInterval = 0, maxRatioInterval = 0;
 };
 Statistics Estimate(const Samples& samples);
+// Numerical equivalence of geometry-verified rotations. This audits paired
+// blocks, not convergence of the orientation average; no Fieller gate.
+double RotationEquivalenceBound(const Samples& candidate,const Samples& reference,bool ratios=true);
 double Difference(const Matrix& a, const Matrix& b, const Matrix& reference);
 std::vector<int> Allocate(const std::vector<Samples>& levels,
                           const std::vector<double>& costs,

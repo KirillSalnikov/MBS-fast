@@ -15,6 +15,11 @@
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
+#include <chrono>
+#include <iostream>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace AnalyticFacetAverage
 {
@@ -343,8 +348,8 @@ AnalyticGpuModel Control::GpuModel() const
 }
 
 Control::Control(const std::vector<Face>&input,C refractive,double wavelength,
-                 const std::vector<double>&theta,const std::string &mode,const std::string &meanCache,const std::string &referenceGrid)
-    :faces(input),index(refractive),wave(wavelength),refinementError(0),forwardShadowMean(0),circleRadius(0),shadowMode(mode)
+                 const std::vector<double>&theta,const std::string &mode,const std::string &meanCache,const std::string &referenceGrid,int setupThreads)
+    :faces(input),index(refractive),wave(wavelength),refinementError(0),forwardShadowMean(0),circleRadius(0),shadowMode(mode),meanThreads(setupThreads)
 {
     if(faces.empty() || !(wave>0) || index.real()<1 || !std::isfinite(index.real()+index.imag()+wave))
         throw std::invalid_argument("analytic facet average requires finite index REAL>=1 and positive wavelength");
@@ -423,7 +428,10 @@ void Control::PrepareCachedMeans(const std::vector<double>&theta,const std::stri
             {if(fd>=0)::close(fd);throw std::runtime_error("cannot lock analytic mean cache.\n  Fix: use a writable cache path with an existing parent directory.");}
         }
         ~Lock(){::flock(fd,LOCK_UN);::close(fd);}
-    } lock(path);
+    };
+    const auto lockStarted=std::chrono::steady_clock::now();
+    Lock lock(path);
+    const double lockSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-lockStarted).count();
     struct Cached {Components value;double error;};std::map<double,Cached> stored;
     {
         std::ifstream file(path.c_str());std::string magic;std::uint64_t saved=0;size_t n=0;
@@ -438,6 +446,8 @@ void Control::PrepareCachedMeans(const std::vector<double>&theta,const std::stri
         }
     }
     std::vector<double> missing;for(double angle:theta)if(!stored.count(angle))missing.push_back(angle);
+    if(meanThreads>0)std::clog<<"Analytic mean cache: requested="<<theta.size()<<" missing="<<missing.size()
+        <<" lock_wait_seconds="<<lockSeconds<<std::endl;
     if(!missing.empty()){
         PrepareMeans(missing);
         for(size_t i=0;i<missing.size();++i)stored[missing[i]]=Cached{means[i],meanErrors[i]};
@@ -519,6 +529,11 @@ Components Control::EvaluateUnit(const Vec&u,const Vec&v)const
 void Control::PrepareMeans(const std::vector<double>&theta)
 {
     if(index==C(1,0)){means.assign(theta.size(),Components{0,0});meanErrors.assign(theta.size(),0);refinementError=0;return;}
+    int setupThreads=1;
+#ifdef _OPENMP
+    setupThreads=std::max(1,std::min(int(theta.size()),meanThreads>0?meanThreads:omp_get_max_threads()));
+#endif
+    if(meanThreads>0)std::clog<<"Analytic mean setup: rows="<<theta.size()<<" threads="<<setupThreads<<std::endl;
     double maxDiameter=0,maxQ=0;
     for(const Patch&p:patches)maxDiameter=std::max(maxDiameter,p.diameter);
     for(double angle:theta)maxQ=std::max(maxQ,4*pi/wave*std::sin(angle/2));
@@ -553,13 +568,16 @@ void Control::PrepareMeans(const std::vector<double>&theta)
     double lastReflection=0,lastShadow=0,lastAngle=0;
     for(int pass=0;pass<5;++pass)
     {
+        const auto passStarted=std::chrono::steady_clock::now();
+        if(meanThreads>0)std::clog<<"Analytic mean refinement: pass="<<pass<<" pending_rows="
+            <<std::count(converged.begin(),converged.end(),0)<<std::endl;
         int degree=pass==0 ? 128:(pass==1 ? 192:320),nodes=pass==0 ? 64:(pass==1 ? 128:(pass==2 ? 192:(pass==3 ? 384:768)));
         double step=pass==0 ? .06:(pass==1 ? .03:.015);
         Moments moments(index,degree);Basis basis(degree,maxQ*maxDiameter+step*4,step);
         double worst=0;
         std::vector<std::exception_ptr> errors(theta.size());
 #ifdef _OPENMP
-        #pragma omp parallel for schedule(dynamic,1) if(theta.size()>=8)
+        #pragma omp parallel for schedule(dynamic,1) num_threads(setupThreads) if(theta.size()>=8)
 #endif
         for(long long indexRow=0;indexRow<static_cast<long long>(theta.size());++indexRow)
         {
@@ -611,6 +629,9 @@ void Control::PrepareMeans(const std::vector<double>&theta)
             }
             previous[row]=means[row];
         }
+        if(meanThreads>0)std::clog<<"Analytic mean refinement complete: pass="<<pass<<" pending_rows="
+            <<std::count(converged.begin(),converged.end(),0)<<" seconds="
+            <<std::chrono::duration<double>(std::chrono::steady_clock::now()-passStarted).count()<<std::endl;
         if(std::find(converged.begin(),converged.end(),0)==converged.end())return;
         if(pass==4)
             throw std::runtime_error("analytic facet mean did not converge within1e-4 at theta="

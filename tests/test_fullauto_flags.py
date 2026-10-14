@@ -21,6 +21,7 @@ def main():
   state=json.loads((dest/'fullauto_status.json').read_text());assert state['status']=='converged'
   assert state['phi']==phi and state['fixed_phi']==phi
   assert state['worker_threads']==2 and state['worker_chunk']==32 and state['orientation_block']==256
+  assert state['analytic_mean_threads']==(4 if name=='embedded_phi' else 2)
   if name=='embedded_phi':assert state['pass_streak']==1
   assert state['target_depth']==2 and state['selected_cutoff']=='requested'
   assert state['rotation_beta_factor']==state['rotation_gamma_factor']==1 and not state['mirror_gamma']
@@ -36,12 +37,13 @@ def main():
    if '--incoherent' in extra:assert '--incoherent' in args
    if '--analytic-mean-cache' in extra and '--analytic-facet-average' in args:
     assert args[args.index('--analytic-mean-cache')+1]==extra[extra.index('--analytic-mean-cache')+1]
+    assert args[args.index('--analytic-mean-threads')+1]=='4'
    if a.backend=='cuda':assert '--orientation-pipeline' in args
   checked=audit(dest,ROOT/'scripts/gpu_campaign.py',dense=True)
   records.append(dict(case=name,seconds=time.monotonic()-started,state=state,audit=checked));(out/'results.json').write_text(json.dumps(records,indent=2))
   return np.loadtxt(dest/'mueller_fullauto.dat',skiprows=1)
  cache=str(out/'specified_mean.cache')
- calculate('embedded_phi',['--analytic-mean-cache',cache,'--analytic-shadow-control','circular','--checkpoint','--convergence-passes','1'],7)
+ calculate('embedded_phi',['--analytic-mean-cache',cache,'--analytic-mean-threads','4','--analytic-shadow-control','circular','--checkpoint','--convergence-passes','1'],7)
  assert Path(cache).exists()
  coherent=calculate('coherent_reference',['--phi-points','3','--fullauto-analytic-controls','off'],3)
  incoherent=calculate('incoherent',['--phi-points','3','--incoherent','--fullauto-final-audit','on'],3)
