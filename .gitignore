@@ -8,6 +8,7 @@ tests/.adaptive/
 
 # Output data
 *.dat
+!tests/data/phase_dust15.dat
 M_*/
 M\out.txt
 

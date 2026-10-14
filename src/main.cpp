@@ -500,6 +500,8 @@ void PrintVersion()
     std::cout << " fp32-diffraction-storage trace-geometry-fp64";
 #ifdef MBS_GPU_PHASE_FP32
     std::cout << " phase-build-mixed phase-trig-fp32";
+#elif defined(MBS_GPU_PHASE_REDUCED)
+    std::cout << " phase-build-fp64 phase-trig-reduced-fp32 phase-fallback-fp64";
 #else
     std::cout << " phase-build-fp64 phase-trig-fp64";
 #endif

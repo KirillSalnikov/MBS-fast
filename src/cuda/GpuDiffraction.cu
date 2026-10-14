@@ -1,4 +1,5 @@
 #include "HandlerPO.h"
+#include "GpuPhaseReduction.cuh"
 
 #include <cuda_runtime.h>
 #include <cufft.h>
@@ -20,6 +21,9 @@
 #endif
 #if defined(MBS_GPU_PHASE_FP32) && !defined(MBS_GPU_FLOAT)
 #error "MBS_GPU_PHASE_FP32 requires FP32 diffraction storage"
+#endif
+#if defined(MBS_GPU_PHASE_REDUCED) && (!defined(MBS_GPU_FLOAT) || defined(MBS_GPU_PHASE_FP32))
+#error "Reduced phase trigonometry requires FP32 storage and FP64 phase construction"
 #endif
 #if (defined(MBS_GPU_FP32) && defined(MBS_GPU_FP64)) || \
     (!defined(MBS_GPU_FP32) && !defined(MBS_GPU_FP64))
@@ -69,13 +73,25 @@ __device__ inline void gpu_sincos(GpuReal x, GpuReal *s, GpuReal *c)
 #endif
 }
 
-__device__ inline void gpu_sincos_phase(double x, GpuReal *s, GpuReal *c)
+__device__ inline void gpu_sincos_phase(double x, GpuReal *s, GpuReal *c,
+                                       bool precise = false)
 {
 #ifdef MBS_GPU_FLOAT
 #ifdef MBS_GPU_PHASE_FP32
     // The consumer profile retains the common beam-centre phase in FP64,
     // then evaluates the completed phase on the much faster FP32 units.
     sincosf((GpuReal)x, s, c);
+#elif defined(MBS_GPU_PHASE_REDUCED)
+    double reduced;
+    if (!precise && MbsGpuPhase::Reduce(x, reduced))
+        sincosf((float)reduced, s, c);
+    else
+    {
+        double sd, cd;
+        sincos(x, &sd, &cd);
+        *s = (GpuReal)sd;
+        *c = (GpuReal)cd;
+    }
 #else
     double sd, cd;
     sincos(x, &sd, &cd);
@@ -1114,6 +1130,27 @@ __device__ inline bool compute_beam_integral_cached_gpu(const BeamT &b,
     }
 
     GpuReal vc[MaxVertices], vs[MaxVertices];
+    bool precisePhase = false;
+#ifdef MBS_GPU_PHASE_REDUCED
+    if (!NativePhase)
+    {
+        // Edge quotients subtract endpoint phasors. For a short phase step,
+        // their cancellation can amplify an extra FP32 argument rounding.
+        // Keep the original FP64 phasors for the entire affected polygon.
+        // The small-phase moment branch above needs no endpoint phasors.
+        const bool useX = absB > absA;
+        const int edges = useX ? b.nEdgeX : b.nEdgeY;
+        for (int i = 0; i < edges; ++i)
+        {
+            const int e = useX ? b.edge_valid_x[i] : b.edge_valid_y[i];
+            const int en = (e + 1 < nv) ? e + 1 : 0;
+            const GpuReal gradient = useX ? A + b.slope_yx[e]*B : B + b.slope_xy[e]*A;
+            const GpuReal length = useX ? b.x[en]-b.x[e] : b.y[en]-b.y[e];
+            const GpuReal step = gradient * length * (UnitWave ? (GpuReal)1 : waveIndex);
+            if (fabs(step) < (GpuReal)0.125) { precisePhase = true; break; }
+        }
+    }
+#endif
     if (NativePhase)
     {
         const GpuReal qx = UnitWave ? A : waveIndex * A;
@@ -1133,7 +1170,7 @@ __device__ inline bool compute_beam_integral_cached_gpu(const BeamT &b,
             const GpuVertexPhaseReal x = (GpuVertexPhaseReal)b.x[v];
             const GpuVertexPhaseReal y = (GpuVertexPhaseReal)b.y[v];
             gpu_sincos_phase(qx * x + qy * y + commonPhase,
-                             &vs[v], &vc[v]);
+                             &vs[v], &vc[v], precisePhase);
         }
     }
 

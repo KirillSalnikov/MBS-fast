@@ -59,6 +59,24 @@ if grep -Fq -- '--use_fast_math' "$TMP/fp32_consumer"; then
     exit 1
 fi
 
+make -s -n -C "$ROOT/gpu" GPU_ARCH=86 fp32_reduced >"$TMP/fp32_reduced"
+grep -Fq -- '-DMBS_GPU_PHASE_REDUCED' "$TMP/fp32_reduced"
+grep -Fq -- 'build/fp32_reduced_lto_sm86/obj' "$TMP/fp32_reduced"
+grep -Fq -- 'bin/mbs_po_gpu_float_reduced' "$TMP/fp32_reduced"
+if grep -Eq -- '--use_fast_math|-DMBS_GPU_PHASE_FP32' "$TMP/fp32_reduced"; then
+    echo 'Reduced profile unexpectedly changes FP64 phase construction or fast math' >&2
+    exit 1
+fi
+make -s -n -C "$ROOT" USE_CUDA=1 GPU_ARCH=86 GPU_PRECISION=fp32 \
+    GPU_PHASE_TRIG=reduced TARGET=bin/profile_test_fp32_reduced all >"$TMP/root_fp32_reduced"
+grep -Fq -- 'build/root_cuda/fp32_reduced_sm86/obj' "$TMP/root_fp32_reduced"
+grep -Fq -- '-DMBS_GPU_PHASE_REDUCED' "$TMP/root_fp32_reduced"
+if make -s -n -C "$ROOT/gpu" GPU_PRECISION=fp64 GPU_PHASE_TRIG=reduced clean \
+        >"$TMP/fp64_reduced" 2>&1; then
+    echo 'Reduced phase profile was accepted with FP64 storage' >&2
+    exit 1
+fi
+
 make -s -n -C "$ROOT" USE_CUDA=1 GPU_ARCH=70 GPU_PRECISION=fp32 \
     GPU_PHASE_TRIG=consumer TARGET=bin/profile_test_fp32_consumer all \
     >"$TMP/root_fp32_consumer"

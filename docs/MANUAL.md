@@ -64,6 +64,7 @@ PATH=/usr/local/cuda/bin:$PATH make -C gpu -j
 # Explicit variants
 make -C gpu fp32      -j   # gpu/bin/mbs_po_gpu_float
 make -C gpu fp32_consumer -j # gpu/bin/mbs_po_gpu_float_consumer
+make -C gpu fp32_reduced -j  # gpu/bin/mbs_po_gpu_float_reduced
 make -C gpu fp64      -j   # gpu/bin/mbs_po_gpu_double
 make -C gpu fp32_fast -j   # gpu/bin/mbs_po_gpu_float_fast
 make -C gpu fp64_fast -j   # gpu/bin/mbs_po_gpu_double_fast
@@ -82,15 +83,30 @@ compiler; changing the system-wide GCC alternative is not required.
 | `make -C gpu` or `make -C gpu fp64` | `gpu/bin/mbs_po_gpu_double` | FP64 | no | Numerical reference and production default |
 | `make -C gpu fp32` | `gpu/bin/mbs_po_gpu_float` | FP32 | no | Calibrated FP32 throughput |
 | `make -C gpu fp32_consumer` | `gpu/bin/mbs_po_gpu_float_consumer` | FP32 | no | Consumer GPU throughput with FP32 phase trigonometry |
+| `make -C gpu fp32_reduced` | `gpu/bin/mbs_po_gpu_float_reduced` | FP32 | no | FP64 phase construction and range reduction, then FP32 trigonometry |
 | `make -C gpu fp32_fast` | `gpu/bin/mbs_po_gpu_float_fast` | FP32 | yes | Experimental fast math; benchmark and validate first |
 | `make -C gpu fp64_fast` | `gpu/bin/mbs_po_gpu_double_fast` | FP64 | yes | FP64 throughput after validation |
 | `make -C gpu double_debug` | `gpu/bin/mbs_po_gpu_double_debug` | FP64 | yes | Debug help and diagnostics |
 
-`GPU_PHASE_TRIG=precise|consumer` is the underlying build variable. The
+`GPU_PHASE_TRIG=precise|consumer|reduced` is the underlying build variable. The
 `consumer` value is accepted only with FP32 storage, uses a separate object
 directory, and never enables `--use_fast_math` implicitly. The supported
 shortcut is `make -C gpu fp32_consumer -j`; direct variable use is intended for
 packaging and CI. Run `make test_cuda_consumer` on the target GPU after build.
+
+The `reduced` profile keeps the same FP64 phase construction as precise FP32.
+For phase magnitudes up to 2^20 radians, it subtracts an integer number of
+periods using two FP64 fused operations, then evaluates `sincosf` on the small
+remaining argument. Larger or nonfinite arguments use the original FP64
+trigonometry. This avoids rounding a large phase to FP32 before reduction.
+Polygons with an edge phase increment below 0.125 radians also retain FP64
+phasors, because subtracting nearly equal endpoint values amplifies rounding.
+It does not enable whole-kernel fast math or change beam geometry, reflection
+depth, cutoffs, or orientation sampling. Build it for an RTX 3080 Ti with
+`make -C gpu fp32_reduced GPU_ARCH=86 -j`. The resulting binary accepts the same
+`--fullauto` commands and reports `phase-trig-reduced-fp32` in `--version`.
+Each precision profile has its own object directory. Resume a checkpoint with
+its original binary; a different profile belongs in a new output directory.
 
 FP32 applies to diffraction-beam storage, Jones sums, and Mueller output.
 Visibility/topology tracing, optical paths, absorption, cancellation-prone
@@ -121,8 +137,7 @@ the following median wall times over three runs:
 | Precise mixed FP32 | 5.76 s | 1.49x | `5.68e-8` | `4.69e-8` |
 | Consumer FP32 phase trigonometry | 3.25 s | 2.63x | `2.82e-7` | `2.73e-7` |
 
-Consumer FP32 is the preferred throughput profile on consumer Ampere hardware
-after calibration. It was 1.77x faster than precise mixed FP32. Across convex,
+Consumer FP32 was 1.77x faster than precise mixed FP32 in that calibration. Across convex,
 concave, absorbing, nonabsorbing, `L=5...500 um`, and 8--20-reflection probes,
 the largest side/back M11 L2 error was `8.4e-5`; one weak off-diagonal element
 reached `5.3e-3`. Whole-kernel fast math is not selected automatically because
@@ -130,6 +145,14 @@ it was about 9% slower than the consumer profile in this check and has a larger
 problem-dependent risk for narrow interference structure. FP64 remains the
 default and required reference for a new particle, refractive index, size, or
 sampling regime.
+
+The large-particle fullauto audit of 2026-10-14 found a 4.94% maximum
+pointwise change, scaled by local M11, for the consumer profile on the
+794.3 um prism (0--25 degrees), despite a small global L2 change. It therefore
+failed the 2% workload requirement. Use the separately validated `reduced`
+profile for these RTX workloads. A good global L2 score alone does not
+establish pointwise accuracy, and fullauto orientation statistics do not
+replace a numerical-precision comparison on identical samples.
 
 The mixed phase-build optimization was also checked independently on an RTX
 3080 Ti with hexagonal, concave, aggregate, and bullet-rosette particles up to

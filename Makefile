@@ -59,8 +59,8 @@ endif
 ifneq ($(filter 0 1,$(GPU_FAST_MATH)),$(GPU_FAST_MATH))
 $(error GPU_FAST_MATH must be 0 or 1)
 endif
-ifeq ($(filter precise consumer,$(GPU_PHASE_TRIG)),)
-$(error GPU_PHASE_TRIG must be one of: precise, consumer)
+ifeq ($(filter precise consumer reduced,$(GPU_PHASE_TRIG)),)
+$(error GPU_PHASE_TRIG must be one of: precise, consumer, reduced)
 endif
 ifneq ($(filter float fp32,$(GPU_PRECISION)),)
 GPU_PRECISION_CANON := float
@@ -77,6 +77,12 @@ $(error GPU_PHASE_TRIG=consumer requires GPU_PRECISION=fp32 or float)
 endif
 GPU_PHASE_DEFINES := -DMBS_GPU_PHASE_FP32
 GPU_PHASE_SUFFIX := _consumer
+else ifeq ($(GPU_PHASE_TRIG),reduced)
+ifneq ($(GPU_PRECISION_CANON),float)
+$(error GPU_PHASE_TRIG=reduced requires GPU_PRECISION=fp32 or float)
+endif
+GPU_PHASE_DEFINES := -DMBS_GPU_PHASE_REDUCED
+GPU_PHASE_SUFFIX := _reduced
 else
 GPU_PHASE_DEFINES :=
 GPU_PHASE_SUFFIX :=
@@ -107,6 +113,7 @@ DEPS = $(OBJECTS:.o=.d)
 TARGET = bin/mbs_po
 TARGET_FLOAT = bin/mbs_po_float
 TARGET_FLOAT_CONSUMER = bin/mbs_po_float_consumer
+TARGET_FLOAT_REDUCED = bin/mbs_po_float_reduced
 TARGET_FLOAT_FAST = bin/mbs_po_float_fast
 TARGET_DOUBLE = bin/mbs_po_double
 TARGET_DOUBLE_FAST = bin/mbs_po_double_fast
@@ -131,6 +138,7 @@ cuda_check:
 
 $(OBJECTS): | cuda_check
 $(TARGET): | cuda_check
+$(ROOT_CUDA_OBJDIR)/src/cuda/GpuDiffraction.o: src/cuda/GpuPhaseReduction.cuh
 endif
 
 cpu:
@@ -145,6 +153,9 @@ gpu_float:
 gpu_float_consumer:
 	$(MAKE) -C gpu float_consumer
 
+gpu_float_reduced:
+	$(MAKE) -C gpu float_reduced
+
 gpu_float_fast:
 	$(MAKE) -C gpu float_fast
 
@@ -157,6 +168,8 @@ gpu_double_fast:
 gpu_fp32: gpu_float
 
 gpu_fp32_consumer: gpu_float_consumer
+
+gpu_fp32_reduced: gpu_float_reduced
 
 gpu_fp64: gpu_double
 
@@ -262,6 +275,9 @@ test_cuda_consumer_build:
 test_cuda_profiles:
 	tests/run_cuda_precision_profile_test.sh
 
+test_cuda_phase:
+	bash tests/run_gpu_phase_reduction_test.sh
+
 test_cuda: test_cuda_build cpu
 	MBS_CPU=$(CURDIR)/cpu/bin/mbs_po_mpi \
 		MBS_GPU=$(CURDIR)/gpu/bin/mbs_po_gpu_double \
@@ -341,7 +357,7 @@ clean:
 	find src/bigint -name '*.o' -delete 2>/dev/null; true
 	find src/bigint -name '*.d' -delete 2>/dev/null; true
 	rm -rf build/root_cuda
-	rm -f $(TARGET) $(TARGET_FLOAT) $(TARGET_FLOAT_CONSUMER) $(TARGET_FLOAT_FAST) $(TARGET_DOUBLE) $(TARGET_DOUBLE_FAST) $(FFT_PROBE) $(GPU_TRACE_PROBE)
+	rm -f $(TARGET) $(TARGET_FLOAT) $(TARGET_FLOAT_CONSUMER) $(TARGET_FLOAT_REDUCED) $(TARGET_FLOAT_FAST) $(TARGET_DOUBLE) $(TARGET_DOUBLE_FAST) $(FFT_PROBE) $(GPU_TRACE_PROBE)
 
 clean_cuda_objects:
 	find $(SRC_DIR)/cuda -name '*.o' -delete
@@ -355,6 +371,11 @@ cuda_float:
 cuda_float_consumer:
 	$(MAKE) clean_cuda_objects
 	$(MAKE) USE_CUDA=1 GPU_PRECISION=float GPU_PHASE_TRIG=consumer TARGET=$(TARGET_FLOAT_CONSUMER) all
+	$(MAKE) clean_cuda_objects
+
+cuda_float_reduced:
+	$(MAKE) clean_cuda_objects
+	$(MAKE) USE_CUDA=1 GPU_PRECISION=float GPU_PHASE_TRIG=reduced GPU_FAST_MATH=0 TARGET=$(TARGET_FLOAT_REDUCED) all
 	$(MAKE) clean_cuda_objects
 
 cuda_float_fast:
@@ -375,6 +396,7 @@ cuda_double_fast:
 cuda_variants:
 	$(MAKE) cuda_float
 	$(MAKE) cuda_float_consumer
+	$(MAKE) cuda_float_reduced
 	$(MAKE) cuda_double
 	$(MAKE) cuda_float_fast
 	$(MAKE) cuda_double_fast
@@ -407,12 +429,12 @@ gpu_quaternion_probe:
 	@false
 endif
 
-.PHONY: all cuda_check cpu gpu gpu_float gpu_float_consumer gpu_float_fast gpu_double gpu_double_fast \
-	gpu_fp32 gpu_fp32_consumer gpu_fp64 gpu_fp32_fast gpu_fp64_fast split docs \
+.PHONY: all cuda_check cpu gpu gpu_float gpu_float_consumer gpu_float_reduced gpu_float_fast gpu_double gpu_double_fast \
+	gpu_fp32 gpu_fp32_consumer gpu_fp32_reduced gpu_fp64 gpu_fp32_fast gpu_fp64_fast split docs \
 	test test_gpu_optimization test_cli test_release test_adaptive test_regression test_so3 test_poles \
 	test_beam_topology test_coherence test_analytic test_analytic_facets test_analytic_directions test_analytic_azimuth test_forward_depth test_concave_visibility test_warnings test_cuda_build test_cuda \
-	test_cuda_profiles test_cuda_consumer_build test_cuda_consumer test_cuda_if_available test_sanitize clean \
-	clean_cuda_objects cuda_float cuda_float_consumer cuda_float_fast cuda_double cuda_double_fast cuda_variants \
+	test_cuda_profiles test_cuda_phase test_cuda_consumer_build test_cuda_consumer test_cuda_if_available test_sanitize clean \
+	clean_cuda_objects cuda_float cuda_float_consumer cuda_float_reduced cuda_float_fast cuda_double cuda_double_fast cuda_variants \
 	fft_probe gpu_trace_probe gpu_quaternion_probe
 
 -include $(DEPS)
