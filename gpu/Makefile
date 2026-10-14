@@ -158,6 +158,11 @@ $(OBJDIR)/%.o: $(ROOT)/%.cu
 	@mkdir -p $(dir $@)
 	$(NVCC) $(NVCCFLAGS) -DUSE_CUDA -I$(CUDA_PATH)/include $(INCLUDES) -c $< -o $@
 
+# Convex clipping must retain the CPU predicate operation order. Do not
+# inherit approximate division/trigonometry from an optional fast PO build.
+$(OBJDIR)/src/cuda/GpuConvexQueue.o: $(ROOT)/src/cuda/GpuConvexQueueMath.cuh $(ROOT)/src/cuda/GpuConvexQueue.h
+$(OBJDIR)/src/cuda/GpuConvexQueue.o: NVCCFLAGS += --fmad=false --prec-div=true --prec-sqrt=true
+
 float:
 	$(MAKE) GPU_PRECISION=float GPU_PHASE_TRIG=precise GPU_FAST_MATH=0 TARGET=bin/mbs_po_gpu_float all
 

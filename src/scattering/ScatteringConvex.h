@@ -1,6 +1,9 @@
 #pragma once
 
 #include "Scattering.h"
+#ifdef USE_CUDA
+#include "cuda/GpuConvexQueue.h"
+#endif
 
 class ScatteringConvex : public Scattering
 {
@@ -18,7 +21,14 @@ public:
     bool ScatterLight(double, double, const std::vector<std::vector<int>> &,
                       std::vector<Beam> &) override; ///> for predefined trajectories
 
+#ifdef USE_CUDA
+    bool PrepareGpuInput(GpuConvexQueue::Input& input, std::vector<Beam>& external);
+    void AddGpuStatistics(const GpuConvexQueue::Status& status);
+    static Beam DecodeGpuBeam(const GpuConvexQueue::Beam& beam, int diagnosticFacets = 0);
+#endif
+
 protected:
+    bool PrepareExternalBeams(std::vector<Beam>& outBeams);
     bool TraceInternalBeams(std::vector<Beam> &outBeams);
 
     bool SplitSecondaryBeams(Beam &incidentBeam, int facetID,

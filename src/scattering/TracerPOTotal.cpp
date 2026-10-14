@@ -12,6 +12,11 @@
 #include <array>
 #include "Sobol.h"
 #include "cuda/GpuSupport.h"
+#ifdef USE_CUDA
+#include "ScatteringConvex.h"
+#include "cuda/GpuConvexQueue.h"
+#include "BigIntegerUtils.hh"
+#endif
 
 #include <iostream>
 #include <fstream>
@@ -6154,6 +6159,70 @@ void TracerPOTotal::TraceWeightedOrientations(
         block.outputEnergies.assign(thisChunk,0);
         ParallelExceptionState parallelError;
 
+#ifdef USE_CUDA
+        const bool residentQueue=handlerPO->IsGpuEnabled()
+            && EnvEnabled("MBS_GPU_TRACE_CONVEX_QUEUE")
+            && dynamic_cast<ScatteringConvex*>(m_scattering)!=nullptr;
+        std::vector<std::vector<Beam>> residentBeams;
+        std::vector<char> residentReady(thisChunk,0);
+        std::vector<double> residentEnergy(thisChunk,0);
+        std::vector<GpuConvexQueue::Output> residentOutput;
+        std::vector<size_t> residentOrder,residentOffsets(thisChunk+1,0);
+        double residentVerificationError=0;long long residentComparedBeams=0;int residentChangedVertices=0;
+        if(residentQueue)
+        {
+            const auto traceStarted=std::chrono::steady_clock::now();
+            std::vector<GpuConvexQueue::Input> inputs(thisChunk);
+            residentBeams.resize(thisChunk);
+            #pragma omp parallel num_threads(nThreads)
+            {
+                Particle particle=*m_particle;
+                std::unique_ptr<Scattering> scatter(m_scattering->CloneFor(&particle,&m_incidentLight));
+                auto* convex=static_cast<ScatteringConvex*>(scatter.get());
+                #pragma omp for schedule(dynamic,4)
+                for(int i=0;i<thisChunk;++i)
+                {
+                    if(parallelError.Failed())continue;
+                    try {
+                        const auto& pose=orientations[iStart+i];
+                        if(pose.useQuaternion)particle.RotateQuaternion(pose.qx,pose.qy,pose.qz,pose.qw);
+                        else particle.Rotate(pose.beta,pose.gamma,pose.alpha);
+                        if(!shadowOff)convex->FormShadowBeam(residentBeams[i]);
+                        residentReady[i]=convex->PrepareGpuInput(inputs[i],residentBeams[i]);
+                        residentEnergy[i]=convex->GetIncedentEnergy();
+                        if(!residentReady[i]){inputs[i].seedCount=0;inputs[i].faceCount=0;residentBeams[i].clear();}
+                    } catch(...) {parallelError.Capture();}
+                }
+            }
+            parallelError.Rethrow();
+            std::vector<GpuConvexQueue::Status> status;
+            GpuConvexQueue::Metrics metrics;
+            bool any=std::find(residentReady.begin(),residentReady.end(),char(1))!=residentReady.end();
+            bool traced=any&&GpuConvexQueue::Trace(inputs,residentOutput,residentOrder,status,metrics,nThreads);
+            int accepted=0;int failures[5]={};
+            for(int i=0;i<thisChunk;++i){
+                if(traced&&status[i].failure>=1&&status[i].failure<=4)++failures[status[i].failure];
+                residentReady[i]=residentReady[i]&&traced&&!status[i].failure;
+                if(residentReady[i]){++accepted;static_cast<ScatteringConvex*>(m_scattering)->AddGpuStatistics(status[i]);}
+                else residentBeams[i].clear();
+            }
+            size_t cursor=0;
+            for(int i=0;i<thisChunk;++i){residentOffsets[i]=cursor;
+                while(cursor<residentOrder.size()&&residentOutput[residentOrder[cursor]].orientation==i)++cursor;}
+            residentOffsets[thisChunk]=cursor;
+            std::ostringstream log;
+            log << "GPU convex resident queue: orientations=" << thisChunk << " accepted=" << accepted
+                << " CPU_fallback=" << thisChunk-accepted << " output_beams=" << residentOutput.size()
+                << " vertex_limit=" << failures[1] << " output_limit=" << failures[2]
+                << " queue_limit=" << failures[3] << " nonfinite=" << failures[4]
+                << " kernel_s=" << metrics.kernelSeconds << " transfer_sort_s=" << metrics.wallSeconds-metrics.kernelSeconds
+                << " download_s=" << metrics.downloadSeconds << " sort_s=" << metrics.sortSeconds
+                << " total_s=" << std::chrono::duration<double>(std::chrono::steady_clock::now()-traceStarted).count()
+                << " device_MiB=" << metrics.bytes/1048576.0;
+            std::cerr << log.str() << std::endl;
+        }
+#endif
+
         // std::async workers do not inherit the calling thread's OpenMP ICV.
         // Keep four concurrent GPU jobs within the requested CPU budget.
         #pragma omp parallel num_threads(nThreads)
@@ -6197,8 +6266,83 @@ void TracerPOTotal::TraceWeightedOrientations(
                         now - profileStart).count();
                     profileStart = now;
                 }
-                if (!shadowOff) localScatter->FormShadowBeam(localBeams);
-                bool ok = localScatter->ScatterLight(0, 0, localBeams);
+                bool ok;
+#ifdef USE_CUDA
+                if(residentReady[i])
+                {
+                    localBeams.swap(residentBeams[i]);ok=true;
+                    const bool verifyResident=EnvEnabled("MBS_GPU_TRACE_CONVEX_VERIFY");
+                    localBeams.reserve(localBeams.size()+residentOffsets[i+1]-residentOffsets[i]);
+                    for(size_t item=residentOffsets[i];item<residentOffsets[i+1];++item)
+                        localBeams.push_back(ScatteringConvex::DecodeGpuBeam(residentOutput[residentOrder[item]].beam,
+                            verifyResident?localParticle.nFacets:0));
+                    if(verifyResident)
+                    {
+                        std::vector<Beam> reference;
+                        if(!shadowOff)localScatter->FormShadowBeam(reference);
+                        localScatter->SetTrackIdsRequired(true);
+                        if(!localScatter->ScatterLight(0,0,reference)||reference.size()!=localBeams.size())
+                            throw std::runtime_error("GPU convex verification: beam count differs at orientation "+std::to_string(idx)
+                                +" CPU="+std::to_string(reference.size())+" GPU="+std::to_string(localBeams.size()));
+                        double error=0,scale=std::max(1.0,localParticle.MaximalDimention());int changedVertices=0;
+                        // Clipping can leave a collinear outward/backward spur.
+                        // Its position is ill-conditioned, but its closed contour
+                        // contributes zero area and zero diffraction integral.
+                        // Canonicalize only diagnostic copies; do not alter rays.
+                        const auto canonical=[scale](Beam b){bool changed=true;
+                            while(changed&&b.nVertices>3){changed=false;
+                                for(int v=0;v<b.nVertices;++v){const auto& a=b.arr[(v+b.nVertices-1)%b.nVertices];
+                                    const auto edge=b.arr[(v+1)%b.nVertices]-a,offset=b.arr[v]-a;
+                                    const double length=Norm(edge),tolerance=geometry_length_tolerance(scale);
+                                    if((length<=tolerance*tolerance)||Norm(CrossProduct(edge,offset))<=tolerance*tolerance*length){
+                                        for(int k=v;k+1<b.nVertices;++k)b.arr[k]=b.arr[k+1];--b.nVertices;changed=true;break;}}
+                            }return b;};
+                        const auto polygonDistance=[](const Beam& a,const Beam& c){double result=0;
+                            for(int v=0;v<a.nVertices;++v){double best=std::numeric_limits<double>::infinity();
+                                for(int e=0;e<c.nVertices;++e){const auto& start=c.arr[e];const auto edge=c.arr[(e+1)%c.nVertices]-start;
+                                    double length=Norm(edge);double t=length>DBL_MIN?std::max(0.0,std::min(1.0,DotProduct(a.arr[v]-start,edge)/length)):0;
+                                    best=std::min(best,Norm(a.arr[v]-(start+edge*t)));}
+                                result=std::max(result,std::sqrt(best));}return result;};
+                        for(size_t b=0;b<reference.size();++b){
+                            const Beam& a=reference[b];const Beam& c=localBeams[b];
+                            if(a.lastFacetId!=__INT_MAX__&&a.nActs>0&&a.id!=c.id){std::ostringstream detail;
+                                detail << "GPU convex verification: track order differs orientation=" << idx << " beam=" << b << " CPU=" << bigIntegerToString(a.id) << " GPU=" << bigIntegerToString(c.id);
+                                throw std::runtime_error(detail.str());}
+                            if(a.lastFacetId!=c.lastFacetId
+                               ||(a.lastFacetId!=__INT_MAX__&&a.nActs!=c.nActs))
+                                throw std::runtime_error("GPU convex verification: topology/order differs at orientation "+std::to_string(idx)+" beam="+std::to_string(b));
+                            changedVertices+=a.nVertices!=c.nVertices;
+                            const Beam ca=canonical(a),cc=canonical(c);
+                            error=std::max(error,std::fabs(a.opticalPath-c.opticalPath)/scale);
+                            error=std::max(error,std::max(polygonDistance(ca,cc),polygonDistance(cc,ca))/scale);
+                            error=std::max(error,std::fabs(a.Area()-c.Area())/(scale*scale));
+                            error=std::max(error,std::sqrt(Norm(a.direction-c.direction)));
+                            error=std::max(error,std::sqrt(Norm(a.polarizationBasis-c.polarizationBasis)));
+                            const ::complex aj[]={a.J.m11,a.J.m12,a.J.m21,a.J.m22},cj[]={c.J.m11,c.J.m12,c.J.m21,c.J.m22};
+                            for(int j=0;j<4;++j)error=std::max(error,abs(aj[j]-cj[j]));
+                            if(!std::isfinite(error)||error>1e-8){std::ostringstream detail;detail<<std::setprecision(17)
+                                << "GPU convex verification mismatch: orientation=" << idx << " beam=" << b
+                                << " facet=" << a.lastFacetId << " depth=" << a.nActs << " vertices=" << a.nVertices << "/" << c.nVertices
+                                << " geometry=" << std::max(polygonDistance(a,c),polygonDistance(c,a))/scale
+                                << " area=" << a.Area() << "/" << c.Area() << " path=" << a.opticalPath << "/" << c.opticalPath
+                                << " direction=" << std::sqrt(Norm(a.direction-c.direction))
+                                << " basis=" << std::sqrt(Norm(a.polarizationBasis-c.polarizationBasis))
+                                << " Jones=" << abs(aj[0]-cj[0]) << "," << abs(aj[1]-cj[1]) << "," << abs(aj[2]-cj[2]) << "," << abs(aj[3]-cj[3]);
+                                detail << " CPU_polygon=" << Polygon(a) << " GPU_polygon=" << Polygon(c);
+                                throw std::runtime_error(detail.str());}
+                        }
+                        if(!std::isfinite(error)||error>1e-8)
+                            throw std::runtime_error("GPU convex verification: numerical mismatch at orientation "+std::to_string(idx)+" error="+std::to_string(error));
+                        #pragma omp critical(gpu_convex_verification)
+                        {residentVerificationError=std::max(residentVerificationError,error);residentComparedBeams+=reference.size();residentChangedVertices+=changedVertices;}
+                    }
+                }
+                else
+#endif
+                {
+                    if (!shadowOff) localScatter->FormShadowBeam(localBeams);
+                    ok = localScatter->ScatterLight(0, 0, localBeams);
+                }
                 if (profileOrientation)
                 {
                     const auto now = std::chrono::high_resolution_clock::now();
@@ -6228,7 +6372,11 @@ void TracerPOTotal::TraceWeightedOrientations(
                 {
                     chunkPrepared[i].sinZenith = weight;
                 }
+#ifdef USE_CUDA
+                block.energies[i] = (residentReady[i]?residentEnergy[i]:localScatter->GetIncedentEnergy()) * weight;
+#else
                 block.energies[i] = localScatter->GetIncedentEnergy() * weight;
+#endif
                 localBeams.clear();
                 if (profileOrientation)
                     localPrepareSeconds += std::chrono::duration<double>(
@@ -6253,6 +6401,11 @@ void TracerPOTotal::TraceWeightedOrientations(
             delete localScatter;
         }
         parallelError.Rethrow();
+
+#ifdef USE_CUDA
+        if(residentComparedBeams)std::cerr << "GPU convex verification: beams=" << residentComparedBeams
+            << " equivalent_vertex_changes=" << residentChangedVertices << " max_error=" << residentVerificationError << std::endl;
+#endif
 
         block.seconds=std::chrono::duration<double>(std::chrono::high_resolution_clock::now()-tp1).count();
         return block;
