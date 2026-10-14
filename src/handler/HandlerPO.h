@@ -7,6 +7,9 @@
 #include <memory>
 #include <utility>
 #include <vector>
+#ifdef USE_CUDA
+#include "cuda/GpuConvexQueue.h"
+#endif
 
 struct ScatteringBasisSoA
 {
@@ -286,6 +289,13 @@ public:
     void PrepareBeams(std::vector<Beam> &beams, double sinZenith,
                       PreparedOrientation &out);
     double ComputeForwardExtinctionOt(const PreparedOrientation &prepared) const;
+#ifdef USE_CUDA
+    bool CanHandleResidentConvexGpu() const;
+    bool HandleResidentConvexGpu(const GpuConvexQueue::Input* inputs,
+        const GpuConvexQueue::Output* beams,size_t beamCount,
+        const std::vector<double>& weights,Arr2D& full,Arr2D& noShadow,
+        std::vector<double>& energies,std::vector<double>& extinction);
+#endif
     double ComputeForwardExtinctionOtScaled(const PreparedOrientation &prepared,
                                             double scale,
                                             double waveIndex,

@@ -1,6 +1,7 @@
 <!doctype html><html lang="ru"><meta charset="utf-8">
 <title>Эксперимент: резидентная GPU-трассировка выпуклых частиц</title>
 <style>body{font:17px system-ui;line-height:1.5;max-width:1080px;margin:32px auto;padding:0 16px}table{border-collapse:collapse}td,th{border:1px solid #bbb;padding:8px}pre{background:#eee;padding:14px;overflow:auto}code{font-size:.9em}</style>
+<p><strong>Исторический первый прототип.</strong> Продолжение с подготовкой и дифракцией прямо на GPU: <a href="GPU_DIRECT_PIPELINE_EXPERIMENT_RU.html">результаты нового эксперимента</a>.</p>
 <h1>Резидентная GPU-трассировка: проверка на epyc1, 14 октября 2026</h1>
 <p><strong>Прототип пока не ускоряет полный расчёт.</strong> На четырёх V100 медиана времени одного и того же пакета выросла с 2,485 до 5,538 с (три повтора, по 4096 ориентаций на каждую карту). Средняя загрузка GPU выросла с 18,3% до 36,3%, но расчёт стал в 2,23 раза дольше. Автоматическое включение в fullauto не добавлено. Производственные бинарники и контрольные точки не заменялись.</p>
 <h2>Что действительно перенесено на GPU</h2>

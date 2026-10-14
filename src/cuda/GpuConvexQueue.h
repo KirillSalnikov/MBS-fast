@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <cstddef>
+#include <functional>
 
 // Experimental resident convex tracer. Geometry and optics always use FP64,
 // independently of the diffraction storage precision. Limits cause a complete
@@ -40,5 +41,7 @@ struct Metrics { double kernelSeconds = 0, wallSeconds = 0, downloadSeconds = 0,
 
 // Device/allocation failures return false, with no accepted partial results.
 bool Trace(const std::vector<Input>& inputs, std::vector<Output>& output,
-           std::vector<size_t>& order, std::vector<Status>& status, Metrics& metrics, int threads);
+           std::vector<size_t>& order, std::vector<Status>& status, Metrics& metrics, int threads,
+           const std::vector<Output>* external = nullptr,
+           const std::function<bool(const Input*,const Output*,size_t)>& consumeDevice = {});
 }

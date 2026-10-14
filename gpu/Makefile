@@ -217,3 +217,5 @@ clean:
 bin/fullauto_queue_probe: ../tests/fullauto_queue_probe.cpp ../src/FullAuto.cpp ../src/FullAutoAdaptive.inc ../src/FullAutoTuning.inc $(filter-out %/main.o %/FullAuto.o,$(OBJECTS))
 	@mkdir -p bin
 	$(CXX) $(CXXFLAGS) $(INCLUDES) ../tests/fullauto_queue_probe.cpp $(filter-out %/main.o %/FullAuto.o,$(OBJECTS)) -o $@ $(LDFLAGS)
+
+$(OBJDIR)/src/cuda/GpuDiffraction.o: $(ROOT)/src/cuda/GpuResidentPrepare.cuh $(ROOT)/src/cuda/GpuConvexQueueMath.cuh $(ROOT)/src/cuda/GpuConvexQueue.h

@@ -99,7 +99,9 @@ struct Buffers {
         if(start)cudaEventDestroy(start);if(stop)cudaEventDestroy(stop);if(stream)cudaStreamDestroy(stream);}
 };
 }
-bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vector<size_t>& order,std::vector<Status>& status,Metrics& metrics,int threads) {
+bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vector<size_t>& order,std::vector<Status>& status,Metrics& metrics,int threads,
+           const std::vector<Output>* external,
+           const std::function<bool(const Input*,const Output*,size_t)>& consumeDevice) {
     output.clear();order.clear();status.clear();metrics=Metrics();if(inputs.empty())return true;
     const auto started=std::chrono::steady_clock::now();
     GpuProcessLock lock;Buffers b;
@@ -116,6 +118,8 @@ bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vec
     if(budget<stackBytes+inputBytes+sizeof(Output)*size_t(count)*64)return false;
     size_t cap=std::min(size_t(count)*2048,(budget-stackBytes-inputBytes)/sizeof(Output));
     if(cap>UINT_MAX)return false;
+    const unsigned initial=external?static_cast<unsigned>(external->size()):0;
+    if(initial>cap)return false;
     metrics.bytes=stackBytes+inputBytes+cap*sizeof(Output)+inputs.size()*sizeof(Status)+sizeof(unsigned);
     const auto check=[](cudaError_t e){if(e!=cudaSuccess){std::fprintf(stderr,"GPU convex queue: %s; complete CPU fallback\n",cudaGetErrorString(e));return false;}return true;};
     if(!check(cudaStreamCreateWithFlags(&b.stream,cudaStreamNonBlocking))
@@ -129,8 +133,9 @@ bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vec
            ||!check(cudaMemsetAsync(b.queueSizes,0,2*sizeof(unsigned),b.stream))
            ||!check(cudaMemsetAsync(b.status,0,inputs.size()*sizeof(Status),b.stream)))return false;
     }else if(!check(cudaMalloc(&b.stacks,stackBytes)))return false;
+    if(initial&&!check(cudaMemcpyAsync(b.output,external->data(),initial*sizeof(Output),cudaMemcpyHostToDevice,b.stream)))return false;
     if(!check(cudaMemcpyAsync(b.inputs,inputs.data(),inputBytes,cudaMemcpyHostToDevice,b.stream))
-       ||!check(cudaMemsetAsync(b.total,0,sizeof(unsigned),b.stream))||!check(cudaEventRecord(b.start,b.stream)))return false;
+       ||!check(cudaMemcpyAsync(b.total,&initial,sizeof(unsigned),cudaMemcpyHostToDevice,b.stream))||!check(cudaEventRecord(b.start,b.stream)))return false;
     if(levels){
         seedQueue<<<(count+63)/64,64,0,b.stream>>>(b.inputs,count,b.queues[0],b.queueSizes);
         int depth=0;for(const auto& in:inputs)depth=std::max(depth,in.maxDepth);
@@ -148,6 +153,18 @@ bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vec
        ||!check(cudaMemcpyAsync(status.data(),b.status,inputs.size()*sizeof(Status),cudaMemcpyDeviceToHost,b.stream))
        ||!check(cudaStreamSynchronize(b.stream)))return false;
     float ms=0;if(!check(cudaEventElapsedTime(&ms,b.start,b.stop)))return false;metrics.kernelSeconds=ms/1000.0;
+    if(consumeDevice){
+        // Transactional whole-chunk fallback: never consume a partial trace.
+        if(used>cap)return false;
+        for(const auto& state:status)if(state.failure)return false;
+        // Tracing scratch is no longer needed. Keep only inputs and raw output
+        // until the consumer completes; no raw beam crosses PCIe.
+        cudaFree(b.stacks);b.stacks=nullptr;
+        for(int i=0;i<2;++i){cudaFree(b.queues[i]);b.queues[i]=nullptr;}
+        const bool ok=consumeDevice(b.inputs,b.output,used);
+        metrics.wallSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+        return ok;
+    }
     // An overflow invalidates only orientations flagged by the device. Entries
     // written earlier by other orientations remain complete and independently valid.
     const auto downloadStarted=std::chrono::steady_clock::now();

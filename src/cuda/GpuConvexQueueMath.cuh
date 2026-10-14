@@ -139,8 +139,7 @@ CQ_INLINE bool finiteBeam(const Beam& b) {
     for(int i=0;i<b.count;++i)if(!isfinite(norm(b.vertices[i])))return false;
     return true;
 }
-CQ_INLINE void rotate(Beam& b,Vec normal) {
-    Vec basis=unit(cross(normal,b.direction));
+CQ_INLINE void rotateBasis(Beam& b,Vec basis) {
     double cs=maximum(-1.0,minimum(1.0,dot(basis,b.basis)));
     if(fabs(1-cs)>=64*DBL_EPSILON){
         if(fabs(1+cs)<64*DBL_EPSILON){for(int i=0;i<4;++i)b.j[i]=mul(b.j[i],-1);}
@@ -152,6 +151,9 @@ CQ_INLINE void rotate(Beam& b,Vec normal) {
         }
     }
     b.basis=basis;
+}
+CQ_INLINE void rotate(Beam& b,Vec normal) {
+    rotateBasis(b,unit(cross(normal,b.direction)));
 }
 // Returns whether a transmitted beam exists. The reflected beam always exists.
 CQ_INLINE bool split(const Input& input,const Beam& original,Vec normal,double cosA,Beam& reflected,Beam& transmitted) {

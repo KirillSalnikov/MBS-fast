@@ -25,6 +25,7 @@ public:
     bool PrepareGpuInput(GpuConvexQueue::Input& input, std::vector<Beam>& external);
     void AddGpuStatistics(const GpuConvexQueue::Status& status);
     static Beam DecodeGpuBeam(const GpuConvexQueue::Beam& beam, int diagnosticFacets = 0);
+    static bool EncodeGpuBeam(const Beam& beam, GpuConvexQueue::Beam& output);
 #endif
 
 protected:

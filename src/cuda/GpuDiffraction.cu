@@ -2424,7 +2424,8 @@ __global__ void diffraction_grid_mueller_kernel(const GpuBeam *__restrict__ beam
                                                 GpuReal invComplWaveI,
                                                 int legacySign,
                                                 GpuReal *__restrict__ mFull,
-                                                GpuReal *__restrict__ mNoShadow)
+                                                GpuReal *__restrict__ mNoShadow,
+                                                const int* residentCounts = nullptr)
 {
     const int gridCount = nAz * (nZen + 1);
     const long long total = (long long)nOrient * gridCount;
@@ -2434,7 +2435,7 @@ __global__ void diffraction_grid_mueller_kernel(const GpuBeam *__restrict__ beam
     const int orient = (int)(idx / gridCount);
     const int grid = (int)(idx - (long long)orient * gridCount);
     const int begin = beamOffsets[orient];
-    const int end = beamOffsets[orient + 1];
+    const int end = residentCounts ? begin + residentCounts[orient] : beamOffsets[orient + 1];
     const int p = grid / (nZen + 1);
     const int t = grid - p * (nZen + 1);
     const GpuReal cp = cosPhi[p], sp = sinPhi[p];
@@ -6883,3 +6884,5 @@ bool HandlerPO::DiffractThetasGpu(const std::vector<PreparedOrientation> &prepar
     ws.gridSignature = 0.0;
     return true;
 }
+
+#include "GpuResidentPrepare.cuh"

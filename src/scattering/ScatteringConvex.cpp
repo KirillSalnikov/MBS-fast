@@ -59,13 +59,18 @@ namespace {
 GpuConvexQueue::Vec PackVec(const Point3f& p) { return {p.cx,p.cy,p.cz}; }
 Point3f UnpackVec(const GpuConvexQueue::Vec& p) { return Point3f(p.x,p.y,p.z); }
 GpuConvexQueue::Beam PackBeam(const Beam& b) {
-    GpuConvexQueue::Beam p={};p.count=b.nVertices;p.depth=b.nActs;p.facet=b.lastFacetId;
+    GpuConvexQueue::Beam p={};p.count=b.nVertices;p.depth=b.lastFacetId==__INT_MAX__?0:b.nActs;p.facet=b.lastFacetId;
     p.track[0]=b.lastFacetId;
     for(int v=0;v<p.count;++v)p.vertices[v]=PackVec(b.arr[v]);
-    p.direction=PackVec(b.direction);p.basis=PackVec(b.polarizationBasis);p.path=b.opticalPath;p.front=b.front;
+    p.direction=PackVec(b.direction);p.basis=PackVec(b.polarizationBasis);p.path=b.opticalPath;p.front=b.lastFacetId==__INT_MAX__?0:b.front;
     const complex j[]={b.J.m11,b.J.m12,b.J.m21,b.J.m22};
     for(int i=0;i<4;++i)p.j[i]={real(j[i]),imag(j[i])};return p;
 }
+}
+bool ScatteringConvex::EncodeGpuBeam(const Beam& beam,GpuConvexQueue::Beam& output) {
+    if(beam.nVertices<3||beam.nVertices>GpuConvexQueue::MaxVertices)return false;
+    // Shadow beams do not initialize the internal ray's front/depth fields.
+    output=PackBeam(beam);return true;
 }
 bool ScatteringConvex::PrepareGpuInput(GpuConvexQueue::Input& input,std::vector<Beam>& external) {
     // Track/absorption reconstruction and nonconvex clipping are deliberately

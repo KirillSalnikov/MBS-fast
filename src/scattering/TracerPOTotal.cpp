@@ -6113,7 +6113,7 @@ void TracerPOTotal::TraceWeightedOrientations(
 
     double phase1_total = 0, phase2_total = 0;
     const bool profileOrientation = m_profilePhases || EnvEnabled("MBS_ORIENTATION_TIMING");
-    double controlSeconds=0.0,diffractionSeconds=0.0;
+    double controlSeconds=0.0,diffractionSeconds=0.0,residentTraceKernelSeconds=0.0;
     const auto processingStarted=std::chrono::steady_clock::now();
     double rotationCpuSeconds = 0.0;
     double traceCpuSeconds = 0.0;
@@ -6129,7 +6129,8 @@ void TracerPOTotal::TraceWeightedOrientations(
         std::vector<PreparedOrientation> lower;
         std::vector<double> energies,outputEnergies;
         std::vector<std::array<AnalyticBackscatter::Vec,3>> frames;
-        double seconds=0,rotation=0,trace=0,prepare=0;
+        std::unique_ptr<Arr2D> residentFull,residentNS;
+        double seconds=0,rotation=0,trace=0,prepare=0,residentConsumer=0,residentTraceKernel=0;
     };
     auto prepareBlock = [&](int iStart,int thisChunk)
     {
@@ -6160,9 +6161,16 @@ void TracerPOTotal::TraceWeightedOrientations(
         ParallelExceptionState parallelError;
 
 #ifdef USE_CUDA
+        const bool directRequested=EnvEnabled("MBS_GPU_TRACE_CONVEX_DIRECT");
+        const bool directModeEligible=!m_pairedDepth && !facetControl && !analyticControl
+            && !m_analyticFacetSamples && !m_analyticAzimuthGaussian
+            && handlerPO->CanHandleResidentConvexGpu();
         const bool residentQueue=handlerPO->IsGpuEnabled()
             && EnvEnabled("MBS_GPU_TRACE_CONVEX_QUEUE")
-            && dynamic_cast<ScatteringConvex*>(m_scattering)!=nullptr;
+            && dynamic_cast<ScatteringConvex*>(m_scattering)!=nullptr
+            && (!directRequested||directModeEligible);
+        if(directRequested&&!residentQueue)
+            std::cerr << "GPU convex resident direct: unsupported mode; CPU tracing + existing diffraction" << std::endl;
         std::vector<std::vector<Beam>> residentBeams;
         std::vector<char> residentReady(thisChunk,0);
         std::vector<double> residentEnergy(thisChunk,0);
@@ -6197,8 +6205,40 @@ void TracerPOTotal::TraceWeightedOrientations(
             parallelError.Rethrow();
             std::vector<GpuConvexQueue::Status> status;
             GpuConvexQueue::Metrics metrics;
+            const bool directEligible=directRequested && directModeEligible
+                && std::find(residentReady.begin(),residentReady.end(),char(0))==residentReady.end();
+            if(directEligible){
+                std::vector<GpuConvexQueue::Output> external;
+                std::vector<double> weights(thisChunk),extinction;
+                bool packed=true;
+                for(int i=0;i<thisChunk;++i){weights[i]=orientations[iStart+i].weight;
+                    for(const auto& beam:residentBeams[i]){GpuConvexQueue::Output item={};item.orientation=i;
+                        if(!ScatteringConvex::EncodeGpuBeam(beam,item.beam)){packed=false;break;}
+                        external.push_back(item);}}
+                block.residentFull.reset(new Arr2D(nAz+1,nZen+1,4,4));block.residentFull->ClearArr();
+                block.residentNS.reset(new Arr2D(nAz+1,nZen+1,4,4));block.residentNS->ClearArr();
+                const bool success=packed&&GpuConvexQueue::Trace(inputs,residentOutput,residentOrder,status,metrics,nThreads,&external,
+                    [&](const GpuConvexQueue::Input* deviceInputs,const GpuConvexQueue::Output* raw,size_t beamCount){
+                        const auto consumerStart=std::chrono::steady_clock::now();
+                        const bool ok=handlerPO->HandleResidentConvexGpu(deviceInputs,raw,beamCount,weights,
+                            *block.residentFull,*block.residentNS,block.outputEnergies,extinction);
+                        block.residentConsumer=std::chrono::duration<double>(std::chrono::steady_clock::now()-consumerStart).count();
+                        return ok;});
+                if(success){
+                    block.residentTraceKernel=metrics.kernelSeconds;
+                    for(int i=0;i<thisChunk;++i){block.energies[i]=residentEnergy[i]*weights[i];
+                        chunkPrepared[i].sinZenith=weights[i];chunkPrepared[i].extinctionOt=extinction[i];
+                        static_cast<ScatteringConvex*>(m_scattering)->AddGpuStatistics(status[i]);}
+                    block.seconds=std::chrono::duration<double>(std::chrono::high_resolution_clock::now()-tp1).count();
+                    std::cerr << "GPU convex resident direct: accepted=" << thisChunk << " CPU_fallback=0 trace_kernel_s="
+                        << metrics.kernelSeconds << " block_s=" << block.seconds << std::endl;
+                    return block;
+                }
+                block.residentFull.reset();block.residentNS.reset();block.residentConsumer=0;
+                std::cerr << "GPU convex resident direct: complete chunk fallback; no partial matrices accepted" << std::endl;
+            }else if(directRequested)std::cerr << "GPU convex resident direct: unsupported mode; using existing preparation" << std::endl;
             bool any=std::find(residentReady.begin(),residentReady.end(),char(1))!=residentReady.end();
-            bool traced=any&&GpuConvexQueue::Trace(inputs,residentOutput,residentOrder,status,metrics,nThreads);
+            bool traced=!directRequested&&any&&GpuConvexQueue::Trace(inputs,residentOutput,residentOrder,status,metrics,nThreads);
             int accepted=0;int failures[5]={};
             for(int i=0;i<thisChunk;++i){
                 if(traced&&status[i].failure>=1&&status[i].failure<=4)++failures[status[i].failure];
@@ -6427,7 +6467,10 @@ void TracerPOTotal::TraceWeightedOrientations(
             handlerPO->m_hasExtinctionOt = true;
             count++;
         }
-        phase1_total += block.seconds;
+        phase1_total += block.seconds-block.residentConsumer;
+        phase2_total += block.residentConsumer;
+        diffractionSeconds += block.residentConsumer;
+        residentTraceKernelSeconds += block.residentTraceKernel;
 
         // Phase 2: parallel diffraction for this chunk
         auto tp2 = std::chrono::high_resolution_clock::now();
@@ -6466,7 +6509,12 @@ void TracerPOTotal::TraceWeightedOrientations(
             gaussianSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
         }
 
-        if (handlerPO->IsGpuEnabled())
+        if(block.residentFull){
+            for(int p=0;p<nAz;++p)for(int t=0;t<=nZen;++t){
+                handlerPO->M.insert(p,t,(*block.residentFull)(p,t));
+                if(computeNoShadow)handlerPO->M_noshadow.insert(p,t,(*block.residentNS)(p,t));}
+        }
+        else if (handlerPO->IsGpuEnabled())
         {
             // Small physical controls are evaluated by a separate FP64 CUDA
             // aperture kernel. The expensive full coherent field still uses
@@ -6688,7 +6736,9 @@ void TracerPOTotal::TraceWeightedOrientations(
     };
     if(pipeline && myStart<myEnd)
     {
-        std::cout << "Weighted orientation pipeline: persistent CPU producer overlaps CUDA diffraction; two host chunks" << std::endl;
+        std::cout << (EnvEnabled("MBS_GPU_TRACE_CONVEX_DIRECT")
+            ? "Weighted orientation pipeline: resident producer performs CUDA tracing, preparation and diffraction"
+            : "Weighted orientation pipeline: persistent CPU producer overlaps CUDA diffraction; two host chunks") << std::endl;
         std::mutex mutex;std::condition_variable condition;
         bool requested=false,stop=false;int requestStart=0,requestCount=0;
         std::unique_ptr<PreparedBlock> ready;std::exception_ptr failure;
@@ -6959,6 +7009,7 @@ void TracerPOTotal::TraceWeightedOrientations(
                 << "trace_prepare\t" << phase1_total << "\tstage_wall_sum\n"
                 << "diffraction_and_controls\t" << phase2_total << "\tstage_wall_sum\n"
                 << "gpu_diffraction_including_packing\t" << diffractionSeconds << "\tstage_wall_sum\n"
+                << "gpu_resident_trace_kernel\t" << residentTraceKernelSeconds << "\tdevice_elapsed_subset_of_trace_prepare\n"
                 << "analytic_controls\t" << controlSeconds << "\tstage_wall_sum\n"
                 << "processing\t" << processingWall << "\twall\n"
                 << "overlap_saved\t" << std::max(0.,phase1_total+phase2_total-processingWall) << "\twall_estimate\n"
