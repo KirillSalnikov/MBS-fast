@@ -57,6 +57,7 @@ private:
     std::vector<Patch> patches;
     std::vector<Face> faces;
     std::vector<Components> means;
+    std::vector<double> meanErrors;
     std::complex<double> index;
     double wave,refinementError,forwardShadowMean,circleRadius;
     std::string shadowMode;

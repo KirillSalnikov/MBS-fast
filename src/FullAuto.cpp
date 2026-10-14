@@ -482,10 +482,9 @@ struct Engine {
         depthPilot=Int("fullauto_depth_pilot",std::min(512,initial));
         Require(depthPilot>0&&depthPilot<=maxCount&&(depthPilot&(depthPilot-1))==0,"depth pilot must be a power of two within max-orientations");
         // The generated reference grid already bounds the angular search.
-        // Prepare its analytic means once, including large grids: per-row
-        // storage is linear and the radial kernel depends on the maximum
-        // angle, not on the row count. Every refined subset then uses the
-        // same means, without repeated cold preparations or proxy jobs.
+        // Share authoritative, lazily computed means. Independent per-row
+        // refinement gives the same values for every requested subset; a
+        // large reference grid no longer forces a cold calculation of all rows.
         sharedMeans=controls;
         if(config.useGpu){int count=VisibleGpuDeviceCount();Require(count>0,"no visible CUDA GPU");
             std::vector<std::string> visible;const char* env=getenv("CUDA_VISIBLE_DEVICES");if(env){std::istringstream f(env);std::string v;while(std::getline(f,v,','))visible.push_back(v);}
@@ -919,9 +918,10 @@ struct Engine {
            &&log.find("analytic facet mean did not converge")==std::string::npos
            &&log.find("analytic facet mean is nonfinite or negative")==std::string::npos
            &&log.find("mean M11 must be positive")==std::string::npos
-           &&log.find("analytic mean numerical budget")==std::string::npos)return false;
+           &&log.find("analytic mean numerical budget")==std::string::npos
+           &&log.find("analytic combined radial kernel exceeds memory budget")==std::string::npos)return false;
         controls=false;sharedMeans=false;weights.clear();polarWeights.clear();SetMirror(false);verifiedMirrorGrids.clear();
-        Record(root+"/analytic_control_fallback.json","{\"enabled\":false,\"reason\":\"analytic mean budget/convergence limit; full sampled PO retained\"}\n");
+        Record(root+"/analytic_control_fallback.json","{\"enabled\":false,\"reason\":\"analytic mean budget/convergence limit; full sampled PO retained\",\"exception\":"+Quoted(message)+",\"diagnostic\":"+Quoted(log)+"}\n");
         std::cout<<"fullauto: analytic mean unavailable; retaining complete sampled PO without facet controls"<<std::endl;return true;
     }
     std::array<Mueller,2> Polar(double angle)const{
@@ -988,6 +988,14 @@ struct Engine {
         }
         std::cout<<"fullauto: independent dense theta pilot N="<<thetaAuditCount<<" rows="<<theta.size()<<std::endl;
         auto jobs=DirectStage(thetaAuditCount,angularValidation,8,target,theta);Samples data=Data(jobs);Matrix reference=Mean(data);
+        // A finite control-variate pilot is a signed estimator. A negative
+        // corrected mean does not make the underlying physical M11 negative.
+        // Scale interpolation checks by native positive M11 from the SAME
+        // independent jobs; retain the corrected matrices in the residual.
+        if(controls)for(size_t row=0;row<reference.size();++row){
+            double raw=0;for(const auto& job:jobs)raw+=job.controls.at(row)[0]/8;
+            reference[row][0]=raw;
+        }
         for(const auto& r:reference)Require(r[0]>0,"mean M11 must be positive in theta pilot");
         double maximum=0;int refinements=0;
         for(;;){Samples support(8),predicted(8);std::vector<double> kx;
@@ -1003,7 +1011,8 @@ struct Engine {
             Require(next.size()>knots.size(),"theta audit cannot refine support");knots.assign(next.begin(),next.end());++refinements;
         }
         std::ostringstream report;report<<"{\"count_per_seed\":"<<thetaAuditCount<<",\"reference_rows\":"<<theta.size()<<",\"support_rows\":"<<knots.size()<<",\"refinements\":"<<refinements<<",\"max_paired_residual95_scaled_M11\":"<<Number(maximum)<<",\"pilot_budget\":"<<Number(interpolation*.5)<<",\"independent_production_seeds\":true}\n";
-        Record(root+"/dense_theta_pilot.json",report.str());return knots;
+        Record(root+"/dense_theta_pilot.json",report.str());
+        Log("theta_pilot_normalization","{\"native_M11\":"+std::string(controls?"true":"false")+",\"signed_control_residuals_retained\":"+(controls?"true":"false")+"}");return knots;
     }
     #include "FullAutoTuning.inc"
     void Calibrate(const std::vector<double>& x,bool working=false) {
@@ -1017,7 +1026,8 @@ struct Engine {
                 Log("kernel_candidate","{\"pipeline\":"+std::string(k.pipeline?"true":"false")+",\"block\":"+Number(k.block)+",\"warp\":"+Quoted(k.warp)
                     +",\"seconds\":"+Number(jobs[0].seconds)+",\"all16_difference_scaled_M11\":"+Number(error)+",\"budget\":"+Number(eps/1024)
                     +",\"numerically_accepted\":"+(error<=eps/1024?"true":"false")+",\"fixed_pipeline\":"+(fixedPipeline?"true":"false")+",\"fixed_block\":"+(fixedBlock?"true":"false")+",\"fixed_warp\":"+(fixedWarp?"true":"false")+"}");
-                if(error<=eps/1024&&jobs[0].seconds<fastest){fastest=jobs[0].seconds;winner=k;}}
+                const double native=std::max(1e-6,jobs[0].seconds-jobs[0].controlSetup);
+                if(error<=eps/1024&&native<fastest){fastest=native;winner=k;}}
             Require(fastest<std::numeric_limits<double>::max(),"no validated GPU kernel");kernel=winner;}
         double best=std::numeric_limits<double>::max();int chosen=4;std::vector<std::array<double,2>> selected;
         std::vector<std::array<Mueller,2>> selectedPolar;std::vector<int> phiCandidates;
@@ -1032,7 +1042,7 @@ struct Engine {
         const int depth=working?target:std::max(1,target-4);
         for(int candidate:phiCandidates){Require(candidate>=minPhi&&candidate<=maxPhi,"phi outside configured limits");phi=candidate;
             auto train=Stage(pilot,training,8,depth,x,false),valid=Stage(pilot,validation,8,depth,x,false);
-            Samples adjusted=Data(valid,false);std::vector<std::array<double,2>> fitted(x.size(),{{1.,1.}});
+            Samples adjusted=Data(valid,false);std::vector<std::array<double,2>> fitted(x.size(),{{0.,0.}});
             std::vector<std::array<Mueller,2>> fittedPolar(x.size());std::array<int,16> accepted{};
             if(controls)for(size_t r=0;r<x.size();++r){
                 double cm[2]={};for(int seed=0;seed<8;++seed)for(int c=0;c<2;++c)cm[c]+=train[seed].controls[r][c+3]/8;
@@ -1048,25 +1058,33 @@ struct Engine {
                     if(active[0]&&active[1]){const double det=1.21-cov*cov;b[0]=(1.1*cy[0]-cov*cy[1])/det/scale[0];b[1]=(1.1*cy[1]-cov*cy[0])/det/scale[1];}
                     else {for(int c=0;c<2;++c)if(active[c])b[c]=cy[c]/1.1/scale[c];}
                     for(double& v:b)v=std::max(-4.,std::min(4.,v));
-                    double def[8],prop[8],dm=0,pm=0;
+                    double def[8],prop[8],rawValues[8],dm=0,pm=0,rm=0;
                     for(int seed=0;seed<8;++seed){const auto& c=valid[seed].controls[r];const double raw=element?valid[seed].matrix[r][element]:c[0];
+                        rawValues[seed]=raw;rm+=raw/8;
                         def[seed]=element?raw:raw+c[1]-c[3]+c[2]-c[4];prop[seed]=raw+b[0]*(c[1]-c[3])+b[1]*(c[2]-c[4]);dm+=def[seed]/8;pm+=prop[seed]/8;}
-                    double dv=0,pv=0;for(int seed=0;seed<8;++seed){dv+=std::pow(def[seed]-dm,2);pv+=std::pow(prop[seed]-pm,2);}
-                    const bool accept=pv<.7*dv;if(accept){++accepted[element];if(!element)fitted[r]=b;else for(int c=0;c<2;++c)fittedPolar[r][c][element]=b[c];}
-                    for(int seed=0;seed<8;++seed)adjusted[seed][r][element]=accept?prop[seed]:def[seed];
+                    double dv=0,pv=0,rv=0;for(int seed=0;seed<8;++seed){dv+=std::pow(def[seed]-dm,2);pv+=std::pow(prop[seed]-pm,2);rv+=std::pow(rawValues[seed]-rm,2);}
+                    const bool useDefault=!element&&dm>0&&dv<.7*rv;
+                    const bool accept=(element||pm>0)&&pv<.7*rv&&(!useDefault||pv<dv);
+                    if(accept||useDefault){++accepted[element];const auto chosen=accept?b:std::array<double,2>{{1.,1.}};
+                        if(!element)fitted[r]=chosen;else for(int c=0;c<2;++c)fittedPolar[r][c][element]=chosen[c];}
+                    for(int seed=0;seed<8;++seed)adjusted[seed][r][element]=accept?prop[seed]:(useDefault?def[seed]:rawValues[seed]);
                 }
             }
-            Statistics stats=Estimate(adjusted);double seconds=0;for(const auto& job:valid)seconds+=job.seconds;
+            Statistics stats=Estimate(adjusted);double seconds=0,setup=0;
+            for(const auto& job:valid){seconds+=std::max(1e-6,job.seconds-job.controlSetup);setup=std::max(setup,job.controlSetup);}
             const double uncertainty=ratios?std::max(stats.maxInterval,stats.maxRatioInterval):stats.maxInterval;
             // Predict finite work to reach the requested budget. Once the
             // minimum production sample count suffices, lower variance
             // alone must not justify a more expensive azimuth rule.
             const double multiplier=std::max(double(initial)/pilot,std::pow(uncertainty/statistical,2));
-            const double score=seconds*multiplier;
+            // Cache construction/lock waiting happens once, not N/pilot
+            // times. Do not make the first cold phi/kernel candidate lose
+            // solely because it prepared authoritative analytic rows.
+            const double score=seconds*multiplier+setup;
             Log("phi_candidate","{\"phi\":"+Number(phi)+",\"validation_seconds\":"+Number(seconds)+",\"projected_seconds\":"+Number(score)
-                +",\"statistical95_scaled_M11\":"+Number(stats.maxInterval)+",\"ratio95\":"+Number(stats.maxRatioInterval)+",\"pilot_count\":"+Number(pilot)
+                +",\"analytic_setup_once_seconds\":"+Number(setup)+",\"statistical95_scaled_M11\":"+Number(stats.maxInterval)+",\"ratio95\":"+Number(stats.maxRatioInterval)+",\"pilot_count\":"+Number(pilot)
                 +",\"depth\":"+Number(depth)+",\"theta_rows\":"+Number(x.size())+",\"fixed_phi\":"+Number(fixedPhi)+",\"working_recheck\":"+(working?"true":"false")+"}");
-            candidatesJson<<(first?"":",")<<"{\"phi\":"<<phi<<",\"native_seconds\":"<<Number(seconds)<<",\"score\":"<<Number(score)<<",\"validation95\":"<<Number(stats.maxInterval)<<",\"ratio95\":"<<Number(stats.maxRatioInterval)<<",\"accepted_control_rows\":[";
+            candidatesJson<<(first?"":",")<<"{\"phi\":"<<phi<<",\"native_seconds\":"<<Number(seconds)<<",\"analytic_setup_once_seconds\":"<<Number(setup)<<",\"score\":"<<Number(score)<<",\"validation95\":"<<Number(stats.maxInterval)<<",\"ratio95\":"<<Number(stats.maxRatioInterval)<<",\"accepted_control_rows\":[";
             for(int j=0;j<16;++j)candidatesJson<<(j?",":"")<<accepted[j];
             candidatesJson<<"]}";first=false;
             if(score<best){best=score;chosen=phi;selected=fitted;selectedPolar=fittedPolar;}

@@ -66,7 +66,7 @@ def reweight(data, summaries, coefficients):
 def fit_control_weights(training, validation, summaries_train, summaries_validation):
     """Independent pilot with regularized two-control covariance per angle.
 
-    The validation pilot selects between fixed b=1 and the training fit.
+    The validation pilot selects raw PO, fixed b=1, or the training fit.
     Production must use a third disjoint set of scrambles. No production
     samples enter either fitting or model selection.
     """
@@ -89,13 +89,16 @@ def fit_control_weights(training, validation, summaries_train, summaries_validat
         coefficients[row] = candidate
     proposed = reweight(validation, summaries_validation, coefficients)
     default = reweight(validation, summaries_validation, np.ones_like(coefficients))
+    raw = reweight(validation, summaries_validation, np.zeros_like(coefficients))
     candidate_var = proposed[:, :, 2].var(axis=0, ddof=1)
     default_var = default[:, :, 2].var(axis=0, ddof=1)
-    # A substantial held-out gain is required before departing from b=1.
-    use = candidate_var < .7 * default_var
-    coefficients[~use] = 1.
+    raw_var = raw[:, :, 2].var(axis=0, ddof=1)
+    use_default=(default[:, :, 2].mean(axis=0)>0)&(default_var<.7*raw_var)
+    use=(proposed[:, :, 2].mean(axis=0)>0)&(candidate_var<.7*raw_var)&(~use_default|(candidate_var<default_var))
+    coefficients[~use]=0.
+    coefficients[~use&use_default]=1.
     return coefficients, dict(rows_fitted=int(use.sum()), rows=rows,
-                             validation_selection='candidate variance<0.7*default; production seeds disjoint',
+                             validation_selection='positive M11 mean and variance<0.7*raw; production seeds disjoint',
                              regularization=.1, coefficient_bound=4.)
 
 

@@ -244,7 +244,9 @@ int RunAdaptive(Engine& e){
         auto calibrate=[&](){e.PrepareMirror(x);e.Calibrate(x);if(!e.VerifyMirror(x)){e.SetMirror(false);e.Calibrate(x);}};
         try{calibrate();if(e.thetaAuditCount)state.knots=e.AuditThetaSupport(state.knots);}catch(const std::exception& error){if(!e.DisableUnsupportedControls(error))throw;calibrate();if(e.thetaAuditCount)state.knots=e.AuditThetaSupport(state.knots);}
         ids=AdaptiveGuards(state.knots,e.theta.size());if(e.phiRecheck&&!e.fixedPhi&&ids.size()>2*x.size()){
-            Atomic(e.root+"/initial_calibration.json",Read(e.root+"/calibration.json"));e.Calibrate(WorkingGrid(e,ids),true);if(!e.VerifyMirror(WorkingGrid(e,ids))){e.SetMirror(false);e.Calibrate(WorkingGrid(e,ids),true);}}
+            Atomic(e.root+"/initial_calibration.json",Read(e.root+"/calibration.json"));
+            try{e.Calibrate(WorkingGrid(e,ids),true);if(!e.VerifyMirror(WorkingGrid(e,ids))){e.SetMirror(false);e.Calibrate(WorkingGrid(e,ids),true);}}
+            catch(const std::exception& error){if(!e.DisableUnsupportedControls(error))throw;e.Calibrate(WorkingGrid(e,ids),true);}}
         // On small grids startup, matrix assembly and tracing dominate. The
         // measured regressions do not justify grouping there; retain a
         // common budget. Explicit 'on' remains available for experiments.

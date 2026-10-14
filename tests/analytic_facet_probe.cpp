@@ -116,6 +116,15 @@ int main(int argc,char**argv)
         std::cout<<g.reflection<<' '<<g.shadow<<' '<<3*x.reflection+y.reflection<<' '<<3*x.shadow+y.shadow<<'\n';
         return 0;
     }
+    if(argc>=10 && std::string(argv[1])=="mean-cached")
+    {
+        std::vector<double>theta;for(int i=9;i<argc;++i)theta.push_back(std::atof(argv[i])*pi/180);
+        const std::string reference=std::string(argv[8])=="none"?"":argv[8];
+        AnalyticFacetAverage::Control control({Polygon(argv[2],std::atof(argv[3]))},
+            std::complex<double>(std::atof(argv[4]),std::atof(argv[5])),.532,theta,argv[6],argv[7],reference);
+        for(size_t i=0;i<theta.size();++i){const auto value=control.Mean(i);std::cout<<theta[i]*180/pi<<' '<<value.reflection<<' '<<value.shadow<<'\n';}
+        return 0;
+    }
     if(argc>=8 && std::string(argv[1])=="mean")
     {
         std::vector<double>theta;for(int i=7;i<argc;++i)theta.push_back(std::atof(argv[i])*pi/180);

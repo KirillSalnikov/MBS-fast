@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <map>
 #include <exception>
 #include <stdexcept>
 #include <cstdint>
@@ -185,11 +186,10 @@ struct Basis
     std::vector<double>g,d;
     Basis(int degree_,double maxz,double step_):degree(degree_),step(step_)
     {
-        count=std::max(size_t(4),size_t(std::ceil(maxz/step/2))*2+1);terms=degree/2+1;
-        // Two FP64 tables: at most ~1 GiB. The previous 32M-entry limit
-        // excluded the 891.3 um test prism at the required refinement.
-        if(count>1000001 || count*terms>64000000)
-            throw std::runtime_error("analytic facet kernel exceeds radial-table budget.\n  Fix: use a smaller particle or remove --analytic-facet-average.");
+        // Only the small-z core needs numerical primitive tables. Beyond it,
+        // exact Bessel primitives build the COMBINED kernel for one theta.
+        // Memory is O(degree * 64/step + maxz/step), not O(degree * maxz/step).
+        count=std::max(size_t(4),size_t(std::ceil(std::min(maxz,64.)/step/2))*2+1);terms=degree/2+1;
         g.resize(count*terms);d.resize(count*terms);
         for(size_t i=0;i<count;++i)
         {
@@ -206,9 +206,38 @@ struct Basis
             for(size_t i=0;i<count;++i){g[i*terms+l]=values[i];d[i*terms+l]=f[i];}
         }
     }
+    std::array<double,2> Exact(double z,const std::vector<double>&factor)const
+    {
+        // Ci(z) asymptotics at z>=64. Stop before the divergent tail; the
+        // omitted term is below FP64 precision in this domain.
+        double a=1,b=1,ta=1,tb=1;
+        for(int k=1;k<40;++k){
+            const double na=-ta*(2*k)*(2*k-1)/(z*z),nb=-tb*(2*k)*(2*k+1)/(z*z);
+            if(std::fabs(na)>std::fabs(ta)||std::fabs(nb)>std::fabs(tb))break;
+            a+=na;b+=nb;ta=na;tb=nb;
+            if(std::max(std::fabs(ta),std::fabs(tb))<1e-17)break;
+        }
+        const double g0=.5772156649015328606065120900824024+std::log(z)
+            -(std::sin(z)/z*a-std::cos(z)/(z*z)*b);
+        const auto j=AnalyticBackscatter::SphericalBessel(degree,z);
+        double value=factor[0]*g0,derivative=factor[0]*(1-std::cos(z))/z;
+        // H_q = integral_0^z j_q(t) dt for odd q. Its exact recurrence gives
+        // F_l=integral_0^z t*j_l(t)dt and G_l=integral_0^z F_l(t)/t dt.
+        double H=1-j[0],A=1,T=0;const double K=g0-1+j[0];
+        for(int l=2;l<=degree;l+=2){
+            if(l>2){const int q=l-1;const double next=double(q-1)/q*H-double(2*q-1)/q*j[q-1];
+                T=double(q-1)/q*T-(H+next)/q;A*=double(q-1)/q;H=next;}
+            value+=factor[l/2]*(l*A*K+l*T-H);
+            derivative+=factor[l/2]*(l*H/z-j[l-1]);
+        }
+        return {{value,derivative}};
+    }
     Green Combine(const std::vector<double>&a,double maxz)const
     {
-        size_t n=std::min(count,std::max(size_t(4),size_t(std::ceil(maxz/step))+2));
+        const double required=std::max(4.,std::ceil(maxz/step)+2);
+        if(!std::isfinite(required)||required>8388608)
+            throw std::runtime_error("analytic combined radial kernel exceeds memory budget");
+        const size_t n=size_t(required),core=std::min(count,n);
         std::vector<double>values(n,0),derivatives(n,0),factor(terms);
         double p=1;
         for(size_t l=0;l<terms;++l)
@@ -216,9 +245,19 @@ struct Basis
             if(l)p*=-(2*l-1.)/(2*l);
             factor[l]=a[2*l]*(l%2 ? -1:1)*p;
         }
-        for(size_t i=0;i<n;++i)
+        for(size_t i=0;i<core;++i)
             for(size_t l=0;l<terms;++l)
             {values[i]+=factor[l]*g[i*terms+l];derivatives[i]+=factor[l]*d[i*terms+l];}
+        if(core<n){
+            const double z0=(core-1)*step;const auto anchor=Exact(z0,factor);
+            const double offset=values[core-1]-anchor[0],fluxOffset=z0*(derivatives[core-1]-anchor[1]);
+            for(size_t i=core;i<n;++i){const double z=i*step;const auto primitive=Exact(z,factor);
+                // Preserve the integrated small-z core, including its tiny
+                // Simpson error, with continuous value and derivative.
+                values[i]=primitive[0]+offset+fluxOffset*std::log(z/z0);
+                derivatives[i]=primitive[1]+fluxOffset/z;
+            }
+        }
         return Green(step,std::move(values),std::move(derivatives));
     }
 };
@@ -347,7 +386,10 @@ Control::Control(const std::vector<Face>&input,C refractive,double wavelength,
         std::vector<size_t> ids;for(double q:theta){auto found=std::lower_bound(all.begin(),all.end(),q-1e-13);
             if(found==all.end()||std::fabs(*found-q)>1e-13)throw std::runtime_error("theta is absent from the analytic mean reference grid");
             ids.push_back(found-all.begin());}
-        PrepareCachedMeans(all,meanCache);const auto full=means;means.clear();for(size_t i:ids)means.push_back(full.at(i));
+        // Canonical reference angles define cache keys; only requested rows
+        // are computed. Per-row refinement is independent of the subset.
+        std::vector<double> canonical;for(size_t i:ids)canonical.push_back(all.at(i));
+        PrepareCachedMeans(canonical,meanCache);
     }
 }
 
@@ -362,7 +404,7 @@ void Control::PrepareCachedMeans(const std::vector<double>&theta,const std::stri
         const unsigned char *p=static_cast<const unsigned char*>(data);
         for(size_t i=0;i<bytes;++i){fingerprint^=p[i];fingerprint*=1099511628211ULL;}
     };
-    const char version[]="MBS_PHYSICAL_FACET_MEAN_V2";mix(version,sizeof(version));
+    const char version[]="MBS_PHYSICAL_FACET_MEAN_V3_COMPACT_ROWS";mix(version,sizeof(version));
     double re=index.real(),im=index.imag();mix(&re,sizeof(re));mix(&im,sizeof(im));mix(&wave,sizeof(wave));
     mix(shadowMode.data(),shadowMode.size());
     const size_t count=faces.size();mix(&count,sizeof(count));
@@ -372,8 +414,6 @@ void Control::PrepareCachedMeans(const std::vector<double>&theta,const std::stri
         const size_t vertices=face.vertices.size();mix(&vertices,sizeof(vertices));
         for(const Vec &v:face.vertices){mix(&v.x,sizeof(double));mix(&v.y,sizeof(double));mix(&v.z,sizeof(double));}
     }
-    const size_t rows=theta.size();mix(&rows,sizeof(rows));
-    for(double angle:theta)mix(&angle,sizeof(angle));
     struct Lock
     {
         int fd;
@@ -384,27 +424,31 @@ void Control::PrepareCachedMeans(const std::vector<double>&theta,const std::stri
         }
         ~Lock(){::flock(fd,LOCK_UN);::close(fd);}
     } lock(path);
+    struct Cached {Components value;double error;};std::map<double,Cached> stored;
     {
-        std::ifstream file(path.c_str());std::string magic;std::uint64_t saved=0;size_t n=0;double error=0;
-        if(file>>magic>>saved>>n>>error && magic=="MBS_PHYSICAL_FACET_MEAN_V2" && saved==fingerprint
-            && n==theta.size() && std::isfinite(error) && error>=0 && error<1e-4)
-        {
-            std::vector<Components> loaded(n);bool valid=true;
-            for(size_t i=0;i<n;++i)
-            {
-                double angle=0;
-                if(!(file>>angle>>loaded[i].reflection>>loaded[i].shadow) || angle!=theta[i]
-                    || !std::isfinite(loaded[i].reflection+loaded[i].shadow) || loaded[i].reflection<0 || loaded[i].shadow<0)
-                {valid=false;break;}
-            }
-            if(valid){means.swap(loaded);refinementError=error;return;}
+        std::ifstream file(path.c_str());std::string magic;std::uint64_t saved=0;size_t n=0;
+        if(file>>magic>>saved>>n && magic==version && saved==fingerprint && n<=1000000){
+            bool valid=true;
+            for(size_t i=0;i<n;++i){double angle;Cached row;
+                if(!(file>>angle>>row.value.reflection>>row.value.shadow>>row.error)
+                    || !std::isfinite(angle)||angle<0||angle>pi
+                    || !std::isfinite(row.value.reflection+row.value.shadow)||row.value.reflection<0||row.value.shadow<0
+                    || !std::isfinite(row.error)||row.error<0||row.error>=1e-4||!stored.emplace(angle,row).second){valid=false;break;}}
+            if(!valid)stored.clear();
         }
     }
-    PrepareMeans(theta);
+    std::vector<double> missing;for(double angle:theta)if(!stored.count(angle))missing.push_back(angle);
+    if(!missing.empty()){
+        PrepareMeans(missing);
+        for(size_t i=0;i<missing.size();++i)stored[missing[i]]=Cached{means[i],meanErrors[i]};
+    }
+    means.clear();meanErrors.clear();refinementError=0;
+    for(double angle:theta){const auto& row=stored.at(angle);means.push_back(row.value);meanErrors.push_back(row.error);refinementError=std::max(refinementError,row.error);}
+    if(missing.empty())return;
     const std::string temporary=path+".tmp."+std::to_string(::getpid());
     std::ofstream file(temporary.c_str());file<<std::setprecision(17)
-        <<"MBS_PHYSICAL_FACET_MEAN_V2 "<<fingerprint<<' '<<theta.size()<<' '<<refinementError<<'\n';
-    for(size_t i=0;i<theta.size();++i)file<<theta[i]<<' '<<means[i].reflection<<' '<<means[i].shadow<<'\n';
+        <<version<<' '<<fingerprint<<' '<<stored.size()<<'\n';
+    for(const auto& row:stored)file<<row.first<<' '<<row.second.value.reflection<<' '<<row.second.value.shadow<<' '<<row.second.error<<'\n';
     file.flush();if(!file)throw std::runtime_error("cannot save analytic mean cache.\n  Fix: check disk space and cache permissions.");
     file.close();if(::rename(temporary.c_str(),path.c_str())!=0)
         throw std::runtime_error("cannot publish analytic mean cache.\n  Fix: check cache path permissions.");
@@ -474,7 +518,7 @@ Components Control::EvaluateUnit(const Vec&u,const Vec&v)const
 
 void Control::PrepareMeans(const std::vector<double>&theta)
 {
-    if(index==C(1,0)){means.assign(theta.size(),Components{0,0});return;}
+    if(index==C(1,0)){means.assign(theta.size(),Components{0,0});meanErrors.assign(theta.size(),0);refinementError=0;return;}
     double maxDiameter=0,maxQ=0;
     for(const Patch&p:patches)maxDiameter=std::max(maxDiameter,p.diameter);
     for(double angle:theta)maxQ=std::max(maxQ,4*pi/wave*std::sin(angle/2));
@@ -504,6 +548,7 @@ void Control::PrepareMeans(const std::vector<double>&theta)
         if(g==representatives.size()){representatives.push_back(i);multiplicity.push_back(1);}else ++multiplicity[g];
     }
     means.assign(theta.size(),Components{0,0});
+    meanErrors.assign(theta.size(),0);std::vector<unsigned char> converged(theta.size(),0);refinementError=0;
     std::vector<Components>previous(theta.size(),Components{0,0});
     double lastReflection=0,lastShadow=0,lastAngle=0;
     for(int pass=0;pass<5;++pass)
@@ -519,6 +564,7 @@ void Control::PrepareMeans(const std::vector<double>&theta)
         for(long long indexRow=0;indexRow<static_cast<long long>(theta.size());++indexRow)
         {
             const size_t row=static_cast<size_t>(indexRow);
+            if(converged[row])continue;
             try {
             double h2,c2;Angles(theta[row],h2,c2);double reflection=0,shadow=0,Q=4*pi/wave*std::sqrt(h2);
             if(Q>0)
@@ -552,17 +598,20 @@ void Control::PrepareMeans(const std::vector<double>&theta)
         // Only independent rows run in parallel. Preserve the serial order
         // of the convergence reduction and all sums within each row.
         for(size_t row=0;row<theta.size();++row){
+            if(converged[row])continue;
             if(errors[row])std::rethrow_exception(errors[row]);
             const double reflection=means[row].reflection,shadow=means[row].shadow;
             if(pass){
                 double re=std::fabs(reflection-previous[row].reflection)/std::max(std::fabs(reflection),1e-100);
                 double se=std::fabs(shadow-previous[row].shadow)/std::max(std::fabs(reflection)+std::fabs(shadow),1e-100);
+                const double error=std::max(re,se);
+                if(error<1e-4){converged[row]=1;meanErrors[row]=error;refinementError=std::max(refinementError,error);}
                 if(std::max(re,se)>worst){lastReflection=re;lastShadow=se;lastAngle=theta[row]*180/pi;}
                 worst=std::max(worst,std::max(re,se));
             }
             previous[row]=means[row];
         }
-        if(pass && worst<1e-4){refinementError=worst;return;}
+        if(std::find(converged.begin(),converged.end(),0)==converged.end())return;
         if(pass==4)
             throw std::runtime_error("analytic facet mean did not converge within1e-4 at theta="
                 +std::to_string(lastAngle)+", reflection change="+std::to_string(lastReflection)

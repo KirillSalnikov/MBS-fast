@@ -51,7 +51,10 @@ def main():
         commands = [(job/'command.args').read_text().splitlines()
                     for job in (result/'jobs').iterdir() if (job/'complete.txt').exists()]
         if name == 'shared':
-            assert all('--analytic-mean-reference-grid' in c for c in commands)
+            # Resource/depth pilots deliberately use native PO. Only workers
+            # using controls must share the authoritative mean-row cache.
+            controlled=[c for c in commands if '--analytic-facet-average' in c]
+            assert controlled and all('--analytic-mean-reference-grid' in c for c in controlled)
             assert len(list(result.glob('*.cache'))) == 1
         report = audit(result, ROOT/'scripts/gpu_campaign.py', dense=True, dense_workers=2)
         records.append(dict(variant=name, controller_seconds=seconds, state=state, audit=report))

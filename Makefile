@@ -230,6 +230,8 @@ test_gpu_optimization: cpu
 
 test_analytic_facets: cpu
 	OPENBLAS_NUM_THREADS=1 python3 tests/test_analytic_facets.py
+	OPENBLAS_NUM_THREADS=1 python3 tests/test_analytic_radial.py
+	OPENBLAS_NUM_THREADS=1 python3 tests/test_analytic_mean_cache.py
 
 test_analytic_directions:
 	OPENBLAS_NUM_THREADS=1 python3 tests/test_analytic_directions.py
