@@ -43,8 +43,26 @@ int main(int argc,const char* argv[]){
         if(getenv("TASK_MBS_WARM_CACHE"))e.WarmCache();
         const std::vector<int> depths={1,2,config.maxReflections};FullAuto::Budgets counts(3,std::vector<int>(e.theta.size()));std::vector<size_t> ids;
         for(size_t i=0;i<e.theta.size();++i){ids.push_back(i);counts[0][i]=e.initial;counts[1][i]=i%2?e.initial/2:e.initial/4;counts[2][i]=e.initial/4;}
+        FullAuto::AdditionalWork forecast(e,e.seeds.data());const auto planned=forecast.Forecast(FullAuto::BudgetRequests(e,depths,counts,ids));
         const double begin=FullAuto::Seconds();auto result=FullAuto::EvaluateBudget(e,depths,counts,ids,e.seeds.data());
+        size_t native=0;for(const auto& item:e.cache)if(!item.second.assembled&&std::find(e.seeds.begin(),e.seeds.end(),item.second.seed)!=e.seeds.end())++native;
+        FullAuto::AdditionalWork cached(e,e.seeds.data());const auto remaining=cached.Forecast(FullAuto::BudgetRequests(e,depths,counts,ids));
+        if(e.QueueEnabled()){
+            FullAuto::Require(remaining.jobs==0,"completed frozen allocation forecast new jobs");
+            if(!getenv("TASK_MBS_WARM_CACHE"))FullAuto::Require(planned.jobs==native,"forecast differs from native frozen job count");
+        }
+        FullAuto::Atomic(e.root+"/work_forecast.json","{\"planned_native_jobs\":"+FullAuto::Number(planned.jobs)+",\"saved_native_jobs\":"+FullAuto::Number(native)+",\"remaining_native_jobs\":"+FullAuto::Number(remaining.jobs)+"}\n");
         FullAuto::WriteMatrix(e.root+"/frozen_matrix.dat",e.theta,FullAuto::Mean(FullAuto::Combine(result.levels)));
-        FullAuto::Atomic(e.root+"/frozen_seconds.txt",FullAuto::Number(FullAuto::Seconds()-begin)+"\n");return 0;
+        FullAuto::Atomic(e.root+"/frozen_seconds.txt",FullAuto::Number(FullAuto::Seconds()-begin)+"\n");
+        if(getenv("TASK_MBS_AUDIT_FAILURE")){
+            FullAuto::AdaptiveState state;state.counts=counts;state.knots=ids;state.valid.assign(ids.size(),false);state.coarse.assign(ids.size(),false);state.previous.resize(ids.size());
+            e.statistical=1e-10;e.eps=1e-9;e.local=true;e.localPolicy="off";
+            FullAuto::Require(!FullAuto::IndependentAudit(e,state,depths,result,ids),"deliberately tight real audit unexpectedly passed");
+            FullAuto::Require(state.counts!=counts,"real failed audit did not schedule work");FullAuto::SaveAdaptive(e,state);
+            FullAuto::AdaptiveState restored=state;FullAuto::Require(FullAuto::RestoreAdaptive(e,restored),"cannot restore failed real audit");
+            const unsigned previousSerial=restored.auditSerial;
+            FullAuto::Require(!FullAuto::IndependentAudit(e,restored,depths,result,ids)&&restored.auditSerial>previousSerial,"restored audit reused seeds or passed without precision");
+        }
+        return 0;
     }catch(const std::exception& error){std::cerr<<error.what()<<std::endl;return 1;}
 }

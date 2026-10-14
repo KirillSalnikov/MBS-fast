@@ -1,5 +1,7 @@
 #pragma once
 #include <array>
+#include <cstddef>
+#include <utility>
 #include <vector>
 class ArgPP;
 struct RunConfig;
@@ -12,6 +14,8 @@ Matrix CubicInterpolate(const std::vector<double>& x, const Matrix& y,
                         const std::vector<double>& query);
 Matrix LocalCubicInterpolate(const std::vector<double>& x,const Matrix& y,
                             const std::vector<double>& query);
+// Sparse weights of the very same local Hermite interpolant (up to 5 nodes).
+std::vector<std::pair<size_t,double>> LocalCubicWeights(const std::vector<double>& x,double query);
 struct Statistics {
     Matrix mean, interval, ratioInterval;
     double maxInterval = 0, maxRatioInterval = 0;

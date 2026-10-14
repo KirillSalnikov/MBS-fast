@@ -216,6 +216,19 @@ Matrix LocalCubicInterpolate(const std::vector<double>& x,const Matrix& y,const 
         for(int c=0;c<16;++c)output[r][c]=(2*u*u*u-3*u*u+1)*y[i][c]+(u*u*u-2*u*u+u)*h*derivative[i][c]+(-2*u*u*u+3*u*u)*y[i+1][c]+(u*u*u-u*u)*h*derivative[i+1][c];}
     return output;
 }
+std::vector<std::pair<size_t,double>> LocalCubicWeights(const std::vector<double>& x,double q){
+    const size_t n=x.size();Require(n>=2&&q>=x.front()-1e-12&&q<=x.back()+1e-12,"invalid local spline query");
+    size_t i=std::upper_bound(x.begin(),x.end(),q)-x.begin();i=std::min(i?i-1:0,n-2);
+    const double h=x[i+1]-x[i],u=(q-x[i])/h;Require(h>0,"invalid local spline interval");
+    std::map<size_t,double> weights;weights[i]=2*u*u*u-3*u*u+1;weights[i+1]=-2*u*u*u+3*u*u;
+    const size_t width=std::min(size_t(4),n);
+    for(size_t at:{i,i+1}){const size_t first=std::min(at?at-1:0,n-width);const double factor=h*(at==i?u*u*u-2*u*u+u:u*u*u-u*u);
+        for(size_t j=first;j<first+width;++j){double coefficient=0;
+            if(j==at){for(size_t k=first;k<first+width;++k)if(k!=at)coefficient+=1/(x[at]-x[k]);}
+            else{coefficient=1/(x[j]-x[at]);for(size_t k=first;k<first+width;++k)if(k!=at&&k!=j)coefficient*=(x[at]-x[k])/(x[j]-x[k]);}
+            weights[j]+=factor*coefficient;}}
+    std::vector<std::pair<size_t,double>> result;for(const auto& w:weights)if(w.second!=0)result.push_back(w);return result;
+}
 double Difference(const Matrix& a,const Matrix& b,const Matrix& reference) {
     Require(a.size()==b.size()&&a.size()==reference.size(),"difference dimensions differ");double e=0;
     for(size_t i=0;i<a.size();++i){Require(reference[i][0]>0,"invalid difference scale");for(int j=0;j<16;++j)e=std::max(e,std::fabs(a[i][j]-b[i][j])/reference[i][0]);}return e;

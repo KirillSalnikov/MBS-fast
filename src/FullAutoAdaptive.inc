@@ -5,18 +5,17 @@ struct AdaptiveData {std::vector<Samples> levels;std::vector<std::vector<double>
 std::vector<int> PeakBudgets(const Budgets& n){std::vector<int> result;for(const auto& level:n)result.push_back(*std::max_element(level.begin(),level.end()));return result;}
 double StatisticalError(const Engine& e,const Statistics& stats){return e.ratios?std::max(stats.maxInterval,stats.maxRatioInterval):stats.maxInterval;}
 bool VaryingBudgets(const Budgets& ns,const std::vector<size_t>& ids){for(const auto& level:ns)for(size_t id:ids)if(level[id]!=level[ids.front()])return true;return false;}
-void GateLocalCost(Engine& e,Budgets& proposed,const std::vector<int>& depths,const std::vector<size_t>& ids){
-    if(e.localPolicy!="auto")return;
-    std::ostringstream report;report<<"{\"policy\":\"auto\",\"levels\":[";
-    for(size_t l=0;l<proposed.size();++l){double trace=0,diffraction=0;size_t observations=0;
-        for(const auto& entry:e.cache){const auto& job=entry.second;if(job.assembled||job.offset||job.depth!=depths[l]||job.phi!=e.phi||job.traceSeconds<=0||job.diffractionSeconds<=0)continue;
-            trace+=job.traceSeconds/job.count;diffraction+=job.diffractionSeconds/job.count/job.inputAngles.size();++observations;}
-        bool unified=false;double grouped=0,global=0;
-        if(observations){trace/=observations;diffraction/=observations;std::map<int,size_t> groups;int maximum=0;for(size_t id:ids){++groups[proposed[l][id]];maximum=std::max(maximum,proposed[l][id]);}
-            for(const auto& group:groups)grouped+=group.first*(trace+diffraction*group.second);
-            global=maximum*(trace+diffraction*ids.size());
-            if(grouped>global*1.10){for(size_t id:ids)proposed[l][id]=maximum;unified=true;}}
-        report<<(l?",":"")<<"{\"level\":"<<l<<",\"observations\":"<<observations<<",\"projected_local_seconds_per_seed\":"<<Number(grouped)<<",\"projected_global_seconds_per_seed\":"<<Number(global)<<",\"unified\":"<<(unified?"true":"false")<<"}";
+#include "FullAutoWork.inc"
+void GateLocalCost(Engine& e,AdditionalWork& work,Budgets& proposed,const std::vector<int>& depths,const std::vector<size_t>& ids){
+    if(e.localPolicy!="auto"||!e.local)return;
+    std::ostringstream report;report<<"{\"policy\":\"additional native work\",\"scope\":\"sum of worker seconds; excludes controller assembly; not wall time\",\"levels\":[";
+    for(size_t l=0;l<proposed.size();++l){Budgets uniform=proposed;int maximum=0;for(size_t id:ids)maximum=std::max(maximum,proposed[l][id]);for(size_t id:ids)uniform[l][id]=maximum;
+        const auto local=work.Forecast(BudgetRequests(e,depths,proposed,ids)),global=work.Forecast(BudgetRequests(e,depths,uniform,ids));
+        const bool unified=local.profiled&&global.profiled&&local.seconds>global.seconds*1.10;
+        if(unified)proposed=uniform;
+        report<<(l?",":"")<<"{\"level\":"<<l<<",\"profiled\":"<<(local.profiled&&global.profiled?"true":"false")
+            <<",\"additional_local_worker_seconds\":"<<Number(local.seconds)<<",\"additional_global_worker_seconds\":"<<Number(global.seconds)
+            <<",\"local_native_jobs\":"<<local.jobs<<",\"global_native_jobs\":"<<global.jobs<<",\"unified\":"<<(unified?"true":"false")<<"}";
     }report<<"]}";e.Record(e.root+"/local_cost_gate.json",report.str());
 }
 std::vector<size_t> AdaptiveGuards(const std::vector<size_t>& knots,size_t size,bool final=false){
@@ -26,17 +25,11 @@ std::vector<size_t> AdaptiveGuards(const std::vector<size_t>& knots,size_t size,
 }
 AdaptiveData EvaluateBudget(Engine& e,const std::vector<int>& depths,const Budgets& counts,const std::vector<size_t>& ids,const unsigned* seeds){
     const auto x=Angles(e.theta,ids);AdaptiveData result;result.analytic.assign(ids.size(),0);std::ostringstream sources;
-    std::vector<Engine::WorkRequest> requests;
-    for(size_t level=0;level<depths.size();++level){std::map<int,std::vector<double>> groups;
-        for(size_t row=0;row<ids.size();++row)groups[counts[level][ids[row]]].push_back(x[row]);
-        for(auto& group:groups){auto& subset=group.second;if(subset.size()==1){subset.push_back(x[0]==subset[0]?x.back():x[0]);std::sort(subset.begin(),subset.end());}
-            requests.push_back(Engine::WorkRequest{group.first,0,depths[level],level&&e.depthSharing?depths[level-1]:0,subset});
-            if(level&&!e.depthSharing)requests.push_back(Engine::WorkRequest{group.first,0,depths[level-1],0,subset});}}
-    e.Prefetch(requests,seeds);
+    e.Prefetch(BudgetRequests(e,depths,counts,ids),seeds);
     for(size_t level=0;level<depths.size();++level){Samples data(8,Matrix(ids.size()));std::vector<double> cost(ids.size());std::map<int,std::vector<size_t>> groups;
         for(size_t r=0;r<ids.size();++r)groups[counts[level][ids[r]]].push_back(r);
         for(const auto& group:groups){std::vector<double> subset;for(size_t r:group.second)subset.push_back(x[r]);
-            if(subset.size()==1){subset.push_back(x[0]==subset[0]?x.back():x[0]);std::sort(subset.begin(),subset.end());}
+            if(subset.size()==1){subset.push_back(x.size()>1?(x[0]==subset[0]?x.back():x[0]):(e.theta.front()==subset[0]?e.theta.back():e.theta.front()));std::sort(subset.begin(),subset.end());}
             std::vector<Job> upper,lower;if(level&&e.depthSharing){auto pair=e.SharedStage(group.first,seeds,8,depths[level],depths[level-1],subset);upper=pair.first;lower=pair.second;}else upper=e.Stage(group.first,seeds,8,depths[level],subset);
             Samples value=e.Data(upper);double seconds=e.Cost(upper,group.first);
             for(size_t s=0;s<8;++s)sources<<level<<" 1 "<<group.first<<' '<<seeds[s]<<' '<<upper[s].folder<<'\n';
@@ -58,7 +51,8 @@ std::vector<int> AllocateRow(const Engine& e,const AdaptiveData& data,const Budg
         auto ratio=Allocate(values,costs,ns,reference,e.statistical*.85);for(size_t l=0;l<proposed.size();++l)proposed[l]=std::max(proposed[l],ratio[l]);}
     return proposed;
 }
-struct AdaptiveState {int round=0,streak=0;std::vector<size_t> knots;Budgets counts;Matrix previous;std::vector<bool> valid,coarse;};
+#include "FullAutoRefinement.inc"
+struct AdaptiveState {int round=0,streak=0;unsigned auditSerial=0;std::vector<size_t> knots;Budgets counts;Matrix previous;std::vector<bool> valid,coarse;};
 std::string SaveRoundDiagnostics(Engine& e,const AdaptiveState& state,const AdaptiveData& stage,const Statistics& stats,const std::vector<size_t>& ids,const std::vector<double>& errors,const std::vector<double>& x){
     const std::string folder=e.root+"/round_snapshots/round"+Number(state.round)+"_"+Hash(stage.sources);
     Directory(folder);WriteMatrix(folder+"/mueller_evaluated.dat",x,stats.mean);WriteGrid(folder+"/theta_support.csv",Angles(e.theta,state.knots));
@@ -75,13 +69,13 @@ std::string SaveRoundDiagnostics(Engine& e,const AdaptiveState& state,const Adap
 }
 void SaveAdaptive(Engine& e,const AdaptiveState& state,const std::string& phase="active"){
     std::ostringstream payload;payload<<std::setprecision(17)<<e.signature<<' '<<phase<<' '<<state.round<<' '<<state.streak<<' '<<e.phi<<' '<<e.controls<<' '<<e.sharedMeans<<' '<<e.mirror<<' '<<e.mirrorError<<' '<<e.kernel.block<<' '<<e.kernel.pipeline<<' '<<e.kernel.warp<<'\n';
-    payload<<e.depthSharing<<' '<<e.depthVerified<<' '<<e.local<<'\n';payload<<e.weightTheta.size()<<'\n';for(size_t r=0;r<e.weightTheta.size();++r){payload<<e.weightTheta[r];
+    payload<<state.auditSerial<<'\n';payload<<e.depthSharing<<' '<<e.depthVerified<<' '<<e.local<<'\n';payload<<e.weightTheta.size()<<'\n';for(size_t r=0;r<e.weightTheta.size();++r){payload<<e.weightTheta[r];
         const auto b=e.Polar(e.weightTheta[r]);for(int j=0;j<16;++j)for(int c=0;c<2;++c)payload<<' '<<(j?b[c][j]:(e.weights.empty()?1:e.weights[r][c]));payload<<'\n';}
     payload<<state.knots.size();for(size_t k:state.knots)payload<<' '<<k;payload<<'\n';
     const auto evaluated=AdaptiveGuards(state.knots,e.theta.size());std::set<size_t> saved(evaluated.begin(),evaluated.end());
     for(size_t i=0;i<e.theta.size();++i)if(state.valid[i])saved.insert(i);
     payload<<state.counts.size()<<' '<<saved.size()<<'\n';for(size_t i:saved){payload<<i<<' '<<state.valid[i]<<' '<<state.coarse[i];for(const auto& level:state.counts)payload<<' '<<level[i];for(double v:state.previous[i])payload<<' '<<v;payload<<'\n';}
-    Atomic(e.root+"/adaptive_checkpoint.tsv","2 "+Hash(payload.str())+"\n"+payload.str());
+    Atomic(e.root+"/adaptive_checkpoint.tsv","3 "+Hash(payload.str())+"\n"+payload.str());
     std::ostringstream history;history<<"{\"phase\":"<<Quoted(phase)<<",\"round\":"<<state.round<<",\"pass_streak\":"<<state.streak<<",\"phi\":"<<e.phi<<",\"theta_support_indices\":[";
     for(size_t i=0;i<state.knots.size();++i)history<<(i?",":"")<<state.knots[i];history<<"],\"counts_by_level\":[";
     for(size_t level=0;level<state.counts.size();++level){if(level)history<<',';std::map<int,std::vector<size_t>> groups;for(size_t id:saved)groups[state.counts[level][id]].push_back(id);
@@ -91,9 +85,10 @@ void SaveAdaptive(Engine& e,const AdaptiveState& state,const std::string& phase=
 }
 bool RestoreAdaptive(Engine& e,AdaptiveState& state){
     const std::string path=e.root+"/adaptive_checkpoint.tsv";if(!Exists(path))return false;
-    const std::string text=Read(path);const size_t newline=text.find('\n');std::istringstream header(text.substr(0,newline));int version;std::string hash;Require(bool(header>>version>>hash)&&version==2,"unsupported checkpoint schema");
+    const std::string text=Read(path);const size_t newline=text.find('\n');std::istringstream header(text.substr(0,newline));int version;std::string hash;Require(bool(header>>version>>hash)&&(version==2||version==3),"unsupported checkpoint schema");
     const std::string payload=text.substr(newline+1);Require(Hash(payload)==hash,"controller checkpoint changed");std::istringstream file(payload);std::string signature,phase;
     Require(bool(file>>signature>>phase>>state.round>>state.streak>>e.phi>>e.controls>>e.sharedMeans>>e.mirror>>e.mirrorError>>e.kernel.block>>e.kernel.pipeline>>e.kernel.warp)&&signature==e.signature,"checkpoint inputs changed");
+    if(version>=3)file>>state.auditSerial;else state.auditSerial=unsigned(state.round)*8u+8u;
     file>>e.depthSharing>>e.depthVerified>>e.local;size_t rows;file>>rows;e.weightTheta.resize(rows);e.weights.resize(rows);e.polarWeights.resize(rows);
     for(size_t r=0;r<rows;++r){file>>e.weightTheta[r];for(int j=0;j<16;++j)for(int c=0;c<2;++c){double v;Require(bool(file>>v)&&std::isfinite(v),"invalid checkpoint coefficient");if(j)e.polarWeights[r][c][j]=v;else e.weights[r][c]=v;}}
     if(!e.controls){e.weights.clear();e.polarWeights.clear();}const double savedMirror=e.mirrorError;e.SetMirror(e.mirror);e.mirrorError=savedMirror;size_t knots;file>>knots;state.knots.resize(knots);for(auto& k:state.knots)file>>k;
@@ -162,7 +157,48 @@ InterpolationResult CommonPrefixInterpolation(Engine& e,const AdaptiveState& sta
     Atomic(e.root+"/interpolation_"+label+"_sources.tsv",sources.str());Atomic(e.root+"/interpolation_"+label+"_budgets.csv",budgets.str());return result;
 }
 void SaveReplicaMatrices(Engine& e,const std::string& label,const Samples& data,const std::vector<double>& x,const unsigned* seeds){Directory(e.root+"/replicas");for(int s=0;s<8;++s)WriteMatrix(e.root+"/replicas/"+label+"_seed"+Number(seeds[s])+".dat",x,data[s]);}
-bool IndependentAudit(Engine& e,AdaptiveState& state,const std::vector<int>& depths,const Samples& productionSamples,const std::vector<size_t>& productionIds){
+void RefineFailedAudit(Engine& e,AdaptiveState& state,const std::vector<int>& depths,
+        const AdaptiveData& productionData,const std::vector<size_t>& productionIds,const AdaptiveData& audit,
+        const std::vector<size_t>& ids,const std::vector<int>& observedCounts,const Statistics& stats,
+        const Statistics& output,const InterpolationResult& interp){
+    const Budgets before=state.counts;Budgets proposed=before;AdditionalWork work(e,e.seeds.data());
+    std::set<size_t> knots(state.knots.begin(),state.knots.end());knots.insert(interp.bad.begin(),interp.bad.end());
+    std::ostringstream log;log<<RefinementHeader();
+    for(size_t r=0;r<ids.size();++r){const auto metric=WorstMetric(stats,r,e.ratios);if(metric.error<=e.statistical)continue;
+        RefineError(e,work,depths,before,proposed,ids,audit,{{ids[r],1}},metric,stats.mean[r],e.theta[ids[r]],"audit_sampled",log,{},observedCounts);knots.insert(ids[r]);}
+    for(size_t q=0;q<e.theta.size();++q){const auto metric=WorstMetric(output,q,e.ratios);if(metric.error<=e.statistical)continue;
+        RefineError(e,work,depths,before,proposed,ids,audit,QueryWeights(e,state.knots,e.theta[q]),metric,output.mean[q],e.theta[q],"audit_interpolated",log,{},observedCounts);}
+    const auto production=Mean(Combine(productionData.levels));std::vector<Matrix> pm,am;
+    for(const auto& level:productionData.levels)pm.push_back(Mean(level));for(const auto& level:audit.levels)am.push_back(Mean(level));
+    for(size_t r=0;r<productionIds.size();++r){const size_t id=productionIds[r],row=std::lower_bound(ids.begin(),ids.end(),id)-ids.begin();ErrorMetric metric;
+        for(int j=0;j<16;++j){const double delta=std::fabs(production[r][j]-stats.mean[row][j])/production[r][0];if(delta>metric.error)metric=ErrorMetric(j,false,delta);}
+        if(metric.error<=e.eps)continue;
+        std::vector<double> discrepancy(depths.size());for(size_t l=0;l<depths.size();++l)discrepancy[l]=pm[l][r][metric.element]-am[l][row][metric.element];
+        RefineError(e,work,depths,before,proposed,ids,audit,{{id,1}},metric,stats.mean[row],e.theta[id],"audit_mean_difference",log,discrepancy,observedCounts);knots.insert(id);
+    }
+    state.knots.assign(knots.begin(),knots.end());
+    // New midpoint guards inherit the surrounding requested budget. Explicit
+    // refinements at failed audit nodes must not be overwritten by inheritance.
+    const auto nextIds=AdaptiveGuards(state.knots,e.theta.size());
+    for(size_t id:nextIds)if(!std::binary_search(ids.begin(),ids.end(),id)){
+        const auto upper=std::upper_bound(ids.begin(),ids.end(),id);const size_t right=upper==ids.end()?ids.back():*upper,left=upper==ids.begin()?ids.front():*(upper-1);
+        for(auto& level:proposed)level[id]=std::max(level[id],std::max(level[left],level[right]));}
+    if(!e.local)for(auto& level:proposed){int maximum=0;for(size_t id:nextIds)maximum=std::max(maximum,level[id]);for(size_t id:nextIds)level[id]=maximum;}
+    GateLocalCost(e,work,proposed,depths,nextIds);
+    std::ostringstream budgets;budgets<<"theta_deg,level,previous_count,next_count\n";
+    for(size_t id:nextIds)for(size_t l=0;l<depths.size();++l)budgets<<Number(e.theta[id])<<','<<l<<','<<before[l][id]<<','<<proposed[l][id]<<'\n';
+    const auto filename="audit_refinement_budget_"+Number(state.auditSerial)+".csv";Atomic(e.root+"/"+filename,budgets.str());
+    RefinementLog(e,state.round,"audit_error_growth",log);e.Log("audit_refinement","{\"counts\":"+Quoted(filename)+",\"next_audit_requires_fresh_seeds\":true}");state.counts=proposed;
+}
+std::array<unsigned,8> ReserveAuditSeeds(Engine& e,AdaptiveState& state){
+    Require(state.auditSerial<976562u,"independent audit seed namespace exhausted");
+    const unsigned serial=state.auditSerial++;std::array<unsigned,8> seeds;
+    for(int s=0;s<8;++s){seeds[s]=1000000000u+serial*512u+unsigned(s)*17u;Require(std::find(e.seeds.begin(),e.seeds.end(),seeds[s])==e.seeds.end(),"final/production seed overlap");}
+    // Reserve before reading any audit result. A crash can skip an unused
+    // holdout, but cannot reuse one whose data influenced an allocation.
+    SaveAdaptive(e,state);return seeds;
+}
+bool IndependentAudit(Engine& e,AdaptiveState& state,const std::vector<int>& depths,const AdaptiveData& productionData,const std::vector<size_t>& productionIds){
     if(!e.finalAudit){e.Record(e.root+"/independent_final_validation.json","{\"enabled\":false,\"passed\":false}");return true;}
     auto ids=AdaptiveGuards(state.knots,e.theta.size(),true);
     if(e.theta.size()<=size_t(std::min(4097,e.maxTheta))){ids.resize(e.theta.size());for(size_t i=0;i<ids.size();++i)ids[i]=i;}
@@ -172,12 +208,12 @@ bool IndependentAudit(Engine& e,AdaptiveState& state,const std::vector<int>& dep
     // Freeze the validation allocation from production observations only.
     // Uniform level budgets avoid re-tracing every local-budget group on
     // the dense grid. Keep every requested angle and every accuracy gate.
-    const auto peak=PeakBudgets(state.counts);const auto productionStats=Estimate(productionSamples);
+    const Samples productionSamples=Combine(productionData.levels);const auto peak=PeakBudgets(state.counts);const auto productionStats=Estimate(productionSamples);
     const double projected=std::pow(StatisticalError(e,productionStats)/(e.statistical*.5),2);
     double fraction=std::min(1.,std::max(1./16.,projected));
     const auto production=Mean(productionSamples);bool pass=false;
     for(int attempt=0;attempt<2;++attempt){
-        std::array<unsigned,8> seeds;for(int s=0;s<8;++s){seeds[s]=1000000000u+unsigned(state.round)*4096u+unsigned(attempt)*512u+unsigned(s)*17u;Require(std::find(e.seeds.begin(),e.seeds.end(),seeds[s])==e.seeds.end(),"final/production seed overlap");}
+        const auto seeds=ReserveAuditSeeds(e,state);
         Budgets validationCounts(depths.size());std::vector<int> chosen;
         for(size_t l=0;l<depths.size();++l){const int floor=std::min(peak[l],l?e.minimum:e.initial);const int n=std::min(peak[l],std::max(floor,Power2(peak[l]*fraction)));
             validationCounts[l].assign(e.theta.size(),n);chosen.push_back(n);}
@@ -194,6 +230,7 @@ bool IndependentAudit(Engine& e,AdaptiveState& state,const std::vector<int>& dep
         report<<"],\"counts_per_seed\":[";for(size_t l=0;l<chosen.size();++l)report<<(l?",":"")<<chosen[l];
         report<<"],\"allocation_from_production\":true,\"attempt\":"<<attempt<<",\"max_pointwise95_scaled_M11\":"<<Number(std::max(stats.maxInterval,outputStats.maxInterval))<<",\"max_ratio95\":"<<Number(std::max(stats.maxRatioInterval,outputStats.maxRatioInterval))<<",\"max_interpolation_residual95\":"<<Number(interp.maximum)<<",\"difference_to_production_scaled_M11\":"<<Number(change)<<",\"checked_theta\":"<<ids.size()<<",\"scope\":\"fresh-seed frozen-estimator pointwise validation; all requested nodes up to 4097, otherwise quarter interval guards; no simultaneous-confidence claim\"}";
         e.Record(e.root+"/independent_final_validation.json",report.str());e.Record(e.root+"/independent_final_validation_attempt"+Number(attempt)+".json",report.str());
+        e.Record(e.root+"/independent_final_validation_serial"+Number(state.auditSerial-1)+".json",report.str());
         Atomic(e.root+"/independent_final_sources.tsv",data.sources);SaveReplicaMatrices(e,"validation_evaluated",combined,Angles(e.theta,ids),seeds.data());
         WriteGrid(e.root+"/independent_theta.csv",Angles(e.theta,ids));
         std::ostringstream budgets;budgets<<"theta_deg";for(size_t l=0;l<chosen.size();++l)budgets<<",N_level"<<l;budgets<<'\n';
@@ -202,7 +239,7 @@ bool IndependentAudit(Engine& e,AdaptiveState& state,const std::vector<int>& dep
         // allocation fallback. Interpolation-only failure refines theta;
         // it must not blindly double all production orientation counts.
         if(!pass&&e.independentNeedsSampling&&fraction<1&&attempt==0){fraction=1;continue;}
-        if(!pass){std::set<size_t> next(state.knots.begin(),state.knots.end());next.insert(interp.bad.begin(),interp.bad.end());state.knots.assign(next.begin(),next.end());}
+        if(!pass)RefineFailedAudit(e,state,depths,productionData,productionIds,data,ids,chosen,stats,outputStats,interp);
         break;
     }
     e.independentPassed=pass;return pass;
@@ -272,7 +309,7 @@ int RunAdaptive(Engine& e){
         e.Record(e.root+"/interpolation_production_mode.json","{\"common_prefix\":"+std::string(common?"true":"false")+"}");
         if(common){auto checked=CommonPrefixInterpolation(e,state,depths,ids,e.seeds.data());interp.errors=checked.errors;interp.maximum=checked.maximum;interp.bad=checked.bad;}
         bool positive=true;for(const auto& m:Mean(interp.output))positive=positive&&m[0]>0;
-        std::vector<Matrix> levelVariance;for(const auto& level:stage.levels)levelVariance.push_back(Variance(level));
+
         Statistics output;if(positive)output=Estimate(interp.output);double outputCI=positive?StatisticalError(e,output):1e100;
         double change=0;bool previous=true,coarse=true;for(size_t r=0;r<ids.size();++r){const size_t id=ids[r];previous=previous&&state.valid[id];coarse=coarse&&state.coarse[id];if(state.valid[id])for(int j=0;j<16;++j)change=std::max(change,std::fabs(stats.mean[r][j]-state.previous[id][j])/stats.mean[r][0]);}
         if(!previous)change=1e100;
@@ -292,7 +329,7 @@ int RunAdaptive(Engine& e){
         BudgetFile(e,state,ids);Atomic(e.root+"/final_stage_sources.tsv",stage.sources);
         std::ostringstream record;record<<state.round<<' '<<PeakBudgets(state.counts)[0]<<' '<<ids.size()<<' '<<state.knots.size()<<' '<<Number(stats.maxInterval)<<' '<<Number(outputCI)<<' '<<Number(interp.maximum)<<' '<<Number(change)<<' '<<state.streak;HistoryRecord(e,state.round,record.str());
         if(state.streak>=e.stablePasses){e.State("validating",state.round,PeakBudgets(state.counts),ids.size(),lastCI,lastInterpolation,state.streak);
-            if(IndependentAudit(e,state,depths,data,ids)){
+            if(IndependentAudit(e,state,depths,stage,ids)){
                 if(!e.AuditAutomaticCutoffs(x,PeakBudgets(state.counts)[0],state.round)){
                     e.Calibrate(x,true);state.streak=0;std::fill(state.valid.begin(),state.valid.end(),false);
                     std::fill(state.coarse.begin(),state.coarse.end(),false);SaveAdaptive(e,state);continue;
@@ -309,7 +346,7 @@ int RunAdaptive(Engine& e){
                 std::ostringstream finalHashes;for(const char* path:{"controller_command.json","mueller_fullauto.dat","mueller_evaluated.dat","all_mueller_confidence.csv","normalized_mueller_confidence.csv","theta_support.csv","theta_evaluated.csv","orientation_budget.csv","final_stage_sources.tsv","independent_final_validation.json","precision_contract.json","physics_validation.json","execution_tuning.tsv","resource_calibration.json","rotation_verification.json","cutoff_calibration.json","automatic_cutoff_validation.json"})finalHashes<<path<<' '<<Hash(Read(e.root+"/"+path))<<'\n';if(e.finalAudit)finalHashes<<"independent_orientation_budget.csv "<<Hash(Read(e.root+"/independent_orientation_budget.csv"))<<'\n';if(e.autoDepth)for(const char* name:{"automatic_depth.tsv","depth_selection.json"})finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';if(Exists(e.root+"/depth_startup.tsv"))for(const char* name:{"depth_startup.tsv","depth_startup.json"})finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';Atomic(e.root+"/final_outputs.fnv",finalHashes.str());
                 SaveAdaptive(e,state,"converged");e.State("converged",state.round,PeakBudgets(state.counts),ids.size(),lastCI,lastInterpolation,state.streak);return 0;
             }
-            state.streak=0;std::fill(state.valid.begin(),state.valid.end(),false);if(e.independentNeedsSampling)for(auto& level:state.counts)for(size_t id:ids)level[id]=std::min(e.maxCount,level[id]>e.maxCount/2?e.maxCount:2*level[id]);SaveAdaptive(e,state);continue;
+            state.streak=0;std::fill(state.valid.begin(),state.valid.end(),false);SaveAdaptive(e,state);continue;
         }
         for(size_t r=0;r<ids.size();++r){state.previous[ids[r]]=stats.mean[r];state.valid[ids[r]]=true;}
         if(!interp.bad.empty()||!positive){std::set<size_t> next(state.knots.begin(),state.knots.end());next.insert(interp.bad.begin(),interp.bad.end());if(!positive)next.insert(ids.begin(),ids.end());
@@ -322,33 +359,26 @@ int RunAdaptive(Engine& e){
         }
         if(!e.local){for(size_t l=0;l<proposed.size();++l){int maximum=0;for(size_t id:ids)maximum=std::max(maximum,proposed[l][id]);for(size_t id:ids)proposed[l][id]=maximum;}}
         for(size_t l=0;l<proposed.size();++l)for(size_t id:ids)grew=grew||proposed[l][id]>state.counts[l][id];
-        if(outputCI>e.statistical&&positive){
-            for(size_t q=0;q<e.theta.size();++q){double error=0;for(int j=0;j<16;++j){error=std::max(error,output.interval[q][j]);if(e.ratios)error=std::max(error,output.ratioInterval[q][j]);}if(error<=e.statistical)continue;
-                size_t near=std::upper_bound(state.knots.begin(),state.knots.end(),q)-state.knots.begin();const size_t begin=near>2?near-2:0,end=std::min(state.knots.size(),near+2);
-                for(size_t k=begin;k<end;++k){const size_t id=state.knots[k],row=std::lower_bound(ids.begin(),ids.end(),id)-ids.begin();size_t chosen=0;double largest=-1;
-                    for(size_t l=0;l<stage.levels.size();++l){double score=0;for(int j=0;j<16;++j)score=std::max(score,levelVariance[l][row][j]);if(score>largest){largest=score;chosen=l;}}
-                    proposed[chosen][id]=std::max(proposed[chosen][id],std::min(e.maxCount,state.counts[chosen][id]>e.maxCount/2?e.maxCount:2*state.counts[chosen][id]));}
-            }
-            if(!e.local)for(size_t l=0;l<proposed.size();++l){int maximum=0;for(size_t id:ids)maximum=std::max(maximum,proposed[l][id]);for(size_t id:ids)proposed[l][id]=maximum;}
-            for(size_t l=0;l<proposed.size();++l)for(size_t id:ids)grew=grew||proposed[l][id]>state.counts[l][id];
-        }
-        if(!grew){ // A fresh prefix is required for a stability pass or spline uncertainty.
-            size_t worst=0;double maximum=-1;for(size_t r=0;r<ids.size();++r)for(int j=0;j<16;++j)if(stats.interval[r][j]>maximum){maximum=stats.interval[r][j];worst=r;}
-            const size_t id=ids[worst];size_t chosen=0;double largest=-1;for(size_t l=0;l<stage.levels.size();++l){double v=0;for(int j=0;j<16;++j)v=std::max(v,levelVariance[l][worst][j]);if(v>largest){largest=v;chosen=l;}}
-            auto grow=[&](size_t i){proposed[chosen][i]=std::min(e.maxCount,state.counts[chosen][i]>e.maxCount/2?e.maxCount:2*state.counts[chosen][i]);};if(e.local)grow(id);else for(size_t i:ids)grow(i);
-        }
         // A correction may dominate uncertainty while the base already has
         // millions of samples. Do not pay for another huge base before the
         // cheap correction has supplied a more informative variance estimate.
+        AdditionalWork work(e,e.seeds.data());
         size_t deferred=0;double jointWork=0,stagedWork=0;std::ostringstream priorityRows;
-        priorityRows<<"theta_deg,level,current_count,joint_proposal,staged_proposal,represented_seconds_per_orientation\n";
+        priorityRows<<"theta_deg,level,current_count,joint_proposal,staged_proposal,estimated_additional_worker_seconds_per_orientation,cost_profiled\n";
         for(size_t r=0;r<ids.size();++r){const size_t id=ids[r];std::vector<Samples> values;
-            std::vector<double> costs;std::vector<int> current,next;
+            std::vector<double> costs;std::vector<int> current,next;std::vector<bool> profiled;
             for(size_t l=0;l<depths.size();++l){Samples row(8,Matrix(1));for(int s=0;s<8;++s)row[s][0]=stage.levels[l][s][r];
-                values.push_back(row);costs.push_back(stage.costs[l][r]);current.push_back(state.counts[l][id]);next.push_back(proposed[l][id]);}
+                values.push_back(row);costs.push_back(8*stage.costs[l][r]);current.push_back(state.counts[l][id]);next.push_back(proposed[l][id]);profiled.push_back(false);
+                if(next.back()>current.back()){
+                    const auto x=std::vector<double>{std::min(e.theta[id],e.theta[id==ids.front()?ids.back():ids.front()]),std::max(e.theta[id],e.theta[id==ids.front()?ids.back():ids.front()])};
+                    auto requests=[&](int n){std::vector<Engine::WorkRequest> result={{n,0,depths[l],l&&e.depthSharing?depths[l-1]:0,x}};
+                        if(l&&!e.depthSharing)result.push_back(Engine::WorkRequest{n,0,depths[l-1],0,x});return result;};
+                    const auto before=work.Forecast(requests(current.back())),after=work.Forecast(requests(next.back()));
+                    profiled[l]=before.profiled&&after.profiled;if(profiled[l])costs[l]=std::max(1e-18,(after.seconds-before.seconds)/(next.back()-current.back()));
+                }}
             const auto selected=PrioritizeAllocation(values,costs,current,next,e.statistical,e.ratios);
             for(size_t l=0;l<depths.size();++l){jointWork+=costs[l]*(next[l]-current[l]);stagedWork+=costs[l]*(selected[l]-current[l]);
-                if(selected!=next)priorityRows<<Number(e.theta[id])<<','<<l<<','<<current[l]<<','<<next[l]<<','<<selected[l]<<','<<Number(costs[l])<<'\n';
+                if(selected!=next)priorityRows<<Number(e.theta[id])<<','<<l<<','<<current[l]<<','<<next[l]<<','<<selected[l]<<','<<Number(costs[l])<<','<<profiled[l]<<'\n';
                 deferred+=selected[l]<next[l];proposed[l][id]=selected[l];}
         }
         if(!e.local)for(auto& level:proposed){int maximum=0;for(size_t id:ids)maximum=std::max(maximum,level[id]);for(size_t id:ids)level[id]=maximum;}
@@ -357,7 +387,15 @@ int RunAdaptive(Engine& e){
         e.Record(e.root+"/level_growth_priority.json","{\"policy\":\"cheap dominant correction first\",\"details\":"+Quoted(priorityFile)+",\"deferred_level_rows\":"+Number(deferred)
             +",\"joint_row_cost_proxy\":"+Number(jointWork)+",\"staged_row_cost_proxy\":"+Number(stagedWork)
             +",\"proxy_scope\":\"before shared tracing and local cost gate; not wall time\",\"minimum_efficiency_ratio\":8,\"accuracy_gates_unchanged\":true}");
-        GateLocalCost(e,proposed,depths,ids);
+        std::ostringstream refinement;refinement<<RefinementHeader();
+        if(outputCI>e.statistical&&positive)for(size_t q=0;q<e.theta.size();++q){const auto metric=WorstMetric(output,q,e.ratios);if(metric.error<=e.statistical)continue;
+            RefineError(e,work,depths,state.counts,proposed,ids,stage,QueryWeights(e,state.knots,e.theta[q]),metric,output.mean[q],e.theta[q],"interpolated_output",refinement);}
+        grew=false;for(size_t l=0;l<proposed.size();++l)for(size_t id:ids)grew=grew||proposed[l][id]>state.counts[l][id];
+        if(!grew){ // A fresh prefix is still required for a stability pass.
+            size_t worst=0;for(size_t r=1;r<ids.size();++r)if(WorstMetric(stats,r,e.ratios).error>WorstMetric(stats,worst,e.ratios).error)worst=r;
+            RefineError(e,work,depths,state.counts,proposed,ids,stage,{{ids[worst],1}},WorstMetric(stats,worst,e.ratios),stats.mean[worst],e.theta[ids[worst]],"stability",refinement);}
+        RefinementLog(e,state.round,"error_growth_priority",refinement);
+        GateLocalCost(e,work,proposed,depths,ids);
         if(proposed==state.counts)break;
         state.counts=proposed;SaveAdaptive(e,state);
     }

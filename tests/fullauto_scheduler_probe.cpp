@@ -1,0 +1,70 @@
+// Decision regressions: measured saved matrices plus adversarial numerical
+// and cache cases. These tests do not label synthetic/replayed data an audit.
+#include "../src/FullAuto.cpp"
+using namespace FullAuto;
+void Near(double a,double b,const char* message){Require(std::fabs(a-b)<=1e-10*std::max(1.,std::fabs(b)),message);}
+void InitTest(Engine& e,const std::string& root,size_t rows,size_t levels,AdaptiveState& state){
+    e.root=root;e.signature="scheduler_test";e.controls=false;e.local=true;e.localPolicy="off";e.depthSharing=false;
+    e.eps=.02;e.statistical=.0074;e.interpolation=.005;e.initial=512;e.minimum=64;
+    e.seeds.assign(production,production+8);e.theta.resize(rows);for(size_t i=0;i<rows;++i)e.theta[i]=170+double(i)*10/(rows-1);
+    state.counts=Budgets(levels,std::vector<int>(rows,64));state.counts[0].assign(rows,512);
+    state.valid.assign(rows,false);state.coarse.assign(rows,false);state.previous.resize(rows);
+    for(size_t i=0;i<rows;++i)state.knots.push_back(i);Directory(root);Directory(root+"/jobs");
+}
+void ProfileJob(Engine& e,int count,int offset,int depth,int paired,unsigned seed,const std::vector<double>& angles,const std::string& id){
+    Job j;e.SetSampling(j,count,seed,depth,angles,false);j.pairedDepth=paired;j.offset=offset;j.identity=id;j.folder=id;
+    j.traceSeconds=count;j.diffractionSeconds=count*angles.size();j.seconds=j.traceSeconds+j.diffractionSeconds;e.CacheJob(j);
+}
+int main(int argc,char** argv){try{
+    Require(argc==3,"expected output directory and saved level fixture");Directory(argv[1]);
+    for(size_t n:{size_t(2),size_t(3),size_t(4),size_t(7)}){std::vector<double>x(n);Matrix y(n);
+        for(size_t i=0;i<n;++i){x[i]=i*i+.7*i;for(int j=0;j<16;++j)y[i][j]=std::sin(3*i+.4*j);}
+        for(int r=0;r<=100;++r){const double q=x.back()*r/100;const auto ws=LocalCubicWeights(x,q);Mueller value{};double sum=0;
+            for(const auto& w:ws){sum+=w.second;for(int j=0;j<16;++j)value[j]+=w.second*y[w.first][j];}
+            Near(sum,1,"spline weights do not preserve constants");const auto reference=LocalCubicInterpolate(x,y,{q});for(int j=0;j<16;++j)Near(value[j],reference[0][j],"spline covariance uses a different interpolant");}
+        if(n==7)Require(LocalCubicWeights(x,(x[2]+x[3])*.5).size()==5,"lost fifth support node");}
+    ArgPP args;RunConfig config;Engine e(args,config);AdaptiveState state;InitTest(e,std::string(argv[1])+"/work",3,3,state);
+    e.workQueuePolicy="on";e.orientationBlock=64;
+    ProfileJob(e,64,0,6,0,999,{170,175},"profile");
+    std::vector<Engine::WorkRequest> requests={{128,0,6,0,{170,175}},{64,0,6,0,{175,180}}};
+    {AdditionalWork cost(e,e.seeds.data());const auto cold=cost.Forecast(requests);Require(cold.profiled&&cold.jobs==16,"wrong cold job count");Near(cold.seconds,3584,"common trace counted twice");}
+    for(int s=0;s<8;++s)ProfileJob(e,64,0,6,0,e.seeds[s],{170,175,180},"saved"+Number(s));
+    {AdditionalWork cost(e,e.seeds.data());const auto warm=cost.Forecast(requests);Require(warm.jobs==8,"saved blocks counted as new jobs");Near(warm.seconds,1536,"saved orientations counted as new work");}
+    for(int s=0;s<7;++s)ProfileJob(e,64,64,6,0,e.seeds[s],{170,175},"partial"+Number(s));
+    {AdditionalWork cost(e,e.seeds.data());const auto partial=cost.Forecast(requests);Require(partial.jobs==1,"partial seed completion ignored");Near(partial.seconds,192,"partial restart cost wrong");}
+    e.base={"changed_optical_recipe"};{AdditionalWork cost(e,e.seeds.data());const auto incompatible=cost.Forecast(requests);Require(!incompatible.profiled&&incompatible.jobs==16,"incompatible optical cache/profile accepted");}e.base.clear();
+    ProfileJob(e,64,0,8,6,999,{170,175},"paired_profile");
+    {AdditionalWork cost(e,e.seeds.data());auto paired=cost.Forecast({{64,0,8,6,{170,175}}});Require(paired.jobs==8,"paired depths counted twice");Near(paired.seconds,1536,"paired trace cost wrong");}
+    // Dominant raw variance is not necessarily dominant ratio uncertainty.
+    Engine ratioEngine(args,config);AdaptiveState ratioState;InitTest(ratioEngine,std::string(argv[1])+"/ratio",3,2,ratioState);
+    AdaptiveData ratioData;ratioData.levels.assign(2,Samples(8,Matrix(3)));ratioData.costs.assign(2,std::vector<double>(3,1));
+    const double a[8]={-1,-1,-1,-1,1,1,1,1},b[8]={-1,-1,1,1,-1,-1,1,1};
+    for(int s=0;s<8;++s)for(int r=0;r<3;++r){ratioData.levels[0][s][r][0]=10+a[s];ratioData.levels[0][s][r][1]=.8*(10+a[s]);
+        ratioData.levels[1][s][r][0]=.8*b[s];ratioData.levels[1][s][r][1]=-.8*b[s];}
+    const auto rs=Estimate(Combine(ratioData.levels));const auto metric=WorstMetric(rs,1,true);Require(metric.ratio,"fixture does not isolate ratio error");
+    Budgets proposed=ratioState.counts;AdditionalWork ratioCost(ratioEngine,ratioEngine.seeds.data());std::ostringstream log;log<<RefinementHeader();
+    RefineError(ratioEngine,ratioCost,{6,8},ratioState.counts,proposed,{0,1,2},ratioData,{{1,1}},metric,rs.mean[1],175,"ratio_regression",log);
+    Require(proposed[0]==ratioState.counts[0]&&proposed[1][1]==128,"selected raw variance instead of ratio influence");
+    // Failed audit at one angle must not double other angles or quiet levels.
+    Engine auditEngine(args,config);AdaptiveState auditState;InitTest(auditEngine,std::string(argv[1])+"/audit",3,3,auditState);
+    AdaptiveData auditData;auditData.levels.assign(3,Samples(8,Matrix(3)));auditData.costs.assign(3,std::vector<double>(3,1));
+    for(int s=0;s<8;++s)for(int r=0;r<3;++r){auditData.levels[0][s][r][0]=100;auditData.levels[1][s][r][0]=r==1?10*a[s]:0;}
+    const auto stats=Estimate(Combine(auditData.levels));const auto interp=InterpolateBudget(auditEngine,auditState.knots,{0,1,2},Combine(auditData.levels));
+    RefineFailedAudit(auditEngine,auditState,{6,8,10},auditData,{0,1,2},auditData,{0,1,2},{512,64,64},stats,stats,interp);
+    Require(auditState.counts==Budgets({{512,512,512},{64,128,64},{64,64,64}}),"audit failure multiplied unrelated work");
+    const auto first=ReserveAuditSeeds(auditEngine,auditState);AdaptiveState restored;restored.counts=Budgets(3,std::vector<int>(3,64));restored.previous.resize(3);restored.valid.assign(3,false);restored.coarse.assign(3,false);
+    Require(RestoreAdaptive(auditEngine,restored)&&restored.counts==auditState.counts,"refined budgets lost on resume");
+    const auto second=ReserveAuditSeeds(auditEngine,restored);for(unsigned seed:first)Require(std::find(second.begin(),second.end(),seed)==second.end(),"resumed audit reused an exposed holdout");
+    // Use real large-particle backscatter samples as failure-scheduling input.
+    std::ifstream input(argv[2]);size_t rows;double tolerance;Require(bool(input>>rows>>tolerance),"invalid measured fixture");std::ostringstream replay;replay<<"theta,level,before,after\n";
+    for(size_t r=0;r<rows;++r){Engine real(args,config);AdaptiveState saved;InitTest(real,std::string(argv[1])+"/real"+Number(r),2,3,saved);double theta;input>>theta;real.statistical=tolerance;
+        AdaptiveData data;data.levels.assign(3,Samples(8,Matrix(2)));data.costs.assign(3,std::vector<double>(2));std::vector<int> ns;
+        for(int l=0;l<3;++l){int n;double seconds;input>>n>>seconds;ns.push_back(n);saved.counts[l].assign(2,n);data.costs[l].assign(2,seconds);
+            for(int s=0;s<8;++s)for(int j=0;j<16;++j){Require(bool(input>>data.levels[l][s][0][j]),"incomplete real fixture");data.levels[l][s][1][j]=data.levels[l][s][0][j];}}
+        const auto st=Estimate(Combine(data.levels));const auto in=InterpolateBudget(real,saved.knots,{0,1},Combine(data.levels));
+        RefineFailedAudit(real,saved,{14,16,18},data,{0,1},data,{0,1},ns,st,st,in);
+        Require(saved.counts[0][0]==ns[0]&&saved.counts[1][0]==2*ns[1]&&saved.counts[2][0]==ns[2],"measured audit replay did not prioritize first correction");
+        for(size_t l=0;l<3;++l)replay<<Number(theta)<<','<<l<<','<<ns[l]<<','<<saved.counts[l][0]<<'\n';}
+    Atomic(std::string(argv[1])+"/real_failure_replay.csv",replay.str());
+    std::cout<<"PASS: true spline stencil; ratio covariance; cached/paired/shared additional work; targeted audit; fresh seeds after resume; real backscatter scheduling\n";return 0;
+}catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}
