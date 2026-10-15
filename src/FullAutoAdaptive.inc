@@ -353,11 +353,12 @@ bool IndependentAudit(Engine& e,AdaptiveState& state,const std::vector<int>& dep
             else if(common&&e.QueueEnabled()){
                 e.Prefetch(AuditRequests(e,depths,validationCounts,ids,state.knots),seeds.data());
             }
-            if(!angular)data=EvaluateBudget(e,depths,validationCounts,ids,seeds.data());combined=Combine(data.levels);stats=Estimate(combined);
+            if(!angular)data=EvaluateBudget(e,depths,validationCounts,ids,seeds.data());combined=Combine(data.levels);
             if(angular){bool positive=true;for(const auto& row:Mean(combined))positive=positive&&row[0]>0;
                 if(!positive){e.workQueuePolicy=savedQueue;const std::string report="{\"enabled\":true,\"passed\":false,\"estimator\":\"angular_residual_v1\",\"reason\":\"nonpositive independent M11; fresh direct fallback required\"}";
                     e.Record(e.root+"/independent_final_validation.json",report);e.Record(e.root+"/independent_final_validation_serial"+Number(state.auditSerial-1)+".json",report);
                     e.Log("independent_audit_fallback",report);fraction=1;continue;}}
+            stats=Estimate(combined);
             interp=InterpolateBudget(e,state.knots,ids,combined);
             if(common&&!angular){AdaptiveState checked=state;checked.counts=validationCounts;
                 const auto guards=CommonPrefixInterpolation(e,checked,depths,ids,seeds.data());
@@ -366,6 +367,10 @@ bool IndependentAudit(Engine& e,AdaptiveState& state,const std::vector<int>& dep
         }catch(...){e.workQueuePolicy=savedQueue;throw;}
         e.workQueuePolicy=savedQueue;
         e.Record(e.root+"/interpolation_validation_mode.json","{\"angular_residual_estimator\":"+std::string(angular?"true":"false")+",\"common_prefix\":"+std::string(common?"true":"false")+",\"uniform_level_budgets\":"+(auditLocal?"false":"true")+",\"work_queue_auto_for_local_audit\":"+(queueAuto?"true":"false")+"}");
+        if(angular){bool positive=true;for(const auto& row:Mean(interp.output))positive=positive&&row[0]>0;
+            if(!positive){const std::string report="{\"enabled\":true,\"passed\":false,\"estimator\":\"angular_residual_v1\",\"reason\":\"nonpositive interpolated independent M11; fresh direct fallback required\"}";
+                e.Record(e.root+"/independent_final_validation.json",report);e.Record(e.root+"/independent_final_validation_serial"+Number(state.auditSerial-1)+".json",report);
+                e.Log("independent_audit_fallback",report);fraction=1;continue;}}
         const auto outputStats=Estimate(interp.output);
         Matrix matched;for(size_t id:productionIds){size_t r=std::lower_bound(ids.begin(),ids.end(),id)-ids.begin();matched.push_back(stats.mean[r]);}
         const double change=Difference(production,matched,production);

@@ -35,6 +35,18 @@ int main(int argc,const char* argv[]){try{
     SaveReplicaMatrices(e,"angular",z,e.theta,fresh);SaveReplicaMatrices(e,"direct",a,e.theta,fresh);
     Atomic(e.root+"/angular_probe.json","{\"equal_prefix_all16_scaled_M11\":"+Number(all16)+",\"equal_prefix_ratio_difference\":"+Number(ratio)
         +",\"frozen_plan_unchanged_after_holdout\":true,\"support_theta\":"+Number(state.knots.size())+",\"checked_theta\":"+Number(ids.size())+",\"reduced_statistical95\":"+Number(StatisticalError(e,stats))+"}\n");
+    if(getenv("TASK_FORCE_NONPOSITIVE_AUDIT")){
+        // Fault injection into private in-memory holdout matrices only. Real
+        // native files and all production replicas remain unchanged.
+        for(auto& item:e.cache)if(std::find(fresh,fresh+8,item.second.seed)!=fresh+8)
+            for(auto& row:item.second.matrix)for(double& value:row)value=-value;
+        state.previous.assign(e.theta.size(),Mueller{});state.valid.assign(e.theta.size(),false);state.coarse.assign(e.theta.size(),false);state.auditSerial=0;e.workQueuePolicy="off";
+        IndependentAudit(e,state,depths,productionData,ids);
+        Require(state.auditSerial==2,"nonpositive angular matrix did not reserve fresh direct seeds");
+        Require(Read(e.root+"/independent_final_validation_serial0.json").find("nonpositive independent M11")!=std::string::npos,"nonpositive estimate was not rejected before statistics");
+        Require(Read(e.root+"/independent_final_validation_serial1.json").find("direct")!=std::string::npos,"nonpositive estimate did not fall back to direct optics");
+        Atomic(e.root+"/nonpositive_probe.json","{\"passed\":true,\"fresh_direct_serial\":1}\n");
+    }
     if(getenv("TASK_FORCE_AUDIT_REJECTION")){
         state.previous.assign(e.theta.size(),Mueller{});state.valid.assign(e.theta.size(),false);state.coarse.assign(e.theta.size(),false);state.auditSerial=32;
         e.statistical=1e-30;e.interpolation=1e-30;
