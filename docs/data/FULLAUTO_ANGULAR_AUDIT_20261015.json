@@ -259,5 +259,370 @@
     "independent_seeds_preserved": true,
     "completed_resume_without_recalculation": true
   },
-  "training_data_artifact": "/home/user/BEM-CUDA/artifacts/angular_audit_optimization_20261015"
+  "training_data_artifact": "/home/user/BEM-CUDA/artifacts/angular_audit_optimization_20261015",
+  "clean_short_benchmark": {
+    "rows": [
+      {
+        "chunk": 0,
+        "repeat": 0,
+        "wall_seconds": 1.067824125289917,
+        "timings": {
+          "trace_prepare": 0.29608598,
+          "diffraction_and_controls": 0.658664687,
+          "gpu_diffraction_including_packing": 0.657086682,
+          "gpu_resident_trace_kernel": 0.0,
+          "analytic_controls": 0.0,
+          "processing": 0.703275693,
+          "pipeline_wait_for_prepared": 0.021567982000000006,
+          "pipeline_producer_wait": 0.406129309,
+          "pipeline_chunks": 10.0,
+          "overlap_saved": 0.2514749740000001,
+          "rotation": 0.0029843029999999998,
+          "trace": 1.157984567,
+          "beam_preparation": 2.32933211
+        },
+        "path": "/home/kirill_epyc/mbs-fast/releases/20261015-478a3af-fp64/clean_short_benchmark/chunk0_repeat0"
+      },
+      {
+        "chunk": 1024,
+        "repeat": 0,
+        "wall_seconds": 0.818443775177002,
+        "timings": {
+          "trace_prepare": 0.300883835,
+          "diffraction_and_controls": 0.46877953200000005,
+          "gpu_diffraction_including_packing": 0.46675316399999994,
+          "gpu_resident_trace_kernel": 0.0,
+          "analytic_controls": 0.0,
+          "processing": 0.511900593,
+          "pipeline_wait_for_prepared": 0.022317432000000005,
+          "pipeline_producer_wait": 0.21058437200000002,
+          "pipeline_chunks": 14.0,
+          "overlap_saved": 0.25776277400000003,
+          "rotation": 0.0026386779999999993,
+          "trace": 1.264832217,
+          "beam_preparation": 1.404851912
+        },
+        "path": "/home/kirill_epyc/mbs-fast/releases/20261015-478a3af-fp64/clean_short_benchmark/chunk1024_repeat0"
+      },
+      {
+        "chunk": 1024,
+        "repeat": 1,
+        "wall_seconds": 0.7684478759765625,
+        "timings": {
+          "trace_prepare": 0.277004356,
+          "diffraction_and_controls": 0.413050388,
+          "gpu_diffraction_including_packing": 0.41128854800000003,
+          "gpu_resident_trace_kernel": 0.0,
+          "analytic_controls": 0.0,
+          "processing": 0.462143582,
+          "pipeline_wait_for_prepared": 0.02168623300000001,
+          "pipeline_producer_wait": 0.184617014,
+          "pipeline_chunks": 14.0,
+          "overlap_saved": 0.227911162,
+          "rotation": 0.0027012829999999996,
+          "trace": 1.2561229010000001,
+          "beam_preparation": 1.417817846
+        },
+        "path": "/home/kirill_epyc/mbs-fast/releases/20261015-478a3af-fp64/clean_short_benchmark/chunk1024_repeat1"
+      },
+      {
+        "chunk": 0,
+        "repeat": 1,
+        "wall_seconds": 1.1190168857574463,
+        "timings": {
+          "trace_prepare": 0.27204645499999996,
+          "diffraction_and_controls": 0.673414441,
+          "gpu_diffraction_including_packing": 0.672052376,
+          "gpu_resident_trace_kernel": 0.0,
+          "analytic_controls": 0.0,
+          "processing": 0.725207619,
+          "pipeline_wait_for_prepared": 0.023500003,
+          "pipeline_producer_wait": 0.452174831,
+          "pipeline_chunks": 10.0,
+          "overlap_saved": 0.22025327699999997,
+          "rotation": 0.003140834999999999,
+          "trace": 1.175561706,
+          "beam_preparation": 2.311138263
+        },
+        "path": "/home/kirill_epyc/mbs-fast/releases/20261015-478a3af-fp64/clean_short_benchmark/chunk0_repeat1"
+      },
+      {
+        "chunk": 0,
+        "repeat": 2,
+        "wall_seconds": 1.1189804077148438,
+        "timings": {
+          "trace_prepare": 0.2740051,
+          "diffraction_and_controls": 0.637604819,
+          "gpu_diffraction_including_packing": 0.636335326,
+          "gpu_resident_trace_kernel": 0.0,
+          "analytic_controls": 0.0,
+          "processing": 0.695490393,
+          "pipeline_wait_for_prepared": 0.031077905,
+          "pipeline_producer_wait": 0.42057918499999997,
+          "pipeline_chunks": 10.0,
+          "overlap_saved": 0.21611952599999995,
+          "rotation": 0.0029231059999999995,
+          "trace": 1.191269903,
+          "beam_preparation": 2.1928569639999997
+        },
+        "path": "/home/kirill_epyc/mbs-fast/releases/20261015-478a3af-fp64/clean_short_benchmark/chunk0_repeat2"
+      },
+      {
+        "chunk": 1024,
+        "repeat": 2,
+        "wall_seconds": 0.7682108879089355,
+        "timings": {
+          "trace_prepare": 0.280276175,
+          "diffraction_and_controls": 0.41168867099999995,
+          "gpu_diffraction_including_packing": 0.410054071,
+          "gpu_resident_trace_kernel": 0.0,
+          "analytic_controls": 0.0,
+          "processing": 0.454821453,
+          "pipeline_wait_for_prepared": 0.022725952,
+          "pipeline_producer_wait": 0.174007247,
+          "pipeline_chunks": 14.0,
+          "overlap_saved": 0.23714339299999998,
+          "rotation": 0.0027504889999999996,
+          "trace": 1.252985303,
+          "beam_preparation": 1.3752035059999999
+        },
+        "path": "/home/kirill_epyc/mbs-fast/releases/20261015-478a3af-fp64/clean_short_benchmark/chunk1024_repeat2"
+      }
+    ],
+    "median_processing_seconds": {
+      "0": 0.703275693,
+      "1024": 0.462143582
+    },
+    "processing_speedup": 1.5217688190247334,
+    "all16_scaled_M11": 6.382263275475626e-16,
+    "normalized": 1.1102230246251565e-15,
+    "scope": "GPU2 primary MBS queue paused; other GPUs and external services unchanged"
+  },
+  "final_recovery": {
+    "passed": true,
+    "schema": 2,
+    "epsilon": 0.02,
+    "requested_theta": 17,
+    "evaluated_theta": 9,
+    "support_theta": 5,
+    "final_counts_per_seed": [
+      8192,
+      512,
+      256
+    ],
+    "minimum_counts_per_seed": [
+      8192,
+      512,
+      256
+    ],
+    "phi": 4,
+    "complete_jobs_audited": 1329,
+    "matrix_difference_scaled_M11": 1.8109225754509239e-16,
+    "evaluated_matrix_difference_scaled_M11": 0.0,
+    "statistical95_scaled_M11": 0.006441443560706405,
+    "ratio95": 0.002881601514246089,
+    "guard_residual95_scaled_M11": 0.0005143338322371295,
+    "independent_final_validation": {
+      "enabled": true,
+      "passed": true,
+      "fresh_seeds_per_attempt": true,
+      "seeds": [
+        1000000000,
+        1000000017,
+        1000000034,
+        1000000051,
+        1000000068,
+        1000000085,
+        1000000102,
+        1000000119
+      ],
+      "counts_per_seed": [
+        8192,
+        512,
+        256
+      ],
+      "estimator": "angular_residual_v1",
+      "angular_allocation_fnv1a64": "64ab6513db782193",
+      "local_orientation_budgets": false,
+      "allocation_from_production": true,
+      "attempt": 0,
+      "max_pointwise95_scaled_M11": 0.008561070749965278,
+      "max_ratio95": 0.0033409348922070307,
+      "max_interpolation_residual95": 0.002491395035857657,
+      "difference_to_production_scaled_M11": 0.0047546969012256775,
+      "checked_theta": 17,
+      "scope": "fresh-seed frozen-estimator pointwise validation; all requested nodes up to 4097, otherwise quarter interval guards; no simultaneous-confidence claim"
+    },
+    "limits": "pointwise statistical estimates; frozen target depth/cutoffs; mean refinement and physical sensitivity reported separately",
+    "forced_sigkill_recovery": true,
+    "completed_markers_preserved": 696,
+    "frozen_plan_preserved": true,
+    "independent_seeds_preserved": true,
+    "completed_resume_without_recalculation": true
+  },
+  "nonpositive_holdout_fault_injection": {
+    "passed": true,
+    "fresh_direct_serial": 1
+  },
+  "automatic_depth_integration": {
+    "enabled": true,
+    "passed": true,
+    "depth_plus2_residual95_scaled_M11": 0.002755193235298769,
+    "cutoffs_off_residual95_scaled_M11": 0,
+    "depth_pass": true,
+    "cutoff_pass": true,
+    "cutoffs_checked": false,
+    "depth_budget": 0.005,
+    "count_per_seed": 128,
+    "checked_theta": 9,
+    "requested_physics_retained": true,
+    "scope": "requested evaluated angles (up to 4097 in automatic depth); depth+2 and optional cutoff sensitivity estimates; no ADDA or infinite-depth guarantee"
+  },
+  "deployed_code_commit": "0ee3a83",
+  "final_build": {
+    "status": "built",
+    "started": 1792061346.6482584,
+    "config": {
+      "host": "epyc1",
+      "home": "/home/kirill_epyc",
+      "release": "/home/kirill_epyc/mbs-fast/releases/20261015-0ee3a83-fp64",
+      "commit": "0ee3a833d8de06584b43371ebd5ff2e66ffc3a85",
+      "profile": "fp64",
+      "filename": "mbs_po_gpu_double",
+      "ld_library_path": "/home/kirill_epyc/cuda-12.2/usr/local/cuda-12.2/lib64:/home/kirill_epyc/cuda-12.2/usr/local/cuda-12.2/targets/x86_64-linux/lib:/usr/lib/wsl/lib:/usr/lib/x86_64-linux-gnu",
+      "command": [
+        "make",
+        "-C",
+        "gpu",
+        "-j4",
+        "fp64",
+        "GPU_ARCH=70",
+        "GPU_LTO=1",
+        "GPU_LTO_FLAGS=-flto=8",
+        "USE_MPI=0",
+        "GPU_FAST_MATH=0",
+        "GIT_DESCRIBE=0ee3a83",
+        "CXX=/usr/bin/g++-7",
+        "CUDA_PATH=/home/kirill_epyc/cuda-12.2/usr/local/cuda-12.2"
+      ],
+      "version_label": "0ee3a83",
+      "previous_release": "/home/kirill_epyc/mbs-fast/releases/20261015-478a3af-fp64"
+    },
+    "finished": 1792061411.9803743,
+    "binary": "/home/kirill_epyc/mbs-fast/releases/20261015-0ee3a83-fp64/bin/mbs_po_gpu_double",
+    "sha256": "ca475977e82800787fec89772dd88dd6de0c465e3b445fee49c4e2811fc04ae1",
+    "version": "MBS-fast 0ee3a83\nbackend-build: CUDA sm_70 fp64-diffraction-storage trace-geometry-fp64 phase-build-fp64 phase-trig-fp64 precise-math\ncompiler: GCC 7.5.0\nopenmp: enabled (_OPENMP=201511)\nmpi: disabled\n"
+  },
+  "final_checkpoint_validation": {
+    "status": "passed",
+    "started": 1792061447.3314204,
+    "checkpoints": [
+      {
+        "signature_matches": true,
+        "round": 14,
+        "audit_serial": 4,
+        "target_depth": 8,
+        "phi": 64,
+        "counts_per_seed": [
+          2097152,
+          131072,
+          8192
+        ],
+        "copied_native_blocks_verified": 4,
+        "work_queue": true,
+        "optical_tasks_launched": 0,
+        "full_cache_verification": "deferred to real resumed controller",
+        "lane": "epyc1_gpu0_independent",
+        "source": "/home/kirill_epyc/campaigns/list1_fullauto_2pct_20261014_8ae9e85/epyc1_gpu01/results/prism_L446.7_D147.1_theta0_25",
+        "private_copy": "/home/kirill_epyc/mbs-fast/releases/20261015-0ee3a83-fp64/checkpoint_copies/epyc1_gpu0_independent"
+      },
+      {
+        "signature_matches": true,
+        "round": 5,
+        "audit_serial": 0,
+        "target_depth": 18,
+        "phi": 4,
+        "counts_per_seed": [
+          2097152,
+          1024,
+          1024
+        ],
+        "copied_native_blocks_verified": 4,
+        "work_queue": true,
+        "optical_tasks_launched": 0,
+        "full_cache_verification": "deferred to real resumed controller",
+        "lane": "epyc1_gpu1_independent",
+        "source": "/home/kirill_epyc/campaigns/list1_fullauto_2pct_20261014_8ae9e85/epyc1_gpu01/results/prism_L794.3_D196.2_theta170_180",
+        "private_copy": "/home/kirill_epyc/mbs-fast/releases/20261015-0ee3a83-fp64/checkpoint_copies/epyc1_gpu1_independent"
+      },
+      {
+        "signature_matches": true,
+        "round": 5,
+        "audit_serial": 0,
+        "target_depth": 8,
+        "phi": 64,
+        "counts_per_seed": [
+          4194304,
+          65536,
+          16384
+        ],
+        "copied_native_blocks_verified": 4,
+        "work_queue": true,
+        "optical_tasks_launched": 0,
+        "full_cache_verification": "deferred to real resumed controller",
+        "lane": "epyc1_gpu2_independent",
+        "source": "/home/kirill_epyc/campaigns/list1_fullauto_2pct_20261014_8ae9e85/epyc1_gpu23/results/prism_L501.2_D155.8_theta0_25",
+        "private_copy": "/home/kirill_epyc/mbs-fast/releases/20261015-0ee3a83-fp64/checkpoint_copies/epyc1_gpu2_independent"
+      },
+      {
+        "signature_matches": true,
+        "round": 0,
+        "audit_serial": 0,
+        "target_depth": 12,
+        "phi": 64,
+        "counts_per_seed": [
+          262144,
+          256,
+          256
+        ],
+        "copied_native_blocks_verified": 4,
+        "work_queue": true,
+        "optical_tasks_launched": 0,
+        "full_cache_verification": "deferred to real resumed controller",
+        "lane": "epyc1_gpu3_independent",
+        "source": "/home/kirill_epyc/campaigns/list1_fullauto_2pct_20261014_8ae9e85/epyc1_gpu23/results/prism_L562.3_D165.0_theta170_180",
+        "private_copy": "/home/kirill_epyc/mbs-fast/releases/20261015-0ee3a83-fp64/checkpoint_copies/epyc1_gpu3_independent"
+      }
+    ],
+    "native": [
+      {
+        "label": "old",
+        "seconds": 4.108091134985443,
+        "rows": 2099,
+        "binary": "/home/kirill_epyc/mbs-fast/releases/20261015-478a3af-fp64/bin/mbs_po_gpu_double"
+      },
+      {
+        "label": "new",
+        "seconds": 4.063513491943013,
+        "rows": 2099,
+        "binary": "/home/kirill_epyc/mbs-fast/releases/20261015-0ee3a83-fp64/bin/mbs_po_gpu_double"
+      }
+    ],
+    "native_all16_difference_scaled_M11": 0.0,
+    "native_normalized_difference": 0.0,
+    "finished": 1792061468.031972
+  },
+  "active_frozen_angular_plan": {
+    "schema": 1,
+    "strategy": "independent anchors plus common-orientation angular residual",
+    "allocation_fnv1a64": "2bec60f9ca9fac61",
+    "enabled": true,
+    "support_theta": 1967,
+    "checked_theta": 5574,
+    "predicted_point_worker_seconds": 132924.89868676174,
+    "predicted_control_worker_seconds": 41901.24962614643,
+    "profiled": true,
+    "training": "production replicas only; frozen before holdout",
+    "acceptance_gates_unchanged": true
+  }
 }
