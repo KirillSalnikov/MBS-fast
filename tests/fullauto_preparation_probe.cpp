@@ -21,6 +21,13 @@ int main(int argc,const char* argv[]){try{
         j.executionHash=e.ExecutionHash();j.inputAngles.resize(rows);j.preparationThreads=1;
         j.traceSeconds=trace;j.diffractionSeconds=diffraction;return j;
     };
+    // Physical dispatch is not part of a saved estimator's execution identity.
+    e.gpus={"0","1"};const std::string savedRecipe=e.ExecutionHash();
+    Require(e.WorkerGpus()==e.gpus,"default dispatch changed");
+    e.dispatchGpus={"3"};Require(e.WorkerGpus().size()==1&&e.WorkerGpus()[0]=="3","single-card relocation ignored");
+    Require(e.ExecutionHash()==savedRecipe&&e.gpus.size()==2,"relocation invalidated the saved execution recipe");
+    Require(FullAutoOptionPolicy("fullauto_dispatch_gpus")==FullAutoOptionPolicy("fullauto_gpus"),"dispatch option leaked into worker physics");
+    e.dispatchGpus.clear();e.gpus={""};
     // Measured epyc1 production values, seconds per complete native block.
     e.CacheJob(sample("comparable",26,1.890,.693));
     for(int i=0;i<20;++i)e.CacheJob(sample("old_two_row_stall"+Number(i),2,1.743,7.8));

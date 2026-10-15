@@ -1184,10 +1184,12 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
         const std::string value=args.GetStringValue(key);
         if(value!="auto"&&value!="off")Fail(std::string("--")+key+" expects auto or off.","choose auto or off.");
     }
-    if(args.IsCatched("fullauto_gpus")){
-        const std::string value=args.GetStringValue("fullauto_gpus");
+    for(const char* gpuKey:{"fullauto_gpus","fullauto_dispatch_gpus"})if(args.IsCatched(gpuKey)){
+        const std::string value=args.GetStringValue(gpuKey);
+        if(std::string(gpuKey)=="fullauto_dispatch_gpus"&&!args.IsCatched("fullauto_resume_compatible"))
+            Fail("--fullauto-dispatch-gpus requires compatible resume.","use it only to relocate an existing CUDA checkpoint.");
         if(!config.useGpu)Fail("--fullauto-gpus requires CUDA.","select --backend cuda or remove the GPU list.");
-        if(value!="auto"){
+        if(value!="auto"||std::string(gpuKey)=="fullauto_dispatch_gpus"){
             std::istringstream list(value);std::string token;std::set<int> seen;
             if(value.empty()||value.back()==',')Fail("invalid --fullauto-gpus list.","use auto or distinct nonnegative indices.");
             while(std::getline(list,token,',')){char* end=nullptr;long id=std::strtol(token.c_str(),&end,10);

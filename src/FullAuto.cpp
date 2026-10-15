@@ -409,6 +409,9 @@ struct Engine {
     std::set<bool> warmedCacheControls;
     long pendingLegacyAuditSerial=-1;int pendingLegacyAuditRound=-1;std::string pendingLegacyAuditSources;
     std::ofstream journal;std::string requestedOptions;size_t journalSequence=0;double runStarted=Seconds();
+    // Keep the saved execution recipe stable when moving a checkpoint to other cards.
+    std::vector<std::string> dispatchGpus;
+    const std::vector<std::string>& WorkerGpus()const{return dispatchGpus.empty()?gpus:dispatchGpus;}
     std::vector<std::string> base,gpus;std::vector<double> theta,weightTheta;
     std::vector<std::array<double,2>> weights;std::vector<unsigned> seeds;
     std::map<std::string,Job> cache;Kernel kernel;int phi=4,target=12,pilot=512,kernelCount=256;
@@ -497,7 +500,8 @@ struct Engine {
             <<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
             <<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"selected_gpus\":[";
         for(size_t i=0;i<gpus.size();++i)out<<(i?",":"")<<Quoted(gpus[i]);
-        out<<"],\"resource_policy\":"<<Quoted(resourcePolicy)<<",\"rotation_policy\":"<<Quoted(rotationPolicy)<<",\"cutoff_policy\":"<<Quoted(cutoffPolicy)
+        out<<"],\"dispatch_gpus\":[";for(size_t i=0;i<WorkerGpus().size();++i)out<<(i?",":"")<<Quoted(WorkerGpus()[i]);
+        out<<"],\"active_worker_slots\":"<<std::min(WorkerGpus().size(),size_t(8))<<",\"resource_policy\":"<<Quoted(resourcePolicy)<<",\"rotation_policy\":"<<Quoted(rotationPolicy)<<",\"cutoff_policy\":"<<Quoted(cutoffPolicy)
             <<",\"mirror_policy\":"<<Quoted(mirrorPolicy)<<",\"controls_policy\":"<<Quoted(controlPolicy)<<",\"local_policy\":"<<Quoted(localPolicy)
             <<",\"work_queue_policy\":"<<Quoted(workQueuePolicy)<<",\"angular_cache\":"<<(angularCache?"true":"false")<<",\"incremental\":"<<(incremental?"true":"false")
             <<",\"coherent\":"<<(coherent?"true":"false")<<",\"depth_sharing\":"<<(depthSharing?"true":"false")<<",\"ratio_accuracy\":"<<(ratios?"true":"false")
@@ -672,7 +676,14 @@ struct Engine {
             std::string list=args.IsCatched("fullauto_gpus")?args.GetStringValue("fullauto_gpus"):"0";autoGpus=list=="auto";if(autoGpus){list="";for(int i=0;i<std::min(count,8);++i)list+=(i?",":"")+std::to_string(i);}
             std::istringstream f(list);std::string v;std::set<int> used;
             while(std::getline(f,v,',')){size_t pos=0;int id=std::stoi(v,&pos);Require(pos==v.size()&&id>=0&&id<count&&used.insert(id).second,"invalid/duplicate visible GPU index");gpus.push_back(visible.empty()?v:visible.at(id));}
-        Require(!gpus.empty(),"empty GPU list");}else{Require(!args.IsCatched("fullauto_gpus"),"GPU list requires CUDA backend");gpus.assign(size_t(Int("fullauto_cpu_workers",1)),"");}
+        Require(!gpus.empty(),"empty GPU list");
+        if(args.IsCatched("fullauto_dispatch_gpus")){
+            Require(args.IsCatched("fullauto_resume_compatible"),"dispatch override requires --fullauto-resume-compatible and an existing checkpoint");
+            std::istringstream dispatch(args.GetStringValue("fullauto_dispatch_gpus"));used.clear();
+            while(std::getline(dispatch,v,',')){size_t pos=0;int id=std::stoi(v,&pos);Require(pos==v.size()&&id>=0&&id<count&&used.insert(id).second,"invalid/duplicate dispatch GPU index");dispatchGpus.push_back(visible.empty()?v:visible.at(id));}
+            Require(!dispatchGpus.empty()&&dispatchGpus.size()<=8,"dispatch GPU list must contain 1..8 devices");
+        }
+        }else{Require(!args.IsCatched("fullauto_gpus")&&!args.IsCatched("fullauto_dispatch_gpus"),"GPU list requires CUDA backend");gpus.assign(size_t(Int("fullauto_cpu_workers",1)),"");}
         workerThreads=config.threads>0?config.threads:std::max(1,std::min(16,QueryRuntimeResourceSnapshot().physicalCores/int(gpus.size())));
         // A shared mean cache has one CPU owner per controller, not per GPU.
         // Reserve the selected GPUs' share of host cores for its independent
@@ -700,7 +711,7 @@ struct Engine {
         std::ostringstream fingerprint;fingerprint<<(compatibleHash.empty()?binaryHash:compatibleHash)<<'\n';
         for(int i=1;i<argc;++i){
             std::string option=argv[i];while(!option.empty()&&option[0]=='-')option.erase(0,1);
-            if(argv[i][0]=='-' && (option=="fullauto-resume-compatible"||option=="fullauto_resume_compatible")){++i;continue;}
+            if(argv[i][0]=='-' && (option=="fullauto-resume-compatible"||option=="fullauto_resume_compatible"||option=="fullauto-dispatch-gpus"||option=="fullauto_dispatch_gpus")){++i;continue;}
             fingerprint<<argv[i]<<'\n';
         }
         // Canonical reconstruction avoids shell quoting and option aliases.
@@ -901,21 +912,22 @@ struct Engine {
         if(PersistentEnabled()){ExecutePersistent(result,commands,todo);return;}
         for(auto& service:services)service.reset();
         WorkerCleanup cleanup;
-        const size_t slots=std::min(gpus.size(),size_t(8));
+        const auto& workerGpus=WorkerGpus();
+        const size_t slots=std::min(workerGpus.size(),size_t(8));
         std::vector<int> slotSeed(slots,-1);std::vector<double> begun(result.size());
         size_t next=0,completed=0;
         auto launch=[&](size_t slot,size_t s){Job& j=result[s];begun[s]=Seconds();std::string text=exe+"\n";for(const auto& v:commands[s])text+=v+"\n";Atomic(j.folder+"/command.args",text);
                 std::vector<char*> argv;argv.push_back(const_cast<char*>(exe.c_str()));for(auto& v:commands[s])argv.push_back(const_cast<char*>(v.c_str()));argv.push_back(nullptr);
                 j.pid=fork();Require(j.pid>=0,"cannot fork worker");
                 if(j.pid==0){signal(SIGTERM,SIG_DFL);signal(SIGINT,SIG_DFL);int log=open((j.folder+"/stdout.log").c_str(),O_WRONLY|O_CREAT|O_TRUNC,0644);if(log<0)_exit(126);dup2(log,1);dup2(log,2);close(log);
-                    if(config.useGpu){setenv("CUDA_VISIBLE_DEVICES",gpus[slot].c_str(),1);unsetenv("MBS_GPU_DEVICE");}
+                    if(config.useGpu){setenv("CUDA_VISIBLE_DEVICES",workerGpus[slot].c_str(),1);unsetenv("MBS_GPU_DEVICE");}
                     if(!getenv("MBS_HOST_MEM_BUDGET_MB"))setenv("MBS_HOST_MEM_BUDGET_MB",std::to_string(hostBudgetMb).c_str(),1);
                     setenv("MBS_GPU_BLOCK",std::to_string(j.block).c_str(),1);
                     if(j.warp=="auto")unsetenv("MBS_GPU_WARP_BEAMS");else setenv("MBS_GPU_WARP_BEAMS",j.warp=="warp"?"1":"0",1);
                     execv(exe.c_str(),argv.data());_exit(127);}
                 activeWorkers[slot]=j.pid;slotSeed[slot]=int(s);
                 Log("worker_start","{\"folder\":"+Quoted(j.folder)+",\"command_file\":"+Quoted(j.folder+"/command.args")+",\"pid\":"+Number(j.pid)
-                    +",\"gpu\":"+Quoted(gpus[slot])+",\"count\":"+Number(j.count)+",\"offset\":"+Number(j.offset)+",\"seed\":"+Number(j.seed)
+                    +",\"gpu\":"+Quoted(workerGpus[slot])+",\"count\":"+Number(j.count)+",\"offset\":"+Number(j.offset)+",\"seed\":"+Number(j.seed)
                     +",\"depth\":"+Number(j.depth)+",\"paired_depth\":"+Number(j.pairedDepth)+",\"phi\":"+Number(j.phi)+",\"theta_rows\":"+Number(j.inputAngles.size())
                     +",\"block\":"+Number(j.block)+",\"warp\":"+Quoted(j.warp)+",\"pipeline\":"+(j.pipeline?"true":"false")+",\"threads\":"+Number(workerThreads)+",\"chunk\":"+Number(workerChunk)+"}");std::string boot=Read("/proc/sys/kernel/random/boot_id");
                 Atomic(j.folder+"/worker.pid",std::to_string(j.pid)+" "+ProcessStart(j.pid)+" "+boot);};
@@ -941,7 +953,7 @@ struct Engine {
             const double begin=Seconds();ExecutePrepared(pendingJobs,pendingCommands,todo);
             if(!todo.empty()){double seconds=0;for(const auto& job:pendingJobs)seconds+=job.seconds;
                 std::ofstream log((root+"/work_queue.tsv").c_str(),std::ios::app);
-                log<<todo.size()<<'\t'<<gpus.size()<<'\t'<<Number(Seconds()-begin)<<'\t'<<Number(seconds)<<'\n';}
+                log<<todo.size()<<'\t'<<WorkerGpus().size()<<'\t'<<Number(Seconds()-begin)<<'\t'<<Number(seconds)<<'\n';}
             pendingJobs.clear();pendingCommands.clear();
         };
         int maximum=0;for(const auto& request:requests)maximum=std::max(maximum,request.count);

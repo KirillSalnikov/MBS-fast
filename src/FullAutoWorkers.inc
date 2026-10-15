@@ -26,11 +26,12 @@ void CompleteNative(Job& j) {
 }
 void ExecutePersistent(std::vector<Job>& result,const std::vector<std::vector<std::string>>& commands,const std::vector<size_t>& todo){
     if(todo.empty())return;
-    const size_t slots=std::min(gpus.size(),size_t(8));
+    const auto& workerGpus=WorkerGpus();
+    const size_t slots=std::min(workerGpus.size(),size_t(8));
     // Resource tuning may change the GPU list; never keep a second context on
     // a card owned by another slot or retain unused tuning workers.
     for(size_t slot=0;slot<services.size();++slot)if(services[slot]&&
-        (slot>=slots||services[slot]->identity!=exe+"\n"+gpus[slot]+"\n"+Number(hostBudgetMb)))services[slot].reset();
+        (slot>=slots||services[slot]->identity!=exe+"\n"+workerGpus[slot]+"\n"+Number(hostBudgetMb)))services[slot].reset();
     std::vector<int> slotJob(slots,-1);std::vector<double> begun(result.size());
     size_t next=0,completed=0;
     auto launch=[&](size_t slot,size_t index){
@@ -41,10 +42,10 @@ void ExecutePersistent(std::vector<Job>& result,const std::vector<std::vector<st
             int sockets[2];Require(socketpair(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0,sockets)==0,"cannot create worker channel");
             pid_t pid=fork();if(pid<0){close(sockets[0]);close(sockets[1]);Require(false,"cannot fork persistent worker");}
             if(pid==0){signal(SIGTERM,SIG_DFL);signal(SIGINT,SIG_DFL);close(sockets[0]);fcntl(sockets[1],F_SETFD,0);
-                if(config.useGpu){setenv("CUDA_VISIBLE_DEVICES",gpus[slot].c_str(),1);unsetenv("MBS_GPU_DEVICE");}
+                if(config.useGpu){setenv("CUDA_VISIBLE_DEVICES",workerGpus[slot].c_str(),1);unsetenv("MBS_GPU_DEVICE");}
                 if(!getenv("MBS_HOST_MEM_BUDGET_MB"))setenv("MBS_HOST_MEM_BUDGET_MB",Number(hostBudgetMb).c_str(),1);
                 const std::string fd=std::to_string(sockets[1]);execl(exe.c_str(),exe.c_str(),"--fullauto-worker-server",fd.c_str(),static_cast<char*>(nullptr));_exit(127);}
-            close(sockets[1]);services[slot].reset(new WorkerService(pid,sockets[0],exe+"\n"+gpus[slot]+"\n"+Number(hostBudgetMb)));
+            close(sockets[1]);services[slot].reset(new WorkerService(pid,sockets[0],exe+"\n"+workerGpus[slot]+"\n"+Number(hostBudgetMb)));
             activeWorkers[slot]=pid;
         }
         auto& service=*services[slot];++service.requests;j.pid=service.pid;slotJob[slot]=int(index);
@@ -54,7 +55,7 @@ void ExecutePersistent(std::vector<Job>& result,const std::vector<std::vector<st
         request.insert(request.end(),commands[index].begin(),commands[index].end());
         Require(WorkerProtocol::Send(service.fd,request),"persistent worker channel closed; see "+j.folder+"/stdout.log");
         Log("worker_start","{\"folder\":"+Quoted(j.folder)+",\"command_file\":"+Quoted(j.folder+"/command.args")+",\"pid\":"+Number(j.pid)
-            +",\"gpu\":"+Quoted(gpus[slot])+",\"count\":"+Number(j.count)+",\"offset\":"+Number(j.offset)+",\"seed\":"+Number(j.seed)
+            +",\"gpu\":"+Quoted(workerGpus[slot])+",\"count\":"+Number(j.count)+",\"offset\":"+Number(j.offset)+",\"seed\":"+Number(j.seed)
             +",\"depth\":"+Number(j.depth)+",\"paired_depth\":"+Number(j.pairedDepth)+",\"phi\":"+Number(j.phi)+",\"theta_rows\":"+Number(j.inputAngles.size())
             +",\"block\":"+Number(j.block)+",\"warp\":"+Quoted(j.warp)+",\"pipeline\":"+(j.pipeline?"true":"false")+",\"threads\":"+Number(workerThreads)
             +",\"chunk\":"+Number(workerChunk)+",\"prepare_threads\":"+Number(j.preparationThreads?j.preparationThreads:workerThreads)+",\"persistent\":true,\"request_serial\":"+Number(service.requests)+"}");

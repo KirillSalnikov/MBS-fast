@@ -284,7 +284,7 @@ bool UseLocalAudit(Engine& e,const AdaptiveState& state,const std::vector<int>& 
     for(const auto& item:e.cache){const auto& j=item.second;if(j.assembled&&j.assemblySeconds>0
         &&std::find(e.seeds.begin(),e.seeds.end(),j.seed)!=e.seeds.end()){assembly+=j.assemblySeconds;++observations;}}
     if(observations)assembly/=observations;
-    const double extraAssembly=extraAliases*assembly,concurrency=std::max(size_t(1),std::min(size_t(8),e.gpus.size()));
+    const double extraAssembly=extraAliases*assembly,concurrency=std::max(size_t(1),std::min(size_t(8),e.WorkerGpus().size()));
     const bool selected=!(local.profiled&&uniform.profiled&&local.seconds/concurrency+extraAssembly>=uniform.seconds/concurrency*.90);
     e.Record(e.root+"/independent_audit_cost_gate.json","{\"policy\":\"production profiles only; ignore holdout coverage\",\"profiled\":"+std::string(local.profiled&&uniform.profiled?"true":"false")
         +",\"predicted_local_worker_seconds\":"+Number(local.seconds)+",\"predicted_uniform_worker_seconds\":"+Number(uniform.seconds)
