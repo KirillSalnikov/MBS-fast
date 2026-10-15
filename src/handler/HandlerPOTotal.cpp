@@ -111,7 +111,7 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
     const IntegralCharacteristics characteristics = ComputeIntegralCharacteristics(
         IntegralMethod::PhysicalOptics, nrg, C_sca_integral,
         m_extinctionCrossSectionOt, m_hasExtinctionOt, m_hasAbsorption,
-        cScaError);
+        cScaError, HasFullAngularCoverage(thetaRows));
     const std::string log = FormatIntegralCharacteristicsLog(
         characteristics, label);
     WriteIntegralCharacteristicsTsv(destName, label, characteristics);

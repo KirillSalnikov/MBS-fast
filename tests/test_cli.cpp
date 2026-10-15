@@ -605,6 +605,7 @@ int main()
     });
     ExpectSuccessForBuild("explicit FFT controls", fftCuda, true, true);
 
+    {auto command=CanonicalBase();command.insert(command.end(),{"--po-prepare-threads","0"});ExpectFailure("zero PO preparation threads",command,"must be at least 1");}
     const IntegralCharacteristics absorbing = ComputeIntegralCharacteristics(
         IntegralMethod::PhysicalOptics, 100.0, 150.0, 170.0,
         true, true, 0.002);
@@ -635,6 +636,20 @@ int main()
         FailTest("compact integral log", "alternate definitions leaked into output");
     else
         Pass("compact integral log");
+
+    const auto partial = ComputeIntegralCharacteristics(IntegralMethod::PhysicalOptics,
+        100., .01, 170., true, false, .002, false);
+    const auto partialAbs = ComputeIntegralCharacteristics(IntegralMethod::PhysicalOptics,
+        100., .01, 170., true, true, .002, false);
+    const auto badFull = ComputeIntegralCharacteristics(IntegralMethod::PhysicalOptics,
+        100., .01, 170., true, false, .002, true);
+    if(IntegralCharacteristicsStatus(partial,"full")!="partial_angular_integral"
+       ||partial.cScaErrorEstimateRel!=.002||std::isfinite(partialAbs.cAbs)
+       ||IntegralCharacteristicsStatus(badFull,"full")!="check_csca_integration"
+       ||FormatIntegralCharacteristicsLog(partial,"full").find("WARNING:")!=std::string::npos
+       ||HasFullAngularCoverage({0.,.2})||!HasFullAngularCoverage({0.,M_PI/2,M_PI}))
+        FailTest("partial angular integral", "partial grids mistaken for failed full-sphere closure");
+    else Pass("partial angular integral");
 
     const std::vector<double> theta = {
         0.0, M_PI/4.0, M_PI/2.0, 3.0*M_PI/4.0, M_PI

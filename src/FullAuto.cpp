@@ -335,7 +335,7 @@ struct Job {
     int offset=0,pairedDepth=0;
     std::string folder,data,summary,identity,weightHash,executionHash;
     Matrix matrix;std::vector<double> angles,inputAngles;std::vector<std::array<double,5>> controls;
-    double assemblySeconds=0;
+    int preparationThreads=0;double assemblySeconds=0;
     double seconds=0,controlRefinement=0,controlSetup=0,traceSeconds=0,diffractionSeconds=0,processingSeconds=-1;pid_t pid=-1;
     int count=0,depth=0,phi=0,block=0;unsigned seed=0;
     bool pipeline=false,mirrored=false,paired=false,assembled=false,hasControls=false;std::string warp;
@@ -421,6 +421,7 @@ struct Engine {
     }
     int initial=1024,minimum=256,maxCount=67108864,roundLimit=32,startTheta=33;
     int maxTheta=2147483647,stablePasses=2,minPhi=1,maxPhi=2147483647;
+    int prepareThreadCap=1;std::map<std::string,std::array<double,3>> preparationProfiles;
     int workerThreads=4,workerChunk=0,analyticMeanThreads=1;long long hostBudgetMb=0;
     std::string resourcePolicy="auto",rotationPolicy="auto",cutoffPolicy="auto",selectedCutoff="requested";
     bool tuneCutoffs=false,autoGpus=false;int rotationBeta=1,rotationGamma=1;double rotationError=0,cutoffError=0;
@@ -658,6 +659,8 @@ struct Engine {
         // Reserve the selected GPUs' share of host cores for its independent
         // theta rows. Small GPU-pilot thread tuning must not shrink this pool.
         const int physical=std::max(1,QueryRuntimeResourceSnapshot().physicalCores);
+        const int perGpu=config.useGpu?physical/std::max(1,VisibleGpuDeviceCount()):1;
+        while(prepareThreadCap<8&&prepareThreadCap*2<=std::max(1,perGpu/2))prepareThreadCap*=2;
         const int share=config.useGpu?std::max(1,physical*int(gpus.size())/VisibleGpuDeviceCount())
                                      :std::max(1,physical/int(gpus.size()));
         analyticMeanThreads=Int("analytic_mean_threads",config.threads>0?config.threads:std::min(32,share));
@@ -670,8 +673,8 @@ struct Engine {
             compatibleHash=FileHash(compatibleBinary);
             const std::string oldVersion=ExecutableVersion(compatibleBinary),newVersion=ExecutableVersion(exe);
             const size_t oldLine=oldVersion.find('\n'),newLine=newVersion.find('\n');
-            Require(oldLine!=std::string::npos&&(oldVersion.substr(0,oldLine)=="MBS-fast 8ae9e85"||oldVersion.substr(0,oldLine)=="MBS-fast 89f83a3"),
-                "compatible resume is verified only from releases 8ae9e85 and 89f83a3");
+            Require(oldLine!=std::string::npos&&(oldVersion.substr(0,oldLine)=="MBS-fast 8ae9e85"||oldVersion.substr(0,oldLine)=="MBS-fast 89f83a3"||oldVersion.substr(0,oldLine)=="MBS-fast 336ef78"),
+                "compatible resume is verified only from releases 8ae9e85, 89f83a3 and 336ef78");
             Require(newLine!=std::string::npos&&oldVersion.substr(oldLine)==newVersion.substr(newLine),
                 "compatible resume requires identical CUDA architecture, precision, phase math, compiler, OpenMP and MPI profiles");
         }
@@ -718,7 +721,7 @@ struct Engine {
             <<",\"mirror_gamma\":"<<(mirror?"true":"false")<<",\"mirror_policy\":"<<Quoted(mirrorPolicy)
             <<",\"analytic_controls\":"<<(controls?"true":"false")<<",\"analytic_control_policy\":"<<Quoted(controlPolicy)<<",\"shared_analytic_reference\":"<<(sharedMeans?"true":"false")<<",\"angular_cache\":"<<(angularCache?"true":"false")<<",\"work_queue\":"<<(QueueEnabled()?"true":"false")<<",\"work_queue_policy\":"<<Quoted(workQueuePolicy)<<",\"assembled_jobs_this_invocation\":"<<assembledJobs<<",\"reused_angular_rows_this_invocation\":"<<reusedRows<<",\"computed_new_angular_rows_this_invocation\":"<<newRows
             <<",\"mirror_budget\":"<<(mirror?eps/256:0)<<",\"max_mirror_residual95_scaled_M11\":"<<mirrorError
-            <<",\"adaptive_schema\":2,\"local_orientations\":"<<(local?"true":"false")<<",\"ratio_accuracy\":"<<(ratios?"true":"false")<<",\"max_pointwise_ratio95\":"<<lastRatio<<",\"independent_final_validation\":"<<(independentPassed?"true":"false")<<",\"saved_orientation_blocks_this_invocation\":"<<savedOrientationBlocks
+            <<",\"prepare_thread_cap\":"<<prepareThreadCap<<",\"accuracy_scope\":\"production\",\"adaptive_schema\":2,\"local_orientations\":"<<(local?"true":"false")<<",\"ratio_accuracy\":"<<(ratios?"true":"false")<<",\"max_pointwise_ratio95\":"<<lastRatio<<",\"independent_final_validation\":"<<(independentPassed?"true":"false")<<",\"saved_orientation_blocks_this_invocation\":"<<savedOrientationBlocks
             <<",\"analytic_mean_budget\":"<<(controls?eps/64:0)<<",\"max_estimated_analytic_mean_error_scaled_M11\":"<<lastAnalyticError
             <<",\"execution_budget\":"<<((resourcePolicy=="auto"||config.useGpu)?eps/1024:0)<<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
             <<",\"rotation_beta_factor\":"<<rotationBeta<<",\"rotation_gamma_factor\":"<<rotationGamma<<",\"rotation_budget\":"<<((rotationBeta>1||rotationGamma>1)?eps/256:0)
@@ -726,7 +729,11 @@ struct Engine {
             <<",\"coherent\":"<<(coherent?"true":"false")<<",\"fixed_phi\":"<<fixedPhi<<",\"scope\":\"eight-seed pointwise intervals; interpolation guards on requested grid; mirror paired pilot when enabled; current target physics; automatic depth has fresh paired validation; no global simultaneous confidence claim\"}\n";
         Record(root+"/fullauto_status.json",s.str());
         if(status=="converged")Record(root+"/final_parameters.json",Parameters(s.str()));
-        std::cout<<"fullauto "<<status<<" round="<<round<<" theta="<<nodes<<" ci="<<ci<<" interpolation="<<ie<<" streak="<<streak<<std::endl;
+        std::cout<<"fullauto "<<status<<" round="<<round<<" theta="<<nodes;
+        if(status=="evaluating")std::cout<<" accuracy=pending";
+        else if(status=="validating")std::cout<<" production_ci="<<ci<<" production_interpolation="<<ie<<" production_passes="<<streak<<'/'<<stablePasses<<" independent_audit=pending";
+        else std::cout<<" ci="<<ci<<" interpolation="<<ie<<" streak="<<streak;
+        std::cout<<std::endl;
     }
     Job Load(Job j) {
         std::istringstream f(Read(j.data));std::string line;std::getline(f,line);while(std::getline(f,line)){if(line.empty())continue;std::istringstream r(line);double thetaValue,area;Require(bool(r>>thetaValue>>area)&&std::isfinite(thetaValue)&&std::isfinite(area),"invalid worker angle");j.angles.push_back(thetaValue);Mueller m;
@@ -738,7 +745,9 @@ struct Engine {
             Require(bool(r>>residual>>hybrid>>refinement>>setup>>wr>>ws)&&std::isfinite(refinement)&&std::isfinite(setup),"invalid control diagnostic fields");
             j.controlRefinement=refinement;j.controlSetup=setup;
         }Require(j.controls.size()==j.matrix.size(),"incomplete controls");}
-        const std::string log=Read(j.folder+"/stdout.log");for(const char* label:{"Hard tree-limit hits:","Orientations still incomplete:"}){
+        const std::string log=Read(j.folder+"/stdout.log");const auto preparation=log.find("PO preparation threads: ");
+        if(preparation!=std::string::npos){std::istringstream count(log.substr(preparation+24));count>>j.preparationThreads;}
+        for(const char* label:{"Hard tree-limit hits:","Orientations still incomplete:"}){
             size_t pos=log.find(label);Require(pos!=std::string::npos,"missing tree diagnostics");std::istringstream r(log.substr(pos+std::string(label).size()));int n=-1;r>>n;Require(n==0,"worker tree limit or incomplete orientation");}
         if(Exists(j.folder+"/result/result_phase_timings.tsv"))ReadPhaseTimings(j,Read(j.folder+"/result/result_phase_timings.tsv"));
         if(Exists(j.folder+"/angular_reuse.json")){const auto text=Read(j.folder+"/angular_reuse.json");const std::string key="\"controller_assembly_seconds\":";const auto pos=text.find(key);
@@ -788,9 +797,24 @@ struct Engine {
         return j.offset==offset&&j.count==n&&j.seed==seed&&j.depth==depth&&j.phi==phi&&j.block==kernel.block
             &&j.pipeline==kernel.pipeline&&j.warp==kernel.warp&&j.mirrored==mirror&&!j.paired&&j.hasControls==controls&&j.executionHash==ExecutionHash();
     }
+    int AutoPrepareThreads(int n,int depth,int paired,size_t rows){
+        if(!config.useGpu||go||resourcePolicy!="auto"||args.IsCatched("threads")||args.IsCatched("po_prepare_threads")||n<1024||prepareThreadCap<=workerThreads)return 0;
+        const auto recipe=ExecutionHash();const std::string key=recipe+" "+Number(depth)+" "+Number(paired)+" "+Number(phi)+" "+Number(mirror)+" "+Number(controls);
+        auto saved=preparationProfiles.find(key);std::array<double,3> profile{};
+        if(saved!=preparationProfiles.end())profile=saved->second;
+        else{for(const auto& item:cache){const auto& j=item.second;
+            if(j.assembled||j.paired||j.executionHash!=recipe||j.depth!=depth||j.pairedDepth!=paired||j.phi!=phi||j.mirrored!=mirror||j.hasControls!=controls||j.count<=0||j.inputAngles.empty()||j.traceSeconds<=0)continue;
+            profile[0]+=j.traceSeconds*std::max(workerThreads,j.preparationThreads)/j.count;
+            profile[1]+=j.diffractionSeconds/j.count/j.inputAngles.size();++profile[2];}
+            if(profile[2]){profile[0]/=profile[2];profile[1]/=profile[2];preparationProfiles[key]=profile;}}
+        if(!profile[2]||profile[0]/workerThreads<=1.25*profile[1]*rows)return 0;
+        Log("worker_preparation_selected","{\"count\":"+Number(n)+",\"depth\":"+Number(depth)+",\"theta_rows\":"+Number(rows)+",\"threads\":"+Number(prepareThreadCap)+",\"one_thread_trace_seconds_forecast\":"+Number(profile[0]*n)+",\"diffraction_seconds_forecast\":"+Number(profile[1]*n*rows)+",\"ordered_accumulation_unchanged\":true}");
+        return prepareThreadCap;
+    }
     std::vector<Job> DirectStage(int n,unsigned const* seedSet,size_t ns,int depth,const std::vector<double>& x,bool weighted=true,bool pairedMirror=false,int offset=0,int pairedDepth=0) {
         Require(x.size()<=size_t(maxTheta)+(go?2:0),"explicit theta evaluation limit exceeded");Require(FileHash(exe)==binaryHash,"binary changed during run");std::ostringstream angles;for(double q:x)angles<<Number(q)<<'\n';std::string gridHash=Hash(angles.str());
         std::string grid=root+"/theta_"+gridHash+".csv";Atomic(grid,angles.str());std::string wf=weighted?WriteWeights(x):"";
+        const int preparationThreads=AutoPrepareThreads(n,depth,pairedDepth,x.size());
         std::vector<Job> result(ns);std::vector<std::vector<std::string>> commands(ns);std::vector<size_t> todo;
         for(size_t s=0;s<ns;++s){std::vector<std::string> command=base;
             for(const std::string& v:std::vector<std::string>{"--max-reflections",std::to_string(depth),"--sobol-seed",std::to_string(n),std::to_string(seedSet[s]),"--threads",std::to_string(workerThreads),"--close"})command.push_back(v);
@@ -815,6 +839,7 @@ struct Engine {
             if(Exists(j.folder+"/worker.pid"))Require(!WorkerAlive(j.folder+"/worker.pid"),"an incomplete cached worker is still running; avoid duplicate launch");
             if(Exists(j.folder+"/result")){std::string saved=j.folder+"/result_incomplete_"+std::to_string(getpid())+"_"+std::to_string(s);
                 Require(rename((j.folder+"/result").c_str(),saved.c_str())==0,"cannot preserve incomplete worker output");}
+            if(preparationThreads){j.preparationThreads=preparationThreads;command.push_back("--po-prepare-threads");command.push_back(Number(preparationThreads));}
             command.push_back("--output");command.push_back(j.folder+"/result");commands[s]=command;result[s]=j;todo.push_back(s);
         }
         if(collecting){for(size_t index:todo){pendingJobs.push_back(result[index]);pendingCommands.push_back(commands[index]);}return result;}

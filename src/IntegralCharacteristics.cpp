@@ -97,6 +97,11 @@ double EstimateAngularIntegralRelativeError(
     return RelativeDifference(fineIntegral, coarseIntegral, fineIntegral);
 }
 
+bool HasFullAngularCoverage(const std::vector<double>& theta){
+    return theta.size()>=2&&std::isfinite(theta.front())&&std::isfinite(theta.back())
+        &&std::fabs(theta.front())<=1e-10&&std::fabs(theta.back()-M_PI)<=1e-10;
+}
+
 IntegralCharacteristics ComputeIntegralCharacteristics(
     IntegralMethod method,
     double projectedArea,
@@ -104,10 +109,12 @@ IntegralCharacteristics ComputeIntegralCharacteristics(
     double cExtOt,
     bool hasOpticalTheorem,
     bool hasAbsorption,
-    double cScaQuadratureErrorRel)
+    double cScaQuadratureErrorRel,
+    bool fullAngularCoverage)
 {
     IntegralCharacteristics values;
     values.method = method;
+    values.fullAngularCoverage=fullAngularCoverage;values.angularScatteringIntegral=cScaComputed;
     values.validProjectedArea = std::isfinite(projectedArea) && projectedArea > 0.0;
     values.hasOpticalTheorem = hasOpticalTheorem && std::isfinite(cExtOt);
     values.hasAbsorption = hasAbsorption;
@@ -125,7 +132,13 @@ IntegralCharacteristics ComputeIntegralCharacteristics(
             ? projectedArea : std::numeric_limits<double>::quiet_NaN();
     }
 
-    if (hasAbsorption)
+    if (!fullAngularCoverage&&hasAbsorption)
+    {
+        // Extinction can still come from the optical theorem. Absorption and
+        // total scattering cannot be inferred from a partial angular integral.
+        values.cSca=values.cAbs=std::numeric_limits<double>::quiet_NaN();
+    }
+    else if (hasAbsorption)
     {
         values.cSca = cScaComputed;
         values.cAbs = CleanRoundoff(values.cExt - values.cSca, projectedArea);
@@ -145,7 +158,7 @@ IntegralCharacteristics ComputeIntegralCharacteristics(
         values.cScaErrorEstimateRel = cScaQuadratureErrorRel;
     }
 
-    if (!hasAbsorption && std::isfinite(values.cSca)
+    if (fullAngularCoverage && !hasAbsorption && std::isfinite(values.cSca)
         && std::isfinite(cScaComputed))
     {
         const double balanceError = RelativeDifference(
@@ -184,6 +197,8 @@ std::string IntegralCharacteristicsStatus(
     {
         return "optical_theorem_unavailable";
     }
+    if (!values.fullAngularCoverage)
+        return "partial_angular_integral";
     if (values.hasCScaErrorEstimate && values.cScaErrorEstimateRel > 1e-2)
         return "check_csca_integration";
     return "ok";
@@ -205,7 +220,7 @@ std::string FormatIntegralCharacteristicsLog(
     log << "Q_abs = " << values.qAbs << "\n";
     if (values.hasCScaErrorEstimate)
     {
-        log << "C_sca "
+        log << (values.fullAngularCoverage ? "C_sca " : "Partial angular integral ")
             << (values.method == IntegralMethod::PhysicalOptics
                 ? "integral" : "beam-sum closure")
             << " relative error estimate = "
@@ -229,6 +244,9 @@ std::string FormatIntegralCharacteristicsLog(
         log << "Csca_error_rel=" << values.cScaErrorEstimateRel << ' ';
     log << "integral_status=" << status << "\n";
 
+    if (status == "partial_angular_integral")
+        log << "Partial angular coverage: integral=" << values.angularScatteringIntegral
+            << "; full-sphere closure is not evaluated. This diagnostic is separate from pointwise Mueller accuracy.\n";
     if (status == "check_csca_integration")
     {
         log << "WARNING: the C_sca numerical error estimate is "
@@ -261,7 +279,7 @@ void WriteIntegralCharacteristicsTsv(
 
     out << "method\tlabel\tstatus"
         << "\tCext\tCsca\tCabs\tQext\tQsca\tQabs"
-        << "\tCsca_error_estimate_rel\n";
+        << "\tCsca_error_estimate_rel\tfull_angular_coverage\tangular_scattering_integral\n";
     out << std::setprecision(17)
         << IntegralMethodName(values.method)
         << '\t' << label
@@ -277,7 +295,7 @@ void WriteIntegralCharacteristicsTsv(
         out << values.cScaErrorEstimateRel;
     else
         out << "nan";
-    out << '\n';
+    out << '\t' << values.fullAngularCoverage << '\t' << values.angularScatteringIntegral << '\n';
     out.close();
     if (!out)
         throw std::runtime_error(

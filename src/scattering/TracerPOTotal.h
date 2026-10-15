@@ -28,6 +28,7 @@ public:
     int m_analyticMeanThreads = 0;
 	std::string m_analyticControlWeights;
 	bool m_orientationPipeline = false;
+    int m_prepareThreads=0;
 	bool m_profilePhases = false;
 	TracerPOTotal(Particle *particle, int nActs, const std::string &resultFileName);
 	void TraceRandom(const AngleRange &betaRange,

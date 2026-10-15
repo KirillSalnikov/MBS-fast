@@ -16,6 +16,8 @@ struct IntegralCharacteristics
     bool hasOpticalTheorem = false;
     bool hasAbsorption = false;
     bool hasCScaErrorEstimate = false;
+    bool fullAngularCoverage = true;
+    double angularScatteringIntegral = 0.0;
 
     double projectedArea = 0.0;
     double cExt = 0.0;
@@ -34,7 +36,10 @@ IntegralCharacteristics ComputeIntegralCharacteristics(
     double cExtOt,
     bool hasOpticalTheorem,
     bool hasAbsorption,
-    double cScaQuadratureErrorRel);
+    double cScaQuadratureErrorRel,
+    bool fullAngularCoverage = true);
+
+bool HasFullAngularCoverage(const std::vector<double>& thetaRadians);
 
 double EstimateAngularIntegralRelativeError(
     const std::vector<double> &thetaRadians,

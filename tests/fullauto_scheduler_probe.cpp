@@ -95,6 +95,27 @@ int main(int argc,char** argv){try{
     warmed.WarmCache();warmed.WarmCache();Require(warmed.warmedCacheControls.size()==1,"same cache domain scanned twice");
     warmed.controls=true;warmed.WarmCache();warmed.controls=false;warmed.WarmCache();
     Require(warmed.warmedCacheControls.size()==2,"distinct controls domain not verified");
+    Engine decisions(args,config);AdaptiveState decisionState;InitTest(decisions,std::string(argv[1])+"/idempotent",3,1,decisionState);
+    decisions.stablePasses=2;AdaptiveData decided;decided.sources="prefix_A";
+    UpdatePassStreak(decisions,decisionState,true,decided,"snapshot_A");Require(decisionState.streak==1,"first decision not counted");
+    UpdatePassStreak(decisions,decisionState,true,decided,"snapshot_A");Require(decisionState.streak==1,"same estimator counted twice");
+    SaveAdaptive(decisions,decisionState);AdaptiveState reload;InitTest(decisions,decisions.root,3,1,reload);RestoreAdaptive(decisions,reload);decisions.statistical=.0074;
+    UpdatePassStreak(decisions,reload,true,decided,"snapshot_A");Require(reload.streak==1,"resume inflated validation count");
+    decided.sources="prefix_B";UpdatePassStreak(decisions,reload,true,decided,"snapshot_B");Require(reload.streak==2,"fresh prefix did not count");
+    UpdatePassStreak(decisions,reload,true,decided,"snapshot_B");Require(reload.streak==2,"stable count exceeded requirement");
+    UpdatePassStreak(decisions,reload,false,decided,"snapshot_B");Require(reload.streak==0,"failed decision did not reset count");
+    const auto decisionPath=decisions.root+"/production_validation_receipt.tsv",decisionText=Read(decisionPath);Atomic(decisionPath,decisionText+"changed");
+    bool decisionCorrupt=false;try{UpdatePassStreak(decisions,reload,true,decided,"snapshot_B");}catch(const std::exception&){decisionCorrupt=true;}
+    Require(decisionCorrupt,"corrupt production decision receipt accepted");Atomic(decisionPath,decisionText);
+    Engine legacyDecision(args,config);AdaptiveState old;InitTest(legacyDecision,std::string(argv[1])+"/legacy_decision",3,1,old);legacyDecision.stablePasses=2;old.streak=4;
+    Atomic(legacyDecision.root+"/intermediate_current.json","{\"snapshot_folder\":\"legacy_snapshot\",\"numerical_round_passed\":true}");
+    UpdatePassStreak(legacyDecision,old,true,decided,"legacy_snapshot");Require(old.streak==2,"legacy repeated passes not capped");
+    RunConfig gpu=config;gpu.useGpu=true;Engine preparation(args,gpu);AdaptiveState unused;InitTest(preparation,std::string(argv[1])+"/preparation",3,1,unused);
+    preparation.prepareThreadCap=8;preparation.workerThreads=1;Job trace;preparation.SetSampling(trace,1024,1,6,{0.,1.,2.,3.,4.},false);trace.pairedDepth=4;trace.identity="trace_profile";trace.folder=trace.identity;trace.traceSeconds=10;trace.diffractionSeconds=1;preparation.CacheJob(trace);
+    Require(preparation.AutoPrepareThreads(16384,6,4,20)==8,"CPU-dominant job left serial");
+    Require(preparation.AutoPrepareThreads(16384,6,4,1000)==0&&preparation.AutoPrepareThreads(16,6,4,20)==0,"GPU-bound or tiny job over-threaded");
+    preparation.resourcePolicy="off";Require(preparation.AutoPrepareThreads(16384,6,4,20)==0,"resources off overridden");
+    ArgPP fixed;RegisterCliOptions(fixed);const char* cli[]={"test","--threads","1"};fixed.Parse(3,cli);Engine pinned(fixed,gpu);pinned.prepareThreadCap=8;Require(pinned.AutoPrepareThreads(16384,6,4,20)==0,"explicit threads overridden");
     // Use real large-particle backscatter samples as failure-scheduling input.
     std::ifstream input(argv[2]);size_t rows;double tolerance;Require(bool(input>>rows>>tolerance),"invalid measured fixture");std::ostringstream replay;replay<<"theta,level,before,after\n";
     for(size_t r=0;r<rows;++r){Engine real(args,config);AdaptiveState saved;InitTest(real,std::string(argv[1])+"/real"+Number(r),2,3,saved);double theta;input>>theta;real.statistical=tolerance;

@@ -2123,7 +2123,7 @@ static void WriteAveragedRowsFile(const std::string &destName,
         thetaRows, m11Rows, cscaIntegral);
     const IntegralCharacteristics characteristics = ComputeIntegralCharacteristics(
         IntegralMethod::PhysicalOptics, incomingEnergy, cscaIntegral, cExtOt,
-        hasExtinctionOt, hasAbsorption, cScaError);
+        hasExtinctionOt, hasAbsorption, cScaError, HasFullAngularCoverage(thetaRows));
     const std::string log = FormatIntegralCharacteristicsLog(
         characteristics, label);
     WriteIntegralCharacteristicsTsv(destName, label, characteristics);
@@ -6099,6 +6099,8 @@ void TracerPOTotal::TraceWeightedOrientations(
         nThreads = omp_get_num_threads();
     }
 #endif
+    const int preparationThreads=m_prepareThreads>0?m_prepareThreads:nThreads;
+    std::cerr << "PO preparation threads: " << preparationThreads << std::endl;
 
     if (m_mpiRank == 0)
     {
@@ -6781,9 +6783,9 @@ void TracerPOTotal::TraceWeightedOrientations(
         // orientation exactly once without changing its weight.
         const bool producerCuda=EnvInt("MBS_GPU_HYBRID_PRODUCER_CUDA",1)!=0;
         const int reserve=std::max(1,std::min(8,EnvInt("MBS_GPU_HYBRID_RESERVE",2)));
-        const int gpuThreads=std::max(1,std::min(nThreads-1,EnvInt("MBS_GPU_HYBRID_GPU_THREADS",std::min(2,nThreads-1))));
-        const int cpuThreads=std::max(1,std::min(nThreads,EnvInt("MBS_GPU_HYBRID_CPU_THREADS",std::min(8,nThreads-gpuThreads))));
-        if(cpuThreads+gpuThreads>nThreads)
+        const int gpuThreads=std::max(1,std::min(preparationThreads-1,EnvInt("MBS_GPU_HYBRID_GPU_THREADS",std::min(2,preparationThreads-1))));
+        const int cpuThreads=std::max(1,std::min(preparationThreads,EnvInt("MBS_GPU_HYBRID_CPU_THREADS",std::min(8,preparationThreads-gpuThreads))));
+        if(cpuThreads+gpuThreads>preparationThreads)
             throw std::runtime_error("hybrid CPU and GPU-seed thread counts exceed --threads; lower the overrides or raise --threads");
         const int cpuChunk=std::max(1,std::min(maximumChunk,EnvInt("MBS_GPU_HYBRID_CPU_CHUNK",256)));
         PreparedChunkController cpuMemory(cpuChunk,reserve+2);
@@ -6918,7 +6920,7 @@ void TracerPOTotal::TraceWeightedOrientations(
                 }
                 try
                 {
-                    PreparedBlock block=prepareBlock(start,size,true,nThreads);
+                    PreparedBlock block=prepareBlock(start,size,true,preparationThreads);
                     std::lock_guard<std::mutex> lock(mutex);
                     ready.reset(new PreparedBlock(std::move(block)));condition.notify_all();
                 }
@@ -6968,7 +6970,7 @@ void TracerPOTotal::TraceWeightedOrientations(
     else for(int start=myStart;start<myEnd;)
     {
         const int size=memoryChunks.Next(myEnd-start);
-        PreparedBlock block=prepareBlock(start,size,true,nThreads);processBlock(block);start+=size;
+        PreparedBlock block=prepareBlock(start,size,true,preparationThreads);processBlock(block);start+=size;
     }
     if(!m_preparedReuseKey.empty()){
         const auto& reuse=PreparedReuse::Cache();

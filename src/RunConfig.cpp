@@ -1154,6 +1154,7 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
     if(args.IsCatched("fullauto_work_queue")&&args.GetStringValue("fullauto_work_queue")=="on"&&args.IsCatched("fullauto_angular_cache")&&args.GetStringValue("fullauto_angular_cache")=="off")
         Fail("--fullauto-work-queue on requires --fullauto-angular-cache on.","enable the angular cache or disable the work queue.");
     if(args.IsCatched("trace_cache_mb"))RequireNonnegativeInt(args,"trace_cache_mb");
+    if(args.IsCatched("po_prepare_threads")){RequirePositiveInt(args,"po_prepare_threads");if(config.method!=RunMethod::PhysicalOptics)Fail("--po-prepare-threads requires PO.","select --method po or remove the PO preparation override.");}
     if(args.IsCatched("fullauto_trace")&&args.IsCatched("po_trace_backend")&&args.GetStringValue("fullauto_trace")!="auto"&&args.GetStringValue("fullauto_trace")!=args.GetStringValue("po_trace_backend"))
         Fail("conflicting explicit PO tracing backends.","use one backend choice or matching values.");
     if(args.IsCatched("fullauto_workers")) {

@@ -188,7 +188,7 @@ void TuneTracing(const std::vector<double>& x){
     if(initial<1024){Record(root+"/trace_backend_calibration.json","{\"selected\":\"cpu\",\"reason\":\"small initial workload; no extra tracing search\"}");return;}
     const int n=std::min(maxCount,std::min(2048,initial));const bool previousPipeline=kernel.pipeline;kernel.pipeline=true;
     const auto originalBase=base;
-    RemoveOption("--trace-cache-mib");base.push_back("--trace-cache-mib");base.push_back("0");
+    if(!args.IsCatched("trace_cache_mb")){RemoveOption("--trace-cache-mib");base.push_back("--trace-cache-mib");base.push_back("0");}
     const unsigned seeds[8]={28001,28019,28027,28031,28051,28057,28069,28081};
     auto select=[&](const std::string& mode){RemoveOption("--po-trace-backend");base.push_back("--po-trace-backend");base.push_back(mode);};
     // Warm the persistent CUDA contexts before comparing execution paths.

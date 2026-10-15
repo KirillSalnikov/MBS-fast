@@ -1674,7 +1674,7 @@ AngleRange GetRange(const ArgPP &parser, const std::string &key,
 
 static std::string PreparedRecipe(const ArgPP& args){
     // Observation coordinates and output destinations cannot affect a beam.
-    const std::set<std::string> omit={"o","close","log","profile_phases","grid","tgrid","nphi","trace_cache_mb","threads","chunk","orientation_pipeline"};
+    const std::set<std::string> omit={"o","close","log","profile_phases","grid","tgrid","nphi","trace_cache_mb","po_prepare_threads","threads","chunk","orientation_pipeline"};
     std::ostringstream key;
     for(const auto& spec:GetCliOptionSpecs())if(args.IsCatched(spec.key)&&!omit.count(spec.key)){
         key<<spec.key.size()<<':'<<spec.key;
@@ -2930,6 +2930,7 @@ int RunCalculation(int argc, const char* argv[])
             tracer->m_orientationPipeline=args.IsCatched("orientation_pipeline")
                 ||(args.IsCatched("po_trace_backend")&&args.GetStringValue("po_trace_backend")=="hybrid");
             tracer->m_profilePhases=args.IsCatched("profile_phases");
+            tracer->m_prepareThreads=args.IsCatched("po_prepare_threads")?args.GetIntValue("po_prepare_threads"):0;
             if(cacheMb>0)tracer->SetPreparedReuseKey(PreparedRecipe(args));
             tracer->m_scattering->m_wave = wave;
             ApplyTraceCutoffOptions(args, tracer->m_scattering, useGpu);
