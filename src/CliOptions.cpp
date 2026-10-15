@@ -290,7 +290,7 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
         {"po_trace_backend", "po-trace-backend", 1, "MODE", "Orientation",
          "PO worker tracing: cpu, resident, hybrid. Resident/hybrid require CUDA; eligible FP64 convex coherent jobs use GPU tracing, others retain CPU preparation."},
         {"fullauto_work_queue", "fullauto-work-queue", 1, "MODE", "Orientation",
-         "Dispatch independent orientation blocks, angle groups and levels in one worker queue: auto (default; multiple workers), on, off. Sampling and tolerances are unchanged."},
+         "Dispatch independent orientation blocks, angle groups and levels in one worker queue: auto (default; CUDA, including one GPU, or multiple CPU workers), on, off. Sampling and tolerances are unchanged."},
         {"fullauto_incremental", "fullauto-incremental", 1, "MODE", "Orientation",
          "Reuse exact Owen-Sobol prefixes and checkpoint completed orientation blocks: on (default), off."},
         {"fullauto_orientation_block", "fullauto-orientation-block", 1, "N", "Orientation",

@@ -896,7 +896,7 @@ struct Engine {
                 CompleteNative(j);++completed;
         }
     }
-    bool QueueEnabled()const{return (go||angularCache)&&workQueuePolicy!="off"&&(workQueuePolicy=="on"||gpus.size()>1);}
+    bool QueueEnabled()const{return (go||angularCache)&&workQueuePolicy!="off"&&(workQueuePolicy=="on"||config.useGpu||gpus.size()>1);}
     struct WorkRequest {int count,offset,depth,pairedDepth;std::vector<double> angles;};
     void Prefetch(const std::vector<WorkRequest>& requests,const unsigned* seedSet){
         if(!QueueEnabled()||requests.empty())return;
@@ -997,9 +997,11 @@ struct Engine {
         }catch(const std::exception& error){const std::string message=error.what();const size_t pos=message.find("see ");const std::string log=pos==std::string::npos?message:Read(message.substr(pos+4));if(log.find("paired-depth cache unsupported")==std::string::npos)throw;depthSharing=false;}
         depthVerified=true;Record(root+"/depth_sharing_verification.json","{\"enabled\":"+std::string(depthSharing?"true":"false")+",\"max_all16_difference_scaled_M11\":"+Number(maximum)+",\"probe_count\":"+Number(n)+",\"scope\":\"convex trace prefix with separate coherent diffraction; unsupported shapes use independent traces\"}");
     }
+    #include "FullAutoPrefixCache.inc"
     std::vector<Job> PrefixStage(int n,unsigned const* seedSet,size_t ns,int depth,const std::vector<double>& x,bool weighted=true,bool paired=false){
         bool production=weighted&&!paired;
         if(!incremental||!production||n<=orientationBlock)return DirectStage(n,seedSet,ns,depth,x,weighted,paired);
+        Require(FileHash(exe)==binaryHash,"binary changed during run");
         const std::string wf=WriteWeights(x),weightHash=Hash(wf.empty()?"":Read(wf));
         std::ostringstream coordinates;for(double q:x)coordinates<<Number(q)<<'\n';
         const std::string gridHash=Hash(coordinates.str()),grid=root+"/theta_"+gridHash+".csv";Atomic(grid,coordinates.str());
@@ -1018,20 +1020,26 @@ struct Engine {
         // Combining by part_count/total_count preserves the full estimator,
         // including its analytic corrections and every Mueller entry.
         for(auto& j:result){j.matrix.assign(x.size(),Mueller{});if(controls)j.controls.assign(x.size(),std::array<double,5>{{0,0,0,0,0}});j.seconds=0;}
-        std::vector<std::ostringstream> sources(ns);
+        std::vector<std::ostringstream> sources(ns);std::set<std::string> verified;
+        std::vector<std::array<double,2>> coefficients(x.size(),{{1.,1.}});
+        if(!wf.empty()){std::istringstream f(Read(wf));std::string header;std::getline(f,header);for(auto& b:coefficients){double theta;Require(bool(f>>theta>>b[0]>>b[1]),"incomplete prefix weights");}}
+        const double assemblyStarted=Seconds();double progressAt=-1;size_t cachedBlocks=0;
         for(int start=0;start<n;start+=orientationBlock){const int count=std::min(orientationBlock,n-start);
-            auto parts=Stage(count,seedSet,ns,depth,x,true,false,start);const double fraction=double(count)/n;
+            const bool cached=AccumulateCachedPrefixBlock(count,start,n,seedSet,ns,depth,x,weightHash,coefficients,result,sources,verified);
+            if(cached)++cachedBlocks;
+            else{auto parts=Stage(count,seedSet,ns,depth,x,true,false,start);const double fraction=double(count)/n;
             for(size_t s=0;s<ns;++s){Job& j=result[s];const Job& p=parts[s];
                 for(size_t r=0;r<x.size();++r){for(int k=0;k<16;++k)j.matrix[r][k]+=fraction*p.matrix[r][k];
                     if(controls)for(int k=0;k<5;++k)j.controls[r][k]+=fraction*p.controls[r][k];}
                 j.seconds+=p.seconds;j.controlRefinement=std::max(j.controlRefinement,p.controlRefinement);j.controlSetup+=p.controlSetup;
                 sources[s]<<p.folder<<'\t'<<FileHash(p.folder+"/complete.txt")<<'\n';
-            }
+            }}
             savedOrientationBlocks+=ns;
-            Record(root+"/orientation_progress.json","{\"completed_prefix\":"+Number(start+count)+",\"requested_prefix\":"+Number(n)+",\"depth\":"+Number(depth)+",\"seeds\":"+Number(ns)+",\"block_size\":"+Number(orientationBlock)+",\"scope\":\"verified saved blocks, per seed\"}\n");
+            // Native completion markers remain durable for every block. This
+            // UI snapshot can be reconstructed and must not fsync each cache hit.
+            const double now=Seconds();if(progressAt<0||now-progressAt>=2||start+count==n){
+                Record(root+"/orientation_progress.json","{\"completed_prefix\":"+Number(start+count)+",\"requested_prefix\":"+Number(n)+",\"depth\":"+Number(depth)+",\"seeds\":"+Number(ns)+",\"block_size\":"+Number(orientationBlock)+",\"theta_rows\":"+Number(x.size())+",\"theta_grid_fnv1a64\":"+Quoted(gridHash)+",\"phase\":\"prefix_assembly\",\"scope\":\"verified saved blocks, per seed; intermediate status throttled to two seconds\"}\n");progressAt=now;}
         }
-        std::vector<std::array<double,2>> coefficients(x.size(),{{1.,1.}});
-        if(!wf.empty()){std::istringstream f(Read(wf));std::string header;std::getline(f,header);for(auto& b:coefficients){double theta;Require(bool(f>>theta>>b[0]>>b[1]),"incomplete prefix weights");}}
         for(size_t s=0;s<ns;++s){Job& j=result[s];Directory(j.folder+"/result");WriteMatrix(j.data,x,j.matrix);
             if(controls){std::ostringstream f;f<<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n"<<std::setprecision(17);
                 for(size_t r=0;r<x.size();++r){const auto& c=j.controls[r];const auto& b=coefficients[r];f<<x[r];for(double v:c)f<<'\t'<<v;
@@ -1050,6 +1058,7 @@ struct Engine {
             Atomic(j.folder+"/complete.txt",j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+" "+Hash(sources[s].str())+"\n");
             j.matrix.clear();j.controls.clear();j.angles.clear();j=Load(j);CacheJob(j);
         }
+        Log("prefix_assembly_profile","{\"count\":"+Number(n)+",\"depth\":"+Number(depth)+",\"theta_rows\":"+Number(x.size())+",\"seeds\":"+Number(ns)+",\"cached_blocks_without_intermediate_views\":"+Number(cachedBlocks)+",\"elapsed_seconds\":"+Number(Seconds()-assemblyStarted)+",\"native_block_checkpoints_unchanged\":true}");
         return result;
     }
     double ForecastFullGridCost(int n,unsigned seed,int depth,size_t points,double setup,double conservative)const{
