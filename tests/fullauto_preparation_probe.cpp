@@ -28,6 +28,16 @@ int main(int argc,const char* argv[]){try{
     Require(e.ExecutionHash()==savedRecipe&&e.gpus.size()==2,"relocation invalidated the saved execution recipe");
     Require(FullAutoOptionPolicy("fullauto_dispatch_gpus")==FullAutoOptionPolicy("fullauto_gpus"),"dispatch option leaked into worker physics");
     e.dispatchGpus.clear();e.gpus={""};
+    e.dispatchThreads=16;e.workerThreads=1;const auto originalRecipe=e.ExecutionHash();
+    Job placed;placed.hasControls=true;std::vector<std::string> command={"--threads","1","--po-prepare-threads","8","--analytic-mean-threads","32"};
+    e.ApplyDispatchThreads(placed,command);e.ApplyDispatchThreads(placed,command);
+    Require(command==std::vector<std::string>({"--threads","1","--po-prepare-threads","16","--analytic-mean-threads","16"}),"manual dispatch did not replace CPU pools idempotently");
+    Require(placed.preparationThreads==16&&e.AutoPrepareThreads(256,12,0,3078)==16,"manual CPU dispatch was retuned");
+    Require(e.ExecutionHash()==originalRecipe,"manual CPU placement invalidated checkpoint recipe");
+    Job plain;std::vector<std::string> bare={"--threads","1"};e.ApplyDispatchThreads(plain,bare);
+    Require(bare==std::vector<std::string>({"--threads","1","--po-prepare-threads","16"}),"controls were introduced into raw PO");
+    Require(FullAutoOptionPolicy("fullauto_dispatch_threads")==FullAutoOptionPolicy("fullauto_gpus"),"dispatch threads leaked into native physics");
+    e.dispatchThreads=0;
     // Measured epyc1 production values, seconds per complete native block.
     e.CacheJob(sample("comparable",26,1.890,.693));
     for(int i=0;i<20;++i)e.CacheJob(sample("old_two_row_stall"+Number(i),2,1.743,7.8));

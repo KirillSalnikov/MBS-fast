@@ -410,6 +410,7 @@ struct Engine {
     long pendingLegacyAuditSerial=-1;int pendingLegacyAuditRound=-1;std::string pendingLegacyAuditSources;
     std::ofstream journal;std::string requestedOptions;size_t journalSequence=0;double runStarted=Seconds();
     // Keep the saved execution recipe stable when moving a checkpoint to other cards.
+    int dispatchThreads=0;
     std::vector<std::string> dispatchGpus;
     const std::vector<std::string>& WorkerGpus()const{return dispatchGpus.empty()?gpus:dispatchGpus;}
     std::vector<std::string> base,gpus;std::vector<double> theta,weightTheta;
@@ -497,7 +498,7 @@ struct Engine {
             <<",\"initial_model\":"<<Quoted(initialModel)<<",\"estimated_final_orientation_count\":"<<Number(empiricalFinal)<<",\"depth_pilot_count\":"<<depthPilot<<",\"depth_search_order\":"<<Quoted(depthOrder)<<",\"initial_source\":"<<Quoted(initialSource)<<",\"maximum_edge_um\":"<<Number(maximumEdge)<<",\"maximum_diameter_um\":"<<Number(maximumDiameter)<<",\"oldauto_N_beta_estimate\":"<<Number(estimatedBeta)<<",\"oldauto_N_gamma_estimate\":"<<Number(estimatedGamma)<<",\"oldauto_orientation_estimate\":"<<Number(estimatedOrientations)<<",\"initial_count\":"<<initial<<",\"minimum_correction_count\":"<<minimum<<",\"max_count\":"<<maxCount<<",\"max_rounds\":"<<roundLimit
             <<",\"initial_theta_support\":"<<startTheta<<",\"max_theta_evaluations\":"<<maxTheta<<",\"min_phi\":"<<minPhi<<",\"max_phi\":"<<maxPhi
             <<",\"stable_passes\":"<<stablePasses<<",\"automatic_depth\":"<<(autoDepth?"true":"false")<<",\"depth_start\":"<<depthStart<<",\"depth_maximum\":"<<depthMaximum<<",\"depth_budget\":"<<Number(depthBudget)<<",\"physical_target_depth\":"<<target<<",\"phi\":"<<phi
-            <<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
+            <<",\"effective_analytic_mean_threads\":"<<(dispatchThreads?dispatchThreads:analyticMeanThreads)<<",\"dispatch_threads\":"<<dispatchThreads<<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
             <<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"selected_gpus\":[";
         for(size_t i=0;i<gpus.size();++i)out<<(i?",":"")<<Quoted(gpus[i]);
         out<<"],\"dispatch_gpus\":[";for(size_t i=0;i<WorkerGpus().size();++i)out<<(i?",":"")<<Quoted(WorkerGpus()[i]);
@@ -517,6 +518,9 @@ struct Engine {
         go=config.method==RunMethod::GeometricalOptics;Require(!config.useFft,"requires a direct solver");
         for(const char* key:{"analytic_mean_reference","haar_mirror_audit","multigrid","multikeq","multikeq_list","orientfile_dedup","analytic_facet_samples","analytic_control_weights","analytic_backscatter","analytic_azimuth_gaussian","owen_avg"})
             Require(!args.IsCatched(key),std::string("unsupported modifier --")+key+"; run one coherent size without external controls");
+        dispatchThreads=Int("fullauto_dispatch_threads",0);
+        Require(!dispatchThreads||(config.useGpu&&!go&&dispatchThreads>0),"dispatch threads require CUDA physical optics and a positive count");
+        Require(!dispatchThreads||(!args.IsCatched("threads")&&!args.IsCatched("po_prepare_threads")&&!args.IsCatched("analytic_mean_threads")),"dispatch threads conflict with explicit worker/prepare/analytic thread flags");
         const RuntimeEnvironmentSnapshot environment=QueryRuntimeEnvironmentSnapshot();
         Require(environment.experimental.empty() || args.IsCatched("allow_experimental_environment"),"unset experimental MBS_* variables or acknowledge --allow-experimental-environment");
         for(const char* name:{"OMPI_COMM_WORLD_SIZE","PMI_SIZE","MV2_COMM_WORLD_SIZE"}){const char* v=getenv(name);Require(!v||std::atoi(v)<=1,"use one MPI rank; controller launches its own GPU workers");}
@@ -703,15 +707,15 @@ struct Engine {
             compatibleHash=FileHash(compatibleBinary);
             const std::string oldVersion=ExecutableVersion(compatibleBinary),newVersion=ExecutableVersion(exe);
             const size_t oldLine=oldVersion.find('\n'),newLine=newVersion.find('\n');
-            Require(oldLine!=std::string::npos&&(oldVersion.substr(0,oldLine)=="MBS-fast 8ae9e85"||oldVersion.substr(0,oldLine)=="MBS-fast 89f83a3"||oldVersion.substr(0,oldLine)=="MBS-fast 336ef78"),
-                "compatible resume is verified only from releases 8ae9e85, 89f83a3 and 336ef78");
+            Require(oldLine!=std::string::npos&&(oldVersion.substr(0,oldLine)=="MBS-fast 8ae9e85"||oldVersion.substr(0,oldLine)=="MBS-fast 89f83a3"||oldVersion.substr(0,oldLine)=="MBS-fast 336ef78"||oldVersion.substr(0,oldLine)=="MBS-fast ef50662"),
+                "compatible resume is verified only from releases 8ae9e85, 89f83a3, 336ef78 and ef50662");
             Require(newLine!=std::string::npos&&oldVersion.substr(oldLine)==newVersion.substr(newLine),
                 "compatible resume requires identical CUDA architecture, precision, phase math, compiler, OpenMP and MPI profiles");
         }
         std::ostringstream fingerprint;fingerprint<<(compatibleHash.empty()?binaryHash:compatibleHash)<<'\n';
         for(int i=1;i<argc;++i){
             std::string option=argv[i];while(!option.empty()&&option[0]=='-')option.erase(0,1);
-            if(argv[i][0]=='-' && (option=="fullauto-resume-compatible"||option=="fullauto_resume_compatible"||option=="fullauto-dispatch-gpus"||option=="fullauto_dispatch_gpus")){++i;continue;}
+            if(argv[i][0]=='-' && (option=="fullauto-resume-compatible"||option=="fullauto_resume_compatible"||option=="fullauto-dispatch-gpus"||option=="fullauto_dispatch_gpus"||option=="fullauto-dispatch-threads"||option=="fullauto_dispatch_threads")){++i;continue;}
             fingerprint<<argv[i]<<'\n';
         }
         // Canonical reconstruction avoids shell quoting and option aliases.
@@ -753,7 +757,7 @@ struct Engine {
             <<",\"mirror_budget\":"<<(mirror?eps/256:0)<<",\"max_mirror_residual95_scaled_M11\":"<<mirrorError
             <<",\"prepare_thread_cap\":"<<prepareThreadCap<<",\"accuracy_scope\":\"production\",\"adaptive_schema\":2,\"local_orientations\":"<<(local?"true":"false")<<",\"ratio_accuracy\":"<<(ratios?"true":"false")<<",\"max_pointwise_ratio95\":"<<lastRatio<<",\"independent_final_validation\":"<<(independentPassed?"true":"false")<<",\"saved_orientation_blocks_this_invocation\":"<<savedOrientationBlocks
             <<",\"analytic_mean_budget\":"<<(controls?eps/64:0)<<",\"max_estimated_analytic_mean_error_scaled_M11\":"<<lastAnalyticError
-            <<",\"execution_budget\":"<<((resourcePolicy=="auto"||config.useGpu)?eps/1024:0)<<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
+            <<",\"execution_budget\":"<<((resourcePolicy=="auto"||config.useGpu)?eps/1024:0)<<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"effective_analytic_mean_threads\":"<<(dispatchThreads?dispatchThreads:analyticMeanThreads)<<",\"dispatch_threads\":"<<dispatchThreads<<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
             <<",\"rotation_beta_factor\":"<<rotationBeta<<",\"rotation_gamma_factor\":"<<rotationGamma<<",\"rotation_budget\":"<<((rotationBeta>1||rotationGamma>1)?eps/256:0)
             <<",\"selected_cutoff\":"<<Quoted(selectedCutoff)<<",\"cutoff_budget\":"<<(selectedCutoff!="requested"&&selectedCutoff!="off"?eps/8:0)<<",\"max_cutoff_residual95\":"<<cutoffError
             <<",\"coherent\":"<<(coherent?"true":"false")<<",\"fixed_phi\":"<<fixedPhi<<",\"scope\":\"eight-seed pointwise intervals; interpolation guards on requested grid; mirror paired pilot when enabled; current target physics; automatic depth has fresh paired validation; no global simultaneous confidence claim\"}\n";
@@ -846,6 +850,7 @@ struct Engine {
                 j.diffractionSeconds/j.count/j.inputAngles.size());
     }
     int AutoPrepareThreads(int n,int depth,int paired,size_t rows){
+        if(dispatchThreads)return dispatchThreads;
         if(!config.useGpu||go||resourcePolicy!="auto"||args.IsCatched("threads")||args.IsCatched("po_prepare_threads")||n<1024||prepareThreadCap<=workerThreads)return 0;
         const auto recipe=ExecutionHash();const auto key=PreparationKey(recipe,n,depth,paired,phi,mirror,controls,rows);
         auto& profile=preparationProfiles[key];
@@ -908,7 +913,21 @@ struct Engine {
         return result;
     }
     #include "FullAutoWorkers.inc"
+    void ApplyDispatchThreads(Job& job,std::vector<std::string>& command)const{
+        if(!dispatchThreads)return;
+        // Placement-only override, after saved native identities are formed.
+        // Per-orientation accumulation threads and ordering remain unchanged.
+        for(const char* option:{"--po-prepare-threads","--analytic-mean-threads"}){
+            bool present=false;
+            for(size_t i=0;i+1<command.size();++i)if(command[i]==option){command[i+1]=Number(dispatchThreads);present=true;}
+            if(!present&&(std::string(option)=="--po-prepare-threads"||job.hasControls)){
+                command.push_back(option);command.push_back(Number(dispatchThreads));
+            }
+        }
+        job.preparationThreads=dispatchThreads;
+    }
     void ExecutePrepared(std::vector<Job>& result,std::vector<std::vector<std::string>>& commands,const std::vector<size_t>& todo){
+        for(size_t index:todo)ApplyDispatchThreads(result[index],commands[index]);
         if(PersistentEnabled()){ExecutePersistent(result,commands,todo);return;}
         for(auto& service:services)service.reset();
         WorkerCleanup cleanup;

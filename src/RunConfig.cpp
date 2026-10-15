@@ -1184,6 +1184,13 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
         const std::string value=args.GetStringValue(key);
         if(value!="auto"&&value!="off")Fail(std::string("--")+key+" expects auto or off.","choose auto or off.");
     }
+    if(args.IsCatched("fullauto_dispatch_threads")){
+        RequirePositiveInt(args,"fullauto_dispatch_threads");
+        if(!args.IsCatched("fullauto")||!config.useGpu||config.method!=RunMethod::PhysicalOptics)
+            Fail("--fullauto-dispatch-threads requires CUDA PO fullauto.","select --method po --backend cuda --fullauto EPS.");
+        if(args.IsCatched("threads")||args.IsCatched("po_prepare_threads")||args.IsCatched("analytic_mean_threads"))
+            Fail("dispatch threads conflict with explicit thread flags.","choose one CPU resource policy.");
+    }
     for(const char* gpuKey:{"fullauto_gpus","fullauto_dispatch_gpus"})if(args.IsCatched(gpuKey)){
         const std::string value=args.GetStringValue(gpuKey);
         if(std::string(gpuKey)=="fullauto_dispatch_gpus"&&!args.IsCatched("fullauto_resume_compatible"))
