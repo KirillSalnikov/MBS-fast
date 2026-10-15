@@ -79,6 +79,23 @@ std::string FileHash(const std::string& path) {
     digests[path]=Entry{after,digest};return digest;
 }
 bool Exists(const std::string& p) { struct stat s;return stat(p.c_str(),&s)==0; }
+// Explicit compatibility bridge for the allocation-only analytic CUDA fix.
+// Normal resume still requires the exact executable hash. Never extend this
+// release allowlist without numerical equivalence tests for the new change.
+std::string ExecutableVersion(const std::string& executable){
+    int fd[2];Require(pipe2(fd,O_CLOEXEC)==0,"cannot create version pipe");
+    const pid_t child=fork();
+    if(child<0){close(fd[0]);close(fd[1]);Require(false,"cannot start version check");}
+    if(child==0){close(fd[0]);dup2(fd[1],STDOUT_FILENO);dup2(fd[1],STDERR_FILENO);close(fd[1]);
+        execl(executable.c_str(),executable.c_str(),"--version",static_cast<char*>(nullptr));_exit(127);}
+    close(fd[1]);std::string text;char buffer[1024];bool valid=true;
+    for(;;){pollfd p={fd[0],POLLIN,0};int ready;do{ready=poll(&p,1,10000);}while(ready<0&&errno==EINTR);
+        if(ready<=0){valid=false;break;}
+        ssize_t n;do{n=read(fd[0],buffer,sizeof(buffer));}while(n<0&&errno==EINTR);
+        if(n==0)break;if(n<0||text.size()+n>16384){valid=false;break;}text.append(buffer,n);}
+    close(fd[0]);if(!valid)kill(child,SIGKILL);int status=0;while(waitpid(child,&status,0)<0&&errno==EINTR){}
+    Require(valid&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"cannot verify compatible executable "+executable);return text;
+}
 void Directory(const std::string& p) {
     if(p.empty() || p=="/" || Exists(p))return;
     size_t slash=p.find_last_of('/');if(slash!=std::string::npos)Directory(p.substr(0,slash));
@@ -366,6 +383,7 @@ struct WorkerService {
 };
 struct Engine {
     const ArgPP& args;const RunConfig& config;std::string exe,root,signature,binaryHash,weightFile;
+    std::string compatibleBinary,compatibleHash;
     std::ofstream journal;std::string requestedOptions;size_t journalSequence=0;double runStarted=Seconds();
     std::vector<std::string> base,gpus;std::vector<double> theta,weightTheta;
     std::vector<std::array<double,2>> weights;std::vector<unsigned> seeds;
@@ -443,6 +461,7 @@ struct Engine {
     }
     std::string Parameters(const std::string& state)const{
         std::ostringstream out;out<<"{\"configuration_fnv1a64\":"<<Quoted(signature)<<",\"binary_fnv1a64\":"<<Quoted(binaryHash)
+            <<",\"compatible_origin_binary_fnv1a64\":"<<Quoted(compatibleHash)
             <<",\"requested_options\":"<<requestedOptions<<",\"effective_worker_base\":[";
         for(size_t i=0;i<base.size();++i)out<<(i?",":"")<<Quoted(base[i]);
         out<<"],\"epsilon\":"<<Number(eps)<<",\"interpolation_budget\":"<<Number(interpolation)<<",\"statistical_budget\":"<<Number(statistical)
@@ -639,7 +658,24 @@ struct Engine {
         analyticMeanThreads=Int("analytic_mean_threads",config.threads>0?config.threads:std::min(32,share));
         Require(analyticMeanThreads>0,"analytic mean threads must be positive");
         std::set<std::string> drop={"fullauto","autofull","o","n","grid","tgrid","nphi","haar_alpha","mirror_gamma","analytic_facet_average","analytic_shadow_control","analytic_mean_cache","analytic_control_weights","close","profile_phases","orientation_pipeline","checkpoint","maxorient","max_theta_points","max_phi_points","adaptive_config","owen_seeds","convergence_passes","threads","chunk","analytic_mean_threads"};
-        std::ostringstream fingerprint;fingerprint<<binaryHash<<'\n';for(int i=1;i<argc;++i)fingerprint<<argv[i]<<'\n';
+        if(args.IsCatched("fullauto_resume_compatible")){
+            compatibleBinary=args.GetStringValue("fullauto_resume_compatible");
+            Require(Exists(root+"/configuration.txt")&&Exists(root+"/controller_command.json")&&Exists(root+"/fullauto_parameters.json"),
+                "compatible resume requires an existing fullauto result");
+            compatibleHash=FileHash(compatibleBinary);
+            const std::string oldVersion=ExecutableVersion(compatibleBinary),newVersion=ExecutableVersion(exe);
+            const size_t oldLine=oldVersion.find('\n'),newLine=newVersion.find('\n');
+            Require(oldLine!=std::string::npos&&oldVersion.substr(0,oldLine)=="MBS-fast 8ae9e85",
+                "compatible resume is verified only from release 8ae9e85");
+            Require(newLine!=std::string::npos&&oldVersion.substr(oldLine)==newVersion.substr(newLine),
+                "compatible resume requires identical CUDA architecture, precision, phase math, compiler, OpenMP and MPI profiles");
+        }
+        std::ostringstream fingerprint;fingerprint<<(compatibleHash.empty()?binaryHash:compatibleHash)<<'\n';
+        for(int i=1;i<argc;++i){
+            std::string option=argv[i];while(!option.empty()&&option[0]=='-')option.erase(0,1);
+            if(argv[i][0]=='-' && (option=="fullauto-resume-compatible"||option=="fullauto_resume_compatible")){++i;continue;}
+            fingerprint<<argv[i]<<'\n';
+        }
         // Canonical reconstruction avoids shell quoting and option aliases.
         std::set<std::string> seen;for(const auto& spec:GetCliOptionSpecs())if(args.IsCatched(spec.key)&&seen.insert(spec.key).second){
             if(spec.key=="pf"||spec.key=="tgrid"||spec.key=="adaptive_config")fingerprint<<FileHash(args.GetStringValue(spec.key))<<'\n';
@@ -1273,6 +1309,14 @@ int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],do
     Lock lock(controller->root+"/controller.lock");
     const std::string identity=controller->root+"/configuration.txt";
     if(Exists(identity))Require(Read(identity)==controller->signature+"\n","resume inputs/binary/environment changed; choose a new output directory");else Atomic(identity,controller->signature+"\n");
+    if(!controller->compatibleHash.empty()){
+        const std::string previous=controller->root+"/fullauto_parameters.before_compatible_resume.json";
+        if(!Exists(previous))Atomic(previous,Read(controller->root+"/fullauto_parameters.json"));
+        controller->Record(controller->root+"/binary_compatibility_resume.json",
+            "{\"reason\":\"8ae9e85 analytic CUDA allocation-only fix; bitwise validated\",\"origin_executable\":"+Quoted(controller->compatibleBinary)
+            +",\"origin_binary_fnv1a64\":"+Quoted(controller->compatibleHash)+",\"executable\":"+Quoted(controller->exe)
+            +",\"binary_fnv1a64\":"+Quoted(controller->binaryHash)+"}");
+    }
     char originalDirectory[4096];Require(getcwd(originalDirectory,sizeof(originalDirectory))!=nullptr,"cannot capture original working directory");
     std::ostringstream replay;replay<<"{\"schema\":1,\"executable\":"<<Quoted(controller->exe)<<",\"cwd\":"<<Quoted(originalDirectory)<<",\"argv\":[";
     for(int i=1;i<argc;++i)replay<<(i>1?",":"")<<Quoted(argv[i]);replay<<"],\"environment\":{";
@@ -1285,6 +1329,7 @@ int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],do
     // Environment iteration order is not stable across exec/reboots. Keep
     // the original JSON; signature validation checks result-affecting values.
     if(!Exists(commandFile))Atomic(commandFile,replay.str());
+    if(!controller->compatibleHash.empty())Atomic(controller->root+"/controller_resume_command.json",replay.str());
     signal(SIGTERM,StopWorkers);signal(SIGINT,StopWorkers);
     for(;;){Engine& e=*controller;
         e.Record(e.root+"/explicit_options.json",e.requestedOptions);e.Record(e.root+"/fullauto_parameters.json",e.Parameters("{}"));

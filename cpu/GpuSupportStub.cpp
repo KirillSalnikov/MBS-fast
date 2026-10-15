@@ -5,7 +5,8 @@ bool EvaluateAnalyticFacetGpu(const AnalyticGpuModel&,
     const std::vector<std::array<AnalyticBackscatter::Vec,3>>&,
     const std::vector<double>&,const std::vector<double>&,int,
     std::vector<double>&,std::vector<double>&,
-    std::vector<AnalyticFacetAverage::Components>*){return false;}
+    std::vector<AnalyticFacetAverage::Components>*,std::string*error)
+    {if(error)*error="binary was built without CUDA support";return false;}
 
 bool EvaluateAnalyticAzimuthGaussianGpu(
     const std::vector<std::vector<AnalyticAzimuthGaussian::Beam>>&,

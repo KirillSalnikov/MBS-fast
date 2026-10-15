@@ -6555,9 +6555,10 @@ void TracerPOTotal::TraceWeightedOrientations(
                 for(int i=0;i<thisChunk;++i)weights[i]=chunkPrepared[i].sinZenith;
                 std::vector<double> ref,shadow;
                 std::vector<AnalyticFacetAverage::Components> samples;
+                std::string analyticError;
                 if(!EvaluateAnalyticFacetGpu(facetControl->GpuModel(),poses,weights,facetTheta,nAz,
-                    ref,shadow,m_analyticFacetSamples ? &samples : nullptr))
-                    throw std::runtime_error("CUDA analytic aperture kernel failed.\n  Fix: inspect available GPU memory and CUDA diagnostics.");
+                    ref,shadow,m_analyticFacetSamples ? &samples : nullptr,&analyticError))
+                    throw std::runtime_error("CUDA analytic aperture kernel failed: "+analyticError);
                 for(size_t cell=0;cell<ref.size();++cell)
                 {facetReflectionCells[cell]+=ref[cell];facetShadowCells[cell]+=shadow[cell];}
                 if(m_analyticFacetSamples)

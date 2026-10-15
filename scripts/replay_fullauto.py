@@ -9,11 +9,19 @@ import shlex
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('result', type=Path, help='Fullauto output directory')
 parser.add_argument('--show', action='store_true', help='Print the saved command without running')
+parser.add_argument('--compatible-executable', type=Path,
+                    help='Use the analytic CUDA memory fix with an existing 8ae9e85 result; the binary verifies compatibility')
 args = parser.parse_args()
-recipe = json.loads((args.result/'controller_command.json').read_text())
+resume = args.result/'controller_resume_command.json'
+recipe = json.loads((resume if resume.exists() and not args.compatible_executable
+                     else args.result/'controller_command.json').read_text())
 if recipe['schema'] != 1:
     parser.error('Unsupported saved command schema')
 command = [recipe['executable']] + recipe['argv']
+if args.compatible_executable:
+    command += ['--fullauto-resume-compatible', recipe['executable']]
+    recipe['executable'] = str(args.compatible_executable.resolve())
+    command[0] = recipe['executable']
 if args.show:
     print('cd '+shlex.quote(recipe['cwd']))
     print(' '.join(shlex.quote(argument) for argument in command))

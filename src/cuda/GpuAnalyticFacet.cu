@@ -5,6 +5,9 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <algorithm>
+#include <limits>
+#include <sstream>
 
 namespace
 {
@@ -54,12 +57,12 @@ __device__ double fourier_norm(const AnalyticGpuPatch &p,const double*xy,double 
     double q2=qx*qx+qy*qy;return (sr*sr+si*si)/(q2*q2);
 }
 __global__ void controls_kernel(const AnalyticGpuPatch*patches,int count,const double*xy,
-    const double*frames,const double*theta,int rows,int phi,int orientations,
+    const double*frames,const double*theta,int rows,int phi,int orientations,int firstCell,int tileCells,
     double nr,double ni,double wave,double radius,int shadowMode,double*reflection,double*shadow)
 {
     size_t index=static_cast<size_t>(blockIdx.x)*blockDim.x+threadIdx.x;
-    size_t cells=static_cast<size_t>(rows)*phi,total=cells*orientations;if(index>=total)return;
-    int pose=index/cells,cell=index%cells,row=cell%rows,p=cell/rows;
+    size_t total=static_cast<size_t>(tileCells)*orientations;if(index>=total)return;
+    int pose=index/tileCells,cell=firstCell+index%tileCells,row=cell%rows,p=cell/rows;
     const double*f=frames+pose*9;const double*u=f+6;double angle=theta[row];
     if(nr==1 && ni==0){reflection[index]=0;shadow[index]=0;return;}
     double st,ct,sp,cp;sincos(angle,&st,&ct);sincos(2*pi*p/phi,&sp,&cp);
@@ -136,16 +139,20 @@ template<class T>struct Memory
 {
     T*pointer=nullptr;
     size_t capacity=0;
+    cudaError_t status=cudaSuccess;
     ~Memory(){if(pointer)cudaFree(pointer);}
+    void Release(){if(pointer)cudaFree(pointer);pointer=nullptr;capacity=0;}
     bool Allocate(size_t count)
     {
+        status=cudaSuccess;
         if(count<=capacity)return true;
-        if(pointer){cudaFree(pointer);pointer=nullptr;capacity=0;}
-        if(cudaMalloc(reinterpret_cast<void**>(&pointer),count*sizeof(T))!=cudaSuccess)return false;
+        Release();
+        status=cudaMalloc(reinterpret_cast<void**>(&pointer),count*sizeof(T));
+        if(status!=cudaSuccess)return false;
         capacity=count;return true;
     }
     bool Load(const T*data,size_t count)
-    {return Allocate(count) && (!count || cudaMemcpy(pointer,data,count*sizeof(T),cudaMemcpyHostToDevice)==cudaSuccess);}
+    {return Allocate(count) && (!count || (status=cudaMemcpy(pointer,data,count*sizeof(T),cudaMemcpyHostToDevice))==cudaSuccess);}
 };
 struct FacetWorkspace
 {
@@ -153,6 +160,7 @@ struct FacetWorkspace
     Memory<double>xy,angles,frames,weights,reflection,shadow,sumReflection,sumShadow;
     std::vector<AnalyticGpuPatch>hostPatches;
     std::vector<double>hostXY,hostTheta;
+    size_t reportedCount=0,reportedCells=0,reportedTile=0;
     bool Bind(const AnalyticGpuModel &model,const std::vector<double> &theta)
     {
         const bool same=hostPatches.size()==model.patches.size()
@@ -177,53 +185,114 @@ bool EvaluateAnalyticFacetGpu(const AnalyticGpuModel &model,
     const std::vector<std::array<AnalyticBackscatter::Vec,3>>&poses,
     const std::vector<double>&weights,const std::vector<double>&theta,int phi,
     std::vector<double>&reflected,std::vector<double>&shadow,
-    std::vector<AnalyticFacetAverage::Components>*samples)
+    std::vector<AnalyticFacetAverage::Components>*samples,std::string*error)
 {
-    if(poses.size()!=weights.size() || poses.empty() || theta.empty() || phi<1)return false;
-    for(double angle:theta)if(!std::isfinite(angle) || angle<0 || angle>pi)return false;
+    if(error)error->clear();
+    const auto invalid=[&](const char*message){if(error)*error=message;return false;};
+    if(poses.size()!=weights.size() || poses.empty() || theta.empty() || phi<1)
+        return invalid("invalid orientation, weight or angular array size");
+    const size_t intMax=static_cast<size_t>(std::numeric_limits<int>::max());
+    if(poses.size()>intMax || theta.size()>intMax/static_cast<size_t>(phi) || model.patches.size()>intMax
+        || poses.size()>std::numeric_limits<size_t>::max()/theta.size()/sizeof(AnalyticFacetAverage::Components))
+        return invalid("analytic grid exceeds addressable array dimensions");
+    for(double angle:theta)if(!std::isfinite(angle) || angle<0 || angle>pi)return invalid("invalid theta angle");
     for(const auto &pose:poses)
     {
         for(int a=0;a<3;++a)for(int b=a;b<3;++b)
         {
             const auto &u=pose[a],&v=pose[b];const double dot=u.x*v.x+u.y*v.y+u.z*v.z;
-            if(!std::isfinite(dot) || std::fabs(dot-(a==b ? 1.:0.))>1e-10)return false;
+            if(!std::isfinite(dot) || std::fabs(dot-(a==b ? 1.:0.))>1e-10)return invalid("non-orthonormal source frame");
         }
         const auto &a=pose[0],&b=pose[1],&u=pose[2];
         const double determinant=(a.y*b.z-a.z*b.y)*u.x+(a.z*b.x-a.x*b.z)*u.y+(a.x*b.y-a.y*b.x)*u.z;
-        if(!(determinant>0) || !std::isfinite(determinant))return false;
+        if(!(determinant>0) || !std::isfinite(determinant))return invalid("source frame is not right handed");
     }
-    const size_t count=poses.size(),rows=theta.size(),cells=rows*phi,total=count*cells;
+    const size_t count=poses.size(),rows=theta.size(),cells=rows*phi;
+    const auto failure=[&](const char*operation,cudaError_t status,size_t requested=0){
+        if(error){
+            std::ostringstream out;out<<operation<<": "<<cudaGetErrorName(status)<<" ("<<cudaGetErrorString(status)<<")"
+                <<"; orientations="<<count<<" theta="<<rows<<" phi="<<phi;
+            if(requested)out<<" requested_bytes="<<requested;
+            size_t free=0,total=0;
+            if(cudaMemGetInfo(&free,&total)==cudaSuccess)out<<" free_bytes="<<free<<" total_bytes="<<total;
+            *error=out.str();
+        }
+        return false;
+    };
     std::vector<double>packed(count*9);
     for(size_t i=0;i<count;++i)for(int a=0;a<3;++a)
     {packed[i*9+a*3]=poses[i][a].x;packed[i*9+a*3+1]=poses[i][a].y;packed[i*9+a*3+2]=poses[i][a].z;}
     // Geometry/theta are constant across streamed chunks; retain buffers per
     // thread/device, also avoiding malloc/free synchronization on every chunk.
-    int device=0;if(cudaGetDevice(&device)!=cudaSuccess)return false;
+    int device=0;cudaError_t status=cudaGetDevice(&device);
+    if(status!=cudaSuccess)return failure("cudaGetDevice",status);
     static thread_local std::map<int,std::unique_ptr<FacetWorkspace>> workspaces;
     auto &entry=workspaces[device];if(!entry)entry.reset(new FacetWorkspace);
     auto &cache=*entry;
-    if(!cache.Bind(model,theta))return false;
+    if(!cache.Bind(model,theta)){
+        if(cache.patch.status!=cudaSuccess)return failure("upload facet patches",cache.patch.status);
+        if(cache.xy.status!=cudaSuccess)return failure("upload facet vertices",cache.xy.status);
+        return failure("upload theta",cache.angles.status);
+    }
     auto &patch=cache.patch;auto &xy=cache.xy;auto &angles=cache.angles;
     auto &frames=cache.frames;auto &w=cache.weights;auto &r=cache.reflection;auto &s=cache.shadow;
     auto &sr=cache.sumReflection;auto &ss=cache.sumShadow;
-    if(!frames.Load(packed.data(),packed.size()) || !w.Load(weights.data(),count)
-        || !r.Allocate(total) || !s.Allocate(total) || !sr.Allocate(cells) || !ss.Allocate(cells))return false;
-    controls_kernel<<<(total+127)/128,128>>>(patch.pointer,model.patches.size(),xy.pointer,frames.pointer,angles.pointer,
-        rows,phi,count,model.indexReal,model.indexImag,model.wave,model.circleRadius,model.shadowMode,r.pointer,s.pointer);
-    if(cudaGetLastError()!=cudaSuccess)return false;
-    sum_kernel<<<(cells+127)/128,128>>>(r.pointer,s.pointer,w.pointer,count,cells,sr.pointer,ss.pointer);
-    if(cudaGetLastError()!=cudaSuccess)return false;
+    if(!frames.Load(packed.data(),packed.size()))return failure("upload source frames",frames.status,packed.size()*sizeof(double));
+    if(!w.Load(weights.data(),count))return failure("upload orientation weights",w.status,count*sizeof(double));
+
+    // Tile angular cells, never the reduction over orientations. Each cell is
+    // evaluated and summed in exactly the same order as the unbounded kernel.
+    // The two old count*rows*phi arrays could exceed the entire device memory
+    // on the denser independent fullauto audit grid. Keep at most 128 MiB of
+    // scratch, and leave room for the resident diffraction/trace workspaces.
+    size_t free=0,totalMemory=0;
+    status=cudaMemGetInfo(&free,&totalMemory);
+    if(status!=cudaSuccess)return failure("cudaMemGetInfo",status);
+    const size_t retained=(r.capacity+s.capacity+sr.capacity+ss.capacity)*sizeof(double);
+    const size_t bytesPerCell=2*(count+1)*sizeof(double);
+    const size_t budget=std::min<size_t>(128*1024*1024,(free+retained)/2);
+    size_t tile=std::min(cells,std::max<size_t>(1,budget/bytesPerCell));
+    const auto releaseScratch=[&](){r.Release();s.Release();sr.Release();ss.Release();};
+    if(retained>budget || r.capacity>count*tile || s.capacity>count*tile || sr.capacity>tile || ss.capacity>tile)releaseScratch();
+    for(;;){
+        if(r.Allocate(count*tile) && s.Allocate(count*tile) && sr.Allocate(tile) && ss.Allocate(tile))break;
+        status=r.status!=cudaSuccess ? r.status:s.status!=cudaSuccess ? s.status:sr.status!=cudaSuccess ? sr.status:ss.status;
+        if(status!=cudaErrorMemoryAllocation || tile==1)return failure("allocate analytic tile",status,bytesPerCell*tile);
+        // Only allocation failure permits retry. Never hide a kernel error.
+        releaseScratch();cudaGetLastError();tile=std::max<size_t>(1,tile/2);
+    }
+    if(cache.reportedCount!=count || cache.reportedCells!=cells || cache.reportedTile!=tile){
+        std::printf("CUDA analytic workspace: orientations=%zu theta=%zu phi=%d tile_cells=%zu/%zu scratch_bytes=%zu\n",
+            count,rows,phi,tile,cells,(r.capacity+s.capacity+sr.capacity+ss.capacity)*sizeof(double));
+        cache.reportedCount=count;cache.reportedCells=cells;cache.reportedTile=tile;
+    }
     reflected.resize(cells);shadow.resize(cells);
-    if(cudaMemcpy(reflected.data(),sr.pointer,cells*sizeof(double),cudaMemcpyDeviceToHost)!=cudaSuccess
-        || cudaMemcpy(shadow.data(),ss.pointer,cells*sizeof(double),cudaMemcpyDeviceToHost)!=cudaSuccess)return false;
-    if(samples)
-    {
-        std::vector<double>hr(total),hs(total);
-        if(cudaMemcpy(hr.data(),r.pointer,total*sizeof(double),cudaMemcpyDeviceToHost)!=cudaSuccess
-            || cudaMemcpy(hs.data(),s.pointer,total*sizeof(double),cudaMemcpyDeviceToHost)!=cudaSuccess)return false;
+    std::vector<double>hr,hs;
+    if(samples){
         samples->assign(count*rows,AnalyticFacetAverage::Components{0,0});
-        for(size_t i=0;i<count;++i)for(int p=0;p<phi;++p)for(size_t t=0;t<rows;++t)
-        {size_t j=i*cells+p*rows+t;(*samples)[i*rows+t].reflection+=hr[j]/phi;(*samples)[i*rows+t].shadow+=hs[j]/phi;}
+        hr.resize(count*tile);hs.resize(count*tile);
+    }
+    for(size_t first=0;first<cells;first+=tile){
+        const size_t length=std::min(tile,cells-first),elements=count*length;
+        controls_kernel<<<(elements+127)/128,128>>>(patch.pointer,model.patches.size(),xy.pointer,frames.pointer,angles.pointer,
+            rows,phi,count,first,length,model.indexReal,model.indexImag,model.wave,model.circleRadius,model.shadowMode,r.pointer,s.pointer);
+        status=cudaGetLastError();if(status!=cudaSuccess)return failure("launch analytic controls",status);
+        sum_kernel<<<(length+127)/128,128>>>(r.pointer,s.pointer,w.pointer,count,length,sr.pointer,ss.pointer);
+        status=cudaGetLastError();if(status!=cudaSuccess)return failure("launch analytic sum",status);
+        status=cudaMemcpy(reflected.data()+first,sr.pointer,length*sizeof(double),cudaMemcpyDeviceToHost);
+        if(status!=cudaSuccess)return failure("copy reflected tile",status);
+        status=cudaMemcpy(shadow.data()+first,ss.pointer,length*sizeof(double),cudaMemcpyDeviceToHost);
+        if(status!=cudaSuccess)return failure("copy shadow tile",status);
+        if(samples){
+            status=cudaMemcpy(hr.data(),r.pointer,elements*sizeof(double),cudaMemcpyDeviceToHost);
+            if(status!=cudaSuccess)return failure("copy reflected orientation samples",status);
+            status=cudaMemcpy(hs.data(),s.pointer,elements*sizeof(double),cudaMemcpyDeviceToHost);
+            if(status!=cudaSuccess)return failure("copy shadow orientation samples",status);
+            for(size_t i=0;i<count;++i)for(size_t cell=0;cell<length;++cell){
+                const size_t j=i*length+cell,t=(first+cell)%rows;
+                (*samples)[i*rows+t].reflection+=hr[j]/phi;(*samples)[i*rows+t].shadow+=hs[j]/phi;
+            }
+        }
     }
     return true;
 }

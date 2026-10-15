@@ -2,6 +2,7 @@
 #include "AnalyticFacetAverage.h"
 #include "AnalyticAzimuthGaussian.h"
 #include <array>
+#include <string>
 
 struct AnalyticGpuPatch
 {
@@ -22,4 +23,5 @@ bool EvaluateAnalyticFacetGpu(const AnalyticGpuModel &model,
     const std::vector<std::array<AnalyticBackscatter::Vec,3>>&frames,
     const std::vector<double>&weights,const std::vector<double>&theta,int nPhi,
     std::vector<double>&reflectedCells,std::vector<double>&shadowCells,
-    std::vector<AnalyticFacetAverage::Components>*orientationRows);
+    std::vector<AnalyticFacetAverage::Components>*orientationRows,
+    std::string*error=nullptr);
