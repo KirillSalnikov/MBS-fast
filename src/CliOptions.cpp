@@ -300,7 +300,7 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
         {"fullauto_ratios", "fullauto-ratio-accuracy", 1, "MODE", "Orientation",
          "Also bound normalized Mij/M11 using paired Fieller intervals: on (default), off."},
         {"fullauto_phi_recheck", "fullauto-phi-recheck", 1, "MODE", "Orientation",
-         "Recheck phi on representative working theta at target depth after the dense pilot: on (default), off."},
+         "Recheck phi after the dense pilot and, once per depth, on persistently noisy working angles with independent cost-gated confirmation: on (default), off. Explicit phi/pilot settings are retained."},
         {"fullauto_polar_controls", "fullauto-polarization-controls", 1, "MODE", "Orientation",
          "Frozen scalar analytic control variates for all Mueller entries, retained only after independent variance validation: on (default), off."},
         {"fullauto_final_audit", "fullauto-final-audit", 1, "MODE", "Orientation",

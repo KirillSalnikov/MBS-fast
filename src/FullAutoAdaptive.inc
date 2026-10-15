@@ -46,10 +46,7 @@ AdaptiveData EvaluateBudget(Engine& e,const std::vector<int>& depths,const Budge
 std::vector<int> AllocateRow(const Engine& e,const AdaptiveData& data,const Budgets& counts,const std::vector<size_t>& ids,size_t row,const Matrix& mean){
     std::vector<Samples> values;std::vector<double> costs;std::vector<int> ns;
     for(size_t l=0;l<data.levels.size();++l){Samples v(8,Matrix(1));for(int s=0;s<8;++s)v[s][0]=data.levels[l][s][row];values.push_back(v);costs.push_back(data.costs[l][row]);ns.push_back(counts[l][ids[row]]);}
-    const Matrix reference={mean[row]};auto proposed=Allocate(values,costs,ns,reference,e.statistical*.85);
-    if(e.ratios){for(auto& level:values)for(auto& seed:level)for(int j=1;j<16;++j)seed[0][j]-=mean[row][j]/mean[row][0]*seed[0][0];
-        auto ratio=Allocate(values,costs,ns,reference,e.statistical*.85);for(size_t l=0;l<proposed.size();++l)proposed[l]=std::max(proposed[l],ratio[l]);}
-    return proposed;
+    return AllocateCovariant(values,costs,ns,{mean[row]},e.statistical*.85,e.ratios,e.maxCount,e.statistical);
 }
 #include "FullAutoRefinement.inc"
 struct AdaptiveState {int round=0,streak=0;unsigned auditSerial=0;std::vector<size_t> knots;Budgets counts;Matrix previous;std::vector<bool> valid,coarse;};
@@ -134,6 +131,8 @@ std::vector<double> WorkingGrid(const Engine& e,const std::vector<size_t>& evalu
     for(size_t i=0;i<n;++i)grid.push_back(e.theta[evaluated[i*(evaluated.size()-1)/(n-1)]]);
     return grid;}
 struct InterpolationResult {Samples output;std::vector<double> errors;std::vector<size_t> bad;double maximum=0;};
+#include "FullAutoCorrectionProbe.inc"
+#include "FullAutoWorkingPhi.inc"
 InterpolationResult InterpolateBudget(const Engine& e,const std::vector<size_t>& knots,const std::vector<size_t>& evaluated,const Samples& samples){
     InterpolationResult result;result.output.resize(8);result.errors.resize(evaluated.size());Samples predicted(8);const auto x=Angles(e.theta,evaluated),sx=Angles(e.theta,knots);const auto support=Support(samples,evaluated,knots);
     for(int s=0;s<8;++s){predicted[s]=LocalCubicInterpolate(sx,support[s],x);result.output[s]=LocalCubicInterpolate(sx,support[s],e.theta);}
@@ -406,6 +405,8 @@ int RunAdaptive(Engine& e){
         const std::string path=e.root+"/fullauto_status.json";if(Exists(path)){std::string text=Read(path);const size_t key=text.find("\"status\":\"");if(key!=std::string::npos){const size_t begin=key+10,end=text.find('"',begin);text.replace(begin,end-begin,"converged");Atomic(path,text);}}
         std::cout<<"fullauto: completed outputs and dependencies verified; no calculation repeated"<<std::endl;return 0;
     }
+    if(resumed){RestoreWorkingPhi(e,state);RestoreCorrectionProbe(e,state);}
+    e.Record(e.root+"/allocation_policy.json","{\"model\":\"centered joint eight-scramble covariance and Fieller forecast\",\"max_growth_per_round\":4,\"correction_subrounds_per_round\":2,\"correction_subround_max_theta\":33,\"correction_subround_max_base_cost_fraction\":0.1,\"working_phi_recheck\":"+std::string(e.phiRecheck&&!e.fixedPhi&&!e.args.IsCatched("fullauto_pilot")?"true":"false")+",\"forecast_accepts_accuracy\":false,\"original_accuracy_and_independent_audit_gates_retained\":true}");
     if(!resumed){const size_t initial=std::min(e.theta.size(),size_t(e.startTheta));for(size_t i=0;i<initial;++i)state.knots.push_back(i*(e.theta.size()-1)/(initial-1));
         auto ids=AdaptiveGuards(state.knots,e.theta.size());auto x=Angles(e.theta,ids);e.State("calibrating",0,PeakBudgets(state.counts),ids.size(),0,0,0);
         auto calibrate=[&](){e.PrepareMirror(x);e.Calibrate(x);if(!e.VerifyMirror(x)){e.SetMirror(false);e.Calibrate(x);}};
@@ -477,7 +478,7 @@ int RunAdaptive(Engine& e){
                 e.Record(e.root+"/precision_contract.json","{\"statistics\":\"eight-scramble pointwise Student-t estimates\",\"normalized_ratios\":\"paired-covariance Fieller intervals for ratios of means\",\"interpolation_budget\":"+Number(e.interpolation)+",\"execution_budget\":"+Number((e.resourcePolicy=="auto"||e.config.useGpu)?e.eps/1024:0)+",\"rotation_budget\":"+Number((e.rotationBeta>1||e.rotationGamma>1)?e.eps/256:0)+",\"cutoff_budget\":"+Number(e.selectedCutoff!="requested"&&e.selectedCutoff!="off"?e.eps/8:0)+",\"selected_cutoff\":"+Quoted(e.selectedCutoff)+",\"automatic_cutoff_audit\":"+std::string(e.tuneCutoffs&&e.selectedCutoff!="off"?"true":"false")+",\"physical_depth\":"+Number(e.target)+",\"physical_accuracy_audited\":"+std::string(e.physicsAudit||e.autoDepth?"true":"false")+",\"automatic_depth\":"+std::string(e.autoDepth?"true":"false")+",\"depth_budget\":"+Number(e.depthBudget)+",\"analytic_mean_error\":\"reported internal refinement, not an absolute bound\",\"global_simultaneous_confidence\":false}");
                 if(!physics){SaveAdaptive(e,state,"physics_validation_failed");e.State("physics_validation_failed",state.round,PeakBudgets(state.counts),ids.size(),lastCI,lastInterpolation,state.streak);return 4;}
                 WriteFullAutoIntegrals(e,e.root,interp.output,stage.sources,true);
-                std::ostringstream finalHashes;for(const char* path:{"controller_command.json","mueller_fullauto.dat","mueller_evaluated.dat","all_mueller_confidence.csv","normalized_mueller_confidence.csv","theta_support.csv","theta_evaluated.csv","orientation_budget.csv","final_stage_sources.tsv","independent_final_validation.json","precision_contract.json","physics_validation.json","execution_tuning.tsv","resource_calibration.json","rotation_verification.json","cutoff_calibration.json","automatic_cutoff_validation.json"})finalHashes<<path<<' '<<Hash(Read(e.root+"/"+path))<<'\n';if(e.finalAudit)finalHashes<<"independent_orientation_budget.csv "<<Hash(Read(e.root+"/independent_orientation_budget.csv"))<<'\n';if(e.finalAudit)for(const char* name:{"production_validation_receipt.tsv","independent_audit_plan.json","independent_audit_cost_gate.json","independent_audit_reservation.tsv","independent_final_sources.tsv","independent_theta.csv","interpolation_validation_mode.json","interpolation_validation_sources.tsv","interpolation_validation_budgets.csv"})if(Exists(e.root+"/"+name))finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';if(e.autoDepth)for(const char* name:{"automatic_depth.tsv","depth_selection.json"})finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';if(Exists(e.root+"/depth_startup.tsv"))for(const char* name:{"depth_startup.tsv","depth_startup.json"})finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';HashIntegralProducts(e.root,finalHashes);Atomic(e.root+"/final_outputs.fnv",finalHashes.str());
+                std::ostringstream finalHashes;for(const char* path:{"controller_command.json","mueller_fullauto.dat","mueller_evaluated.dat","all_mueller_confidence.csv","normalized_mueller_confidence.csv","theta_support.csv","theta_evaluated.csv","orientation_budget.csv","final_stage_sources.tsv","independent_final_validation.json","precision_contract.json","physics_validation.json","execution_tuning.tsv","resource_calibration.json","rotation_verification.json","cutoff_calibration.json","automatic_cutoff_validation.json"})finalHashes<<path<<' '<<Hash(Read(e.root+"/"+path))<<'\n';if(e.finalAudit)finalHashes<<"independent_orientation_budget.csv "<<Hash(Read(e.root+"/independent_orientation_budget.csv"))<<'\n';if(e.finalAudit)for(const char* name:{"production_validation_receipt.tsv","independent_audit_plan.json","independent_audit_cost_gate.json","independent_audit_reservation.tsv","independent_final_sources.tsv","independent_theta.csv","interpolation_validation_mode.json","interpolation_validation_sources.tsv","interpolation_validation_budgets.csv"})if(Exists(e.root+"/"+name))finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';if(e.autoDepth)for(const char* name:{"automatic_depth.tsv","depth_selection.json"})finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';if(Exists(e.root+"/depth_startup.tsv"))for(const char* name:{"depth_startup.tsv","depth_startup.json"})finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';HashIntegralProducts(e.root,finalHashes);HashSchedulingReceipts(e,finalHashes);Atomic(e.root+"/final_outputs.fnv",finalHashes.str());
                 SaveAdaptive(e,state,"converged");e.State("converged",state.round,PeakBudgets(state.counts),ids.size(),lastCI,lastInterpolation,state.streak);return 0;
             }
             state.streak=0;std::fill(state.valid.begin(),state.valid.end(),false);SaveAdaptive(e,state);continue;
@@ -529,6 +530,9 @@ int RunAdaptive(Engine& e){
             size_t worst=0;for(size_t r=1;r<ids.size();++r)if(WorstMetric(stats,r,e.ratios).error>WorstMetric(stats,worst,e.ratios).error)worst=r;
             RefineError(e,work,depths,state.counts,proposed,ids,stage,{{ids[worst],1}},WorstMetric(stats,worst,e.ratios),stats.mean[worst],e.theta[ids[worst]],"stability",refinement);}
         RefinementLog(e,state.round,"error_growth_priority",refinement);
+        const auto phiPlan=ReadWorkingPhi(e);
+        if(!(phiPlan.oldPhi&&phiPlan.phase==0)&&TryCorrectionProbe(e,state,depths,stage,ids,stats,proposed,lastInterpolation)){--state.round;continue;}
+        if(TryWorkingPhi(e,state,depths,stage,ids,stats,lastInterpolation)){--state.round;continue;}
         GateLocalCost(e,work,proposed,depths,ids);
         if(proposed==state.counts)break;
         state.counts=proposed;SaveAdaptive(e,state);

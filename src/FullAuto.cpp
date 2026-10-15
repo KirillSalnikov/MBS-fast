@@ -297,13 +297,15 @@ std::vector<int> Allocate(const std::vector<Samples>& levels,const std::vector<d
     std::vector<int> result;for(double n:maximum)result.push_back(Power2(n));return result;
 }
 
+#include "FullAutoAllocation.inc"
+
 // Schedule, never accept, an estimator. First learn from a cheap dominant
 // correction before multiplying a much larger prefix whose noise is small.
 // The 1/N work model affects only the order of refinements; all observed
 // confidence, prefix, interpolation and independent-final gates remain live.
 std::vector<int> PrioritizeAllocation(const std::vector<Samples>& levels,
         const std::vector<double>& costs,const std::vector<int>& counts,
-        const std::vector<int>& proposed,double tolerance,bool ratios){
+        const std::vector<int>& proposed,double tolerance,bool ratios,bool useCovariance){
     Require(levels.size()==costs.size()&&levels.size()==counts.size()&&levels.size()==proposed.size()
             &&tolerance>0,"invalid priority allocation dimensions");
     if(levels.size()<2)return proposed;
@@ -320,7 +322,16 @@ std::vector<int> PrioritizeAllocation(const std::vector<Samples>& levels,
         double mean=0;for(const auto& s:levels[l])mean+=(s[0][element]-r*s[0][0])/8;
         for(const auto& s:levels[l])variance[l]+=std::pow(s[0][element]-r*s[0][0]-mean,2)/7;
         sum+=variance[l];
-        if(proposed[l]>counts[l])score[l]=variance[l]*(1-double(counts[l])/proposed[l])/(costs[l]*(proposed[l]-counts[l]));
+        if(proposed[l]>counts[l]){
+            // The gain includes covariance with the other levels. Refining
+            // one member of a cancelling pair can otherwise increase noise.
+            double covariance=0;
+            for(int s=0;s<8;++s){double total=0;for(size_t k=0;k<levels.size();++k){double km=0;for(int t=0;t<8;++t)km+=(levels[k][t][0][element]-r*levels[k][t][0][0])/8;
+                    total+=levels[k][s][0][element]-r*levels[k][s][0][0]-km;}
+                covariance+=(levels[l][s][0][element]-r*levels[l][s][0][0]-mean)*total/7;}
+            const double shrink=std::sqrt(double(counts[l])/proposed[l]);
+            const double gain=useCovariance?std::max(0.,2*(1-shrink)*covariance-std::pow(1-shrink,2)*variance[l]):variance[l]*(1-double(counts[l])/proposed[l]);
+            score[l]=gain/(costs[l]*(proposed[l]-counts[l]));}
         if(score[l]>score[best])best=l;
     }
     auto result=proposed;
