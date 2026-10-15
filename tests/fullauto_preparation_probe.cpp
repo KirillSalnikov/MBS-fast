@@ -38,6 +38,12 @@ int main(int argc,const char* argv[]){try{
     Require(bare==std::vector<std::string>({"--threads","1","--po-prepare-threads","16"}),"controls were introduced into raw PO");
     Require(FullAutoOptionPolicy("fullauto_dispatch_threads")==FullAutoOptionPolicy("fullauto_gpus"),"dispatch threads leaked into native physics");
     e.dispatchThreads=0;
+    Job shortJob;shortJob.count=8192;shortJob.inputAngles.resize(7);e.kernel.pipeline=true;
+    Require(e.ShortPacketChunk(shortJob)==1024,"short native packet was not capped");
+    e.workerChunk=64;Require(e.ShortPacketChunk(shortJob)==0,"saved explicit chunk was overridden");e.workerChunk=0;
+    e.resourcePolicy="off";Require(e.ShortPacketChunk(shortJob)==0,"disabled resource policy was overridden");e.resourcePolicy="auto";
+    shortJob.inputAngles.resize(44);Require(e.ShortPacketChunk(shortJob)==0,"wide packet chunk changed");
+    shortJob.inputAngles.resize(7);e.shortPacketPolicy="off";Require(e.ShortPacketChunk(shortJob)==0,"explicit short-packet opt-out ignored");e.shortPacketPolicy="auto";
     // Measured epyc1 production values, seconds per complete native block.
     e.CacheJob(sample("comparable",26,1.890,.693));
     for(int i=0;i<20;++i)e.CacheJob(sample("old_two_row_stall"+Number(i),2,1.743,7.8));

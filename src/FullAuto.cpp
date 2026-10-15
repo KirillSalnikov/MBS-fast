@@ -348,7 +348,7 @@ struct Job {
     int offset=0,pairedDepth=0;
     std::string folder,data,summary,identity,weightHash,executionHash;
     Matrix matrix;std::vector<double> angles,inputAngles;std::vector<std::array<double,5>> controls;
-    int preparationThreads=0;double assemblySeconds=0;
+    int preparationThreads=0,dispatchChunk=0;double assemblySeconds=0;
     double seconds=0,controlRefinement=0,controlSetup=0,traceSeconds=0,diffractionSeconds=0,processingSeconds=-1,preparedWaitSeconds=-1,producerWaitSeconds=-1;pid_t pid=-1;
     int count=0,depth=0,phi=0,block=0;unsigned seed=0;
     bool pipeline=false,mirrored=false,paired=false,assembled=false,hasControls=false;std::string warp;
@@ -410,6 +410,9 @@ struct Engine {
     long pendingLegacyAuditSerial=-1;int pendingLegacyAuditRound=-1;std::string pendingLegacyAuditSources;
     std::ofstream journal;std::string requestedOptions;size_t journalSequence=0;double runStarted=Seconds();
     // Keep the saved execution recipe stable when moving a checkpoint to other cards.
+    std::string angularAuditPolicy="auto",shortPacketPolicy="auto";
+    bool shortPacketVerifying=false;std::map<std::string,bool> shortPacketChecks;
+    bool forbidNativeWork=false; // read-only checkpoint/planning probes only
     int dispatchThreads=0;
     std::vector<std::string> dispatchGpus;
     const std::vector<std::string>& WorkerGpus()const{return dispatchGpus.empty()?gpus:dispatchGpus;}
@@ -498,7 +501,7 @@ struct Engine {
             <<",\"initial_model\":"<<Quoted(initialModel)<<",\"estimated_final_orientation_count\":"<<Number(empiricalFinal)<<",\"depth_pilot_count\":"<<depthPilot<<",\"depth_search_order\":"<<Quoted(depthOrder)<<",\"initial_source\":"<<Quoted(initialSource)<<",\"maximum_edge_um\":"<<Number(maximumEdge)<<",\"maximum_diameter_um\":"<<Number(maximumDiameter)<<",\"oldauto_N_beta_estimate\":"<<Number(estimatedBeta)<<",\"oldauto_N_gamma_estimate\":"<<Number(estimatedGamma)<<",\"oldauto_orientation_estimate\":"<<Number(estimatedOrientations)<<",\"initial_count\":"<<initial<<",\"minimum_correction_count\":"<<minimum<<",\"max_count\":"<<maxCount<<",\"max_rounds\":"<<roundLimit
             <<",\"initial_theta_support\":"<<startTheta<<",\"max_theta_evaluations\":"<<maxTheta<<",\"min_phi\":"<<minPhi<<",\"max_phi\":"<<maxPhi
             <<",\"stable_passes\":"<<stablePasses<<",\"automatic_depth\":"<<(autoDepth?"true":"false")<<",\"depth_start\":"<<depthStart<<",\"depth_maximum\":"<<depthMaximum<<",\"depth_budget\":"<<Number(depthBudget)<<",\"physical_target_depth\":"<<target<<",\"phi\":"<<phi
-            <<",\"effective_analytic_mean_threads\":"<<(dispatchThreads?dispatchThreads:analyticMeanThreads)<<",\"dispatch_threads\":"<<dispatchThreads<<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
+            <<",\"effective_analytic_mean_threads\":"<<(dispatchThreads?dispatchThreads:analyticMeanThreads)<<",\"angular_audit_policy\":"<<Quoted(angularAuditPolicy)<<",\"short_packet_policy\":"<<Quoted(shortPacketPolicy)<<",\"dispatch_threads\":"<<dispatchThreads<<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
             <<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"selected_gpus\":[";
         for(size_t i=0;i<gpus.size();++i)out<<(i?",":"")<<Quoted(gpus[i]);
         out<<"],\"dispatch_gpus\":[";for(size_t i=0;i<WorkerGpus().size();++i)out<<(i?",":"")<<Quoted(WorkerGpus()[i]);
@@ -518,6 +521,8 @@ struct Engine {
         go=config.method==RunMethod::GeometricalOptics;Require(!config.useFft,"requires a direct solver");
         for(const char* key:{"analytic_mean_reference","haar_mirror_audit","multigrid","multikeq","multikeq_list","orientfile_dedup","analytic_facet_samples","analytic_control_weights","analytic_backscatter","analytic_azimuth_gaussian","owen_avg"})
             Require(!args.IsCatched(key),std::string("unsupported modifier --")+key+"; run one coherent size without external controls");
+        shortPacketPolicy=args.IsCatched("fullauto_short_packets")?args.GetStringValue("fullauto_short_packets"):"auto";
+        angularAuditPolicy=args.IsCatched("fullauto_audit_angular")?args.GetStringValue("fullauto_audit_angular"):"auto";
         dispatchThreads=Int("fullauto_dispatch_threads",0);
         Require(!dispatchThreads||(config.useGpu&&!go&&dispatchThreads>0),"dispatch threads require CUDA physical optics and a positive count");
         Require(!dispatchThreads||(!args.IsCatched("threads")&&!args.IsCatched("po_prepare_threads")&&!args.IsCatched("analytic_mean_threads")),"dispatch threads conflict with explicit worker/prepare/analytic thread flags");
@@ -604,7 +609,7 @@ struct Engine {
             for(int i=0;i<8;++i){int s=args.GetIntValue("owen_seeds",i);Require(s>=0,"negative seed");seeds[i]=s;}}
         std::set<unsigned> unique(seeds.begin(),seeds.end());Require(unique.size()==8,"production seeds must be distinct");
         for(unsigned s:seeds)for(int i=0;i<8;++i)Require(s!=training[i]&&s!=validation[i]&&s!=4001,"production/calibration seed overlap");
-        for(unsigned s:seeds){for(unsigned reserved:{8001u,8023u,8101u,8111u,8117u,8123u,8147u,8161u,8167u,8171u,9001u,9007u,9011u,9013u,9029u,9041u,9043u,9049u})Require(s!=reserved,"production/tuning seed overlap");Require(s!=3001&&s!=5003,"production/geometry/mean-provider seed overlap");for(unsigned v:mirrorValidation)Require(s!=v,"production/mirror verification seed overlap");for(unsigned v:angularValidation)Require(s!=v,"production/theta pilot seed overlap");}
+        for(unsigned s:seeds){for(unsigned reserved:{8001u,8023u,8501u,8513u,8101u,8111u,8117u,8123u,8147u,8161u,8167u,8171u,9001u,9007u,9011u,9013u,9029u,9041u,9043u,9049u})Require(s!=reserved,"production/tuning seed overlap");Require(s!=3001&&s!=5003,"production/geometry/mean-provider seed overlap");for(unsigned v:mirrorValidation)Require(s!=v,"production/mirror verification seed overlap");for(unsigned v:angularValidation)Require(s!=v,"production/theta pilot seed overlap");}
         if(go){const int intervals=args.IsCatched("grid")?args.GetIntValue("grid",3):36;
             Require(intervals>0&&intervals<1000000,"invalid GO bin count");Require(intervals+1<=maxTheta,"GO angular bins exceed explicit theta limit");
             for(int i=0;i<=intervals;++i)theta.push_back(180.*i/intervals);
@@ -757,7 +762,7 @@ struct Engine {
             <<",\"mirror_budget\":"<<(mirror?eps/256:0)<<",\"max_mirror_residual95_scaled_M11\":"<<mirrorError
             <<",\"prepare_thread_cap\":"<<prepareThreadCap<<",\"accuracy_scope\":\"production\",\"adaptive_schema\":2,\"local_orientations\":"<<(local?"true":"false")<<",\"ratio_accuracy\":"<<(ratios?"true":"false")<<",\"max_pointwise_ratio95\":"<<lastRatio<<",\"independent_final_validation\":"<<(independentPassed?"true":"false")<<",\"saved_orientation_blocks_this_invocation\":"<<savedOrientationBlocks
             <<",\"analytic_mean_budget\":"<<(controls?eps/64:0)<<",\"max_estimated_analytic_mean_error_scaled_M11\":"<<lastAnalyticError
-            <<",\"execution_budget\":"<<((resourcePolicy=="auto"||config.useGpu)?eps/1024:0)<<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"effective_analytic_mean_threads\":"<<(dispatchThreads?dispatchThreads:analyticMeanThreads)<<",\"dispatch_threads\":"<<dispatchThreads<<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
+            <<",\"execution_budget\":"<<((resourcePolicy=="auto"||config.useGpu)?eps/1024:0)<<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"effective_analytic_mean_threads\":"<<(dispatchThreads?dispatchThreads:analyticMeanThreads)<<",\"angular_audit_policy\":"<<Quoted(angularAuditPolicy)<<",\"short_packet_policy\":"<<Quoted(shortPacketPolicy)<<",\"dispatch_threads\":"<<dispatchThreads<<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
             <<",\"rotation_beta_factor\":"<<rotationBeta<<",\"rotation_gamma_factor\":"<<rotationGamma<<",\"rotation_budget\":"<<((rotationBeta>1||rotationGamma>1)?eps/256:0)
             <<",\"selected_cutoff\":"<<Quoted(selectedCutoff)<<",\"cutoff_budget\":"<<(selectedCutoff!="requested"&&selectedCutoff!="off"?eps/8:0)<<",\"max_cutoff_residual95\":"<<cutoffError
             <<",\"coherent\":"<<(coherent?"true":"false")<<",\"fixed_phi\":"<<fixedPhi<<",\"scope\":\"eight-seed pointwise intervals; interpolation guards on requested grid; mirror paired pilot when enabled; current target physics; automatic depth has fresh paired validation; no global simultaneous confidence claim\"}\n";
@@ -913,6 +918,40 @@ struct Engine {
         return result;
     }
     #include "FullAutoWorkers.inc"
+    int ShortPacketChunk(const Job& job)const{
+        if(shortPacketVerifying||shortPacketPolicy=="off"||!config.useGpu||go||!kernel.pipeline||resourcePolicy!="auto"||workerChunk||args.IsCatched("chunk")||job.count<2048||job.inputAngles.size()>8)return 0;
+        return 1024; // cap the adaptive memory chunk; never bypass its memory guard
+    }
+    bool VerifyShortPacketChunk(const Job& job){
+        const std::string key=Hash(ExecutionHash()+Number(job.depth)+" "+Number(job.pairedDepth)+" "+Number(job.phi)+" "+Number(job.mirrored)+" "+Number(job.hasControls)
+            +" "+Number(FullAutoPreparation::Bucket(job.inputAngles.size()))+" "+Number(int(job.inputAngles.front()/15))+" "+Number(int(job.inputAngles.back()/15)));
+        auto known=shortPacketChecks.find(key);if(known!=shortPacketChecks.end())return known->second;
+        const std::string path=root+"/short_packet_validation_"+key+".json";
+        if(Exists(path)){const auto saved=CompactJson(Read(path));
+            if(saved.find("\"binary_fnv1a64\":"+Quoted(binaryHash))!=std::string::npos){const bool passed=saved.find("\"passed\":true")!=std::string::npos;shortPacketChecks[key]=passed;return passed;}}
+        const bool savedCollecting=collecting;const int savedChunk=workerChunk;collecting=false;shortPacketVerifying=true;
+        double error=0,baselineSeconds=0,candidateSeconds=0;
+        try{for(unsigned seed:{8501u,8513u}){
+            workerChunk=savedChunk;const auto baseline=DirectStage(2048,&seed,1,job.depth,job.inputAngles,true,false,0,job.pairedDepth);
+            workerChunk=1024;const auto candidate=DirectStage(2048,&seed,1,job.depth,job.inputAngles,true,false,0,job.pairedDepth);
+            const auto a=Data(baseline),b=Data(candidate);baselineSeconds+=baseline[0].NativeWall();candidateSeconds+=candidate[0].NativeWall();
+            for(size_t r=0;r<a[0].size();++r){const auto& x=a[0][r];const auto& y=b[0][r];if(!(x[0]>0&&y[0]>0)){error=1e100;continue;}
+                for(int j=0;j<16;++j)error=std::max(error,std::fabs(x[j]-y[j])/x[0]);
+                if(ratios)for(int j=1;j<16;++j)error=std::max(error,std::fabs(x[j]/x[0]-y[j]/y[0]));}
+        }}catch(...){workerChunk=savedChunk;collecting=savedCollecting;shortPacketVerifying=false;throw;}
+        workerChunk=savedChunk;collecting=savedCollecting;shortPacketVerifying=false;
+        const double tolerance=std::min(1e-7,eps/1024);const bool passed=error<=tolerance&&candidateSeconds<baselineSeconds*.97;
+        const std::string report="{\"passed\":"+std::string(passed?"true":"false")+",\"binary_fnv1a64\":"+Quoted(binaryHash)+",\"count_per_pilot\":2048,\"paired_pilots\":2,\"chunk_cap\":1024,\"max_all16_and_ratios_difference\":"+Number(error)
+            +",\"numerical_tolerance\":"+Number(tolerance)+",\"baseline_processing_seconds\":"+Number(baselineSeconds)+",\"candidate_processing_seconds\":"+Number(candidateSeconds)+",\"minimum_saving_fraction\":0.03}";
+        Record(path,report);Log("short_packet_validation",report);shortPacketChecks[key]=passed;return passed;
+    }
+    void ApplyShortPacketChunk(Job& job,std::vector<std::string>& command){
+        job.dispatchChunk=ShortPacketChunk(job);if(!job.dispatchChunk)return;
+        if(!VerifyShortPacketChunk(job)){job.dispatchChunk=0;return;}
+        bool found=false;for(size_t i=0;i+1<command.size();++i)if(command[i]=="--orientation-chunk"){command[i+1]=Number(job.dispatchChunk);found=true;}
+        if(!found){command.push_back("--orientation-chunk");command.push_back(Number(job.dispatchChunk));}
+        Log("worker_chunk_decision","{\"count\":"+Number(job.count)+",\"theta_rows\":"+Number(job.inputAngles.size())+",\"chunk_cap\":"+Number(job.dispatchChunk)+",\"reason\":\"short angular packet; bounded producer-consumer chunks\",\"saved_recipe_unchanged\":true}");
+    }
     void ApplyDispatchThreads(Job& job,std::vector<std::string>& command)const{
         if(!dispatchThreads)return;
         // Placement-only override, after saved native identities are formed.
@@ -927,7 +966,8 @@ struct Engine {
         job.preparationThreads=dispatchThreads;
     }
     void ExecutePrepared(std::vector<Job>& result,std::vector<std::vector<std::string>>& commands,const std::vector<size_t>& todo){
-        for(size_t index:todo)ApplyDispatchThreads(result[index],commands[index]);
+        Require(!forbidNativeWork||todo.empty(),"read-only probe would launch native optical work"+(todo.empty()?std::string():std::string(" N=")+Number(result[todo[0]].count)+" seed="+Number(result[todo[0]].seed)+" depth="+Number(result[todo[0]].depth)+" rows="+Number(result[todo[0]].inputAngles.size())+" execution="+result[todo[0]].executionHash+" folder="+result[todo[0]].folder));
+        for(size_t index:todo){ApplyDispatchThreads(result[index],commands[index]);ApplyShortPacketChunk(result[index],commands[index]);}
         if(PersistentEnabled()){ExecutePersistent(result,commands,todo);return;}
         for(auto& service:services)service.reset();
         WorkerCleanup cleanup;
@@ -948,7 +988,7 @@ struct Engine {
                 Log("worker_start","{\"folder\":"+Quoted(j.folder)+",\"command_file\":"+Quoted(j.folder+"/command.args")+",\"pid\":"+Number(j.pid)
                     +",\"gpu\":"+Quoted(workerGpus[slot])+",\"count\":"+Number(j.count)+",\"offset\":"+Number(j.offset)+",\"seed\":"+Number(j.seed)
                     +",\"depth\":"+Number(j.depth)+",\"paired_depth\":"+Number(j.pairedDepth)+",\"phi\":"+Number(j.phi)+",\"theta_rows\":"+Number(j.inputAngles.size())
-                    +",\"block\":"+Number(j.block)+",\"warp\":"+Quoted(j.warp)+",\"pipeline\":"+(j.pipeline?"true":"false")+",\"threads\":"+Number(workerThreads)+",\"chunk\":"+Number(workerChunk)+"}");std::string boot=Read("/proc/sys/kernel/random/boot_id");
+                    +",\"block\":"+Number(j.block)+",\"warp\":"+Quoted(j.warp)+",\"pipeline\":"+(j.pipeline?"true":"false")+",\"threads\":"+Number(workerThreads)+",\"chunk\":"+Number(j.dispatchChunk?j.dispatchChunk:workerChunk)+"}");std::string boot=Read("/proc/sys/kernel/random/boot_id");
                 Atomic(j.folder+"/worker.pid",std::to_string(j.pid)+" "+ProcessStart(j.pid)+" "+boot);};
         for(size_t slot=0;slot<slots&&next<todo.size();++slot)launch(slot,todo[next++]);
         while(completed<todo.size()){

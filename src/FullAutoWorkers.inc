@@ -58,7 +58,7 @@ void ExecutePersistent(std::vector<Job>& result,const std::vector<std::vector<st
             +",\"gpu\":"+Quoted(workerGpus[slot])+",\"count\":"+Number(j.count)+",\"offset\":"+Number(j.offset)+",\"seed\":"+Number(j.seed)
             +",\"depth\":"+Number(j.depth)+",\"paired_depth\":"+Number(j.pairedDepth)+",\"phi\":"+Number(j.phi)+",\"theta_rows\":"+Number(j.inputAngles.size())
             +",\"block\":"+Number(j.block)+",\"warp\":"+Quoted(j.warp)+",\"pipeline\":"+(j.pipeline?"true":"false")+",\"threads\":"+Number(workerThreads)
-            +",\"chunk\":"+Number(workerChunk)+",\"analytic_mean_threads\":"+Number(dispatchThreads?dispatchThreads:analyticMeanThreads)+",\"prepare_threads\":"+Number(j.preparationThreads?j.preparationThreads:workerThreads)+",\"persistent\":true,\"request_serial\":"+Number(service.requests)+"}");
+            +",\"chunk\":"+Number(j.dispatchChunk?j.dispatchChunk:workerChunk)+",\"analytic_mean_threads\":"+Number(dispatchThreads?dispatchThreads:analyticMeanThreads)+",\"prepare_threads\":"+Number(j.preparationThreads?j.preparationThreads:workerThreads)+",\"persistent\":true,\"request_serial\":"+Number(service.requests)+"}");
     };
     try {
         for(size_t slot=0;slot<slots&&next<todo.size();++slot)launch(slot,todo[next++]);

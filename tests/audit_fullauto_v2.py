@@ -102,6 +102,35 @@ def reconstruct(root,state,angles,budgets,source,seeds,records=None):
     assert filled[:,0].all() and filled[1:,1].all()
     return data,seen,jobs
 
+def reconstruct_angular(root,state,angles,seeds):
+    requested=grid(root/'requested_theta.csv');support=grid(root/'angular_audit_support.csv')
+    frozen=np.loadtxt(root/'angular_audit_budget.csv',delimiter=',',skiprows=1,ndmin=2)
+    assert np.allclose(frozen[:,0],angles,rtol=0,atol=1e-10)
+    anchor_budget=frozen[:,2::2].astype(int)
+    records=[line.split() for line in (root/'angular_audit_sources.tsv').read_text().splitlines()]
+    anchor_records=[' '.join(line[2:]) for line in records if line[0]=='anchor']
+    anchor,seen,_=reconstruct(root,state,support,anchor_budget[nearest_rows(angles,support)],None,seeds,anchor_records)
+    result=np.array([local_spline(support,level)(angles) for level in anchor]);assigned=np.isin(angles,support)
+    width=min(4,len(support))
+    for group in json.loads((root/'angular_audit_groups.json').read_text())['groups']:
+        rows=requested[np.array(group['theta_indices'],int)]
+        source=[' '.join(line[2:]) for line in records if line[0]=='residual' and int(line[1])==group['id']]
+        if not source:continue
+        budget=np.tile(np.array(group['counts'],int),(len(rows),1))
+        data,checked,_=reconstruct(root,state,rows,budget,None,seeds,source);seen.update(checked)
+        for interval in group['intervals']:
+            left=min(max(interval-1,0),len(support)-width);right=min(interval,len(support)-width)
+            knots=support[left:right+width];positions=nearest_rows(rows,knots)
+            assert np.allclose(rows[positions],knots,rtol=0,atol=1e-10)
+            target=np.flatnonzero((angles>support[interval])&(angles<support[interval+1]))
+            assert not assigned[target].any();assigned[target]=True
+            raw=nearest_rows(rows,angles[target]);assert np.allclose(rows[raw],angles[target],rtol=0,atol=1e-10)
+            for level in range(len(result)):
+                predicted=local_spline(knots,data[level][:,positions])(angles[target])
+                result[level][:,target]+=data[level][:,raw]-predicted
+    assert assigned.all(),'angular audit skipped checked nodes'
+    return result,seen,[]
+
 def common_bounds(root,state,label,evaluated,support,seeds,actual_budget):
     budget=np.loadtxt(root/('interpolation_'+label+'_budgets.csv'),delimiter=',',skiprows=1,ndmin=2)
     lines=(root/('interpolation_'+label+'_sources.tsv')).read_text().splitlines();bound=np.zeros((len(evaluated),16));seen=set();width=min(4,len(support))
@@ -141,6 +170,7 @@ def run(root,reference,dense=False,dense_workers=1):
     assert guard.max()<=state['interpolation_budget'] and max(confidence.max(),output_ci.max())<=state['statistical_budget']
     if state['ratio_accuracy']:assert max(ratio_ci.max(),output_ratio.max())<=state['statistical_budget']
     validation=json.loads((root/'independent_final_validation.json').read_text())
+    angular=False
     if validation['enabled']:
         assert validation['passed'] and set(validation['seeds']).isdisjoint(state['seeds'])
         angles=grid(root/'independent_theta.csv');vb=np.empty((len(angles),budget.shape[1]-1),int)
@@ -152,11 +182,14 @@ def run(root,reference,dense=False,dense_workers=1):
             frozen=np.loadtxt(root/'independent_orientation_budget.csv',delimiter=',',skiprows=1,ndmin=2)
             assert np.allclose(frozen[:,0],angles,rtol=0,atol=1e-10)
             vb=frozen[:,1:].astype(int)
-        vlevels,vseen,_=reconstruct(root,state,angles,vb,root/'independent_final_sources.tsv',validation['seeds']);seen.update(vseen)
+        angular=validation.get('estimator')=='angular_residual_v1'
+        if angular:vlevels,vseen,_=reconstruct_angular(root,state,angles,validation['seeds'])
+        else:vlevels,vseen,_=reconstruct(root,state,angles,vb,root/'independent_final_sources.tsv',validation['seeds'])
+        seen.update(vseen)
         values=vlevels.sum(0);validation_values=values.copy();vm,vci,vri=intervals(values);vid=np.searchsorted(angles,support)
         vs=local_spline(support,values[:,vid]);delta=vs(angles)-values
         bound=interpolation_bounds(vs(angles),values,state['ratio_accuracy'])
-        if json.loads((root/'interpolation_validation_mode.json').read_text())['common_prefix']:
+        if not angular and json.loads((root/'interpolation_validation_mode.json').read_text())['common_prefix']:
             bound,checked=common_bounds(root,state,'validation',angles,support,validation['seeds'],vb);seen.update(checked)
         assert bound.max()<=state['interpolation_budget']
         assert max(vci.max(),intervals(vs(requested))[1].max())<=state['statistical_budget']
@@ -220,7 +253,7 @@ def run(root,reference,dense=False,dense_workers=1):
                 frozen=np.loadtxt(root/'independent_orientation_budget.csv',delimiter=',',skiprows=1,ndmin=2)
                 assert np.allclose(frozen[:,0],angles,rtol=0,atol=1e-10)
                 vb=frozen[:,1:].astype(int)
-            if json.loads((root/'interpolation_validation_mode.json').read_text())['common_prefix']:
+            if not angular and json.loads((root/'interpolation_validation_mode.json').read_text())['common_prefix']:
                 bound,checked=common_bounds(root,state,'validation',angles,support,validation['seeds'],vb);seen.update(checked)
             else:
                 vid=np.searchsorted(angles,support)

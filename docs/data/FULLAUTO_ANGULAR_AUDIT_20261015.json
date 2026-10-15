@@ -1,0 +1,263 @@
+{
+  "production_matrices_verified": 3592,
+  "new_optical_workers": 0,
+  "support_theta": 1967,
+  "checked_theta": 5574,
+  "profiled": true,
+  "direct_worker_seconds_forecast": 86128.04928603732,
+  "residual_worker_seconds_forecast": 26634.165908447772,
+  "forecast_ratio": 0.3092391634227524,
+  "forecast_not_measured_wall_speedup": true,
+  "gpu_validation": {
+    "status": "passed",
+    "started": 1792060539.5920992,
+    "finished": 1792060562.9871507,
+    "short": {
+      "all16_scaled_M11": 4.338982661784886e-16,
+      "normalized": 7.771561172376096e-16,
+      "baseline": {
+        "seconds": 7.156284554046579,
+        "orientations_per_seed": 8192,
+        "gpus": 1,
+        "theta_rows": 7,
+        "legacy_preparation_decision": true
+      },
+      "candidate": {
+        "seconds": 8.342100044013932,
+        "orientations_per_seed": 8192,
+        "gpus": 1,
+        "theta_rows": 7,
+        "legacy_preparation_decision": false
+      },
+      "checks": [
+        {
+          "passed": true,
+          "binary_fnv1a64": "a03081f66791a4fb",
+          "count_per_pilot": 2048,
+          "paired_pilots": 2,
+          "chunk_cap": 1024,
+          "max_all16_and_ratios_difference": 2.8466705178431814e-18,
+          "numerical_tolerance": 1e-07,
+          "baseline_processing_seconds": 1.116913664,
+          "candidate_processing_seconds": 0.647406665,
+          "minimum_saving_fraction": 0.03
+        }
+      ]
+    },
+    "angular": {
+      "equal_prefix_all16_scaled_M11": 7.115401450502936e-18,
+      "equal_prefix_ratio_difference": 6.938893903907228e-18,
+      "frozen_plan_unchanged_after_holdout": true,
+      "support_theta": 5,
+      "checked_theta": 17,
+      "reduced_statistical95": 0.024319079653926597
+    }
+  },
+  "cpu_shape_tests": [
+    {
+      "name": "asymmetric",
+      "returncode": 0,
+      "seconds": 20.22109580039978,
+      "equal_prefix_all16_scaled_M11": 1.7922599759232657e-17,
+      "equal_prefix_ratio_difference": 1.3877787807814457e-17,
+      "frozen_plan_unchanged_after_holdout": true,
+      "support_theta": 5,
+      "checked_theta": 17,
+      "reduced_statistical95": 0.028800754421857946
+    },
+    {
+      "name": "absorbing",
+      "returncode": 0,
+      "seconds": 20.220885515213013,
+      "equal_prefix_all16_scaled_M11": 1.7174009732009975e-17,
+      "equal_prefix_ratio_difference": 1.3877787807814457e-17,
+      "frozen_plan_unchanged_after_holdout": true,
+      "support_theta": 5,
+      "checked_theta": 17,
+      "reduced_statistical95": 0.031244704551163908
+    },
+    {
+      "name": "concave",
+      "returncode": 0,
+      "seconds": 14.742832660675049,
+      "equal_prefix_all16_scaled_M11": 6.450635125245923e-17,
+      "equal_prefix_ratio_difference": 5.551115123125783e-17,
+      "frozen_plan_unchanged_after_holdout": true,
+      "support_theta": 5,
+      "checked_theta": 17,
+      "reduced_statistical95": 0.01451263127236888
+    },
+    {
+      "name": "incoherent",
+      "returncode": 0,
+      "seconds": 11.887155771255493,
+      "equal_prefix_all16_scaled_M11": 4.492755964462305e-17,
+      "equal_prefix_ratio_difference": 5.551115123125783e-17,
+      "frozen_plan_unchanged_after_holdout": true,
+      "support_theta": 5,
+      "checked_theta": 17,
+      "reduced_statistical95": 0.010002857133829594
+    }
+  ],
+  "paired_depth_tests": [
+    {
+      "case": "prism",
+      "backend": "cpu",
+      "all16_lower_difference_scaled_M11": 4.660426638995008e-16,
+      "all16_upper_difference_scaled_M11": 4.475314796878462e-16,
+      "wall_seconds": {
+        "warm": 0.6650303900241852,
+        "lower": 0.2141754439799115,
+        "upper": 0.3646275670034811,
+        "joint": 0.4650000589899719
+      },
+      "paired_speedup": 1.2447375001212095
+    },
+    {
+      "case": "asymmetric",
+      "backend": "cpu",
+      "all16_lower_difference_scaled_M11": 5.721237552096845e-16,
+      "all16_upper_difference_scaled_M11": 5.797486648356766e-16,
+      "wall_seconds": {
+        "warm": 0.3649113300489262,
+        "lower": 0.064060193952173,
+        "upper": 0.11410921695642173,
+        "joint": 0.11420345399528742
+      },
+      "paired_speedup": 1.560105274188527
+    },
+    {
+      "case": "absorbing",
+      "backend": "cpu",
+      "all16_lower_difference_scaled_M11": 4.200189914345618e-16,
+      "all16_upper_difference_scaled_M11": 4.3779799656652186e-16,
+      "wall_seconds": {
+        "warm": 0.5647311750217341,
+        "lower": 0.2142665749997832,
+        "upper": 0.3143433209625073,
+        "joint": 0.4149694890365936
+      },
+      "paired_speedup": 1.2738524395842405
+    }
+  ],
+  "independent_python_audit": {
+    "passed": true,
+    "schema": 2,
+    "epsilon": 0.02,
+    "requested_theta": 17,
+    "evaluated_theta": 9,
+    "support_theta": 5,
+    "final_counts_per_seed": [
+      1024,
+      512,
+      256
+    ],
+    "minimum_counts_per_seed": [
+      1024,
+      512,
+      256
+    ],
+    "phi": 4,
+    "complete_jobs_audited": 275,
+    "matrix_difference_scaled_M11": 3.646467189638195e-16,
+    "evaluated_matrix_difference_scaled_M11": 0.0,
+    "statistical95_scaled_M11": 0.006963296575153442,
+    "ratio95": 0.00258374337370245,
+    "guard_residual95_scaled_M11": 0.0006363729602965767,
+    "independent_final_validation": {
+      "enabled": true,
+      "passed": true,
+      "fresh_seeds_per_attempt": true,
+      "seeds": [
+        1000000000,
+        1000000017,
+        1000000034,
+        1000000051,
+        1000000068,
+        1000000085,
+        1000000102,
+        1000000119
+      ],
+      "counts_per_seed": [
+        1024,
+        512,
+        256
+      ],
+      "estimator": "angular_residual_v1",
+      "angular_allocation_fnv1a64": "957d2f1993efc69d",
+      "local_orientation_budgets": false,
+      "allocation_from_production": true,
+      "attempt": 0,
+      "max_pointwise95_scaled_M11": 0.010281750403578878,
+      "max_ratio95": 0.0035457598881592375,
+      "max_interpolation_residual95": 0.002424524496956028,
+      "difference_to_production_scaled_M11": 0.01167465691273898,
+      "checked_theta": 17,
+      "scope": "fresh-seed frozen-estimator pointwise validation; all requested nodes up to 4097, otherwise quarter interval guards; no simultaneous-confidence claim"
+    },
+    "limits": "pointwise statistical estimates; frozen target depth/cutoffs; mean refinement and physical sensitivity reported separately"
+  },
+  "recovery": {
+    "passed": true,
+    "schema": 2,
+    "epsilon": 0.02,
+    "requested_theta": 17,
+    "evaluated_theta": 9,
+    "support_theta": 5,
+    "final_counts_per_seed": [
+      8192,
+      512,
+      256
+    ],
+    "minimum_counts_per_seed": [
+      8192,
+      512,
+      256
+    ],
+    "phi": 4,
+    "complete_jobs_audited": 1332,
+    "matrix_difference_scaled_M11": 1.8101070158447865e-16,
+    "evaluated_matrix_difference_scaled_M11": 0.0,
+    "statistical95_scaled_M11": 0.00644144356070639,
+    "ratio95": 0.002881601514246088,
+    "guard_residual95_scaled_M11": 0.0005143338322371298,
+    "independent_final_validation": {
+      "enabled": true,
+      "passed": true,
+      "fresh_seeds_per_attempt": true,
+      "seeds": [
+        1000000000,
+        1000000017,
+        1000000034,
+        1000000051,
+        1000000068,
+        1000000085,
+        1000000102,
+        1000000119
+      ],
+      "counts_per_seed": [
+        8192,
+        512,
+        256
+      ],
+      "estimator": "angular_residual_v1",
+      "angular_allocation_fnv1a64": "79081966d86e321c",
+      "local_orientation_budgets": false,
+      "allocation_from_production": true,
+      "attempt": 0,
+      "max_pointwise95_scaled_M11": 0.008561070749965295,
+      "max_ratio95": 0.003340934892207031,
+      "max_interpolation_residual95": 0.002491395035857657,
+      "difference_to_production_scaled_M11": 0.0047546969012256775,
+      "checked_theta": 17,
+      "scope": "fresh-seed frozen-estimator pointwise validation; all requested nodes up to 4097, otherwise quarter interval guards; no simultaneous-confidence claim"
+    },
+    "limits": "pointwise statistical estimates; frozen target depth/cutoffs; mean refinement and physical sensitivity reported separately",
+    "forced_sigkill_recovery": true,
+    "completed_markers_preserved": 696,
+    "frozen_plan_preserved": true,
+    "independent_seeds_preserved": true,
+    "completed_resume_without_recalculation": true
+  },
+  "training_data_artifact": "/home/user/BEM-CUDA/artifacts/angular_audit_optimization_20261015"
+}

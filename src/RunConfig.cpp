@@ -1184,6 +1184,15 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
         const std::string value=args.GetStringValue(key);
         if(value!="auto"&&value!="off")Fail(std::string("--")+key+" expects auto or off.","choose auto or off.");
     }
+    if(args.IsCatched("fullauto_short_packets")){
+        const std::string value=args.GetStringValue("fullauto_short_packets");
+        if(!args.IsCatched("fullauto")||(value!="auto"&&value!="off"))Fail("invalid --fullauto-short-packets policy.","select fullauto with auto or off.");
+    }
+    if(args.IsCatched("fullauto_audit_angular")){
+        const std::string value=args.GetStringValue("fullauto_audit_angular");
+        if(!args.IsCatched("fullauto")||config.method!=RunMethod::PhysicalOptics||(value!="auto"&&value!="on"&&value!="off"))
+            Fail("--fullauto-audit-angular requires PO fullauto and auto, on or off.","select a supported audit policy.");
+    }
     if(args.IsCatched("fullauto_dispatch_threads")){
         RequirePositiveInt(args,"fullauto_dispatch_threads");
         if(!args.IsCatched("fullauto")||!config.useGpu||config.method!=RunMethod::PhysicalOptics)

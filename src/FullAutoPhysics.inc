@@ -78,6 +78,7 @@ void SelectAutomaticDepth(Engine& e){
     const bool savedControls=e.controls;e.controls=false;
     int count=e.depthPilot,selected=e.depthStart;DepthResidual residual;bool passed=false;
     try{
+        if(!e.go&&e.depthSharing){e.target=e.depthStart;e.VerifyDepthSharing(x);}
         for(int depth=e.depthStart;;depth=std::min(e.depthMaximum,depth+2)){
             unsigned seeds[8];for(int i=0;i<8;++i){seeds[i]=1700000000u+unsigned(e.depthStart)*1024u+unsigned(i)*17u;
                 Require(std::find(e.seeds.begin(),e.seeds.end(),seeds[i])==e.seeds.end(),"depth pilot/production seed overlap");}
@@ -86,6 +87,7 @@ void SelectAutomaticDepth(Engine& e){
                 e.Record(e.root+"/depth_search_progress.json","{\"candidate\":"+Number(depth)+",\"comparison_depth\":"+Number(depth+2)+",\"count_per_seed\":"+Number(count)+",\"attempt\":"+Number(attempt)+",\"status\":\"sampling paired depth matrices\"}");
                 Samples first,second;
                 if(e.go){first=GoSample(e,count,seeds,depth);second=GoSample(e,count,seeds,depth+2);}
+                else if(e.depthSharing&&e.depthVerified){const auto pair=e.SharedStage(count,seeds,8,depth+2,depth,x);first=e.Data(pair.second);second=e.Data(pair.first);}
                 else{first=e.Data(e.PrefixStage(count,seeds,8,depth,x,true));second=e.Data(e.PrefixStage(count,seeds,8,depth+2,x,true));}
                 residual=DepthDifference(first,second,e.go,e.theta.size(),e.ratios);passed=residual.upper<=e.depthBudget;
                 const std::string snapshot=e.root+"/depth_pilot_snapshots/n"+Number(depth)+"_N"+Number(count);Directory(snapshot);
@@ -106,8 +108,8 @@ void SelectAutomaticDepth(Engine& e){
             }
             selected=depth;if(passed||depth==e.depthMaximum)break;
         }
-    }catch(...){e.controls=savedControls;throw;}
-    e.controls=savedControls;SaveSelectedDepth(e,selected);
+    }catch(...){e.controls=savedControls;if(savedControls)e.depthVerified=false;throw;}
+    e.controls=savedControls;if(savedControls)e.depthVerified=false;SaveSelectedDepth(e,selected);
     e.Record(e.root+"/depth_selection.json","{\"automatic\":true,\"target_depth\":"+Number(selected)+",\"start\":"+Number(e.depthStart)+",\"maximum\":"+Number(e.depthMaximum)+",\"pilot_passed\":"+(passed?std::string("true"):"false")+",\"count_per_seed\":"+Number(count)+",\"residual_upper95\":"+Number(residual.upper)+",\"budget\":"+Number(e.depthBudget)+",\"fresh_final_audit_required\":true}");
 }
 bool PromoteAutomaticDepth(Engine& e,int code){
