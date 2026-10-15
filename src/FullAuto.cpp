@@ -6,6 +6,7 @@
 #include "cuda/GpuSupport.h"
 #include "RuntimeInfo.h"
 #include "WorkerProtocol.h"
+#include "FullAutoAuditPlan.h"
 #include <poll.h>
 #include <algorithm>
 #include <chrono>
@@ -79,7 +80,8 @@ std::string FileHash(const std::string& path) {
     digests[path]=Entry{after,digest};return digest;
 }
 bool Exists(const std::string& p) { struct stat s;return stat(p.c_str(),&s)==0; }
-// Explicit compatibility bridge for the allocation-only analytic CUDA fix.
+// Explicit compatibility bridge for controller scheduling and CUDA scratch
+// allocation changes whose native optical matrices are numerically equivalent.
 // Normal resume still requires the exact executable hash. Never extend this
 // release allowlist without numerical equivalence tests for the new change.
 std::string ExecutableVersion(const std::string& executable){
@@ -333,6 +335,7 @@ struct Job {
     int offset=0,pairedDepth=0;
     std::string folder,data,summary,identity,weightHash,executionHash;
     Matrix matrix;std::vector<double> angles,inputAngles;std::vector<std::array<double,5>> controls;
+    double assemblySeconds=0;
     double seconds=0,controlRefinement=0,controlSetup=0,traceSeconds=0,diffractionSeconds=0,processingSeconds=-1;pid_t pid=-1;
     int count=0,depth=0,phi=0,block=0;unsigned seed=0;
     bool pipeline=false,mirrored=false,paired=false,assembled=false,hasControls=false;std::string warp;
@@ -384,6 +387,8 @@ struct WorkerService {
 struct Engine {
     const ArgPP& args;const RunConfig& config;std::string exe,root,signature,binaryHash,weightFile;
     std::string compatibleBinary,compatibleHash;
+    std::set<bool> warmedCacheControls;
+    long pendingLegacyAuditSerial=-1;int pendingLegacyAuditRound=-1;std::string pendingLegacyAuditSources;
     std::ofstream journal;std::string requestedOptions;size_t journalSequence=0;double runStarted=Seconds();
     std::vector<std::string> base,gpus;std::vector<double> theta,weightTheta;
     std::vector<std::array<double,2>> weights;std::vector<unsigned> seeds;
@@ -665,8 +670,8 @@ struct Engine {
             compatibleHash=FileHash(compatibleBinary);
             const std::string oldVersion=ExecutableVersion(compatibleBinary),newVersion=ExecutableVersion(exe);
             const size_t oldLine=oldVersion.find('\n'),newLine=newVersion.find('\n');
-            Require(oldLine!=std::string::npos&&oldVersion.substr(0,oldLine)=="MBS-fast 8ae9e85",
-                "compatible resume is verified only from release 8ae9e85");
+            Require(oldLine!=std::string::npos&&(oldVersion.substr(0,oldLine)=="MBS-fast 8ae9e85"||oldVersion.substr(0,oldLine)=="MBS-fast 89f83a3"),
+                "compatible resume is verified only from releases 8ae9e85 and 89f83a3");
             Require(newLine!=std::string::npos&&oldVersion.substr(oldLine)==newVersion.substr(newLine),
                 "compatible resume requires identical CUDA architecture, precision, phase math, compiler, OpenMP and MPI profiles");
         }
@@ -736,12 +741,21 @@ struct Engine {
         const std::string log=Read(j.folder+"/stdout.log");for(const char* label:{"Hard tree-limit hits:","Orientations still incomplete:"}){
             size_t pos=log.find(label);Require(pos!=std::string::npos,"missing tree diagnostics");std::istringstream r(log.substr(pos+std::string(label).size()));int n=-1;r>>n;Require(n==0,"worker tree limit or incomplete orientation");}
         if(Exists(j.folder+"/result/result_phase_timings.tsv"))ReadPhaseTimings(j,Read(j.folder+"/result/result_phase_timings.tsv"));
+        if(Exists(j.folder+"/angular_reuse.json")){const auto text=Read(j.folder+"/angular_reuse.json");const std::string key="\"controller_assembly_seconds\":";const auto pos=text.find(key);
+            if(pos!=std::string::npos){std::istringstream timing(text.substr(pos+key.size()));double value=0;if(timing>>value&&std::isfinite(value)&&value>=0)j.assemblySeconds=value;}}
+
         std::ostringstream index;index<<signature<<' '<<j.identity<<' '<<j.count<<' '<<j.offset<<' '<<j.seed<<' '<<j.depth<<' '<<j.phi<<' '<<j.block<<' '<<j.pipeline<<' '<<j.mirrored<<' '<<j.paired<<' '<<j.assembled<<' '<<j.hasControls<<' '<<j.pairedDepth<<' '<<j.warp<<' '<<j.weightHash<<' '<<j.executionHash<<'\n';
         for(double angle:j.inputAngles)index<<Number(angle)<<'\n';
         Atomic(j.folder+"/sampling.index",index.str());Atomic(j.folder+"/sampling.index.fnv",Hash(index.str()));
         return j;
     }
     void WarmCache(){
+        // The controller lock excludes outside writers. Completed workers are
+        // inserted by CompleteNative/CacheJob, so each controls domain needs
+        // one verified disk pass per process, independent of tuning/depth.
+        if(warmedCacheControls.count(controls)){
+            Log("cache_restore_reuse","{\"verified_jobs\":"+Number(cache.size())+",\"controls\":"+(controls?"true":"false")+"}");return;
+        }
         DIR* directory=opendir((root+"/jobs").c_str());if(!directory)return;std::vector<std::string> folders;
         while(auto* entry=readdir(directory)){if(entry->d_name[0]!='.')folders.push_back(root+"/jobs/"+entry->d_name);}closedir(directory);
         std::set<std::string> visited;for(const auto& folder:folders){if(!Exists(folder+"/complete.txt")||!Exists(folder+"/sampling.index"))continue;
@@ -754,6 +768,7 @@ struct Engine {
             ValidateStoredJob(folder,visited);std::istringstream meta(Read(folder+"/complete.txt"));std::string identity;meta>>identity>>j.seconds;Require(identity==j.identity,"sampling identity changed");
             j=Load(j);Require(j.angles.size()==j.inputAngles.size(),"sampling coordinates changed");for(size_t r=0;r<j.angles.size();++r)Require(std::fabs(j.angles[r]-j.inputAngles[r])<1e-10,"sampling coordinates changed");CacheJob(j);
         }
+        warmedCacheControls.insert(controls);
         Log("cache_restored","{\"verified_jobs\":"+Number(cache.size())+"}");
         std::cout<<"fullauto restored verified cached jobs: "<<cache.size()<<std::endl;
     }
@@ -1052,6 +1067,7 @@ struct Engine {
         if(!wf.empty()){std::istringstream file(Read(wf));std::string header;std::getline(file,header);
             for(size_t r=0;r<x.size();++r){double angle;Require(bool(file>>angle>>coefficients[r][0]>>coefficients[r][1]),"invalid assembled control weights");}}
         for(size_t s=0;s<ns;++s){Job& j=result[s];if(cache.count(j.identity))continue;
+            const double assemblyStarted=Seconds();
             std::set<std::string> sources;size_t reused=0;
             j.angles=x;j.matrix.resize(x.size());if(controls)j.controls.resize(x.size());
             for(size_t r=0;r<x.size();++r){const Job* source;size_t index;auto existing=rows[s].find(x[r]);
@@ -1083,7 +1099,8 @@ struct Engine {
             std::string recipe=exe+"\n";for(const auto& v:command)recipe+=v+"\n";Atomic(j.folder+"/command.args",recipe);
             Atomic(j.folder+"/stdout.log","Controller angular assembly; command.args is a reproducible full-grid recipe, not a launched worker.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");
             Atomic(j.folder+"/angular_sources.tsv",dependencies.str());
-            std::ostringstream provenance;provenance<<"{\"kind\":\"angular_assembly\",\"requested_rows\":"<<x.size()<<",\"reused_rows\":"<<reused<<",\"new_worker_rows\":"<<missing.size()<<",\"cost_scope\":\"full-grid forecast from matching native jobs; not assembly wall time\",\"represented_native_seconds\":"<<Number(representedSeconds)<<",\"forecast_full_grid_seconds\":"<<Number(j.seconds)<<",\"M11_rebased_to_authoritative_full_grid_means\":"<<(controls?"true":"false")<<"}\n";
+            j.assemblySeconds=Seconds()-assemblyStarted;
+            std::ostringstream provenance;provenance<<"{\"controller_assembly_seconds\":"<<Number(j.assemblySeconds)<<",\"kind\":\"angular_assembly\",\"requested_rows\":"<<x.size()<<",\"reused_rows\":"<<reused<<",\"new_worker_rows\":"<<missing.size()<<",\"cost_scope\":\"full-grid forecast from matching native jobs; not assembly wall time\",\"represented_native_seconds\":"<<Number(representedSeconds)<<",\"forecast_full_grid_seconds\":"<<Number(j.seconds)<<",\"M11_rebased_to_authoritative_full_grid_means\":"<<(controls?"true":"false")<<"}\n";
             Atomic(j.folder+"/angular_reuse.json",provenance.str());
             Atomic(j.folder+"/complete.txt",j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+" "+Hash(dependencies.str())+"\n");
             j.matrix.clear();j.controls.clear();j.angles.clear();j=Load(j);CacheJob(j);++assembledJobs;reusedRows+=reused;newRows+=missing.size();
@@ -1309,11 +1326,28 @@ int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],do
     Lock lock(controller->root+"/controller.lock");
     const std::string identity=controller->root+"/configuration.txt";
     if(Exists(identity))Require(Read(identity)==controller->signature+"\n","resume inputs/binary/environment changed; choose a new output directory");else Atomic(identity,controller->signature+"\n");
+    // A legacy audit may have committed native blocks but never assembled or
+    // inspected its holdout. Preserve that reserved namespace during the
+    // verified controller upgrade, only while the production sources agree.
+    if(!controller->compatibleHash.empty()&&!Exists(controller->root+"/independent_audit_reservation.tsv")
+        &&Exists(controller->root+"/adaptive_checkpoint.tsv")&&Exists(controller->root+"/fullauto_status.json")
+        &&Exists(controller->root+"/final_stage_sources.tsv")){
+        const auto status=CompactJson(Read(controller->root+"/fullauto_status.json"));
+        if(status.find("\"status\":\"validating\"")!=std::string::npos){
+            std::istringstream saved(Read(controller->root+"/adaptive_checkpoint.tsv"));int version=0;std::string hash,signature,phase;int round=0,streak=0;unsigned serial=0;
+            saved>>version>>hash;std::string header;std::getline(saved,header);std::getline(saved,header);std::istringstream fields(header);fields>>signature>>phase>>round>>streak;
+            if(version>=3&&signature==controller->signature&&streak>=controller->stablePasses&&(saved>>serial)&&serial>0
+                &&!Exists(controller->root+"/independent_final_validation_serial"+Number(serial-1)+".json")){
+                controller->pendingLegacyAuditSerial=serial-1;controller->pendingLegacyAuditRound=round;
+                controller->pendingLegacyAuditSources=Hash(Read(controller->root+"/final_stage_sources.tsv"));
+            }
+        }
+    }
     if(!controller->compatibleHash.empty()){
         const std::string previous=controller->root+"/fullauto_parameters.before_compatible_resume.json";
         if(!Exists(previous))Atomic(previous,Read(controller->root+"/fullauto_parameters.json"));
         controller->Record(controller->root+"/binary_compatibility_resume.json",
-            "{\"reason\":\"8ae9e85 analytic CUDA allocation-only fix; bitwise validated\",\"origin_executable\":"+Quoted(controller->compatibleBinary)
+            "{\"reason\":\"verified native-kernel compatibility; local independent audit and bounded CUDA workspace\",\"origin_executable\":"+Quoted(controller->compatibleBinary)
             +",\"origin_binary_fnv1a64\":"+Quoted(controller->compatibleHash)+",\"executable\":"+Quoted(controller->exe)
             +",\"binary_fnv1a64\":"+Quoted(controller->binaryHash)+"}");
     }

@@ -22,14 +22,24 @@ bool RefineError(Engine& e,AdditionalWork& work,const std::vector<int>& depths,
         const Budgets& current,Budgets& proposed,const std::vector<size_t>& evaluated,
         const AdaptiveData& data,const std::vector<std::pair<size_t,double>>& weights,
         const ErrorMetric& metric,const Mueller& reference,double query,const std::string& reason,
-        std::ostringstream& log,const std::vector<double>& discrepancy={},const std::vector<int>& observedCounts={}){
-    const auto values=WeightedLevels(data,evaluated,weights);std::vector<size_t> nodes;for(const auto& w:weights)nodes.push_back(w.first);
+        std::ostringstream& log,const std::vector<double>& discrepancy={},const Budgets& observedCounts={}){
+    auto values=WeightedLevels(data,evaluated,weights);
+    if(!observedCounts.empty()){
+        Require(observedCounts.size()==depths.size(),"audit refinement budget level mismatch");
+        for(auto& level:values)for(auto& seed:level)seed[0].fill(0);
+        for(const auto& w:weights){const size_t row=std::lower_bound(evaluated.begin(),evaluated.end(),w.first)-evaluated.begin();
+            for(size_t l=0;l<depths.size();++l){
+                const double projection=std::sqrt(double(observedCounts[l][w.first])/current[l][w.first]);
+                for(int s=0;s<8;++s)for(int j=0;j<16;++j)values[l][s][0][j]+=w.second*projection*data.levels[l][s][row][j];
+            }
+        }
+    }
+    std::vector<size_t> nodes;for(const auto& w:weights)nodes.push_back(w.first);
     if(!e.local)nodes=evaluated;
     std::vector<std::array<double,8>> centered(depths.size());std::array<double,8> total{};
     const double ratio=metric.ratio?reference[metric.element]/reference[0]:0;
-    for(size_t l=0;l<depths.size();++l){double mean=0,projection=1;
-        if(!observedCounts.empty()){int n=0;for(const auto& w:weights)n=std::max(n,current[l][w.first]);projection=std::sqrt(double(observedCounts[l])/n);}
-        for(int s=0;s<8;++s){centered[l][s]=(values[l][s][0][metric.element]-ratio*values[l][s][0][0])*projection;mean+=centered[l][s]/8;}
+    for(size_t l=0;l<depths.size();++l){double mean=0;
+        for(int s=0;s<8;++s){centered[l][s]=(values[l][s][0][metric.element]-ratio*values[l][s][0][0]);mean+=centered[l][s]/8;}
         for(int s=0;s<8;++s){centered[l][s]-=mean;total[s]+=centered[l][s];}}
     struct Choice {double variance=0,reduction=0,seconds=0;bool profiled=false,eligible=false;};std::vector<Choice> choices(depths.size());
     bool positive=false;

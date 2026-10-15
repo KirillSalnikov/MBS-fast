@@ -12,3 +12,8 @@ mkdir -p "$task_root/tests/.build"
     "$task_root/src/CliOptions.cpp" "$task_root/src/RuntimeInfo.cpp" \
     "$task_root/cpu/GpuSupportStub.cpp" -o "$task_root/tests/.build/fullauto_priority_probe"
 "$task_root/tests/.build/fullauto_priority_probe" "$task_root/tests/data/fullauto_priority_backscatter.txt" --expect-first-correction-only
+"${CXX:-g++}" -std=c++11 -O2 -Wall -Wextra \
+    "$task_root/tests/fullauto_audit_plan_probe.cpp" -o "$task_root/tests/.build/fullauto_audit_plan_probe"
+for task_fixture in epyc1 dima; do
+    "$task_root/tests/.build/fullauto_audit_plan_probe" "$task_root/tests/data/local_audit/${task_fixture}_allocation.txt"
+done

@@ -29,7 +29,7 @@ assert (target/'controller_resume_command.json').exists()
 changed=compat[:];changed[changed.index('--fullauto')+1]='.2'
 code,log=run('resume_changed_accuracy',new,changed);assert code!=0 and 'resume inputs/binary/environment changed' in log,log[-2000:]
 changed=compat[:];changed[changed.index('--fullauto-resume-compatible')+1]=new
-code,log=run('resume_wrong_origin',new,changed);assert code!=0 and 'only from release 8ae9e85' in log,log[-2000:]
+code,log=run('resume_wrong_origin',new,changed);assert code!=0 and 'only from releases 8ae9e85 and 89f83a3' in log,log[-2000:]
 changed=compat[:];changed[changed.index('--output')+1]=str(root/'no_checkpoint')
 code,log=run('resume_missing_checkpoint',new,changed);assert code!=0 and 'requires an existing fullauto result' in log,log[-2000:]
 # A version-report fixture must be rejected before any checkpoint is changed.

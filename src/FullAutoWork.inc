@@ -2,7 +2,7 @@
 // accuracy criterion. Times are summed native worker seconds, not elapsed time.
 struct WorkForecast {double seconds=0;size_t jobs=0;bool profiled=true;};
 class AdditionalWork {
-    const Engine& e;std::array<unsigned,8> seeds;
+    const Engine& e;std::array<unsigned,8> seeds;bool ignoreCoverage;
     struct Profile {double trace=0,diffraction=0,setup=0,overlap=0;size_t observations=0;};
     using Depth=std::pair<int,int>;
     using Slot=std::array<uint64_t,5>; // N, offset, depth, paired depth, seed
@@ -11,6 +11,7 @@ class AdditionalWork {
     std::map<std::string,WorkForecast> forecasts;
     Slot Key(int n,int offset,int depth,int paired,unsigned seed)const{return {{uint64_t(n),uint64_t(offset),uint64_t(depth),uint64_t(paired),seed}};}
     bool Covered(int n,int offset,int depth,int paired,unsigned seed,double angle){
+        if(ignoreCoverage)return false;
         const auto key=Key(n,offset,depth,paired,seed);auto found=coverage.find(key);
         if(found==coverage.end()){std::vector<const Job*> candidates;for(const auto& item:e.SamplingCandidates(n,seed,depth,offset)){
             const Job& job=*item.second;if(e.SameSampling(job,n,seed,depth,offset)&&(!paired||job.pairedDepth==paired))candidates.push_back(&job);}
@@ -19,9 +20,10 @@ class AdditionalWork {
     }
 
 public:
-    AdditionalWork(const Engine& engine,const unsigned* seedSet):e(engine){
+    AdditionalWork(const Engine& engine,const unsigned* seedSet,bool ignoreSaved=false,bool productionProfilesOnly=false):e(engine),ignoreCoverage(ignoreSaved){
         std::copy(seedSet,seedSet+8,seeds.begin());const auto recipe=e.ExecutionHash();
         for(const auto& item:e.cache){const Job& j=item.second;
+            if(productionProfilesOnly&&std::find(e.seeds.begin(),e.seeds.end(),j.seed)==e.seeds.end())continue;
             if(j.assembled||j.paired||j.count<=0||j.inputAngles.empty()||j.executionHash!=recipe||j.phi!=e.phi
                 ||j.block!=e.kernel.block||j.pipeline!=e.kernel.pipeline||j.warp!=e.kernel.warp||j.mirrored!=e.mirror||j.hasControls!=e.controls)continue;
             if(j.seconds<=0||!std::isfinite(j.seconds))continue;
@@ -61,7 +63,7 @@ public:
             for(unsigned seed:seeds){
                 // DirectStage can reuse a completed native command for a seed
                 // even when another seed of the batch was interrupted.
-                bool exact=false;if(!e.controls)for(const auto& item:e.SamplingCandidates(r.count,seed,r.depth,r.offset)){
+                bool exact=false;if(!ignoreCoverage&&!e.controls)for(const auto& item:e.SamplingCandidates(r.count,seed,r.depth,r.offset)){
                     const Job& j=*item.second;exact=exact||(!j.assembled&&j.pairedDepth==r.pairedDepth&&j.inputAngles==missing&&e.SameSampling(j,r.count,seed,r.depth,r.offset));}
                 if(!exact){++result.jobs;if(profile!=profiles.end()){const auto& p=profile->second;const double trace=r.count*p.trace,diffraction=r.count*p.diffraction*missing.size();
                     result.seconds+=p.setup+trace+diffraction-p.overlap*std::min(trace,diffraction);}}

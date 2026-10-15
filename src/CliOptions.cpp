@@ -278,7 +278,7 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
          "Jointly converge reflection depth, phi, theta, N_beta, and N_gamma; finish on a regular Euler quadrature grid.",
          false, {"oldfullauto"}},
         {"fullauto_resume_compatible", "fullauto-resume-compatible", 1, "OLD_BINARY", "Orientation",
-         "Resume an existing 8ae9e85 result after the analytic CUDA memory fix. Requires the original binary, identical build profile, inputs and environment."},
+         "Resume an existing 8ae9e85 or 89f83a3 result after verified native-kernel compatible controller fixes. Requires the original binary, identical build profile, inputs and environment."},
         {"fullauto_workers", "fullauto-workers", 1, "MODE", "Orientation",
          "Worker lifetime: auto (persistent CUDA workers), persistent, process. Each completed block remains checkpointed; explicit process restores per-job exec."},
         {"fullauto_trace", "fullauto-trace-backend", 1, "MODE", "Orientation",

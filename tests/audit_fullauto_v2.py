@@ -216,6 +216,10 @@ def run(root,reference,dense=False,dense_workers=1):
             for i,angle in enumerate(angles):
                 right=min(np.searchsorted(evaluated,angle),len(evaluated)-1);left=max(0,right-1)
                 vb[i]=budget[right,1:] if abs(evaluated[right]-angle)<1e-10 else np.maximum(budget[left,1:],budget[right,1:])
+            if (root/'independent_orientation_budget.csv').exists():
+                frozen=np.loadtxt(root/'independent_orientation_budget.csv',delimiter=',',skiprows=1,ndmin=2)
+                assert np.allclose(frozen[:,0],angles,rtol=0,atol=1e-10)
+                vb=frozen[:,1:].astype(int)
             if json.loads((root/'interpolation_validation_mode.json').read_text())['common_prefix']:
                 bound,checked=common_bounds(root,state,'validation',angles,support,validation['seeds'],vb);seen.update(checked)
             else:

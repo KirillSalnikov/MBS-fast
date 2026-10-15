@@ -68,11 +68,33 @@ int main(int argc,char** argv){try{
     AdaptiveData auditData;auditData.levels.assign(3,Samples(8,Matrix(3)));auditData.costs.assign(3,std::vector<double>(3,1));
     for(int s=0;s<8;++s)for(int r=0;r<3;++r){auditData.levels[0][s][r][0]=100;auditData.levels[1][s][r][0]=r==1?10*a[s]:0;}
     const auto stats=Estimate(Combine(auditData.levels));const auto interp=InterpolateBudget(auditEngine,auditState.knots,{0,1,2},Combine(auditData.levels));
-    RefineFailedAudit(auditEngine,auditState,{6,8,10},auditData,{0,1,2},auditData,{0,1,2},{512,64,64},stats,stats,interp);
+    RefineFailedAudit(auditEngine,auditState,{6,8,10},auditData,{0,1,2},auditData,{0,1,2},Budgets({{512,512,512},{64,64,64},{64,64,64}}),stats,stats,interp);
     Require(auditState.counts==Budgets({{512,512,512},{64,128,64},{64,64,64}}),"audit failure multiplied unrelated work");
     const auto first=ReserveAuditSeeds(auditEngine,auditState);AdaptiveState restored;restored.counts=Budgets(3,std::vector<int>(3,64));restored.previous.resize(3);restored.valid.assign(3,false);restored.coarse.assign(3,false);
     Require(RestoreAdaptive(auditEngine,restored)&&restored.counts==auditState.counts,"refined budgets lost on resume");
     const auto second=ReserveAuditSeeds(auditEngine,restored);for(unsigned seed:first)Require(std::find(second.begin(),second.end(),seed)==second.end(),"resumed audit reused an exposed holdout");
+    // An unexposed pending holdout is resumed with its frozen allocation;
+    // a completed/failed report, changed production or corruption cannot reuse it.
+    Engine pending(args,config);AdaptiveState pendingState;InitTest(pending,std::string(argv[1])+"/pending",3,3,pendingState);
+    pending.orientationBlock=64;const auto reserved=ReserveAuditSeeds(pending,pendingState);
+    pending.pendingLegacyAuditSerial=0;pending.pendingLegacyAuditRound=0;pending.pendingLegacyAuditSources=Hash(auditData.sources);
+    int attempt=0;double fraction=.5;
+    const auto imported=ReserveOrResumeAudit(pending,pendingState,auditData,{0,1,2},attempt,fraction);
+    Require(imported.resumed&&imported.seeds==reserved&&imported.legacyFloor==64,"unexposed legacy audit was discarded");
+    const auto again=ReserveOrResumeAudit(pending,pendingState,auditData,{0,1,2},attempt,fraction);
+    Require(again.resumed&&again.seeds==reserved&&pendingState.auditSerial==1,"pending audit reseeded on restart");
+    Atomic(pending.root+"/independent_final_validation_serial0.json","{\"passed\":false}");attempt=1;fraction=1;
+    const auto fallback=ReserveOrResumeAudit(pending,pendingState,auditData,{0,1,2},attempt,fraction);
+    Require(!fallback.resumed&&fallback.seeds!=reserved&&pendingState.auditSerial==2,"exposed holdout reused");
+    attempt=0;fraction=.5;const auto fallbackResume=ReserveOrResumeAudit(pending,pendingState,auditData,{0,1,2},attempt,fraction);
+    Require(fallbackResume.resumed&&attempt==1&&fraction==1&&fallbackResume.seeds==fallback.seeds,"fallback plan changed on resume");
+    const auto reservationPath=pending.root+"/independent_audit_reservation.tsv";const auto payload=Read(reservationPath);Atomic(reservationPath,payload+"changed");
+    bool corrupt=false;try{ReserveOrResumeAudit(pending,pendingState,auditData,{0,1,2},attempt,fraction);}catch(const std::exception&){corrupt=true;}
+    Require(corrupt,"corrupt frozen audit allocation accepted");Atomic(reservationPath,payload);
+    Engine warmed(args,config);AdaptiveState warmState;InitTest(warmed,std::string(argv[1])+"/warm_once",3,1,warmState);
+    warmed.WarmCache();warmed.WarmCache();Require(warmed.warmedCacheControls.size()==1,"same cache domain scanned twice");
+    warmed.controls=true;warmed.WarmCache();warmed.controls=false;warmed.WarmCache();
+    Require(warmed.warmedCacheControls.size()==2,"distinct controls domain not verified");
     // Use real large-particle backscatter samples as failure-scheduling input.
     std::ifstream input(argv[2]);size_t rows;double tolerance;Require(bool(input>>rows>>tolerance),"invalid measured fixture");std::ostringstream replay;replay<<"theta,level,before,after\n";
     for(size_t r=0;r<rows;++r){Engine real(args,config);AdaptiveState saved;InitTest(real,std::string(argv[1])+"/real"+Number(r),2,3,saved);double theta;input>>theta;real.statistical=tolerance;
@@ -80,7 +102,7 @@ int main(int argc,char** argv){try{
         for(int l=0;l<3;++l){int n;double seconds;input>>n>>seconds;ns.push_back(n);saved.counts[l].assign(2,n);data.costs[l].assign(2,seconds);
             for(int s=0;s<8;++s)for(int j=0;j<16;++j){Require(bool(input>>data.levels[l][s][0][j]),"incomplete real fixture");data.levels[l][s][1][j]=data.levels[l][s][0][j];}}
         const auto st=Estimate(Combine(data.levels));const auto in=InterpolateBudget(real,saved.knots,{0,1},Combine(data.levels));
-        RefineFailedAudit(real,saved,{14,16,18},data,{0,1},data,{0,1},ns,st,st,in);
+        RefineFailedAudit(real,saved,{14,16,18},data,{0,1},data,{0,1},Budgets({{ns[0],ns[0]},{ns[1],ns[1]},{ns[2],ns[2]}}),st,st,in);
         Require(saved.counts[0][0]==ns[0]&&saved.counts[1][0]==2*ns[1]&&saved.counts[2][0]==ns[2],"measured audit replay did not prioritize first correction");
         for(size_t l=0;l<3;++l)replay<<Number(theta)<<','<<l<<','<<ns[l]<<','<<saved.counts[l][0]<<'\n';}
     Atomic(std::string(argv[1])+"/real_failure_replay.csv",replay.str());

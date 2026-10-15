@@ -1,0 +1,16 @@
+[
+  {
+    "source_host": "epyc1",
+    "source_job": "prism_L446.7_D147.1_theta0_25",
+    "source_file": "adaptive_checkpoint.tsv",
+    "source_snapshot_unix": 1792035391.9917378,
+    "fixture": "epyc1_allocation.txt"
+  },
+  {
+    "source_host": "dima",
+    "source_job": "prism_L446.7_D147.1_theta170_180",
+    "source_file": "adaptive_checkpoint.tsv",
+    "source_snapshot_unix": 1792035390.3665988,
+    "fixture": "dima_allocation.txt"
+  }
+]
