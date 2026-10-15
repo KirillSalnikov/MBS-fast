@@ -7,6 +7,7 @@
 #include "RuntimeInfo.h"
 #include "WorkerProtocol.h"
 #include "FullAutoAuditPlan.h"
+#include "FullAutoPreparation.h"
 #include "IntegralCharacteristics.h"
 #include <poll.h>
 #include <algorithm>
@@ -348,7 +349,7 @@ struct Job {
     std::string folder,data,summary,identity,weightHash,executionHash;
     Matrix matrix;std::vector<double> angles,inputAngles;std::vector<std::array<double,5>> controls;
     int preparationThreads=0;double assemblySeconds=0;
-    double seconds=0,controlRefinement=0,controlSetup=0,traceSeconds=0,diffractionSeconds=0,processingSeconds=-1;pid_t pid=-1;
+    double seconds=0,controlRefinement=0,controlSetup=0,traceSeconds=0,diffractionSeconds=0,processingSeconds=-1,preparedWaitSeconds=-1,producerWaitSeconds=-1;pid_t pid=-1;
     int count=0,depth=0,phi=0,block=0;unsigned seed=0;
     bool pipeline=false,mirrored=false,paired=false,assembled=false,hasControls=false;std::string warp;
     // Phase sums overlap in the producer/consumer pipeline. Only the measured
@@ -370,6 +371,8 @@ void ReadPhaseTimings(Job& j,const std::string& text){
         if(phase=="trace_prepare")j.traceSeconds=seconds;
         if(phase=="diffraction_and_controls")j.diffractionSeconds=seconds;
         if(phase=="processing"&&clock=="wall")j.processingSeconds=seconds;
+        if(phase=="pipeline_wait_for_prepared")j.preparedWaitSeconds=seconds;
+        if(phase=="pipeline_producer_wait")j.producerWaitSeconds=seconds;
     }
 }
 void ValidateStoredJob(const std::string& folder,std::set<std::string>& visited){
@@ -437,7 +440,7 @@ struct Engine {
     }
     int initial=1024,minimum=256,maxCount=67108864,roundLimit=32,startTheta=33;
     int maxTheta=2147483647,stablePasses=2,minPhi=1,maxPhi=2147483647;
-    int prepareThreadCap=1;std::map<std::string,std::array<double,3>> preparationProfiles;
+    int prepareThreadCap=1;std::map<std::string,FullAutoPreparation::Profile> preparationProfiles;
     int workerThreads=4,workerChunk=0,analyticMeanThreads=1;long long hostBudgetMb=0;
     std::string resourcePolicy="auto",rotationPolicy="auto",cutoffPolicy="auto",selectedCutoff="requested";
     bool tuneCutoffs=false,autoGpus=false;int rotationBeta=1,rotationGamma=1;double rotationError=0,cutoffError=0;
@@ -813,19 +816,50 @@ struct Engine {
         return j.offset==offset&&j.count==n&&j.seed==seed&&j.depth==depth&&j.phi==phi&&j.block==kernel.block
             &&j.pipeline==kernel.pipeline&&j.warp==kernel.warp&&j.mirrored==mirror&&!j.paired&&j.hasControls==controls&&j.executionHash==ExecutionHash();
     }
+    std::string PreparationKey(const std::string& recipe,int n,int depth,int paired,int points,bool mirrored,bool controlled,size_t rows)const{
+        return recipe+" "+Number(depth)+" "+Number(paired)+" "+Number(points)+" "+Number(mirrored)+" "+Number(controlled)
+            +" "+Number(FullAutoPreparation::Bucket(size_t(n)))+" "+Number(FullAutoPreparation::Bucket(rows));
+    }
+    bool PreparationSample(const Job& j)const{
+        return !j.assembled&&!j.paired&&j.count>=1024&&!j.inputAngles.empty()&&j.traceSeconds>0
+            &&std::isfinite(j.traceSeconds)&&std::isfinite(j.diffractionSeconds)&&j.diffractionSeconds>=0;
+    }
+    void ObservePreparation(const Job& j){
+        if(preparationProfiles.empty()||!PreparationSample(j))return;
+        const auto key=PreparationKey(j.executionHash,j.count,j.depth,j.pairedDepth,j.phi,j.mirrored,j.hasControls,j.inputAngles.size());
+        auto found=preparationProfiles.find(key);
+        // Uninitialized groups will include this completed job in their cache
+        // restoration. Never count a restored job twice as fresh evidence.
+        if(found!=preparationProfiles.end()&&found->second.initialized)
+            found->second.Observe(j.traceSeconds*std::max(workerThreads,j.preparationThreads)/j.count,
+                j.diffractionSeconds/j.count/j.inputAngles.size());
+    }
     int AutoPrepareThreads(int n,int depth,int paired,size_t rows){
         if(!config.useGpu||go||resourcePolicy!="auto"||args.IsCatched("threads")||args.IsCatched("po_prepare_threads")||n<1024||prepareThreadCap<=workerThreads)return 0;
-        const auto recipe=ExecutionHash();const std::string key=recipe+" "+Number(depth)+" "+Number(paired)+" "+Number(phi)+" "+Number(mirror)+" "+Number(controls);
-        auto saved=preparationProfiles.find(key);std::array<double,3> profile{};
-        if(saved!=preparationProfiles.end())profile=saved->second;
-        else{for(const auto& item:cache){const auto& j=item.second;
-            if(j.assembled||j.paired||j.executionHash!=recipe||j.depth!=depth||j.pairedDepth!=paired||j.phi!=phi||j.mirrored!=mirror||j.hasControls!=controls||j.count<=0||j.inputAngles.empty()||j.traceSeconds<=0)continue;
-            profile[0]+=j.traceSeconds*std::max(workerThreads,j.preparationThreads)/j.count;
-            profile[1]+=j.diffractionSeconds/j.count/j.inputAngles.size();++profile[2];}
-            if(profile[2]){profile[0]/=profile[2];profile[1]/=profile[2];preparationProfiles[key]=profile;}}
-        if(!profile[2]||profile[0]/workerThreads<=1.25*profile[1]*rows)return 0;
-        Log("worker_preparation_selected","{\"count\":"+Number(n)+",\"depth\":"+Number(depth)+",\"theta_rows\":"+Number(rows)+",\"threads\":"+Number(prepareThreadCap)+",\"one_thread_trace_seconds_forecast\":"+Number(profile[0]*n)+",\"diffraction_seconds_forecast\":"+Number(profile[1]*n*rows)+",\"ordered_accumulation_unchanged\":true}");
-        return prepareThreadCap;
+        const auto recipe=ExecutionHash();const auto key=PreparationKey(recipe,n,depth,paired,phi,mirror,controls,rows);
+        auto& profile=preparationProfiles[key];
+        if(!profile.initialized){std::vector<double> trace,diffraction;
+            const size_t countBucket=FullAutoPreparation::Bucket(size_t(n)),rowBucket=FullAutoPreparation::Bucket(rows);
+            for(const auto& item:cache){const auto& j=item.second;
+                if(!PreparationSample(j)||j.executionHash!=recipe||j.depth!=depth||j.pairedDepth!=paired||j.phi!=phi||j.mirrored!=mirror||j.hasControls!=controls
+                    ||FullAutoPreparation::Bucket(size_t(j.count))!=countBucket||FullAutoPreparation::Bucket(j.inputAngles.size())!=rowBucket)continue;
+                trace.push_back(j.traceSeconds*std::max(workerThreads,j.preparationThreads)/j.count);
+                diffraction.push_back(j.diffractionSeconds/j.count/j.inputAngles.size());}
+            profile.Restore(trace,diffraction);
+        }
+        const auto estimate=profile.Estimate();const bool boost=!profile.recent.empty()&&estimate[0]/workerThreads>1.25*estimate[1]*rows;
+        const int selected=boost?prepareThreadCap:0;
+        if(profile.lastSelected!=selected){
+            Log("worker_preparation_decision","{\"count\":"+Number(n)+",\"depth\":"+Number(depth)+",\"paired_depth\":"+Number(paired)
+                +",\"theta_rows\":"+Number(rows)+",\"threads\":"+Number(boost?prepareThreadCap:workerThreads)
+                +",\"baseline_threads\":"+Number(workerThreads)+",\"prepare_thread_cap\":"+Number(prepareThreadCap)
+                +",\"one_thread_trace_seconds_forecast\":"+Number(estimate[0]*n)+",\"diffraction_seconds_forecast\":"+Number(estimate[1]*n*rows)
+                +",\"restored_profile_samples\":"+Number(profile.restoredSamples)+",\"fresh_profile_samples\":"+Number(profile.liveSamples)
+                +",\"profile_policy\":\"rolling median; comparable count and theta buckets\",\"reason\":"+Quoted(profile.recent.empty()?"no comparable production profile":boost?"CPU preparation limits pipeline":"diffraction limits pipeline")
+                +",\"ordered_accumulation_unchanged\":true}");
+            profile.lastSelected=selected;
+        }
+        return selected;
     }
     std::vector<Job> DirectStage(int n,unsigned const* seedSet,size_t ns,int depth,const std::vector<double>& x,bool weighted=true,bool pairedMirror=false,int offset=0,int pairedDepth=0) {
         Require(x.size()<=size_t(maxTheta)+(go?2:0),"explicit theta evaluation limit exceeded");Require(FileHash(exe)==binaryHash,"binary changed during run");std::ostringstream angles;for(double q:x)angles<<Number(q)<<'\n';std::string gridHash=Hash(angles.str());

@@ -440,6 +440,14 @@ endif
 -include $(DEPS)
 
 # Frozen-allocation queue probe: no adaptive accuracy decisions in the harness.
-bin/fullauto_queue_probe: tests/fullauto_queue_probe.cpp src/FullAuto.cpp src/FullAutoPrefixCache.inc src/FullAutoAllocation.inc src/FullAutoIntegrals.inc src/FullAutoAdaptive.inc src/FullAutoCorrectionProbe.inc src/FullAutoWorkingPhi.inc src/FullAutoTuning.inc src/FullAutoGO.inc src/FullAutoPhysics.inc $(filter-out %/main.o %/FullAuto.o,$(OBJECTS))
+bin/fullauto_queue_probe: tests/fullauto_queue_probe.cpp src/FullAuto.cpp src/FullAutoPreparation.h src/FullAutoWorkers.inc src/FullAutoPrefixCache.inc src/FullAutoAllocation.inc src/FullAutoIntegrals.inc src/FullAutoAdaptive.inc src/FullAutoCorrectionProbe.inc src/FullAutoWorkingPhi.inc src/FullAutoTuning.inc src/FullAutoGO.inc src/FullAutoPhysics.inc $(filter-out %/main.o %/FullAuto.o,$(OBJECTS))
 	@mkdir -p bin
 	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/fullauto_queue_probe.cpp $(filter-out %/main.o %/FullAuto.o,$(OBJECTS)) -o $@ $(LDFLAGS)
+
+bin/fullauto_preparation_probe: tests/fullauto_preparation_probe.cpp src/FullAuto.cpp src/FullAutoPreparation.h src/FullAutoWorkers.inc $(wildcard src/FullAuto*.inc) $(filter-out %/main.o %/FullAuto.o,$(OBJECTS))
+	@mkdir -p bin
+	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/fullauto_preparation_probe.cpp $(filter-out %/main.o %/FullAuto.o,$(OBJECTS)) -o $@ $(LDFLAGS)
+
+bin/fullauto_pipeline_probe: tests/fullauto_pipeline_probe.cpp src/FullAuto.cpp src/FullAutoPreparation.h src/FullAutoWorkers.inc $(wildcard src/FullAuto*.inc) $(filter-out %/main.o %/FullAuto.o,$(OBJECTS))
+	@mkdir -p bin
+	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/fullauto_pipeline_probe.cpp $(filter-out %/main.o %/FullAuto.o,$(OBJECTS)) -o $@ $(LDFLAGS)

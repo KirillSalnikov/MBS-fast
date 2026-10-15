@@ -17,11 +17,12 @@ void CompleteNative(Job& j) {
         if(Exists(path))integrals<<path<<' '<<FileHash(path)<<'\n';}
     Atomic(j.folder+"/integral_outputs.fnv",integrals.str());
     Atomic(j.folder+"/complete.txt",j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")
-        +(pairHash.empty()?" none":pairHash)+" "+Hash(integrals.str())+"\n");CacheJob(j);
+        +(pairHash.empty()?" none":pairHash)+" "+Hash(integrals.str())+"\n");CacheJob(j);ObservePreparation(j);
     Log("worker_complete","{\"folder\":"+Quoted(j.folder)+",\"seconds\":"+Number(j.seconds)+",\"trace_prepare_seconds\":"+Number(j.traceSeconds)
         +",\"diffraction_and_controls_seconds\":"+Number(j.diffractionSeconds)+",\"processing_wall_seconds\":"+Number(j.NativeWall())
         +",\"processing_wall_measured\":"+(j.processingSeconds>=0?"true":"false")+",\"outside_processing_seconds\":"+Number(j.OutsideProcessing())
-        +",\"analytic_setup_seconds\":"+Number(j.controlSetup)+",\"return_code\":0}");
+        +",\"analytic_setup_seconds\":"+Number(j.controlSetup)+",\"pipeline_wait_for_prepared_seconds\":"+Number(j.preparedWaitSeconds)
+        +",\"pipeline_producer_wait_seconds\":"+Number(j.producerWaitSeconds)+",\"pipeline_wait_measured\":"+(j.preparedWaitSeconds>=0?"true":"false")+",\"return_code\":0}");
 }
 void ExecutePersistent(std::vector<Job>& result,const std::vector<std::vector<std::string>>& commands,const std::vector<size_t>& todo){
     if(todo.empty())return;

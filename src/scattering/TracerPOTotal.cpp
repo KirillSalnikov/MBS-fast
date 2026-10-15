@@ -6119,6 +6119,7 @@ void TracerPOTotal::TraceWeightedOrientations(
     double phase1_total = 0, phase2_total = 0;
     const bool profileOrientation = m_profilePhases || EnvEnabled("MBS_ORIENTATION_TIMING");
     double controlSeconds=0.0,diffractionSeconds=0.0,residentTraceKernelSeconds=0.0;
+    double preparedWaitSeconds=0.0,producerWaitSeconds=0.0;
     const auto processingStarted=std::chrono::steady_clock::now();
     double rotationCpuSeconds = 0.0;
     double traceCpuSeconds = 0.0;
@@ -6893,6 +6894,7 @@ void TracerPOTotal::TraceWeightedOrientations(
             shutdown();
         }catch(...){shutdown();throw;}
         assignments.flush();if(!assignments)throw std::runtime_error("cannot write hybrid orientation assignment log");
+        preparedWaitSeconds+=emptyWait;producerWaitSeconds+=producerBlocked;
         if(cpuOrientations+gpuOrientations!=myCount || count!=myCount)
             throw std::runtime_error("hybrid pipeline orientation accounting mismatch");
         std::ostringstream log;
@@ -6918,7 +6920,9 @@ void TracerPOTotal::TraceWeightedOrientations(
                 int start,size;
                 {
                     std::unique_lock<std::mutex> lock(mutex);
+                    const auto waitStarted=std::chrono::steady_clock::now();
                     condition.wait(lock,[&](){return requested || stop;});
+                    producerWaitSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-waitStarted).count();
                     if(stop)return;
                     start=requestStart;size=requestCount;requested=false;
                 }
@@ -6954,7 +6958,9 @@ void TracerPOTotal::TraceWeightedOrientations(
                 std::unique_ptr<PreparedBlock> block;
                 {
                     std::unique_lock<std::mutex> lock(mutex);
+                    const auto waitStarted=std::chrono::steady_clock::now();
                     condition.wait(lock,[&](){return bool(ready) || bool(failure);});
+                    preparedWaitSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-waitStarted).count();
                     if(failure)std::rethrow_exception(failure);
                     block=std::move(ready);
                 }
@@ -7190,6 +7196,9 @@ void TracerPOTotal::TraceWeightedOrientations(
                 << "gpu_resident_trace_kernel\t" << residentTraceKernelSeconds << "\tdevice_elapsed_subset_of_trace_prepare\n"
                 << "analytic_controls\t" << controlSeconds << "\tstage_wall_sum\n"
                 << "processing\t" << processingWall << "\twall\n"
+                << "pipeline_wait_for_prepared\t" << preparedWaitSeconds << "\tconsumer_wall_subset_of_processing\n"
+                << "pipeline_producer_wait\t" << producerWaitSeconds << "\tproducer_wall_subset_of_processing\n"
+                << "pipeline_chunks\t" << chunkNumber << "\tcount\n"
                 << "overlap_saved\t" << std::max(0.,phase1_total+phase2_total-processingWall) << "\twall_estimate\n"
                 << "rotation\t" << rotationCpuSeconds << "\tsummed_cpu_wall\n"
                 << "trace\t" << traceCpuSeconds << "\tsummed_cpu_wall\n"
