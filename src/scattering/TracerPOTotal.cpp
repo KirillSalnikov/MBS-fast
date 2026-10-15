@@ -6082,6 +6082,7 @@ void TracerPOTotal::TraceWeightedOrientations(
     int nAz = handlerPO->m_sphere.nAzimuth;
     int nZen = handlerPO->m_sphere.nZenith;
     std::unique_ptr<Arr2D> pairedMatrices;
+    double pairedExtinctionOt=0;
     if(m_pairedDepth){pairedMatrices.reset(new Arr2D(nAz+1,nZen+1,4,4));pairedMatrices->ClearArr();}
 
 
@@ -6230,6 +6231,7 @@ void TracerPOTotal::TraceWeightedOrientations(
                             Arr2D unused(nAz+1,nZen+1,4,4);unused.ClearArr();std::vector<double> lowerEnergy,lowerExtinction;
                             lowerOk=handlerPO->HandleResidentConvexGpu(deviceInputs,raw,beamCount,weights,
                                 *block.residentLower,unused,lowerEnergy,lowerExtinction,m_pairedDepth,false);
+                            if(lowerOk)for(int i=0;i<thisChunk;++i)block.lower[i].extinctionOt=lowerExtinction[i];
                         }
                         const bool ok=lowerOk&&handlerPO->HandleResidentConvexGpu(deviceInputs,raw,beamCount,weights,
                             *block.residentFull,*block.residentNS,block.outputEnergies,extinction);
@@ -6426,7 +6428,8 @@ void TracerPOTotal::TraceWeightedOrientations(
                     double beforeOutput = localHandler.m_outputEnergy;
                     localHandler.PrepareBeams(localBeams, weight, chunkPrepared[i]);
                     if(m_pairedDepth&&reusePrepared){auto& lower=block.lower[i];lower.sinZenith=weight;
-                        for(const auto& beam:chunkPrepared[i].beams)if(beam.nActs<=m_pairedDepth||beam.isExternal)lower.beams.push_back(beam);}
+                        for(const auto& beam:chunkPrepared[i].beams)if(beam.nActs<=m_pairedDepth||beam.isExternal)lower.beams.push_back(beam);
+                        lower.extinctionOt=localHandler.ComputeForwardExtinctionOt(lower);}
                     block.outputEnergies[i] = localHandler.m_outputEnergy - beforeOutput;
                 }
                 else
@@ -6494,6 +6497,7 @@ void TracerPOTotal::TraceWeightedOrientations(
             handlerPO->m_outputEnergy += chunkOutputEnergies[i];
             handlerPO->m_extinctionCrossSectionOt +=
                 chunkPrepared[i].extinctionOt;
+            if(m_pairedDepth)pairedExtinctionOt+=block.lower[i].extinctionOt;
             handlerPO->m_hasExtinctionOt = true;
             count++;
         }
@@ -7005,7 +7009,12 @@ void TracerPOTotal::TraceWeightedOrientations(
                     (*pairedMatrices)(p,t,0,0)+=wr*(known.reflection-facetReflectionCells[cell])+(shadowOff?0:ws*(known.shadow-facetShadowCells[cell]));}
                 summary<<RadToDeg(facetTheta[t])<<'\t'<<raw<<'\t'<<known.reflection<<'\t'<<(shadowOff?0:known.shadow)<<'\t'<<ref<<'\t'<<(shadowOff?0:shadow)<<'\t'<<raw-wr*ref-(shadowOff?0:ws*shadow)<<'\t'<<raw+wr*(known.reflection-ref)+(shadowOff?0:ws*(known.shadow-shadow))<<'\t'<<facetControl->RefinementError()<<'\t'<<facetSetupSeconds<<'\t'<<wr<<'\t'<<ws<<'\n';}
             summary.flush();if(!summary)throw std::runtime_error("cannot write paired-depth control summary");}
+        const double upperExtinction=handlerPO->m_extinctionCrossSectionOt;
+        handlerPO->m_extinctionCrossSectionOt=pairedExtinctionOt;
         std::swap(handlerPO->M,*pairedMatrices);handlerPO->WriteMatricesToFile(lowerName,m_incomingEnergy);std::swap(handlerPO->M,*pairedMatrices);
+        handlerPO->m_extinctionCrossSectionOt=upperExtinction;
+        std::ofstream revision((lowerName+"_integrals_revision.txt").c_str());revision<<"paired_extinction_v1\n";revision.close();
+        if(!revision)throw std::runtime_error("cannot write paired-depth integral revision");
         std::cout<<"Paired depth "<<m_pairedDepth<<": coherent field recomputed from shared convex trace; "<<lowerName<<".dat"<<std::endl;
     }
     std::vector<double> facetRawMeans,facetHybridMeans;

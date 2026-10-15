@@ -190,7 +190,7 @@ std::string IntegralCharacteristicsStatus(
 {
     if (!values.validProjectedArea)
         return "invalid_projected_area";
-    if (label != "full")
+    if (label != "full" && label != "fullauto_final" && label != "fullauto_intermediate")
         return "diagnostic_no_shadow";
     if (values.method == IntegralMethod::PhysicalOptics
         && !values.hasOpticalTheorem)
@@ -220,10 +220,9 @@ std::string FormatIntegralCharacteristicsLog(
     log << "Q_abs = " << values.qAbs << "\n";
     if (values.hasCScaErrorEstimate)
     {
-        log << (values.fullAngularCoverage ? "C_sca " : "Partial angular integral ")
-            << (values.method == IntegralMethod::PhysicalOptics
-                ? "integral" : "beam-sum closure")
-            << " relative error estimate = "
+        if(values.fullAngularCoverage)log << "C_sca " << (values.method == IntegralMethod::PhysicalOptics ? "integral" : "beam-sum closure");
+        else log << "Partial angular integral";
+        log << " relative error estimate = "
             << values.cScaErrorEstimateRel * 100.0 << "%\n";
     }
     else
@@ -241,7 +240,7 @@ std::string FormatIntegralCharacteristicsLog(
         << "Qsca=" << values.qSca << ' '
         << "Qabs=" << values.qAbs << ' ';
     if (values.hasCScaErrorEstimate)
-        log << "Csca_error_rel=" << values.cScaErrorEstimateRel << ' ';
+        log << (values.fullAngularCoverage?"Csca_error_rel=":"partial_integral_error_rel=") << values.cScaErrorEstimateRel << ' ';
     log << "integral_status=" << status << "\n";
 
     if (status == "partial_angular_integral")
@@ -279,7 +278,7 @@ void WriteIntegralCharacteristicsTsv(
 
     out << "method\tlabel\tstatus"
         << "\tCext\tCsca\tCabs\tQext\tQsca\tQabs"
-        << "\tCsca_error_estimate_rel\tfull_angular_coverage\tangular_scattering_integral\n";
+        << "\tCsca_error_estimate_rel\tfull_angular_coverage\tangular_scattering_integral\tprojected_area\tpartial_integral_error_estimate_rel\n";
     out << std::setprecision(17)
         << IntegralMethodName(values.method)
         << '\t' << label
@@ -291,11 +290,15 @@ void WriteIntegralCharacteristicsTsv(
         << '\t' << values.qSca
         << '\t' << values.qAbs
         << '\t';
-    if (values.hasCScaErrorEstimate)
+    if (values.hasCScaErrorEstimate && values.fullAngularCoverage)
         out << values.cScaErrorEstimateRel;
     else
         out << "nan";
-    out << '\t' << values.fullAngularCoverage << '\t' << values.angularScatteringIntegral << '\n';
+    out << '\t' << values.fullAngularCoverage << '\t' << values.angularScatteringIntegral
+        << '\t' << values.projectedArea << '\t';
+    if(values.hasCScaErrorEstimate && !values.fullAngularCoverage)out<<values.cScaErrorEstimateRel;
+    else out<<"nan";
+    out<<'\n';
     out.close();
     if (!out)
         throw std::runtime_error(

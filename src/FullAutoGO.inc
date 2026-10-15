@@ -12,7 +12,7 @@ GoStatistics EstimateGO(const Samples& samples,size_t bins,bool ratios){
     }return out;
 }
 std::vector<double> GoRows(const Engine& e){auto x=e.theta;x.push_back(0);x.push_back(180);return x;}
-Samples GoSample(Engine& e,int count,const unsigned* seeds,int depth=-1){
+Samples GoSample(Engine& e,int count,const unsigned* seeds,int depth=-1,std::string* integralSources=nullptr){
     if(depth<0)depth=e.target;
     const auto x=GoRows(e);
     Samples data(8,Matrix(x.size()));
@@ -33,6 +33,7 @@ Samples GoSample(Engine& e,int count,const unsigned* seeds,int depth=-1){
             e.ExecutePrepared(e.pendingJobs,e.pendingCommands,todo);e.pendingJobs.clear();e.pendingCommands.clear();
         }
         for(const auto& w:windows){auto jobs=e.DirectStage(w.second,seeds,8,depth,x,true,false,w.first);
+            if(integralSources)for(const auto& job:jobs)*integralSources+="0 1 "+Number(count)+" "+Number(job.seed)+" "+job.folder+"\n";
             for(int seed=0;seed<8;++seed)for(size_t row=0;row<x.size();++row)for(int j=0;j<16;++j)
                 data[seed][row][j]+=double(w.second)/count*jobs[seed].matrix[row][j];
         }
@@ -74,6 +75,7 @@ void GoCheckpoint(Engine& e,int round,int count,int streak){
 int RunGO(Engine& e){
     if(Exists(e.root+"/final_outputs.fnv")){
         std::istringstream files(Read(e.root+"/final_outputs.fnv"));std::string name,digest;while(files>>name>>digest)Require(FileHash(e.root+"/"+name)==digest,"completed output changed");
+        ValidateIntegralSources(e.root);
         e.WarmCache();
         const std::string parameters=Read(e.root+"/final_parameters.json"),key="\"selected_state\":";
         const auto at=parameters.find(key);Require(at!=std::string::npos,"missing completed GO state");
@@ -92,11 +94,12 @@ int RunGO(Engine& e){
     if(havePrevious)previous=Mean(GoSample(e,count/2,e.seeds.data()));
     for(;round<e.roundLimit;++round){
         GoCheckpoint(e,round,count,streak);e.State("active",round,{count},bins,0,0,streak);
-        auto samples=GoSample(e,count,e.seeds.data());auto result=EstimateGO(samples,bins,e.ratios);lastMaximum=result.maximum;
+        std::string integralSources;auto samples=GoSample(e,count,e.seeds.data(),-1,&integralSources);auto result=EstimateGO(samples,bins,e.ratios);lastMaximum=result.maximum;
         const double change=havePrevious?GoDifference(result.stats.mean,previous,bins,e.ratios):1e100;
         const bool pass=result.maximum<=e.statistical&&change<=e.statistical;streak=pass?streak+1:0;e.lastRatio=result.stats.maxRatioInterval;
         const std::string folder=e.root+"/round_snapshots/n"+Number(e.target)+"_round"+Number(round)+"_N"+Number(count);GoOutputs(e,folder,result,count);
-        e.Record(e.root+"/intermediate_current.json","{\"converged\":false,\"method\":\"go\",\"round\":"+Number(round)+",\"snapshot_folder\":"+Quoted(folder)+",\"matrix\":"+Quoted(folder+"/mueller_evaluated.dat")+",\"accuracy_and_parameters\":"+Quoted(folder+"/parameters_accuracy.csv")+",\"statistical95\":"+Number(result.maximum)+",\"interpolation_residual95\":0,\"pass_streak\":"+Number(streak)+"}");
+        WriteFullAutoIntegrals(e,folder,samples,integralSources,false);
+        e.Record(e.root+"/intermediate_current.json","{\"converged\":false,\"method\":\"go\",\"round\":"+Number(round)+",\"snapshot_folder\":"+Quoted(folder)+",\"matrix\":"+Quoted(folder+"/mueller_evaluated.dat")+",\"integrals\":"+Quoted(folder+"/mueller_fullauto_integrals.tsv")+",\"accuracy_and_parameters\":"+Quoted(folder+"/parameters_accuracy.csv")+",\"statistical95\":"+Number(result.maximum)+",\"interpolation_residual95\":0,\"pass_streak\":"+Number(streak)+"}");
         e.Log("round_decision","{\"round\":"+Number(round)+",\"count_per_seed\":"+Number(count)+",\"statistics_pass\":"+(result.maximum<=e.statistical?"true":"false")+",\"stability_pass\":"+(change<=e.statistical?"true":"false")+",\"statistical95\":"+Number(result.maximum)+",\"change_scaled_M11\":"+Number(change)+"}");
         e.State("active",round,{count},bins,result.maximum,0,streak);
         if(streak>=e.stablePasses){
@@ -127,8 +130,9 @@ int RunGO(Engine& e){
                 }else e.Record(e.root+"/physics_validation.json","{\"enabled\":false,\"requested_physics_retained\":true}");
                 if(!physics){e.State("physics_validation_failed",round,{count},bins,result.maximum,0,streak);return 4;}
                 GoOutputs(e,e.root,result,count);Atomic(e.root+"/mueller_fullauto.dat",Read(e.root+"/mueller_evaluated.dat"));
+                WriteFullAutoIntegrals(e,e.root,samples,integralSources,true);
                 e.independentPassed=e.finalAudit;e.State("converged",round,{count},bins,result.maximum,0,streak);
-                std::ostringstream hashes;for(const char* name:{"controller_command.json","mueller_fullauto.dat","mueller_evaluated.dat","mueller_forward.dat","mueller_backward.dat","parameters_accuracy.csv","orientation_budget.csv","pole_status.json","precision_contract.json","independent_final_validation.json","physics_validation.json","final_parameters.json"})hashes<<name<<' '<<FileHash(e.root+"/"+name)<<'\n';if(e.autoDepth)for(const char* name:{"automatic_depth.tsv","depth_selection.json"})hashes<<name<<' '<<FileHash(e.root+"/"+name)<<'\n';Atomic(e.root+"/final_outputs.fnv",hashes.str());return 0;
+                std::ostringstream hashes;for(const char* name:{"controller_command.json","mueller_fullauto.dat","mueller_evaluated.dat","mueller_forward.dat","mueller_backward.dat","parameters_accuracy.csv","orientation_budget.csv","pole_status.json","precision_contract.json","independent_final_validation.json","physics_validation.json","final_parameters.json"})hashes<<name<<' '<<FileHash(e.root+"/"+name)<<'\n';if(e.autoDepth)for(const char* name:{"automatic_depth.tsv","depth_selection.json"})hashes<<name<<' '<<FileHash(e.root+"/"+name)<<'\n';HashIntegralProducts(e.root,hashes);Atomic(e.root+"/final_outputs.fnv",hashes.str());return 0;
             }streak=0;
         }
         if(count>=e.maxCount||round+1>=e.roundLimit)break;

@@ -650,6 +650,11 @@ int main()
        ||HasFullAngularCoverage({0.,.2})||!HasFullAngularCoverage({0.,M_PI/2,M_PI}))
         FailTest("partial angular integral", "partial grids mistaken for failed full-sphere closure");
     else Pass("partial angular integral");
+    if(IntegralCharacteristicsStatus(partial,"fullauto_final")!="partial_angular_integral"
+       ||IntegralCharacteristicsStatus(partialAbs,"fullauto_intermediate")!="partial_angular_integral"
+       ||FormatIntegralCharacteristicsLog(partial,"fullauto_final").find("partial_integral_error_rel=")==std::string::npos)
+        FailTest("fullauto integral labels", "fullauto summary mistaken for no-shadow output or partial error mislabeled");
+    else Pass("fullauto integral labels");
 
     const std::vector<double> theta = {
         0.0, M_PI/4.0, M_PI/2.0, 3.0*M_PI/4.0, M_PI

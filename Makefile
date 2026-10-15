@@ -440,6 +440,6 @@ endif
 -include $(DEPS)
 
 # Frozen-allocation queue probe: no adaptive accuracy decisions in the harness.
-bin/fullauto_queue_probe: tests/fullauto_queue_probe.cpp src/FullAuto.cpp src/FullAutoAdaptive.inc src/FullAutoTuning.inc src/FullAutoGO.inc src/FullAutoPhysics.inc $(filter-out %/main.o %/FullAuto.o,$(OBJECTS))
+bin/fullauto_queue_probe: tests/fullauto_queue_probe.cpp src/FullAuto.cpp src/FullAutoIntegrals.inc src/FullAutoAdaptive.inc src/FullAutoTuning.inc src/FullAutoGO.inc src/FullAutoPhysics.inc $(filter-out %/main.o %/FullAuto.o,$(OBJECTS))
 	@mkdir -p bin
 	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/fullauto_queue_probe.cpp $(filter-out %/main.o %/FullAuto.o,$(OBJECTS)) -o $@ $(LDFLAGS)

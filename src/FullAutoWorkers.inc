@@ -7,7 +7,17 @@ void CompleteNative(Job& j) {
     std::string pairHash;if(j.pairedDepth){const std::string name=j.folder+"/result/result_depth"+std::to_string(j.pairedDepth);std::ostringstream manifest;
         manifest<<name+".dat"<<' '<<FileHash(name+".dat")<<'\n';if(controls)manifest<<name+"_analytic_facets.tsv"<<' '<<FileHash(name+"_analytic_facets.tsv")<<'\n';
         Atomic(j.folder+"/paired_depth.tsv",manifest.str());pairHash=" "+Hash(manifest.str());}
-    Atomic(j.folder+"/complete.txt",j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+pairHash+"\n");CacheJob(j);
+    std::ostringstream integrals;
+    for(int depth:{0,j.pairedDepth}){
+        if(depth==0||j.pairedDepth){const auto path=j.folder+"/result/result"+(depth?"_depth"+Number(depth):"")+"_integrals.tsv";
+            integrals<<path<<' '<<FileHash(path)<<'\n';}
+        if(!j.pairedDepth)break;
+    }
+    if(j.pairedDepth){const auto path=j.folder+"/result/result_depth"+Number(j.pairedDepth)+"_integrals_revision.txt";
+        if(Exists(path))integrals<<path<<' '<<FileHash(path)<<'\n';}
+    Atomic(j.folder+"/integral_outputs.fnv",integrals.str());
+    Atomic(j.folder+"/complete.txt",j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")
+        +(pairHash.empty()?" none":pairHash)+" "+Hash(integrals.str())+"\n");CacheJob(j);
     Log("worker_complete","{\"folder\":"+Quoted(j.folder)+",\"seconds\":"+Number(j.seconds)+",\"trace_prepare_seconds\":"+Number(j.traceSeconds)
         +",\"diffraction_and_controls_seconds\":"+Number(j.diffractionSeconds)+",\"processing_wall_seconds\":"+Number(j.NativeWall())
         +",\"processing_wall_measured\":"+(j.processingSeconds>=0?"true":"false")+",\"outside_processing_seconds\":"+Number(j.OutsideProcessing())

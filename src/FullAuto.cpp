@@ -7,6 +7,7 @@
 #include "RuntimeInfo.h"
 #include "WorkerProtocol.h"
 #include "FullAutoAuditPlan.h"
+#include "IntegralCharacteristics.h"
 #include <poll.h>
 #include <algorithm>
 #include <chrono>
@@ -362,9 +363,13 @@ void ReadPhaseTimings(Job& j,const std::string& text){
 }
 void ValidateStoredJob(const std::string& folder,std::set<std::string>& visited){
     if(!visited.insert(folder).second)return;
-    std::istringstream metadata(Read(folder+"/complete.txt"));std::string id,dataHash,summaryHash,sourceHash;double seconds=0;
-    Require(bool(metadata>>id>>seconds>>dataHash>>summaryHash)&&seconds>0,"invalid cached metadata");metadata>>sourceHash;
+    std::istringstream metadata(Read(folder+"/complete.txt"));std::string id,dataHash,summaryHash,sourceHash,integralHash;double seconds=0;
+    Require(bool(metadata>>id>>seconds>>dataHash>>summaryHash)&&seconds>0,"invalid cached metadata");metadata>>sourceHash>>integralHash;
     Require(FileHash(folder+"/result/result.dat")==dataHash&&(summaryHash=="none"||FileHash(folder+"/result/result_analytic_facets.tsv")==summaryHash),"cached job changed; do not reuse corrupted files");
+    if(!integralHash.empty()){
+        const auto manifest=Read(folder+"/integral_outputs.fnv");Require(Hash(manifest)==integralHash,"worker integral manifest changed");
+        std::istringstream rows(manifest);std::string path,hash;while(rows>>path>>hash)Require(FileHash(path)==hash,"worker integral output changed");
+    }
     if(Exists(folder+"/paired_depth.tsv")){const std::string manifest=Read(folder+"/paired_depth.tsv");Require(Hash(manifest)==sourceHash,"paired depth manifest changed");
         std::istringstream rows(manifest);std::string path,hash;while(rows>>path>>hash)Require(FileHash(path)==hash,"paired depth matrix changed");}
     if(Exists(folder+"/angular_sources.tsv")){
@@ -835,7 +840,7 @@ struct Engine {
             const std::string meta=j.folder+"/complete.txt";
             if(Exists(meta)){std::istringstream m(Read(meta));std::string id,dataHash,summaryHash;m>>id>>j.seconds>>dataHash>>summaryHash;
                 Require(id==j.identity&&j.seconds>0&&std::isfinite(j.seconds)&&FileHash(j.data)==dataHash&&(!controls||FileHash(j.summary)==summaryHash),"cached job changed; do not reuse corrupted files");
-                if(pairedDepth){std::set<std::string> visited;ValidateStoredJob(j.folder,visited);}j=Load(j);correctAngles(j);CacheJob(j);result[s]=j;Log("worker_cache_reuse","{\"folder\":"+Quoted(j.folder)+",\"verified_from_disk\":true}");continue;}
+                {std::set<std::string> visited;ValidateStoredJob(j.folder,visited);}j=Load(j);correctAngles(j);CacheJob(j);result[s]=j;Log("worker_cache_reuse","{\"folder\":"+Quoted(j.folder)+",\"verified_from_disk\":true}");continue;}
             if(Exists(j.folder+"/worker.pid"))Require(!WorkerAlive(j.folder+"/worker.pid"),"an incomplete cached worker is still running; avoid duplicate launch");
             if(Exists(j.folder+"/result")){std::string saved=j.folder+"/result_incomplete_"+std::to_string(getpid())+"_"+std::to_string(s);
                 Require(rename((j.folder+"/result").c_str(),saved.c_str())==0,"cannot preserve incomplete worker output");}
@@ -1342,6 +1347,7 @@ Samples Support(const Samples& s,const std::vector<size_t>& evaluated,const std:
 }
 
 namespace { double PhysicalDepthBound(const Samples&,const Samples&,const Matrix&,bool,size_t,bool); }
+#include "FullAutoIntegrals.inc"
 #include "FullAutoAdaptive.inc"
 #include "FullAutoGO.inc"
 #include "FullAutoPhysics.inc"

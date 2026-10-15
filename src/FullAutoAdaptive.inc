@@ -118,6 +118,7 @@ bool RestoreAdaptive(Engine& e,AdaptiveState& state){
     std::string extra;Require(!(file>>extra),"extra checkpoint fields");
     if(phase=="converged"&&Exists(e.root+"/final_outputs.fnv")){std::istringstream hashes(Read(e.root+"/final_outputs.fnv"));std::string path,digest;
         while(hashes>>path>>digest)Require(Hash(Read(e.root+"/"+path))==digest,"completed output changed");
+        ValidateIntegralSources(e.root);
         std::set<std::string> visited;std::istringstream sources(Read(e.root+"/final_stage_sources.tsv"));size_t level;int sign,n;unsigned seed;
         while(sources>>level>>sign>>n>>seed>>path)ValidateStoredJob(path,visited);
         e.completedCheckpoint=true;
@@ -401,6 +402,7 @@ int RunAdaptive(Engine& e){
     e.PrepareTuning(tuningAngles);
     const bool resumed=RestoreAdaptive(e,state);
     if(e.completedCheckpoint){
+        CompleteSavedPOIntegrals(e);
         const std::string path=e.root+"/fullauto_status.json";if(Exists(path)){std::string text=Read(path);const size_t key=text.find("\"status\":\"");if(key!=std::string::npos){const size_t begin=key+10,end=text.find('"',begin);text.replace(begin,end-begin,"converged");Atomic(path,text);}}
         std::cout<<"fullauto: completed outputs and dependencies verified; no calculation repeated"<<std::endl;return 0;
     }
@@ -444,6 +446,7 @@ int RunAdaptive(Engine& e){
         if(!previous)change=1e100;
         const bool pass=StatisticalError(e,stats)<=e.statistical&&outputCI<=e.statistical&&interp.maximum<=e.interpolation&&change<=e.statistical&&coarse;
         const std::string roundSnapshot=SaveRoundDiagnostics(e,state,stage,stats,ids,interp.errors,x);
+        if(positive)WriteFullAutoIntegrals(e,roundSnapshot,interp.output,stage.sources,false);
         e.Log("round_decision","{\"round\":"+Number(state.round)+",\"statistics_pass\":"+(StatisticalError(e,stats)<=e.statistical?"true":"false")
             +",\"output_statistics_pass\":"+(outputCI<=e.statistical?"true":"false")+",\"interpolation_pass\":"+(interp.maximum<=e.interpolation?"true":"false")
             +",\"stability_pass\":"+(change<=e.statistical?"true":"false")+",\"half_prefix_pass\":"+(coarse?"true":"false")+",\"previous_available\":"+(previous?"true":"false")
@@ -452,6 +455,7 @@ int RunAdaptive(Engine& e){
         UpdatePassStreak(e,state,pass,stage,roundSnapshot);lastCI=std::max(stats.maxInterval,positive?output.maxInterval:1e100);lastInterpolation=interp.maximum;e.lastRatio=std::max(stats.maxRatioInterval,positive?output.maxRatioInterval:1e100);
         e.Record(e.root+"/intermediate_current.json","{\"converged\":false,\"round\":"+Number(state.round)+",\"snapshot_folder\":"+Quoted(roundSnapshot)
             +",\"matrix\":"+Quoted(roundSnapshot+"/mueller_evaluated.dat")+",\"accuracy_and_parameters\":"+Quoted(roundSnapshot+"/parameters_accuracy.csv")
+            +",\"integrals\":"+(positive?Quoted(roundSnapshot+"/mueller_fullauto_integrals.tsv"):"null")
             +",\"statistical95\":"+Number(StatisticalError(e,stats))+",\"output_statistical95\":"+Number(outputCI)+",\"interpolation_residual95\":"+Number(interp.maximum)
             +",\"numerical_round_passed\":"+(pass?"true":"false")+",\"pass_streak\":"+Number(state.streak)+",\"required_stable_passes\":"+Number(e.stablePasses)+"}");
         e.State("active",state.round,PeakBudgets(state.counts),ids.size(),lastCI,lastInterpolation,state.streak);
@@ -472,7 +476,8 @@ int RunAdaptive(Engine& e){
                 const bool physics=PhysicsAudit(e,state,ids,stats.mean);
                 e.Record(e.root+"/precision_contract.json","{\"statistics\":\"eight-scramble pointwise Student-t estimates\",\"normalized_ratios\":\"paired-covariance Fieller intervals for ratios of means\",\"interpolation_budget\":"+Number(e.interpolation)+",\"execution_budget\":"+Number((e.resourcePolicy=="auto"||e.config.useGpu)?e.eps/1024:0)+",\"rotation_budget\":"+Number((e.rotationBeta>1||e.rotationGamma>1)?e.eps/256:0)+",\"cutoff_budget\":"+Number(e.selectedCutoff!="requested"&&e.selectedCutoff!="off"?e.eps/8:0)+",\"selected_cutoff\":"+Quoted(e.selectedCutoff)+",\"automatic_cutoff_audit\":"+std::string(e.tuneCutoffs&&e.selectedCutoff!="off"?"true":"false")+",\"physical_depth\":"+Number(e.target)+",\"physical_accuracy_audited\":"+std::string(e.physicsAudit||e.autoDepth?"true":"false")+",\"automatic_depth\":"+std::string(e.autoDepth?"true":"false")+",\"depth_budget\":"+Number(e.depthBudget)+",\"analytic_mean_error\":\"reported internal refinement, not an absolute bound\",\"global_simultaneous_confidence\":false}");
                 if(!physics){SaveAdaptive(e,state,"physics_validation_failed");e.State("physics_validation_failed",state.round,PeakBudgets(state.counts),ids.size(),lastCI,lastInterpolation,state.streak);return 4;}
-                std::ostringstream finalHashes;for(const char* path:{"controller_command.json","mueller_fullauto.dat","mueller_evaluated.dat","all_mueller_confidence.csv","normalized_mueller_confidence.csv","theta_support.csv","theta_evaluated.csv","orientation_budget.csv","final_stage_sources.tsv","independent_final_validation.json","precision_contract.json","physics_validation.json","execution_tuning.tsv","resource_calibration.json","rotation_verification.json","cutoff_calibration.json","automatic_cutoff_validation.json"})finalHashes<<path<<' '<<Hash(Read(e.root+"/"+path))<<'\n';if(e.finalAudit)finalHashes<<"independent_orientation_budget.csv "<<Hash(Read(e.root+"/independent_orientation_budget.csv"))<<'\n';if(e.finalAudit)for(const char* name:{"production_validation_receipt.tsv","independent_audit_plan.json","independent_audit_cost_gate.json","independent_audit_reservation.tsv","independent_final_sources.tsv","independent_theta.csv","interpolation_validation_mode.json","interpolation_validation_sources.tsv","interpolation_validation_budgets.csv"})if(Exists(e.root+"/"+name))finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';if(e.autoDepth)for(const char* name:{"automatic_depth.tsv","depth_selection.json"})finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';if(Exists(e.root+"/depth_startup.tsv"))for(const char* name:{"depth_startup.tsv","depth_startup.json"})finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';Atomic(e.root+"/final_outputs.fnv",finalHashes.str());
+                WriteFullAutoIntegrals(e,e.root,interp.output,stage.sources,true);
+                std::ostringstream finalHashes;for(const char* path:{"controller_command.json","mueller_fullauto.dat","mueller_evaluated.dat","all_mueller_confidence.csv","normalized_mueller_confidence.csv","theta_support.csv","theta_evaluated.csv","orientation_budget.csv","final_stage_sources.tsv","independent_final_validation.json","precision_contract.json","physics_validation.json","execution_tuning.tsv","resource_calibration.json","rotation_verification.json","cutoff_calibration.json","automatic_cutoff_validation.json"})finalHashes<<path<<' '<<Hash(Read(e.root+"/"+path))<<'\n';if(e.finalAudit)finalHashes<<"independent_orientation_budget.csv "<<Hash(Read(e.root+"/independent_orientation_budget.csv"))<<'\n';if(e.finalAudit)for(const char* name:{"production_validation_receipt.tsv","independent_audit_plan.json","independent_audit_cost_gate.json","independent_audit_reservation.tsv","independent_final_sources.tsv","independent_theta.csv","interpolation_validation_mode.json","interpolation_validation_sources.tsv","interpolation_validation_budgets.csv"})if(Exists(e.root+"/"+name))finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';if(e.autoDepth)for(const char* name:{"automatic_depth.tsv","depth_selection.json"})finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';if(Exists(e.root+"/depth_startup.tsv"))for(const char* name:{"depth_startup.tsv","depth_startup.json"})finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';HashIntegralProducts(e.root,finalHashes);Atomic(e.root+"/final_outputs.fnv",finalHashes.str());
                 SaveAdaptive(e,state,"converged");e.State("converged",state.round,PeakBudgets(state.counts),ids.size(),lastCI,lastInterpolation,state.streak);return 0;
             }
             state.streak=0;std::fill(state.valid.begin(),state.valid.end(),false);SaveAdaptive(e,state);continue;
