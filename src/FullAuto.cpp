@@ -713,8 +713,8 @@ struct Engine {
             compatibleHash=FileHash(compatibleBinary);
             const std::string oldVersion=ExecutableVersion(compatibleBinary),newVersion=ExecutableVersion(exe);
             const size_t oldLine=oldVersion.find('\n'),newLine=newVersion.find('\n');
-            Require(oldLine!=std::string::npos&&(oldVersion.substr(0,oldLine)=="MBS-fast 8ae9e85"||oldVersion.substr(0,oldLine)=="MBS-fast 89f83a3"||oldVersion.substr(0,oldLine)=="MBS-fast 336ef78"||oldVersion.substr(0,oldLine)=="MBS-fast ef50662"),
-                "compatible resume is verified only from releases 8ae9e85, 89f83a3, 336ef78 and ef50662");
+            Require(oldLine!=std::string::npos&&(oldVersion.substr(0,oldLine)=="MBS-fast 8ae9e85"||oldVersion.substr(0,oldLine)=="MBS-fast 89f83a3"||oldVersion.substr(0,oldLine)=="MBS-fast 336ef78"||oldVersion.substr(0,oldLine)=="MBS-fast ef50662"||oldVersion.substr(0,oldLine)=="MBS-fast a866f0d"||oldVersion.substr(0,oldLine)=="MBS-fast bbe6cea"||oldVersion.substr(0,oldLine)=="MBS-fast 3522122"||oldVersion.substr(0,oldLine)=="MBS-fast 0ee3a83"),
+                "compatible resume is verified only from releases 8ae9e85, 89f83a3, 336ef78, ef50662, a866f0d, bbe6cea, 3522122 and 0ee3a83");
             Require(newLine!=std::string::npos&&oldVersion.substr(oldLine)==newVersion.substr(newLine),
                 "compatible resume requires identical CUDA architecture, precision, phase math, compiler, OpenMP and MPI profiles");
         }
