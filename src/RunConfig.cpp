@@ -1225,7 +1225,7 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
                 Fail("rotation audit requires an undoubled non-mirror sample.","remove mirror options and reduce N.");
         }
     }
-    for(const char* key:{"fullauto_local","fullauto_ratios","fullauto_phi_recheck","fullauto_polar_controls","fullauto_final_audit","fullauto_physics_audit","fullauto_depth_share"})if(args.IsCatched(key)){
+    for(const char* key:{"fullauto_local","fullauto_ratios","fullauto_phi_recheck","fullauto_polar_controls","fullauto_final_audit","fullauto_final_checks","fullauto_physics_audit","fullauto_depth_share"})if(args.IsCatched(key)){
         const std::string value=args.GetStringValue(key);
         if(value!="on"&&value!="off"&&!(std::string(key)=="fullauto_local"&&value=="auto"))Fail(std::string("--")+key+" expects on or off (local orientations also accept auto).","choose a supported mode.");
         if(!args.IsCatched("fullauto"))Fail(std::string("--")+key+" requires --fullauto.","select --fullauto EPS or remove the modifier.");

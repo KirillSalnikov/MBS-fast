@@ -82,7 +82,7 @@ int RunGO(Engine& e){
         e.Record(e.root+"/fullauto_status.json",parameters.substr(at+key.size(),parameters.size()-at-key.size()-1));
         std::cout<<"fullauto GO: completed outputs verified; no calculation repeated"<<std::endl;return 0;
     }
-    e.Record(e.root+"/precision_contract.json","{\"method\":\"go\",\"angular_model\":\"fixed finite solid-angle bins; no interpolation\",\"alpha\":\"analytic scattering-plane and pole averaging; two-dimensional Haar Sobol\",\"statistics\":\"eight independent scrambles; pointwise Student and Fieller estimates\",\"statistical_budget\":"+Number(e.statistical)+",\"depth_budget\":"+Number(e.depthBudget)+",\"interpolation_budget\":0,\"zero_finite_bins\":\"require further sampling\",\"zero_poles\":\"reported as zero observed, not certified absence\",\"physical_depth\":"+Number(e.target)+",\"global_simultaneous_confidence\":false}");
+    e.Record(e.root+"/precision_contract.json","{\"method\":\"go\",\"final_checks\":"+std::string(e.finalChecks?"true":"false")+",\"independent_audit_enabled\":"+std::string(e.finalAudit?"true":"false")+",\"physical_accuracy_audited\":"+std::string(e.PhysicalAuditEnabled()?"true":"false")+",\"angular_model\":\"fixed finite solid-angle bins; no interpolation\",\"alpha\":\"analytic scattering-plane and pole averaging; two-dimensional Haar Sobol\",\"statistics\":\"eight independent scrambles; pointwise Student and Fieller estimates\",\"statistical_budget\":"+Number(e.statistical)+",\"depth_budget\":"+Number(e.depthBudget)+",\"interpolation_budget\":0,\"zero_finite_bins\":\"require further sampling\",\"zero_poles\":\"reported as zero observed, not certified absence\",\"physical_depth\":"+Number(e.target)+",\"global_simultaneous_confidence\":false}");
     int round=0,count=e.initial,streak=0;
     if(Exists(e.root+"/go_checkpoint.tsv")){
         const auto text=Read(e.root+"/go_checkpoint.tsv");const auto line=text.find('\n');const auto payload=text.substr(line+1);
@@ -116,7 +116,7 @@ int RunGO(Engine& e){
             }else e.Record(e.root+"/independent_final_validation.json","{\"enabled\":false,\"passed\":false}");
             if(validation){
                 bool physics=true;
-                if(e.physicsAudit||e.autoDepth){
+                if(e.PhysicalAuditEnabled()){
                     unsigned fresh[8];for(int i=0;i<8;++i){fresh[i]=1400000000u+unsigned(round)*1024u+unsigned(i)*17u;
                         Require(std::find(e.seeds.begin(),e.seeds.end(),fresh[i])==e.seeds.end(),"GO physics/production seed overlap");}
                     auto original=GoSample(e,count,fresh),deep=GoSample(e,count,fresh,e.target+2);
@@ -127,12 +127,12 @@ int RunGO(Engine& e){
                     e.base=savedBase;e.selectedCutoff=savedCutoff;e.SetMirror(false);}
                     physics=depthError<=(e.autoDepth?e.depthBudget:e.eps)&&cutoffError<=e.eps;
                     e.Record(e.root+"/physics_validation.json","{\"enabled\":true,\"passed\":"+(physics?std::string("true"):"false")+",\"depth_plus2_residual95_scaled_M11\":"+Number(depthError)+",\"cutoffs_off_residual95_scaled_M11\":"+Number(cutoffError)+",\"depth_pass\":"+std::string(depthError<=(e.autoDepth?e.depthBudget:e.eps)?"true":"false")+",\"cutoff_pass\":"+std::string(cutoffError<=e.eps?"true":"false")+",\"cutoffs_checked\":"+std::string(e.physicsAudit?"true":"false")+",\"depth_budget\":"+Number(e.autoDepth?e.depthBudget:e.eps)+",\"count_per_seed\":"+Number(count)+",\"requested_physics_retained\":true}");
-                }else e.Record(e.root+"/physics_validation.json","{\"enabled\":false,\"requested_physics_retained\":true}");
+                }else e.Record(e.root+"/physics_validation.json","{\"enabled\":false,\"passed\":false,\"requested_physics_retained\":true}");
                 if(!physics){e.State("physics_validation_failed",round,{count},bins,result.maximum,0,streak);return 4;}
                 GoOutputs(e,e.root,result,count);Atomic(e.root+"/mueller_fullauto.dat",Read(e.root+"/mueller_evaluated.dat"));
                 WriteFullAutoIntegrals(e,e.root,samples,integralSources,true);
                 e.independentPassed=e.finalAudit;e.State("converged",round,{count},bins,result.maximum,0,streak);
-                std::ostringstream hashes;for(const char* name:{"controller_command.json","mueller_fullauto.dat","mueller_evaluated.dat","mueller_forward.dat","mueller_backward.dat","parameters_accuracy.csv","orientation_budget.csv","pole_status.json","precision_contract.json","independent_final_validation.json","physics_validation.json","final_parameters.json"})hashes<<name<<' '<<FileHash(e.root+"/"+name)<<'\n';if(e.autoDepth)for(const char* name:{"automatic_depth.tsv","depth_selection.json"})hashes<<name<<' '<<FileHash(e.root+"/"+name)<<'\n';HashIntegralProducts(e.root,hashes);Atomic(e.root+"/final_outputs.fnv",hashes.str());return 0;
+                std::ostringstream hashes;for(const char* name:{"controller_command.json","final_checks_policy.json","mueller_fullauto.dat","mueller_evaluated.dat","mueller_forward.dat","mueller_backward.dat","parameters_accuracy.csv","orientation_budget.csv","pole_status.json","precision_contract.json","independent_final_validation.json","physics_validation.json","final_parameters.json"})hashes<<name<<' '<<FileHash(e.root+"/"+name)<<'\n';if(e.autoDepth)for(const char* name:{"automatic_depth.tsv","depth_selection.json"})hashes<<name<<' '<<FileHash(e.root+"/"+name)<<'\n';HashIntegralProducts(e.root,hashes);Atomic(e.root+"/final_outputs.fnv",hashes.str());return 0;
             }streak=0;
         }
         if(count>=e.maxCount||round+1>=e.roundLimit)break;

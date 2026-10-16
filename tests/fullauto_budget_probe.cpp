@@ -6,6 +6,18 @@ void NearBudget(double a,double b){Require(std::fabs(a-b)<1e-11,"pointwise repla
 int main(int argc,char** argv){try{
     Require(argc==3,"expected replay fixture and output directory");ArgPP args;RunConfig config;Engine e(args,config);
     e.root=argv[2];Directory(e.root);e.eps=.02;e.statistical=.00951171875;e.interpolation=.005;e.depthBudget=.005;e.ratios=true;
+    {e.autoDepth=true;e.physicsAudit=false;
+        Require(e.PhysicalAuditEnabled(),"default automatic-depth final audit disabled");
+        e.finalChecks=false;e.finalAudit=false;e.forbidNativeWork=true;
+        AdaptiveState state;AdaptiveData data;
+        Require(IndependentAudit(e,state,{},{},{}),"explicit independent skip failed");
+        Require(PhysicsAudit(e,state,{},{}),"explicit automatic-depth final skip launched optics");
+        e.physicsAudit=true;Require(!e.PhysicalAuditEnabled(),"master final-checks off lost priority");
+        e.RecordFinalChecksPolicy();Atomic(e.root+"/final_outputs.fnv","policy guard fixture");
+        const auto policy=Read(e.root+"/final_checks_policy.json");e.finalChecks=true;bool rejected=false;
+        try{e.RecordFinalChecksPolicy();}catch(const std::exception&){rejected=true;}
+        Require(rejected&&Read(e.root+"/final_checks_policy.json")==policy,"completed result silently relabeled as verified");
+        std::remove((e.root+"/final_outputs.fnv").c_str());e.autoDepth=false;e.physicsAudit=false;e.finalAudit=true;e.forbidNativeWork=false;}
     BudgetResidual residual;residual.matrix[0]=.001;
     Statistics sample;sample.interval.resize(1);sample.ratioInterval.resize(1);sample.mean.resize(1);sample.mean[0][0]=1;
     sample.interval[0][0]=.011;

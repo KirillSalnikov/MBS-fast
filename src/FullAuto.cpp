@@ -460,7 +460,7 @@ struct Engine {
     bool angularCache=true,sharedMeans=false;size_t assembledJobs=0,reusedRows=0,newRows=0;
     bool incremental=true;int orientationBlock=65536;size_t savedOrientationBlocks=0;
     std::string controlPolicy="auto";int thetaAuditCount=0;
-    bool local=true,ratios=true,phiRecheck=true,polarControls=true,finalAudit=true,physicsAudit=false;
+    bool local=true,ratios=true,phiRecheck=true,polarControls=true,finalChecks=true,finalAudit=true,physicsAudit=false;
     std::vector<std::array<Mueller,2>> polarWeights;
     double lastRatio=0,lastAnalyticError=0,lastCombined=-1,lastIndependentCombined=-1;bool independentPassed=false,independentNeedsSampling=true;
     int fixedPhi=0;std::string requestedMeanCache;bool coherent=true,fixedPipeline=false,fixedBlock=false,fixedWarp=false;
@@ -512,12 +512,24 @@ struct Engine {
             <<",\"work_queue_policy\":"<<Quoted(workQueuePolicy)<<",\"angular_cache\":"<<(angularCache?"true":"false")<<",\"incremental\":"<<(incremental?"true":"false")
             <<",\"coherent\":"<<(coherent?"true":"false")<<",\"depth_sharing\":"<<(depthSharing?"true":"false")<<",\"ratio_accuracy\":"<<(ratios?"true":"false")
             <<",\"phi_recheck\":"<<(phiRecheck?"true":"false")<<",\"polarization_controls\":"<<(polarControls?"true":"false")
-            <<",\"independent_final_audit\":"<<(finalAudit?"true":"false")<<",\"physics_audit\":"<<(physicsAudit?"true":"false")
+            <<",\"final_checks\":"<<(finalChecks?"true":"false")<<",\"final_physics_audit\":"<<(PhysicalAuditEnabled()?"true":"false")<<",\"independent_final_audit\":"<<(finalAudit?"true":"false")<<",\"physics_audit\":"<<(physicsAudit?"true":"false")
             <<",\"requested_theta_rows\":"<<theta.size()<<",\"requested_theta_file\":"<<Quoted(root+"/requested_theta.csv")
             <<",\"final_orientation_budget_file\":"<<Quoted(root+"/orientation_budget.csv")<<",\"selected_state\":"<<state<<"}";return out.str();
     }
     int Int(const std::string& key,int fallback){return args.IsCatched(key)?args.GetIntValue(key):fallback;}
     bool On(const char* key,bool fallback=true){return args.IsCatched(key)?args.GetStringValue(key)=="on":fallback;}
+    bool PhysicalAuditEnabled()const{return finalChecks&&(physicsAudit||autoDepth);}
+    void RecordFinalChecksPolicy(){
+        const std::string path=root+"/final_checks_policy.json";
+        const bool saved= !Exists(path)||CompactJson(Read(path)).find("\"final_checks\":false")==std::string::npos;
+        Require(!Exists(root+"/final_outputs.fnv")||saved==finalChecks,
+            "completed final-checks policy differs; preserve the saved policy or use a new output directory");
+        if(Exists(root+"/final_outputs.fnv"))return; // Verify the original hashed receipt, never repair it here.
+        Record(path,"{\"schema\":1,\"final_checks\":"+std::string(finalChecks?"true":"false")
+            +",\"independent_audit_enabled\":"+(finalAudit?"true":"false")
+            +",\"final_physics_audit_enabled\":"+(PhysicalAuditEnabled()?"true":"false")
+            +",\"production_convergence_retained\":true,\"startup_depth_selection_retained\":true,\"skipped_checks_are_unverified\":true}");
+    }
     void Init(int argc,const char* argv[],double edge=0,double diameter=0,double volume=0) {
         maximumEdge=edge;maximumDiameter=diameter;particleVolume=volume;
         go=config.method==RunMethod::GeometricalOptics;Require(!config.useFft,"requires a direct solver");
@@ -537,7 +549,7 @@ struct Engine {
         char* full=realpath(root.c_str(),nullptr);Require(full!=nullptr,"cannot resolve output directory");root=full;free(full);
         eps=args.GetDoubleValue("fullauto");interpolation=eps*.25;statistical=eps-interpolation;
         localPolicy=args.IsCatched("fullauto_local")?args.GetStringValue("fullauto_local"):"auto";local=localPolicy!="off";ratios=On("fullauto_ratios");phiRecheck=On("fullauto_phi_recheck");
-        polarControls=On("fullauto_polar_controls");finalAudit=On("fullauto_final_audit");physicsAudit=On("fullauto_physics_audit",false);
+        polarControls=On("fullauto_polar_controls");finalChecks=On("fullauto_final_checks");finalAudit=finalChecks&&On("fullauto_final_audit");physicsAudit=On("fullauto_physics_audit",false);
         coherent=!go&&!args.IsCatched("incoh");depthSharing=!go&&coherent&&On("fullauto_depth_share");
         fixedPhi=args.IsCatched("nphi")?args.GetIntValue("nphi"):(args.IsCatched("grid")?args.GetIntValue("grid",args.GetArgNumber("grid")-2):0);
         fixedPipeline=args.IsCatched("orientation_pipeline");kernel.pipeline=fixedPipeline;
@@ -722,7 +734,7 @@ struct Engine {
         std::ostringstream fingerprint;fingerprint<<(compatibleHash.empty()?binaryHash:compatibleHash)<<'\n';
         for(int i=1;i<argc;++i){
             std::string option=argv[i];while(!option.empty()&&option[0]=='-')option.erase(0,1);
-            if(argv[i][0]=='-' && (option=="fullauto-resume-compatible"||option=="fullauto_resume_compatible"||option=="fullauto-dispatch-gpus"||option=="fullauto_dispatch_gpus"||option=="fullauto-dispatch-threads"||option=="fullauto_dispatch_threads")){++i;continue;}
+            if(argv[i][0]=='-' && (option=="fullauto-resume-compatible"||option=="fullauto_resume_compatible"||option=="fullauto-dispatch-gpus"||option=="fullauto_dispatch_gpus"||option=="fullauto-dispatch-threads"||option=="fullauto_dispatch_threads"||option=="fullauto-final-checks"||option=="fullauto_final_checks")){++i;continue;}
             fingerprint<<argv[i]<<'\n';
         }
         // Canonical reconstruction avoids shell quoting and option aliases.
@@ -762,12 +774,12 @@ struct Engine {
             <<",\"mirror_gamma\":"<<(mirror?"true":"false")<<",\"mirror_policy\":"<<Quoted(mirrorPolicy)
             <<",\"analytic_controls\":"<<(controls?"true":"false")<<",\"analytic_control_policy\":"<<Quoted(controlPolicy)<<",\"shared_analytic_reference\":"<<(sharedMeans?"true":"false")<<",\"angular_cache\":"<<(angularCache?"true":"false")<<",\"work_queue\":"<<(QueueEnabled()?"true":"false")<<",\"work_queue_policy\":"<<Quoted(workQueuePolicy)<<",\"assembled_jobs_this_invocation\":"<<assembledJobs<<",\"reused_angular_rows_this_invocation\":"<<reusedRows<<",\"computed_new_angular_rows_this_invocation\":"<<newRows
             <<",\"mirror_budget\":"<<(mirror?eps/256:0)<<",\"max_mirror_residual95_scaled_M11\":"<<mirrorError
-            <<",\"prepare_thread_cap\":"<<prepareThreadCap<<",\"accuracy_scope\":\"production\",\"adaptive_schema\":2,\"local_orientations\":"<<(local?"true":"false")<<",\"ratio_accuracy\":"<<(ratios?"true":"false")<<",\"max_pointwise_ratio95\":"<<lastRatio<<",\"independent_final_validation\":"<<(independentPassed?"true":"false")<<",\"saved_orientation_blocks_this_invocation\":"<<savedOrientationBlocks
+            <<",\"final_checks\":"<<(finalChecks?"true":"false")<<",\"final_physics_audit\":"<<(PhysicalAuditEnabled()?"true":"false")<<",\"prepare_thread_cap\":"<<prepareThreadCap<<",\"accuracy_scope\":\"production\",\"adaptive_schema\":2,\"local_orientations\":"<<(local?"true":"false")<<",\"ratio_accuracy\":"<<(ratios?"true":"false")<<",\"max_pointwise_ratio95\":"<<lastRatio<<",\"independent_final_validation\":"<<(independentPassed?"true":"false")<<",\"saved_orientation_blocks_this_invocation\":"<<savedOrientationBlocks
             <<",\"analytic_mean_budget\":"<<(controls?eps/64:0)<<",\"max_estimated_analytic_mean_error_scaled_M11\":"<<lastAnalyticError
             <<",\"execution_budget\":"<<((resourcePolicy=="auto"||config.useGpu)?eps/1024:0)<<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"effective_analytic_mean_threads\":"<<(dispatchThreads?dispatchThreads:analyticMeanThreads)<<",\"angular_audit_policy\":"<<Quoted(angularAuditPolicy)<<",\"short_packet_policy\":"<<Quoted(shortPacketPolicy)<<",\"dispatch_threads\":"<<dispatchThreads<<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
             <<",\"rotation_beta_factor\":"<<rotationBeta<<",\"rotation_gamma_factor\":"<<rotationGamma<<",\"rotation_budget\":"<<((rotationBeta>1||rotationGamma>1)?eps/256:0)
             <<",\"selected_cutoff\":"<<Quoted(selectedCutoff)<<",\"cutoff_budget\":"<<(selectedCutoff!="requested"&&selectedCutoff!="off"?eps/8:0)<<",\"max_cutoff_residual95\":"<<cutoffError
-            <<",\"coherent\":"<<(coherent?"true":"false")<<",\"fixed_phi\":"<<fixedPhi<<",\"scope\":\"eight-seed pointwise intervals; interpolation guards on requested grid; mirror paired pilot when enabled; current target physics; automatic depth has fresh paired validation; no global simultaneous confidence claim\"}\n";
+            <<",\"coherent\":"<<(coherent?"true":"false")<<",\"fixed_phi\":"<<fixedPhi<<",\"scope\":\"eight-seed pointwise intervals; interpolation guards on requested grid; mirror paired pilot when enabled; current target physics; final audit policy is reported separately; no global simultaneous confidence claim\"}\n";
         Record(root+"/fullauto_status.json",s.str());
         if(status=="converged")Record(root+"/final_parameters.json",Parameters(s.str()));
         std::cout<<"fullauto "<<status<<" round="<<round<<" theta="<<nodes;
@@ -1485,6 +1497,7 @@ int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],do
     Lock lock(controller->root+"/controller.lock");
     const std::string identity=controller->root+"/configuration.txt";
     if(Exists(identity))Require(Read(identity)==controller->signature+"\n","resume inputs/binary/environment changed; choose a new output directory");else Atomic(identity,controller->signature+"\n");
+    controller->RecordFinalChecksPolicy();
     // A legacy audit may have committed native blocks but never assembled or
     // inspected its holdout. Preserve that reserved namespace during the
     // verified controller upgrade, only while the production sources agree.
