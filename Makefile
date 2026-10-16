@@ -455,3 +455,7 @@ bin/fullauto_pipeline_probe: tests/fullauto_pipeline_probe.cpp src/FullAuto.cpp 
 bin/fullauto_angular_audit_probe: tests/fullauto_angular_audit_probe.cpp src/FullAuto.cpp src/FullAutoPreparation.h src/FullAutoAuditPlan.h $(wildcard src/FullAuto*.inc) $(filter-out %/main.o %/FullAuto.o,$(OBJECTS))
 	@mkdir -p bin
 	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/fullauto_angular_audit_probe.cpp $(filter-out %/main.o %/FullAuto.o,$(OBJECTS)) -o $@ $(LDFLAGS)
+
+bin/fullauto_legacy_integrals_probe: tests/fullauto_legacy_integrals_probe.cpp src/FullAuto.cpp $(wildcard src/FullAuto*.inc) $(filter-out %/main.o %/FullAuto.o,$(OBJECTS))
+	@mkdir -p bin
+	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/fullauto_legacy_integrals_probe.cpp $(filter-out %/main.o %/FullAuto.o,$(OBJECTS)) -o $@ $(LDFLAGS)

@@ -12,6 +12,11 @@ mapfile -t task_objects < <(rg --files --no-ignore "$task_root/cpu/build/obj" -g
     -I"$task_root/src" -I"$task_root/src/cuda" \
     "$task_root/tests/fullauto_integrals_probe.cpp" "${task_objects[@]}" \
     -lm -lgomp -o "$task_output/bin/integrals_probe"
+"${MPI_CXX:-/usr/bin/mpicxx}" -std=c++11 -O2 -fopenmp -DUSE_MPI \
+    -I"$task_root/src" -I"$task_root/src/cuda" \
+    "$task_root/tests/fullauto_legacy_integrals_probe.cpp" "${task_objects[@]}" \
+    -lm -lgomp -o "$task_output/bin/legacy_integrals_probe"
+"$task_output/bin/legacy_integrals_probe" "$task_output/legacy_prefixes"
 task_legacy=()
 if [[ -n "${MBS_LEGACY_BINARY:-}" ]]; then task_legacy=(--legacy-binary "$MBS_LEGACY_BINARY"); fi
 python3 "$task_root/tests/test_fullauto_integrals.py" "${task_legacy[@]}" \

@@ -8,8 +8,8 @@ struct LegacyPairedIntegral : std::runtime_error {LegacyPairedIntegral():std::ru
 struct IntegralReader {
     std::map<std::string,std::string> files;
     std::map<std::string,IntegralSampling> sampling;
-    std::map<std::pair<std::string,int>,IntegralScalar> values;
-    std::set<std::pair<std::string,int>> active;
+    std::map<std::tuple<std::string,int,bool>,IntegralScalar> values;
+    std::set<std::tuple<std::string,int,bool>> active;
     std::set<std::string> verified;
     std::string ReadSource(const std::string& path){const auto text=Read(path);files[path]=Hash(text);return text;}
     IntegralSampling Sampling(const std::string& folder){
@@ -18,29 +18,33 @@ struct IntegralReader {
         Require(bool(in>>signature>>identity>>s.count>>s.offset>>s.seed>>s.depth)&&s.count>0&&s.offset>=0,"invalid integral sampling index");
         sampling[folder]=s;return s;
     }
-    IntegralScalar Prefix(const std::vector<std::string>& folders,int count,int offset,int depth,unsigned seed){
+    IntegralScalar Prefix(const std::vector<std::string>& folders,int count,int offset,int depth,unsigned seed,bool areaOnly=false){
         // A complete prefix may have been assembled repeatedly on different
         // theta subsets. Pick one deterministic representative, never sum them.
         std::map<int,std::string> windows;
         for(const auto& folder:folders){const auto s=Sampling(folder);if(s.seed!=seed)continue;
-            if(s.count==count&&s.offset==offset)return Resolve(folder,depth);
+            if(s.count==count&&s.offset==offset)return Resolve(folder,depth,areaOnly);
             Require(s.offset>=offset&&s.count<=count&&s.offset<=offset+count-s.count,"integral prefix window outside allocation");
             const auto old=windows.find(s.offset);
             if(old==windows.end()||s.count>Sampling(old->second).count)windows[s.offset]=folder;
         }
         IntegralScalar sum;int next=offset;
         for(const auto& entry:windows){const auto s=Sampling(entry.second);Require(s.offset==next,"overlapping or incomplete integral prefix");
-            const auto v=Resolve(entry.second,depth);const double w=double(s.count)/count;sum.area+=w*v.area;sum.ext+=w*v.ext;next+=s.count;}
+            const auto v=Resolve(entry.second,depth,areaOnly);const double w=double(s.count)/count;sum.area+=w*v.area;sum.ext+=w*v.ext;next+=s.count;}
         Require(next==offset+count,"incomplete integral prefix");return sum;
     }
-    IntegralScalar Resolve(const std::string& folder,int depth){
-        const auto key=std::make_pair(folder,depth);const auto found=values.find(key);if(found!=values.end())return found->second;
+    IntegralScalar Resolve(const std::string& folder,int depth,bool areaOnly=false){
+        const auto key=std::make_tuple(folder,depth,areaOnly);const auto found=values.find(key);if(found!=values.end())return found->second;
         Require(active.insert(key).second,"cycle in integral sources");ValidateStoredJob(folder,verified);
         ReadSource(folder+"/complete.txt");const auto s=Sampling(folder);
-        const auto path=folder+"/result/result"+(depth==s.depth?"":"_depth"+Number(depth))+"_integrals.tsv";
+        // Projected area depends on the incident orientation and geometry, not
+        // on tracing depth. Read it from the native upper result for the SAME
+        // orientation window. A legacy lower result has untrusted extinction;
+        // requesting area must neither read that scalar nor demand its revision.
+        const auto path=folder+"/result/result"+(areaOnly||depth==s.depth?"":"_depth"+Number(depth))+"_integrals.tsv";
         IntegralScalar value;
         if(Exists(path)){
-            if(depth!=s.depth){const auto revision=folder+"/result/result_depth"+Number(depth)+"_integrals_revision.txt";
+            if(!areaOnly&&depth!=s.depth){const auto revision=folder+"/result/result_depth"+Number(depth)+"_integrals_revision.txt";
                 if(!Exists(revision))throw LegacyPairedIntegral();
                 Require(ReadSource(revision)=="paired_extinction_v1\n","unsupported paired integral revision");}
             std::istringstream input(ReadSource(path));std::string line;Require(bool(std::getline(input,line)),"missing integral header");
@@ -48,15 +52,15 @@ struct IntegralReader {
             Require(bool(std::getline(input,line)),"missing integral row");std::map<std::string,std::string> row;std::istringstream cells(line);
             for(const auto& name:header){Require(bool(std::getline(cells,line,'\t')),"incomplete integral row");row[name]=line;}
             auto number=[&](const std::string& name){Require(row.count(name),"missing integral column "+name);size_t end=0;double v=std::stod(row.at(name),&end);Require(end==row.at(name).size(),"invalid integral value");return v;};
-            value.ext=number("Cext");
+            value.ext=areaOnly?0:number("Cext");
             // Older workers did not write projected_area explicitly.
-            value.area=row.count("projected_area")?number("projected_area"):value.ext/number("Qext");
+            value.area=row.count("projected_area")?number("projected_area"):number("Cext")/number("Qext");
             Require(std::isfinite(value.area)&&value.area>0,"projected area unavailable in integral source "+path);
         }else{
             Require(Exists(folder+"/angular_sources.tsv"),"missing native integral output "+path);
             std::istringstream rows(ReadSource(folder+"/angular_sources.tsv"));std::vector<std::string> sources;std::string line;
             while(std::getline(rows,line)){const auto tab=line.find('\t');Require(tab!=std::string::npos,"invalid integral provenance");sources.push_back(line.substr(0,tab));}
-            value=Prefix(sources,s.count,s.offset,depth,s.seed);
+            value=Prefix(sources,s.count,s.offset,depth,s.seed,areaOnly);
         }
         active.erase(key);values[key]=value;return value;
     }
@@ -81,7 +85,8 @@ IntegralProduction IntegralProductionSources(const std::string& sources,const st
             std::vector<std::string> folders;for(const auto& r:rows)if(r.level==level&&r.sign==sign&&r.count==maximum[level]&&r.seed==seeds[i])folders.push_back(r.folder);
             std::sort(folders.begin(),folders.end());folders.erase(std::unique(folders.begin(),folders.end()),folders.end());Require(!folders.empty(),"missing integral seed/level");
             const int depth=reader.Sampling(folders.front()).depth;
-            const auto value=reader.Prefix(folders,maximum[level],0,depth,seeds[i]);
+            const bool areaOnly=directTarget&&level==0&&level!=maximum.size()-1;
+            const auto value=reader.Prefix(folders,maximum[level],0,depth,seeds[i],areaOnly);
             if(!directTarget||level==maximum.size()-1)result.samples[i].ext+=sign*value.ext;
             if(level==0)result.samples[i].area=value.area;
             for(const auto& folder:folders)selected<<level<<' '<<sign<<' '<<maximum[level]<<' '<<seeds[i]<<' '<<folder<<'\n';
