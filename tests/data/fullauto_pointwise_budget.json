@@ -1,0 +1,8 @@
+{
+  "source": "epyc1 prism H446.7 D147.1, wavelength 0.532, theta 0..25 degrees, saved independent audit serial4 after round14 on 2026-10-16",
+  "fixture": "fullauto_pointwise_budget.txt",
+  "selection": "16 distributed checked angles, six worst combined angles and the angle nearest the 2% decision boundary; duplicates removed",
+  "metric": "all 16 scaled Mueller intervals, all 15 normalized-ratio intervals, common-prefix interpolation residuals; fixed reserve 0.00548828125",
+  "limitations": "Replay of already observed data; not a fresh independent validation. Full replay remains in artifacts/fullauto_pointwise_fix_20261016/replay.",
+  "format": "n_output n_checked; requested angles; indices of checked angles; six matrices of 16 columns: direct intervals, direct ratio intervals, output intervals, output ratio intervals, interpolation raw bounds, interpolation ratio bounds; expected direct max, output max, failed checked angles"
+}

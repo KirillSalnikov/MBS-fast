@@ -58,15 +58,20 @@ def intervals(samples):
         ratio_ci[:,j]=np.where(aa>0,abs(centre-ratios[:,j])+np.sqrt(disc)/aa,1e100)
     return mean,confidence,ratio_ci
 
-def interpolation_bounds(predicted,direct,ratios):
+def interpolation_components(predicted,direct,ratios):
     delta=predicted-direct;pm=predicted.mean(0);dm=direct.mean(0)
     bound=(abs(delta.mean(0))+T*delta.std(0,ddof=1)/math.sqrt(8))/dm[:,0,None]
+    ratio_bound=np.zeros_like(bound)
     if ratios:
         p=pm/pm[:,0,None];d=dm/dm[:,0,None]
         influence=(predicted-p[None]*predicted[:,:,0,None])/pm[None,:,0,None]-(direct-d[None]*direct[:,:,0,None])/dm[None,:,0,None]
         ratio_bound=abs(p-d)+T*influence.std(0,ddof=1)/math.sqrt(8)
-        bound=np.maximum(bound,ratio_bound)
-    return bound
+        ratio_bound[:,0]=0
+    return bound,ratio_bound
+
+def interpolation_bounds(predicted,direct,ratios):
+    raw,normalized=interpolation_components(predicted,direct,ratios)
+    return np.maximum(raw,normalized)
 
 def local_spline(x,y):
     derivative=np.zeros_like(y);width=min(4,len(x))
@@ -131,9 +136,9 @@ def reconstruct_angular(root,state,angles,seeds):
     assert assigned.all(),'angular audit skipped checked nodes'
     return result,seen,[]
 
-def common_bounds(root,state,label,evaluated,support,seeds,actual_budget):
+def common_bounds(root,state,label,evaluated,support,seeds,actual_budget,separate=False):
     budget=np.loadtxt(root/('interpolation_'+label+'_budgets.csv'),delimiter=',',skiprows=1,ndmin=2)
-    lines=(root/('interpolation_'+label+'_sources.tsv')).read_text().splitlines();bound=np.zeros((len(evaluated),16));seen=set();width=min(4,len(support))
+    lines=(root/('interpolation_'+label+'_sources.tsv')).read_text().splitlines();bound=np.zeros((len(evaluated),16));ratio_bound=np.zeros_like(bound);seen=set();width=min(4,len(support))
     for group in np.unique(budget[:,0]).astype(int):
         rows=budget[budget[:,0]==group];angles=rows[:,1];records=[' '.join(line.split()[1:]) for line in lines if int(line.split()[0])==group]
         levels,checked,_=reconstruct(root,state,angles,rows[:,2:].astype(int),None,seeds,records);seen.update(checked);data=levels.sum(0)
@@ -144,11 +149,33 @@ def common_bounds(root,state,label,evaluated,support,seeds,actual_budget):
             if not np.array_equal(ns,rows[0,2:]):continue
             positions=nearest_rows(angles,stencil);assert np.allclose(angles[positions],stencil,rtol=0,atol=1e-10)
             predicted=local_spline(stencil,data[:,positions])(evaluated[target]);direct=data[:,nearest_rows(angles,evaluated[target])]
-            bound[target]=np.maximum(bound[target],interpolation_bounds(predicted,direct,state['ratio_accuracy']))
-    return bound,seen
+            raw,normalized=interpolation_components(predicted,direct,state['ratio_accuracy'])
+            bound[target]=np.maximum(bound[target],raw);ratio_bound[target]=np.maximum(ratio_bound[target],normalized)
+    return ((bound,ratio_bound) if separate else np.maximum(bound,ratio_bound)),seen
+
+def check_error_budget(state,contract,requested,checked,ci,ri,oci,ori,raw,ratios):
+    """Independent acceptance reconstruction; never interpolate error estimates."""
+    assert np.isfinite(raw).all() and np.isfinite(ratios).all()
+    assert max(raw.max(),ratios.max())<=state['interpolation_budget']
+    if contract.get('error_budget_policy')!='pointwise-stat-plus-interpolation-v1':
+        assert max(ci.max(),oci.max())<=state['statistical_budget']
+        if state['ratio_accuracy']:assert max(ri.max(),ori.max())<=state['statistical_budget']
+        return None
+    target=contract['fixed_error_reserve']+state['statistical_budget']+state['interpolation_budget']
+    reserve=contract['fixed_error_reserve']
+    output_raw=np.full_like(oci,state['interpolation_budget']);output_ratio=np.full_like(ori,state['interpolation_budget']);output_ratio[:,0]=0
+    ix=nearest_rows(requested,checked);assert np.allclose(requested[ix],checked,rtol=0,atol=1e-10)
+    output_raw[ix]=raw;output_ratio[ix]=ratios
+    direct=ci+raw;output=oci+output_raw
+    if state['ratio_accuracy']:
+        direct=np.maximum(direct,ri+ratios);output=np.maximum(output,ori+output_ratio)
+    assert np.isfinite(direct).all() and np.isfinite(output).all()
+    assert max(direct.max(),output.max())<=state['statistical_budget']+state['interpolation_budget']
+    return dict(direct=float(direct.max()+reserve),output=float(output.max()+reserve),target=target)
 
 def run(root,reference,dense=False,dense_workers=1):
     state=json.loads((root/'fullauto_status.json').read_text());assert state['status']=='converged',state
+    contract=json.loads((root/'precision_contract.json').read_text())
     requested=grid(root/'requested_theta.csv');evaluated=grid(root/'theta_evaluated.csv');support=grid(root/'theta_support.csv')
     budget=np.loadtxt(root/'orientation_budget.csv',delimiter=',',skiprows=1,ndmin=2);assert np.allclose(budget[:,0],evaluated,rtol=0,atol=1e-10)
     levels,seen,jobs=reconstruct(root,state,evaluated,budget[:,1:].astype(int),root/'final_stage_sources.tsv',state['seeds']);samples=levels.sum(0)
@@ -163,12 +190,12 @@ def run(root,reference,dense=False,dense_workers=1):
     assert np.max(abs(output_ci-saved_ci))<1e-11
     assert np.max(abs(output_ratio-saved_ratio))<1e-10
     residual=spline(evaluated)-samples
-    guard=interpolation_bounds(spline(evaluated),samples,state['ratio_accuracy'])
+    raw_guard,ratio_guard=interpolation_components(spline(evaluated),samples,state['ratio_accuracy'])
     if json.loads((root/'interpolation_production_mode.json').read_text())['common_prefix']:
-        guard,checked=common_bounds(root,state,'production',evaluated,support,state['seeds'],budget[:,1:].astype(int));seen.update(checked)
+        (raw_guard,ratio_guard),checked=common_bounds(root,state,'production',evaluated,support,state['seeds'],budget[:,1:].astype(int),True);seen.update(checked)
+    guard=np.maximum(raw_guard,ratio_guard)
     assert np.max(abs(guard.max(1)-np.loadtxt(root/'theta_validation.csv',delimiter=',',skiprows=1)[:,3]))<1e-11
-    assert guard.max()<=state['interpolation_budget'] and max(confidence.max(),output_ci.max())<=state['statistical_budget']
-    if state['ratio_accuracy']:assert max(ratio_ci.max(),output_ratio.max())<=state['statistical_budget']
+    pointwise=check_error_budget(state,contract,requested,evaluated,confidence,ratio_ci,output_ci,output_ratio,raw_guard,ratio_guard)
     validation=json.loads((root/'independent_final_validation.json').read_text())
     angular=False
     if validation['enabled']:
@@ -188,14 +215,16 @@ def run(root,reference,dense=False,dense_workers=1):
         seen.update(vseen)
         values=vlevels.sum(0);validation_values=values.copy();vm,vci,vri=intervals(values);vid=np.searchsorted(angles,support)
         vs=local_spline(support,values[:,vid]);delta=vs(angles)-values
-        bound=interpolation_bounds(vs(angles),values,state['ratio_accuracy'])
+        raw_bound,ratio_bound=interpolation_components(vs(angles),values,state['ratio_accuracy'])
         if not angular and json.loads((root/'interpolation_validation_mode.json').read_text())['common_prefix']:
-            bound,checked=common_bounds(root,state,'validation',angles,support,validation['seeds'],vb);seen.update(checked)
-        assert bound.max()<=state['interpolation_budget']
-        assert max(vci.max(),intervals(vs(requested))[1].max())<=state['statistical_budget']
-        if state['ratio_accuracy']:assert max(vri.max(),intervals(vs(requested))[2].max())<=state['statistical_budget']
+            (raw_bound,ratio_bound),checked=common_bounds(root,state,'validation',angles,support,validation['seeds'],vb,True);seen.update(checked)
+        _,voci,vori=intervals(vs(requested))
+        independent_pointwise=check_error_budget(state,contract,requested,angles,vci,vri,voci,vori,raw_bound,ratio_bound)
+        if independent_pointwise is not None:
+            assert abs(independent_pointwise['direct']-validation['max_combined_direct95'])<1e-10
+            assert abs(independent_pointwise['output']-validation['max_combined_output95'])<1e-10
     assert state.get('max_estimated_analytic_mean_error_scaled_M11',0)<=state.get('analytic_mean_budget',0)
-    report=dict(passed=True,schema=2,epsilon=state['statistical_budget']+state['interpolation_budget']+state.get('mirror_budget',0)+state.get('analytic_mean_budget',0)+state.get('rotation_budget',0)+state.get('cutoff_budget',0)+state.get('execution_budget',0),
+    report=dict(passed=True,schema=3,pointwise_budget=pointwise,epsilon=state['statistical_budget']+state['interpolation_budget']+state.get('mirror_budget',0)+state.get('analytic_mean_budget',0)+state.get('rotation_budget',0)+state.get('cutoff_budget',0)+state.get('execution_budget',0)+state.get('depth_budget',0),
                 requested_theta=len(requested),evaluated_theta=len(evaluated),support_theta=len(support),final_counts_per_seed=state['counts_per_seed'],
                 minimum_counts_per_seed=budget[:,1:].min(0).astype(int).tolist(),phi=state['phi'],complete_jobs_audited=len(seen),
                 matrix_difference_scaled_M11=difference,evaluated_matrix_difference_scaled_M11=direct_difference,

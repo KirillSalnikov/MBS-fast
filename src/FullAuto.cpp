@@ -404,6 +404,7 @@ struct WorkerService {
         for(auto& active:activeWorkers)if(active==pid)active=0;
     }
 };
+const char* BudgetPolicy();
 struct Engine {
     const ArgPP& args;const RunConfig& config;std::string exe,root,signature,binaryHash,weightFile;
     std::string compatibleBinary,compatibleHash;
@@ -461,7 +462,7 @@ struct Engine {
     std::string controlPolicy="auto";int thetaAuditCount=0;
     bool local=true,ratios=true,phiRecheck=true,polarControls=true,finalAudit=true,physicsAudit=false;
     std::vector<std::array<Mueller,2>> polarWeights;
-    double lastRatio=0,lastAnalyticError=0;bool independentPassed=false,independentNeedsSampling=true;
+    double lastRatio=0,lastAnalyticError=0,lastCombined=-1,lastIndependentCombined=-1;bool independentPassed=false,independentNeedsSampling=true;
     int fixedPhi=0;std::string requestedMeanCache;bool coherent=true,fixedPipeline=false,fixedBlock=false,fixedWarp=false;
     bool depthSharing=true,depthVerified=false;
     bool completedCheckpoint=false;
@@ -497,7 +498,7 @@ struct Engine {
             <<",\"compatible_origin_binary_fnv1a64\":"<<Quoted(compatibleHash)
             <<",\"requested_options\":"<<requestedOptions<<",\"effective_worker_base\":[";
         for(size_t i=0;i<base.size();++i)out<<(i?",":"")<<Quoted(base[i]);
-        out<<"],\"epsilon\":"<<Number(eps)<<",\"interpolation_budget\":"<<Number(interpolation)<<",\"statistical_budget\":"<<Number(statistical)
+        out<<"],\"epsilon\":"<<Number(eps)<<",\"interpolation_budget\":"<<Number(interpolation)<<",\"statistical_budget\":"<<Number(statistical)<<",\"error_budget_policy\":"<<Quoted(go?"fixed-go":BudgetPolicy())<<",\"statistical_budget_role\":\"conservative floor; PO uses component pointwise sums\""
             <<",\"pilot_count\":"<<pilot<<",\"kernel_pilot_count\":"<<kernelCount<<",\"dense_theta_pilot_count\":"<<thetaAuditCount
             <<",\"initial_model\":"<<Quoted(initialModel)<<",\"estimated_final_orientation_count\":"<<Number(empiricalFinal)<<",\"depth_pilot_count\":"<<depthPilot<<",\"depth_search_order\":"<<Quoted(depthOrder)<<",\"initial_source\":"<<Quoted(initialSource)<<",\"maximum_edge_um\":"<<Number(maximumEdge)<<",\"maximum_diameter_um\":"<<Number(maximumDiameter)<<",\"oldauto_N_beta_estimate\":"<<Number(estimatedBeta)<<",\"oldauto_N_gamma_estimate\":"<<Number(estimatedGamma)<<",\"oldauto_orientation_estimate\":"<<Number(estimatedOrientations)<<",\"initial_count\":"<<initial<<",\"minimum_correction_count\":"<<minimum<<",\"max_count\":"<<maxCount<<",\"max_rounds\":"<<roundLimit
             <<",\"initial_theta_support\":"<<startTheta<<",\"max_theta_evaluations\":"<<maxTheta<<",\"min_phi\":"<<minPhi<<",\"max_phi\":"<<maxPhi
@@ -755,8 +756,8 @@ struct Engine {
         s<<"],\"seeds\":[";
         for(size_t i=0;i<seeds.size();++i)s<<(i?",":"")<<seeds[i];
         s<<"],\"phi\":"<<phi<<",\"target_depth\":"<<target<<",\"requested_theta\":"<<theta.size()<<",\"evaluated_theta\":"<<nodes
-            <<",\"automatic_depth\":"<<(autoDepth?"true":"false")<<",\"depth_budget\":"<<depthBudget<<",\"statistical_budget\":"<<statistical<<",\"interpolation_budget\":"<<interpolation<<",\"max_pointwise95_scaled_M11\":"<<ci
-            <<",\"max_guard_residual95_scaled_M11\":"<<ie<<",\"pass_streak\":"<<streak<<",\"pipeline\":"<<(kernel.pipeline?"true":"false")
+            <<",\"automatic_depth\":"<<(autoDepth?"true":"false")<<",\"depth_budget\":"<<depthBudget<<",\"statistical_budget\":"<<statistical<<",\"error_budget_policy\":"<<Quoted(go?"fixed-go":BudgetPolicy())<<",\"interpolation_budget\":"<<interpolation<<",\"max_pointwise95_scaled_M11\":"<<ci
+            <<",\"combined_error95\":"<<(lastCombined>=0?Number(lastCombined):"null")<<",\"independent_combined_error95\":"<<(lastIndependentCombined>=0?Number(lastIndependentCombined):"null")<<",\"max_guard_residual95_scaled_M11\":"<<ie<<",\"pass_streak\":"<<streak<<",\"pipeline\":"<<(kernel.pipeline?"true":"false")
             <<",\"block\":"<<kernel.block<<",\"warp\":"<<Quoted(kernel.warp)
             <<",\"mirror_gamma\":"<<(mirror?"true":"false")<<",\"mirror_policy\":"<<Quoted(mirrorPolicy)
             <<",\"analytic_controls\":"<<(controls?"true":"false")<<",\"analytic_control_policy\":"<<Quoted(controlPolicy)<<",\"shared_analytic_reference\":"<<(sharedMeans?"true":"false")<<",\"angular_cache\":"<<(angularCache?"true":"false")<<",\"work_queue\":"<<(QueueEnabled()?"true":"false")<<",\"work_queue_policy\":"<<Quoted(workQueuePolicy)<<",\"assembled_jobs_this_invocation\":"<<assembledJobs<<",\"reused_angular_rows_this_invocation\":"<<reusedRows<<",\"computed_new_angular_rows_this_invocation\":"<<newRows
@@ -773,6 +774,7 @@ struct Engine {
         if(status=="evaluating")std::cout<<" accuracy=pending";
         else if(status=="validating")std::cout<<" production_ci="<<ci<<" production_interpolation="<<ie<<" production_passes="<<streak<<'/'<<stablePasses<<" independent_audit=pending";
         else std::cout<<" ci="<<ci<<" interpolation="<<ie<<" streak="<<streak;
+        if(!go&&status!="evaluating"&&lastCombined>=0)std::cout<<" combined_error="<<lastCombined<<" target="<<eps;
         std::cout<<std::endl;
     }
     Job Load(Job j) {

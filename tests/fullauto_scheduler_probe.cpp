@@ -111,7 +111,8 @@ int main(int argc,char** argv){try{
     Atomic(legacyDecision.root+"/intermediate_current.json","{\"snapshot_folder\":\"legacy_snapshot\",\"numerical_round_passed\":true}");
     UpdatePassStreak(legacyDecision,old,true,decided,"legacy_snapshot");Require(old.streak==2,"legacy repeated passes not capped");
     RunConfig gpu=config;gpu.useGpu=true;Engine preparation(args,gpu);AdaptiveState unused;InitTest(preparation,std::string(argv[1])+"/preparation",3,1,unused);
-    preparation.prepareThreadCap=8;preparation.workerThreads=1;Job trace;preparation.SetSampling(trace,1024,1,6,{0.,1.,2.,3.,4.},false);trace.pairedDepth=4;trace.identity="trace_profile";trace.folder=trace.identity;trace.traceSeconds=10;trace.diffractionSeconds=1;preparation.CacheJob(trace);
+    // Match the production count/row buckets required by rolling profiles.
+    preparation.prepareThreadCap=8;preparation.workerThreads=1;Job trace;preparation.SetSampling(trace,16384,1,6,std::vector<double>(20,0.),false);trace.pairedDepth=4;trace.identity="trace_profile";trace.folder=trace.identity;trace.traceSeconds=10;trace.diffractionSeconds=1;preparation.CacheJob(trace);
     Require(preparation.AutoPrepareThreads(16384,6,4,20)==8,"CPU-dominant job left serial");
     Require(preparation.AutoPrepareThreads(16384,6,4,1000)==0&&preparation.AutoPrepareThreads(16,6,4,20)==0,"GPU-bound or tiny job over-threaded");
     preparation.resourcePolicy="off";Require(preparation.AutoPrepareThreads(16384,6,4,20)==0,"resources off overridden");
