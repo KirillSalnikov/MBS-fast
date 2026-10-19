@@ -61,25 +61,33 @@ void PrepareDepthStartup(Engine& e){
     Atomic(checkpoint,Hash(payload.str())+"\n"+payload.str());
     e.Record(e.root+"/depth_startup.json","{\"order\":\"sampling-first\",\"phi\":"+Number(e.phi)+",\"kernel_pipeline\":"+(e.kernel.pipeline?std::string("true"):"false")+",\"pilot_count\":"+Number(std::min(oldPilot,64))+",\"theta_rows\":"+Number(x.size())+",\"seconds\":"+Number(Seconds()-begin)+",\"scope\":\"cheap kernel/phi training before paired depth; final estimator is refitted at selected depth\"}");
 }
-void SelectAutomaticDepth(Engine& e){
-    if(!e.autoDepth){e.Record(e.root+"/depth_selection.json","{\"automatic\":false,\"target_depth\":"+Number(e.target)+",\"explicit_target_preserved\":true}");return;}
+bool SelectAutomaticDepth(Engine& e){
+    if(!e.autoDepth){e.Record(e.root+"/depth_selection.json","{\"automatic\":false,\"target_depth\":"+Number(e.target)+",\"explicit_target_preserved\":true}");return true;}
     const std::string checkpoint=e.root+"/automatic_depth.tsv";
+    int resumeDepth=e.depthStart,resumeCount=e.depthPilot;
     if(Exists(checkpoint)){
         const auto text=Read(checkpoint);const auto split=text.find('\n');Require(split!=std::string::npos,"invalid depth checkpoint");
         const auto payload=text.substr(split+1);Require(Hash(payload)==text.substr(0,split),"depth checkpoint changed");
         std::istringstream input(payload);std::string signature,extra;int selected;
         Require(bool(input>>signature>>selected)&&!(input>>extra)&&signature==e.signature&&selected>=e.depthStart&&selected<=e.depthMaximum,"depth checkpoint inputs changed");
-        e.target=selected;e.SetMirror(false);e.WarmCache();return;
+        e.target=selected;e.SetMirror(false);e.WarmCache();
+        const auto report=Exists(e.root+"/depth_selection.json")?CompactJson(Read(e.root+"/depth_selection.json")):std::string();
+        if(report.find("\"pilot_passed\":true")!=std::string::npos)return true;
+        resumeDepth=selected;
+        const std::string key="\"count_per_seed\":";const auto at=report.find(key);
+        if(at!=std::string::npos){std::istringstream countText(report.substr(at+key.size()));int n=0;
+            if(countText>>n)if(n>0&&n<=e.maxCount&&(n&(n-1))==0)resumeCount=std::max(resumeCount,n);}
+        e.Log("depth_selection_resume_unresolved","{\"candidate\":"+Number(selected)+",\"count_per_seed\":"+Number(resumeCount)+",\"production_blocked_until_pass\":true}");
     }
     std::vector<double> x;
     if(e.go)x=GoRows(e);
     else{const size_t size=std::min(size_t(65),std::min(e.theta.size(),size_t(e.maxTheta)));for(size_t row=0;row<size;++row)x.push_back(e.theta[row*(e.theta.size()-1)/(size-1)]);}
     WriteGrid(e.root+"/depth_pilot_theta.csv",x);
     const bool savedControls=e.controls;e.controls=false;
-    int count=e.depthPilot,selected=e.depthStart;DepthResidual residual;bool passed=false;
+    int count=resumeCount,selected=resumeDepth;DepthResidual residual;bool passed=false;
     try{
         if(!e.go&&e.depthSharing){e.target=e.depthStart;e.VerifyDepthSharing(x);}
-        for(int depth=e.depthStart;;depth=std::min(e.depthMaximum,depth+2)){
+        for(int depth=resumeDepth;;depth=std::min(e.depthMaximum,depth+2)){
             unsigned seeds[8];for(int i=0;i<8;++i){seeds[i]=1700000000u+unsigned(e.depthStart)*1024u+unsigned(i)*17u;
                 Require(std::find(e.seeds.begin(),e.seeds.end(),seeds[i])==e.seeds.end(),"depth pilot/production seed overlap");}
             for(int attempt=0;;++attempt){
@@ -103,7 +111,7 @@ void SelectAutomaticDepth(Engine& e){
                     <<",\"interval95_scaled_M11\":"<<Number(residual.interval)<<",\"residual_upper95\":"<<Number(residual.upper)<<",\"residual_lower95\":"<<Number(residual.lower)
                     <<",\"budget\":"<<Number(e.depthBudget)<<",\"passed\":"<<(passed?"true":"false")<<",\"theta_file\":"<<Quoted(e.root+"/depth_pilot_theta.csv")<<",\"scope\":\"paired initial orientation pilot; representative requested angles; fresh final depth audit required\"}";
                 e.Record(e.root+"/depth_selection_candidate"+Number(depth)+"_N"+Number(count)+".json",report.str());e.Log("depth_candidate",report.str());
-                if(passed||residual.lower>e.depthBudget||count>=e.maxCount||attempt==4)break;
+                if(passed||residual.lower>e.depthBudget||count>=e.maxCount||attempt==(depth==e.depthMaximum?8:4))break;
                 count=std::min(e.maxCount,count>e.maxCount/2?e.maxCount:2*count);
             }
             selected=depth;if(passed||depth==e.depthMaximum)break;
@@ -111,6 +119,8 @@ void SelectAutomaticDepth(Engine& e){
     }catch(...){e.controls=savedControls;if(savedControls)e.depthVerified=false;throw;}
     e.controls=savedControls;if(savedControls)e.depthVerified=false;SaveSelectedDepth(e,selected);
     e.Record(e.root+"/depth_selection.json","{\"automatic\":true,\"target_depth\":"+Number(selected)+",\"start\":"+Number(e.depthStart)+",\"maximum\":"+Number(e.depthMaximum)+",\"pilot_passed\":"+(passed?std::string("true"):"false")+",\"count_per_seed\":"+Number(count)+",\"residual_upper95\":"+Number(residual.upper)+",\"budget\":"+Number(e.depthBudget)+",\"fresh_final_audit_required\":true}");
+    if(!passed)e.State("depth_selection_unresolved",0,{count},x.size(),0,0,0);
+    return passed;
 }
 bool PromoteAutomaticDepth(Engine& e,int code){
     if(code!=4||!e.autoDepth||e.target>=e.depthMaximum)return false;

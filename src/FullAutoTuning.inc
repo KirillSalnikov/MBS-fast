@@ -2,7 +2,10 @@
 // before the adaptive checkpoint. Pilot caches include the complete execution
 // recipe, so different cutoffs, symmetries and resources never share rows.
 std::string ExecutionHash()const{
-    std::ostringstream s;s<<workerThreads<<' '<<workerChunk<<'\n';for(const auto& gpu:gpus)s<<gpu<<'\n';for(const auto& v:base)s<<v<<'\n';return Hash(s.str());
+    std::ostringstream s;s<<workerThreads<<' '<<workerChunk<<'\n';for(const auto& gpu:gpus)s<<gpu<<'\n';for(const auto& v:base)s<<v<<'\n';
+    // A variance pilot of B_N+(O_m-B_m) is a different estimator from a
+    // full-off pilot with the same seed. Never reuse the latter's cache.
+    if(phiCutoffPilot)s<<"matched-cutoff-phi-pilot-v1\n";return Hash(s.str());
 }
 void RemoveOption(const std::string& option,int count=1){
     for(size_t i=0;i<base.size();)if(base[i]==option){Require(i+size_t(count)<base.size(),"incomplete worker option");base.erase(base.begin()+i,base.begin()+i+count+1);}else ++i;
@@ -39,6 +42,7 @@ void SaveTuning(){
     Record(root+"/execution_tuning.tsv","2 "+Hash(s.str())+"\n"+s.str());
 }
 bool RestoreTuning(){
+    const long long dispatchHostBudget=hostBudgetMb;
     if(!Exists(root+"/execution_tuning.tsv"))return false;
     const auto text=Read(root+"/execution_tuning.tsv");const auto newline=text.find('\n');std::istringstream header(text.substr(0,newline));int version;std::string digest;
     Require(bool(header>>version>>digest)&&version==2&&Hash(text.substr(newline+1))==digest,"execution tuning changed");
@@ -48,6 +52,10 @@ bool RestoreTuning(){
         Require(std::find(gpuCandidates.begin(),gpuCandidates.end(),line)!=gpuCandidates.end(),"tuned GPU outside allowed set");gpus.push_back(line);}
     s>>n;std::getline(s,line);base.clear();for(size_t i=0;i<n;++i){Require(bool(std::getline(s,line)),"truncated execution recipe");base.push_back(line);}
     Require(workerThreads>0&&analyticMeanThreads>0&&workerChunk>=0&&orientationBlock>0&&!gpus.empty(),"invalid tuned resources");
+    // Saved tuning describes the previous worker layout. A compatible dispatch
+    // override must retain the freshly divided host budget, not multiply the
+    // old per-worker allocation by the new number of slots.
+    if(!dispatchGpus.empty()){hostBudgetMb=std::min(hostBudgetMb,dispatchHostBudget);ValidateDispatchResources();}
     const auto backend=std::find(base.begin(),base.end(),"--po-trace-backend");if(backend!=base.end()&&std::next(backend)!=base.end()&&*std::next(backend)=="hybrid")kernel.pipeline=true;
     SetMirror(false);return true;
 }
@@ -155,28 +163,11 @@ void TuneCutoffs(const std::vector<double>& input){
     std::vector<double> x=input;IncludeBackscatter(x);
     bool explicitCutoff=args.IsCatched("r");for(const char* key:{"cutoff_profile","beam_cutoff","beam_cutoff_j","beam_cutoff_area","beam_cutoff_importance","trace_cutoff","trace_cutoff_j","trace_cutoff_area","trace_cutoff_importance"})explicitCutoff=explicitCutoff||args.IsCatched(key);
     if(cutoffPolicy=="off"||explicitCutoff){Record(root+"/cutoff_calibration.json","{\"enabled\":false,\"explicit_settings_preserved\":"+std::string(explicitCutoff?"true":"false")+"}");return;}
-    if(x.size()>size_t(maxTheta)){
-        tuneCutoffs=true;SetCutoff("off");
-        Record(root+"/cutoff_calibration.json","{\"enabled\":true,\"selected\":\"off\",\"reason\":\"explicit theta limit cannot fit cutoff guards\"}");return;
-    }
-    tuneCutoffs=true;SetCutoff("off");const bool sharing=depthSharing;const unsigned seeds[8]={9001,9007,9011,9013,9029,9041,9043,9049};
-    double best=0;auto reference=ProfilePilot(x,std::min(std::min(pilot,2048),maxCount),seeds,best);const bool supportedSharing=depthSharing;std::string winner="off";double winnerBias=0;
-    double nativePilot=0;for(const auto& entry:cache){const auto& job=entry.second;
-        if(job.executionHash!=ExecutionHash()||job.assembled||job.count!=std::min(std::min(pilot,2048),maxCount)||std::find(seeds,seeds+8,job.seed)==seeds+8)continue;
-        nativePilot+=job.NativeWall();}
-    const double forecastGain=.25*nativePilot*double(initial)/std::min(std::min(pilot,2048),maxCount);
-    if(best<30&&forecastGain<3*best){
-        Record(root+"/cutoff_calibration.json","{\"enabled\":true,\"selected\":\"off\",\"reference\":\"off\",\"search_amortized\":false,\"baseline_seconds\":"+Number(best)+",\"forecast_gain_seconds\":"+Number(forecastGain)+",\"reason\":\"extra preset pilots cost more than forecast savings on this short workload\"}");
-        depthSharing=supportedSharing&&sharing;depthVerified=false;return;
-    }
-    std::ostringstream report;report<<"{\"enabled\":true,\"reference\":\"off\",\"budget\":"<<Number(eps/8)<<",\"candidates\":[{\"profile\":\"off\",\"seconds\":"<<Number(best)<<",\"bias95\":0,\"shared_depths\":"<<(supportedSharing?"true":"false")<<"}";
-    for(const char* profile:{"safe","balanced","fast"}){SetCutoff(profile);depthSharing=false;double seconds=0;auto candidate=ProfilePilot(x,std::min(std::min(pilot,2048),maxCount),seeds,seconds);
-        double bias=PairedBias(candidate,reference);
-        Log("cutoff_candidate","{\"profile\":"+Quoted(profile)+",\"seconds\":"+Number(seconds)+",\"bias95\":"+Number(bias)+",\"budget\":"+Number(eps/8)+",\"within_bias_budget\":"+(bias<=eps/8?"true":"false")+",\"ten_percent_faster\":"+(seconds<best*.90?"true":"false")+"}");report<<",{\"profile\":"<<Quoted(profile)<<",\"seconds\":"<<Number(seconds)<<",\"bias95\":"<<Number(bias)<<",\"shared_depths\":false}";
-        if(bias<=eps/8&&seconds<best*.90){best=seconds;winner=profile;winnerBias=bias;}}
-    SetCutoff(winner);cutoffError=winnerBias;depthSharing=winner=="off"?supportedSharing&&sharing:false;depthVerified=false;
-    report<<"],\"selected\":"<<Quoted(winner)<<",\"final_fresh_seed_audit_required\":"<<(winner=="off"?"false":"true")<<",\"scope\":\"all16 raw and ratios; measured multilevel workload including shared-depth eligibility; representative theta\"}";
-    Record(root+"/cutoff_calibration.json",report.str());
+    // Fixed production estimator. Its off-balanced correction removes cutoff
+    // bias; uncertainty is measured from the complete eight combined replicas.
+    tuneCutoffs=false;SetCutoff("off");cutoffError=0;
+    balancedCorrection=coherent&&!go;
+    Record(root+"/cutoff_calibration.json","{\"enabled\":true,\"selected\":\"balanced_with_paired_off_correction\",\"physical_target\":\"off\",\"profile_search\":false,\"correction_fraction\":0.125,\"minimum_block\":512,\"supported\":"+std::string(balancedCorrection?"true":"false")+"}");
 }
 void TuneTracing(const std::vector<double>& x){
 #ifndef MBS_GPU_FP64
@@ -212,7 +203,12 @@ void TuneTracing(const std::vector<double>& x){
 }
 
 void PrepareTuning(const std::vector<double>& angles){
-    if(RestoreTuning())return;
+    if(RestoreTuning()){
+        bool explicitCutoff=args.IsCatched("r");for(const char* key:{"cutoff_profile","beam_cutoff","beam_cutoff_j","beam_cutoff_area","beam_cutoff_importance","trace_cutoff","trace_cutoff_j","trace_cutoff_area","trace_cutoff_importance"})explicitCutoff=explicitCutoff||args.IsCatched(key);
+        balancedCorrection=coherent&&!go&&cutoffPolicy!="off"&&!explicitCutoff&&selectedCutoff=="off";
+        Log("cutoff_estimator_restore","{\"balanced_with_paired_off_correction\":"+std::string(balancedCorrection?"true":"false")+",\"saved_physical_target\":"+Quoted(selectedCutoff)+",\"old_completed_blocks_preserved\":true,\"profile_search\":false}");
+        return;
+    }
     Record(root+"/automatic_cutoff_validation.json","{\"enabled\":false}");
     std::vector<double> x;const size_t rows=std::min(size_t(17),angles.size());for(size_t i=0;i<rows;++i)x.push_back(angles[i*(angles.size()-1)/(rows-1)]);
     const bool oldControls=controls;controls=false;SetMirror(false);phi=fixedPhi?fixedPhi:4;
@@ -232,6 +228,6 @@ bool AuditAutomaticCutoffs(const std::vector<double>& angles,int n,int round){
         error=PairedBias(Data(requested),Data(reference));if(error<=eps/8||n>=maxCount||attempt==2)break;n=std::min(maxCount,n>maxCount/2?maxCount:2*n);}
     controls=oldControls;SetMirror(mirror);cutoffError=error;const bool pass=error<=eps/8;
     Record(root+"/automatic_cutoff_validation.json","{\"passed\":"+std::string(pass?"true":"false")+",\"profile\":"+Quoted(profile)+",\"bias95\":"+Number(error)+",\"budget\":"+Number(eps/8)+",\"count_per_seed\":"+Number(n)+",\"theta_count\":"+Number(x.size())+",\"fresh_seeds\":true,\"fallback_to_off\":"+(pass?"false":"true")+"}");
-    if(!pass){SetCutoff("off");cutoffError=0;depthSharing=coherent&&On("fullauto_depth_share");depthVerified=false;weights.clear();polarWeights.clear();weightTheta.clear();SetMirror(mirror);SaveTuning();}
+    if(!pass){SetCutoff("off");balancedCorrection=coherent&&!go;cutoffError=0;depthSharing=coherent&&On("fullauto_depth_share");depthVerified=false;weights.clear();polarWeights.clear();weightTheta.clear();SetMirror(mirror);SaveTuning();}
     SaveTuning();return pass;
 }

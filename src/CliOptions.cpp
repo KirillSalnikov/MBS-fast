@@ -263,7 +263,7 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
         {"fullauto_dispatch_threads", "fullauto-dispatch-threads", 1, "N", "Orientation",
          "CUDA PO only: fix CPU preparation and analytic-mean pools to N without changing checkpoint identities or ordered accumulation. Conflicts with explicit thread flags."},
         {"fullauto_dispatch_gpus", "fullauto-dispatch-gpus", 1, "LIST", "Orientation",
-         "Compatible CUDA resume only: dispatch saved work to these visible devices without changing its saved sampling/execution recipe."},
+         "Compatible CUDA resume only: dispatch saved work to visible devices. Repeating an index twice (0,0) shares a GPU; requires --fullauto-dispatch-threads per worker and divides automatic RAM/VRAM budgets. Maximum 8 slots. Saved sampling is unchanged."},
         {"fullauto_gpus", "fullauto-gpus", 1, "LIST", "Orientation",
          "Fullauto visible GPU indices or auto (benchmark visible devices); respects CUDA_VISIBLE_DEVICES. Default 0."},
         {"fullauto_resources", "fullauto-resources", 1, "MODE", "Orientation",

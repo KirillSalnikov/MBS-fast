@@ -2,13 +2,14 @@
 // accuracy criterion. Times are summed native worker seconds, not elapsed time.
 struct WorkForecast {double seconds=0;size_t jobs=0;bool profiled=true;};
 class AdditionalWork {
-    const Engine& e;std::array<unsigned,8> seeds;bool ignoreCoverage;
+    Engine& e;std::array<unsigned,8> seeds;bool ignoreCoverage,productionOnly,uniformPhi;
     struct Profile {double trace=0,diffraction=0,setup=0,overlap=0;size_t observations=0;};
     using Depth=std::pair<int,int>;
     using Slot=std::array<uint64_t,5>; // N, offset, depth, paired depth, seed
     std::map<Depth,Profile> profiles;
     std::map<Slot,std::vector<const Job*>> coverage;
     std::map<std::string,WorkForecast> forecasts;
+    std::map<int,std::unique_ptr<AdditionalWork>> phiWork;
     Slot Key(int n,int offset,int depth,int paired,unsigned seed)const{return {{uint64_t(n),uint64_t(offset),uint64_t(depth),uint64_t(paired),seed}};}
     bool Covered(int n,int offset,int depth,int paired,unsigned seed,double angle){
         if(ignoreCoverage)return false;
@@ -20,7 +21,7 @@ class AdditionalWork {
     }
 
 public:
-    AdditionalWork(const Engine& engine,const unsigned* seedSet,bool ignoreSaved=false,bool productionProfilesOnly=false):e(engine),ignoreCoverage(ignoreSaved){
+    AdditionalWork(Engine& engine,const unsigned* seedSet,bool ignoreSaved=false,bool productionProfilesOnly=false,bool uniform=false):e(engine),ignoreCoverage(ignoreSaved),productionOnly(productionProfilesOnly),uniformPhi(uniform){
         std::copy(seedSet,seedSet+8,seeds.begin());const auto recipe=e.ExecutionHash();
         for(const auto& item:e.cache){const Job& j=item.second;
             if(productionProfilesOnly&&std::find(e.seeds.begin(),e.seeds.end(),j.seed)==e.seeds.end())continue;
@@ -39,6 +40,11 @@ public:
         for(auto& item:profiles){auto& p=item.second;p.trace/=p.observations;p.diffraction/=p.observations;p.setup/=p.observations;p.overlap/=p.observations;}
     }
     WorkForecast Forecast(const std::vector<Engine::WorkRequest>& requests){
+        if(!uniformPhi&&!e.thetaPhi.empty()){
+            WorkForecast total;const auto groups=PhiRequests(e,requests);
+            for(const auto& group:groups){PhiScope scope(e,group.first);auto& work=phiWork[group.first];if(!work)work.reset(new AdditionalWork(e,seeds.data(),ignoreCoverage,productionOnly,true));const auto part=work->Forecast(group.second);
+                total.seconds+=part.seconds;total.jobs+=part.jobs;total.profiled=total.profiled&&part.profiled;}return total;
+        }
         std::ostringstream name;for(const auto& r:requests){name<<r.count<<':'<<r.depth<<':'<<r.pairedDepth<<':';for(double q:r.angles)name<<Number(q)<<',';name<<';';}
         auto saved=forecasts.find(name.str());if(saved!=forecasts.end())return saved->second;
         WorkForecast result;std::map<Slot,std::vector<double>> planned;
@@ -96,11 +102,11 @@ public:
         forecasts[name.str()]=result;return result;
     }
 };
-std::vector<Engine::WorkRequest> BudgetRequests(const Engine& e,const std::vector<int>& depths,const Budgets& counts,const std::vector<size_t>& ids){
+std::vector<Engine::WorkRequest> BudgetRequests(const Engine& e,const std::vector<int>& depths,const Budgets& counts,const std::vector<size_t>& ids,bool uniform=false){
     std::vector<Engine::WorkRequest> requests;
     for(size_t l=0;l<depths.size();++l){std::map<int,std::vector<double>> groups;
         for(size_t id:ids)groups[counts[l][id]].push_back(e.theta[id]);
-        for(auto& g:groups){auto& x=g.second;if(x.size()==1){x.push_back(ids.size()>1?(e.theta[ids.front()]==x[0]?e.theta[ids.back()]:e.theta[ids.front()]):(e.theta.front()==x[0]?e.theta.back():e.theta.front()));std::sort(x.begin(),x.end());}
+        for(auto& g:groups){auto& x=g.second;if(x.size()==1&&(uniform||e.thetaPhi.empty())){x.push_back(ids.size()>1?(e.theta[ids.front()]==x[0]?e.theta[ids.back()]:e.theta[ids.front()]):(e.theta.front()==x[0]?e.theta.back():e.theta.front()));std::sort(x.begin(),x.end());}
             requests.push_back(Engine::WorkRequest{g.first,0,depths[l],l&&e.depthSharing?depths[l-1]:0,x});
             if(l&&!e.depthSharing)requests.push_back(Engine::WorkRequest{g.first,0,depths[l-1],0,x});}}
     return requests;

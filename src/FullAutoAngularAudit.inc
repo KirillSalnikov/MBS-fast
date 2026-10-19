@@ -23,6 +23,9 @@ AngularAuditPlan PlanAngularAudit(Engine& e,const AdaptiveState& state,const std
         double fraction,bool local){
     AngularAuditPlan plan;
     if(e.angularAuditPolicy=="off"||!e.angularCache||fraction!=1||state.knots.size()>=ids.size())return plan;
+    // The residual cost/variance trainer currently assumes one common phi
+    // and one N per level. Mixed rules use the complete direct holdout.
+    if(!e.thetaPhi.empty()){e.Log("angular_audit_direct_fallback","{\"reason\":\"mixed theta phi rules require separate residual training\"}");return plan;}
     plan.anchors=FullAutoAuditPlan::Scale(state.counts,ids,fraction,e.initial,e.minimum,local);
     plan.residuals=plan.anchors;for(auto& level:plan.residuals)for(int& n:level)n=std::min(n,256);
     const auto productionMean=Mean(Combine(production.levels));
@@ -106,7 +109,7 @@ AdaptiveData EvaluateAngularAudit(Engine& e,const std::vector<int>& depths,const
         for(size_t id:group.second.rows){metadata<<(first?"":",")<<id;first=false;}metadata<<"],\"intervals\":[";
         for(size_t i=0;i<group.second.intervals.size();++i)metadata<<(i?",":"")<<group.second.intervals[i];metadata<<"]}";}
     metadata<<"]}";e.Record(e.root+"/angular_audit_groups.json",metadata.str());WriteGrid(e.root+"/angular_audit_support.csv",Angles(e.theta,knots));
-    e.Prefetch(AngularAuditRequests(e,depths,plan,ids,knots),seeds);
+    PrefetchBudget(e,AngularAuditRequests(e,depths,plan,ids,knots),seeds);
     e.Record(e.root+"/independent_audit_progress.json","{\"phase\":\"independent anchor means\",\"support_theta\":"+Number(knots.size())+"}");
     const auto anchors=EvaluateBudget(e,depths,plan.anchors,knots,seeds);
     AdaptiveData result;result.levels.resize(depths.size());result.costs.assign(depths.size(),std::vector<double>(ids.size()));result.analytic.assign(ids.size(),0);

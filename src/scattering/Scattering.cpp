@@ -68,6 +68,18 @@ Scattering::Scattering(Particle *particle, Light *incidentLight, bool isOpticalP
 
 Scattering::~Scattering()
 {
+    FlushTraceStatistics();
+}
+
+void Scattering::FlushTraceStatistics() const
+{
+    std::atomic<long long>* counters[]={&m_traceCutoffStatistics->evaluated,
+        &m_traceCutoffStatistics->rejected,&m_traceCutoffStatistics->rejectedJones,
+        &m_traceCutoffStatistics->rejectedArea,&m_traceCutoffStatistics->rejectedImportance};
+    for(int k=0;k<5;++k)if(m_bufferedTraceStatistics[k]){
+        counters[k]->fetch_add(m_bufferedTraceStatistics[k],std::memory_order_relaxed);
+        m_bufferedTraceStatistics[k]=0;
+    }
 }
 
 bool Scattering::EnsureBeamTree()
@@ -538,7 +550,8 @@ bool Scattering::IsTracePruned(const Beam &beam) const
     if (!useJ && !useArea && !useImportance)
         return false;
 
-    m_traceCutoffStatistics->evaluated.fetch_add(1, std::memory_order_relaxed);
+    if(m_bufferTraceStatistics)++m_bufferedTraceStatistics[0];
+    else m_traceCutoffStatistics->evaluated.fetch_add(1, std::memory_order_relaxed);
 
     double jn = 0;
     double ar = 0;
@@ -554,6 +567,12 @@ bool Scattering::IsTracePruned(const Beam &beam) const
     if (!(smallJ || smallArea || smallImportance))
         return false;
 
+    if(m_bufferTraceStatistics){
+        ++m_bufferedTraceStatistics[1];
+        m_bufferedTraceStatistics[2]+=smallJ;
+        m_bufferedTraceStatistics[3]+=smallArea;
+        m_bufferedTraceStatistics[4]+=smallImportance;
+    }else{
     m_traceCutoffStatistics->rejected.fetch_add(1, std::memory_order_relaxed);
     if (smallJ)
         m_traceCutoffStatistics->rejectedJones.fetch_add(
@@ -564,11 +583,13 @@ bool Scattering::IsTracePruned(const Beam &beam) const
     if (smallImportance)
         m_traceCutoffStatistics->rejectedImportance.fetch_add(
             1, std::memory_order_relaxed);
+    }
     return true;
 }
 
 std::string Scattering::TraceCutoffReport() const
 {
+    FlushTraceStatistics();
     return FormatTraceCutoffReport(*m_traceCutoffStatistics,
                                    m_cutoffProfileName,
                                    m_traceCutoffJRel,

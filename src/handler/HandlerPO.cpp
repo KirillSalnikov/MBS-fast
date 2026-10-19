@@ -1638,6 +1638,14 @@ void HandlerPO::SetTracks(Tracks *tracks)
 // PrepareBeams: sequential preprocessing of beams from one orientation.
 // Extracts all scalar data needed for the direction loop.
 // =============================================================================
+static double PreparedMueller00(const Matrix2x2c& j)
+{
+    // Same grouping as Mueller(j)[0][0], without allocating/computing the
+    // other fifteen elements. Do not substitute .5*j.Norm(): its sum differs.
+    const double a11=norm(j.m11),a12=norm(j.m12),a21=norm(j.m21),a22=norm(j.m22);
+    const double A1=a11+a21,A2=a12+a22;
+    return (A1+A2)/2.0;
+}
 void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
                               PreparedOrientation &out)
 {
@@ -1711,7 +1719,7 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         const double unabsorbedCrossSection =
             beam.lastFacetId != __INT_MAX__ ? BeamCrossSection(beam) : 0.0;
         const double unabsorbedMueller00 =
-            beam.lastFacetId != __INT_MAX__ ? Mueller(unabsorbedJ)[0][0] : 0.0;
+            beam.lastFacetId != __INT_MAX__ ? PreparedMueller00(unabsorbedJ) : 0.0;
         std::vector<double> absorptionPaths;
         if (hasInternalPath)
         {
@@ -1751,8 +1759,8 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         if (beam.lastFacetId != __INT_MAX__)
         {
             ++candidateBeams;
-            matrix m_ = Mueller(beam.J);
-            localEnergy += BeamCrossSection(beam)*m_[0][0]*sinZenith;
+            const double mueller00 = PreparedMueller00(beam.J);
+            localEnergy += unabsorbedCrossSection*mueller00*sinZenith;
 
             double jn = beam.J.Norm();
             double ar = info.area;
@@ -1789,13 +1797,15 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         PrecomputePolData(beam, info, polData);
 
         pb.isExternal = (beam.lastFacetId == __INT_MAX__);
-        matrixC J_phased = pb.isExternal
-            ? beam.J * fast_exp_im(m_waveIndex * beam.opticalPath)
-            : beam.J * fast_exp_im(m_waveIndex * info.projLenght);
-        if (pb.isExternal)
-            J_phased *= -1.0;
-        if (!pb.isExternal && (beam.nActs & 1))
-            J_phased *= -1.0;
+        const complex phase = fast_exp_im(m_waveIndex *
+            (pb.isExternal ? beam.opticalPath : info.projLenght));
+        complex jp00=beam.J.m11*phase,jp01=beam.J.m12*phase;
+        complex jp10=beam.J.m21*phase,jp11=beam.J.m22*phase;
+        if (pb.isExternal || (beam.nActs & 1))
+        {
+            jp00 *= -1.0; jp01 *= -1.0;
+            jp10 *= -1.0; jp11 *= -1.0;
+        }
 
         // Extract scalars
         pb.horAx = info.horAxis.x; pb.horAy = info.horAxis.y; pb.horAz = info.horAxis.z;
@@ -1809,8 +1819,6 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         pb.pnxDTx = polData.nxDT.x; pb.pnxDTy = polData.nxDT.y; pb.pnxDTz = polData.nxDT.z;
         pb.pnxDPx = polData.nxDP.x; pb.pnxDPy = polData.nxDP.y; pb.pnxDPz = polData.nxDP.z;
 
-        complex jp00 = J_phased[0][0], jp01 = J_phased[0][1];
-        complex jp10 = J_phased[1][0], jp11 = J_phased[1][1];
         pb.jp00r = real(jp00); pb.jp00i = imag(jp00);
         pb.jp01r = real(jp01); pb.jp01i = imag(jp01);
         pb.jp10r = real(jp10); pb.jp10i = imag(jp10);
@@ -1908,7 +1916,8 @@ double HandlerPO::ComputeForwardExtinctionOt(
             const int nv = tc.nv;
             if (nv <= 0)
                 continue;
-            std::vector<double> phases(nv), vc(nv), vs(nv);
+            // The validated aperture has fewer than MAX_EDGES vertices.
+            double phases[BeamEdgeData::MAX_EDGES], vc[BeamEdgeData::MAX_EDGES], vs[BeamEdgeData::MAX_EDGES];
             for (int v = 0; v < nv; ++v)
                 phases[v] = cos_t * tc.pcos[v] + tc.p0[v];
             for (int v = 0; v < nv; ++v)
@@ -2122,7 +2131,7 @@ double HandlerPO::ComputeForwardExtinctionOtScaled(
             const int nv = tc.nv;
             if (nv <= 0)
                 continue;
-            std::vector<double> phases(nv), vc(nv), vs(nv);
+            double phases[BeamEdgeData::MAX_EDGES], vc[BeamEdgeData::MAX_EDGES], vs[BeamEdgeData::MAX_EDGES];
             for (int v = 0; v < nv; ++v)
                 phases[v] = cos_t * tc.pcos[v] + tc.p0[v];
             for (int v = 0; v < nv; ++v)

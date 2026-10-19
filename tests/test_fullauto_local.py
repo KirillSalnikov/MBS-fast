@@ -27,7 +27,8 @@ def main():
             records={str(f):f.stat().st_mtime_ns for f in (dest/'jobs').glob('*/complete.txt')}
             with (out/(case+'_'+policy+'_resume.log')).open('w') as log:subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,check=True,timeout=3600)
             assert records=={str(f):f.stat().st_mtime_ns for f in (dest/'jobs').glob('*/complete.txt')},'Resume recomputed finished work'
-            budget=np.loadtxt(dest/'orientation_budget.csv',delimiter=',',skiprows=1)[:,1:]
+            table=np.genfromtxt(dest/'orientation_budget.csv',delimiter=',',names=True,ndmin=1)
+            budget=np.column_stack([table[n] for n in table.dtype.names if n.startswith('N_level')])
             report.update(case=case,local=policy,seconds=seconds,orientation_row_work_per_seed=float(budget.sum()),
                           global_peak_row_work_per_seed=float(budget.max(0).sum()*len(budget)),completed_jobs_untouched_on_resume=True)
             reports.append(report);(out/'comparison.json').write_text(json.dumps(reports,indent=2)+'\n')

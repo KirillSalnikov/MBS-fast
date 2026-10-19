@@ -15,6 +15,18 @@ def fnv(data):
 
 def grid(path):return np.loadtxt(path,ndmin=1)
 def matrix(path):return np.loadtxt(path,skiprows=1,ndmin=2)
+def orientation_budget(path):
+    names=path.read_text().splitlines()[0].split(',')
+    columns=[0]+[i for i,n in enumerate(names) if n.startswith('N_level')]
+    return np.loadtxt(path,delimiter=',',skiprows=1,ndmin=2)[:,columns]
+def phi_rules(root,state,angles):
+    path=root/'orientation_budget.csv';names=path.read_text().splitlines()[0].split(',')
+    result=np.full(len(angles),state['phi'],int)
+    if 'phi_points' in names:
+        rows=np.loadtxt(path,delimiter=',',skiprows=1,ndmin=2);ix=nearest_rows(rows[:,0],angles)
+        matched=np.isclose(rows[ix,0],angles,rtol=0,atol=1e-10)
+        result[matched]=rows[ix[matched],names.index('phi_points')].astype(int)
+    return result
 def nearest_rows(angles,query):
     right=np.minimum(np.searchsorted(angles,query),len(angles)-1);left=np.maximum(right-1,0)
     return np.where(abs(angles[left]-query)<abs(angles[right]-query),left,right)
@@ -88,8 +100,8 @@ def local_spline(x,y):
 
 def reconstruct(root,state,angles,budgets,source,seeds,records=None):
     levels=budgets.shape[1];data=np.zeros((levels,8,len(angles),16));filled=np.zeros((levels,2,8,len(angles)),bool)
-    coefficients=matrix(root/'polarization_weights.tsv')
-    seen=set();jobs=[]
+    coefficients=matrix(root/'polarization_weights.tsv') if state['analytic_controls'] else None
+    seen=set();jobs=[];rules=phi_rules(root,state,angles)
     for line in source.read_text().splitlines() if records is None else records:
         level,sign,count,seed,name=line.split();level,sign,count,seed=map(int,[level,sign,count,seed]);slot=seeds.index(seed)
         folder=stored_path(name,root);validate(folder,seen,root);raw=matrix(folder/'result/result.dat');values=raw[:,2:].copy()
@@ -98,7 +110,8 @@ def reconstruct(root,state,angles,budgets,source,seeds,records=None):
             for j in range(1,16):
                 wr=np.interp(raw[:,0],coefficients[:,0],coefficients[:,1+2*j]);ws=np.interp(raw[:,0],coefficients[:,0],coefficients[:,2+2*j])
                 values[:,j]+=wr*(control[:,2]-control[:,4])+ws*(control[:,3]-control[:,5])
-        target=np.flatnonzero(budgets[:,level]==count);rows=nearest_rows(raw[:,0],angles[target]);ok=rows<len(raw)
+        sampling=(folder/'sampling.index').read_text().split();phi=int(sampling[6])
+        target=np.flatnonzero((budgets[:,level]==count)&(rules==phi));rows=nearest_rows(raw[:,0],angles[target]);ok=rows<len(raw)
         ok &= np.isclose(raw[np.minimum(rows,len(raw)-1),0],angles[target],rtol=0,atol=1e-10)
         target=target[ok];rows=rows[ok];sign_slot=0 if sign==1 else 1
         assert not filled[level,sign_slot,slot,target].any(),(level,sign,seed)
@@ -177,7 +190,9 @@ def run(root,reference,dense=False,dense_workers=1):
     state=json.loads((root/'fullauto_status.json').read_text());assert state['status']=='converged',state
     contract=json.loads((root/'precision_contract.json').read_text())
     requested=grid(root/'requested_theta.csv');evaluated=grid(root/'theta_evaluated.csv');support=grid(root/'theta_support.csv')
-    budget=np.loadtxt(root/'orientation_budget.csv',delimiter=',',skiprows=1,ndmin=2);assert np.allclose(budget[:,0],evaluated,rtol=0,atol=1e-10)
+    budget=orientation_budget(root/'orientation_budget.csv');assert np.allclose(budget[:,0],evaluated,rtol=0,atol=1e-10)
+    if dense and state.get('retained_phi_theta_rows',0):
+        raise NotImplementedError('Dense worker replay requires per-phi grouping; use direct reconstruction of mixed production and independent audit sources.')
     levels,seen,jobs=reconstruct(root,state,evaluated,budget[:,1:].astype(int),root/'final_stage_sources.tsv',state['seeds']);samples=levels.sum(0)
     mean,confidence,ratio_ci=intervals(samples);indices=np.searchsorted(evaluated,support);assert np.allclose(evaluated[indices],support,rtol=0,atol=1e-10)
     spline=local_spline(support,samples[:,indices]);output=spline(requested)

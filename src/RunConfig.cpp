@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -1206,11 +1207,18 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
             Fail("--fullauto-dispatch-gpus requires compatible resume.","use it only to relocate an existing CUDA checkpoint.");
         if(!config.useGpu)Fail("--fullauto-gpus requires CUDA.","select --backend cuda or remove the GPU list.");
         if(value!="auto"||std::string(gpuKey)=="fullauto_dispatch_gpus"){
-            std::istringstream list(value);std::string token;std::set<int> seen;
-            if(value.empty()||value.back()==',')Fail("invalid --fullauto-gpus list.","use auto or distinct nonnegative indices.");
+            const bool dispatch=std::string(gpuKey)=="fullauto_dispatch_gpus";
+            std::istringstream list(value);std::string token;std::map<int,int> seen;size_t slots=0;
+            if(value.empty()||value.back()==',')Fail("invalid GPU list.","use comma-separated nonnegative indices.");
             while(std::getline(list,token,',')){char* end=nullptr;long id=std::strtol(token.c_str(),&end,10);
-                if(token.empty()||end!=token.c_str()+token.size()||id<0||id>2147483646||!seen.insert(int(id)).second)
-                    Fail("invalid --fullauto-gpus list.","use auto or distinct nonnegative indices.");}
+                if(token.empty()||end!=token.c_str()+token.size()||id<0||id>2147483646)
+                    Fail("invalid GPU index.","use nonnegative integer indices.");
+                ++slots;const int copies=++seen[int(id)];
+                if(copies>(dispatch?2:1))Fail("too many worker slots on one GPU.","use distinct --fullauto-gpus indices; compatible dispatch allows at most two copies.");
+                if(dispatch&&copies==2&&!args.IsCatched("fullauto_dispatch_threads"))
+                    Fail("shared GPU dispatch needs a bounded CPU pool.","set --fullauto-dispatch-threads per worker.");
+            }
+            if(dispatch&&slots>8)Fail("too many dispatch slots.","use at most eight worker slots.");
         }
     }
     if(args.IsCatched("verified_rotation")||args.IsCatched("haar_rotation_audit")){

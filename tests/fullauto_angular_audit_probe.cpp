@@ -38,8 +38,8 @@ int main(int argc,const char* argv[]){try{
     if(getenv("TASK_FORCE_NONPOSITIVE_AUDIT")){
         // Fault injection into private in-memory holdout matrices only. Real
         // native files and all production replicas remain unchanged.
-        for(auto& item:e.cache)if(std::find(fresh,fresh+8,item.second.seed)!=fresh+8)
-            for(auto& row:item.second.matrix)for(double& value:row)value=-value;
+        for(auto& item:e.cache)if(std::find(fresh,fresh+8,item.second.seed)!=fresh+8){
+            auto job=e.Materialize(item.second);for(auto& row:job.matrix)for(double& value:row)value=-value;e.CacheJob(job);}
         state.previous.assign(e.theta.size(),Mueller{});state.valid.assign(e.theta.size(),false);state.coarse.assign(e.theta.size(),false);state.auditSerial=0;e.workQueuePolicy="off";
         IndependentAudit(e,state,depths,productionData,ids);
         Require(state.auditSerial==2,"nonpositive angular matrix did not reserve fresh direct seeds");

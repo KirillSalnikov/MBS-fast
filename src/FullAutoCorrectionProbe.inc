@@ -28,7 +28,7 @@ std::vector<Engine::WorkRequest> CorrectionProbeRequests(const Engine& e,const s
     std::map<std::pair<size_t,int>,std::vector<double>> groups;for(const auto& r:receipt.rows)groups[{r.level,r.after}].push_back(e.theta[r.id]);
     std::vector<Engine::WorkRequest> requests;
     for(auto& group:groups){const auto level=group.first.first;auto& angles=group.second;
-        if(angles.size()==1){angles.push_back(angles[0]==e.theta.front()?e.theta.back():e.theta.front());std::sort(angles.begin(),angles.end());}
+        if(angles.size()==1&&e.thetaPhi.empty()){angles.push_back(angles[0]==e.theta.front()?e.theta.back():e.theta.front());std::sort(angles.begin(),angles.end());}
         requests.push_back({group.first.second,0,depths[level],e.depthSharing?depths[level-1]:0,angles});
         if(!e.depthSharing)requests.push_back({group.first.second,0,depths[level-1],0,angles});}
     return requests;
@@ -61,13 +61,13 @@ bool TryCorrectionProbe(Engine& e,AdaptiveState& state,const std::vector<int>& d
             +",\"profiled\":"+(base.profiled&&probe.profiled?"true":"false")+",\"selected\":"+(accepted?"true":"false")+",\"scope\":\"scheduling forecast; no accuracy acceptance\"}");
         if(!accepted)return false;SaveCorrectionProbe(e,state,receipt);
     }else Require(receipt.sources==Hash(data.sources),"pending correction subround production changed");
-    const auto requests=CorrectionProbeRequests(e,depths,receipt);e.Prefetch(requests,e.seeds.data());std::ostringstream sources;
+    const auto requests=CorrectionProbeRequests(e,depths,receipt);const auto groups=PhiRequests(e,requests);std::ostringstream sources;
     e.State("correction_subround",state.round,PeakBudgets(state.counts),ids.size(),StatisticalError(e,stats),interpolationError,0);
-    for(const auto& request:requests){
+    for(const auto& group:groups){PhiScope scope(e,group.first);e.Prefetch(group.second,e.seeds.data());for(const auto& request:group.second){
         if(e.depthSharing){auto pair=e.SharedStage(request.count,e.seeds.data(),8,request.depth,request.pairedDepth,request.angles);
             for(size_t s=0;s<8;++s)sources<<request.depth<<" 1 "<<request.count<<' '<<e.seeds[s]<<' '<<pair.first[s].folder<<'\n'<<request.pairedDepth<<" -1 "<<request.count<<' '<<e.seeds[s]<<' '<<pair.second[s].folder<<'\n';
         }else{auto jobs=e.Stage(request.count,e.seeds.data(),8,request.depth,request.angles);for(size_t s=0;s<8;++s)sources<<request.depth<<" 1 "<<request.count<<' '<<e.seeds[s]<<' '<<jobs[s].folder<<'\n';}
-    }
+    }}
     Atomic(CorrectionProbePath(e,state)+".sources",sources.str());receipt.complete=true;SaveCorrectionProbe(e,state,receipt);
     for(const auto& r:receipt.rows)state.counts[r.level][r.id]=r.after;state.streak=0;SaveAdaptive(e,state);
     e.Log("correction_subround_complete","{\"round\":"+Number(state.round)+",\"attempt\":"+Number(receipt.attempt)+",\"theta_rows\":"+Number(receipt.rows.size())+",\"base_prefix_unchanged\":true,\"all_accuracy_gates_retained\":true}");return true;

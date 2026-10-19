@@ -50,6 +50,7 @@ double GoDifference(const Matrix& a,const Matrix& b,size_t bins,bool ratios){
 void GoOutputs(Engine& e,const std::string& folder,const GoStatistics& result,int count){
     Directory(folder);const size_t bins=e.theta.size();Matrix density(result.stats.mean.begin(),result.stats.mean.begin()+bins);
     WriteMatrix(folder+"/mueller_evaluated.dat",e.theta,density);
+    WriteGOOutputAnnotations(e,folder,result.stats,result.checked);
     auto pole=[&](size_t index,const std::string& name){std::ostringstream text;text<<"ScAngle 2pi*dcos M11 M12 M13 M14 M21 M22 M23 M24 M31 M32 M33 M34 M41 M42 M43 M44\n"<<std::setprecision(17)<<e.theta[index==bins?0:bins-1]<<" 0";
         for(double v:result.stats.mean[index])text<<' '<<v;
         text<<'\n';Atomic(folder+"/mueller_"+name+".dat",text.str());};
@@ -132,7 +133,7 @@ int RunGO(Engine& e){
                 GoOutputs(e,e.root,result,count);Atomic(e.root+"/mueller_fullauto.dat",Read(e.root+"/mueller_evaluated.dat"));
                 WriteFullAutoIntegrals(e,e.root,samples,integralSources,true);
                 e.independentPassed=e.finalAudit;e.State("converged",round,{count},bins,result.maximum,0,streak);
-                std::ostringstream hashes;for(const char* name:{"controller_command.json","final_checks_policy.json","mueller_fullauto.dat","mueller_evaluated.dat","mueller_forward.dat","mueller_backward.dat","parameters_accuracy.csv","orientation_budget.csv","pole_status.json","precision_contract.json","independent_final_validation.json","physics_validation.json","final_parameters.json"})hashes<<name<<' '<<FileHash(e.root+"/"+name)<<'\n';if(e.autoDepth)for(const char* name:{"automatic_depth.tsv","depth_selection.json"})hashes<<name<<' '<<FileHash(e.root+"/"+name)<<'\n';HashIntegralProducts(e.root,hashes);Atomic(e.root+"/final_outputs.fnv",hashes.str());return 0;
+                std::ostringstream hashes;for(const char* name:{"controller_command.json","final_checks_policy.json","mueller_fullauto.dat","mueller_evaluated.dat","mueller_forward.dat","mueller_backward.dat","parameters_accuracy.csv","orientation_budget.csv","pole_status.json","precision_contract.json","independent_final_validation.json","physics_validation.json","final_parameters.json"})hashes<<name<<' '<<FileHash(e.root+"/"+name)<<'\n';if(e.autoDepth)for(const char* name:{"automatic_depth.tsv","depth_selection.json"})hashes<<name<<' '<<FileHash(e.root+"/"+name)<<'\n';HashMatrixAnnotations(e.root,hashes);HashIntegralProducts(e.root,hashes);Atomic(e.root+"/final_outputs.fnv",hashes.str());return 0;
             }streak=0;
         }
         if(count>=e.maxCount||round+1>=e.roundLimit)break;

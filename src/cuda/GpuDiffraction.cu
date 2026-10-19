@@ -207,6 +207,85 @@ struct GpuCompactBeam
 using GpuBeam4 = GpuCompactBeam<4>;
 using GpuBeam8 = GpuCompactBeam<8>;
 
+// Registration reuses the existing vector allocation: no second staging copy.
+// Keep the total locked host memory bounded across all three beam layouts.
+struct GpuUploadBudget
+{
+    size_t used = 0, limit = 256ULL << 20;
+    GpuUploadBudget()
+    {
+        if (const char *value = std::getenv("MBS_HOST_MEM_BUDGET_MB"))
+        {
+            char *end = nullptr;
+            const unsigned long long mib = std::strtoull(value, &end, 10);
+            if (value[0] != '-' && end != value && *end == '\0' && mib > 0)
+                limit = size_t(std::min(256ULL, mib / 16)) << 20;
+        }
+    }
+};
+template <typename T> class GpuUploadVector
+{
+    std::vector<T> values;
+    GpuUploadBudget *budget;
+    void *registered = nullptr;
+    size_t lockedBytes = 0;
+    bool registrationFailed = false;
+    void Unregister()
+    {
+        if (!registered) return;
+        cudaHostUnregister(registered);
+        budget->used -= lockedBytes;
+        registered = nullptr;
+        lockedBytes = 0;
+    }
+public:
+    explicit GpuUploadVector(GpuUploadBudget *owner) : budget(owner) {}
+    GpuUploadVector(const GpuUploadVector &) = delete;
+    GpuUploadVector &operator=(const GpuUploadVector &) = delete;
+    ~GpuUploadVector() { Unregister(); }
+    void resize(size_t size)
+    {
+        // A vector must never reallocate while its old allocation is registered.
+        if (size > values.capacity()) Unregister();
+        values.resize(size);
+    }
+    size_t size() const { return values.size(); }
+    bool empty() const { return values.empty(); }
+    T &operator[](size_t i) { return values[i]; }
+    T *data()
+    {
+        const char *mode = std::getenv("MBS_GPU_PINNED_UPLOAD");
+#ifdef MBS_GPU_FP32
+        bool enabled = true;
+#else
+        bool enabled = false;
+#endif
+        if (mode) enabled = mode[0] == '1' && mode[1] == '\0';
+        if (!enabled) Unregister();
+        const size_t bytes = values.capacity() * sizeof(T);
+        // Registration has a startup cost; automatic mode targets substantial
+        // transfers. An explicit override can exercise smaller buffers too.
+        const size_t minimum = (mode ? 1ULL : 8ULL) << 20;
+        if (!registered && !registrationFailed && enabled && !values.empty()
+            && bytes >= minimum && bytes <= budget->limit - budget->used)
+        {
+            const cudaError_t result = cudaHostRegister(values.data(), bytes, cudaHostRegisterPortable);
+            if (result == cudaSuccess)
+            {
+                registered = values.data(); lockedBytes = bytes; budget->used += bytes;
+            }
+            else
+            {
+                // WSL/driver restrictions or pinning pressure must not turn a
+                // valid optical calculation into a failed allocation.
+                registrationFailed = true;
+                cudaGetLastError();
+            }
+        }
+        return values.data();
+    }
+};
+
 struct GpuWorkspace
 {
     GpuBeam *beams = nullptr;
@@ -235,9 +314,10 @@ struct GpuWorkspace
     size_t beamOffsets8Cap = 0;
     int gridNAz = -1, gridNZen = -1;
     double gridSignature = 0.0;
-    std::vector<GpuBeam> hBeams;
-    std::vector<GpuBeam4> hBeams4;
-    std::vector<GpuBeam8> hBeams8;
+    GpuUploadBudget uploadBudget;
+    GpuUploadVector<GpuBeam> hBeams{&uploadBudget};
+    GpuUploadVector<GpuBeam4> hBeams4{&uploadBudget};
+    GpuUploadVector<GpuBeam8> hBeams8{&uploadBudget};
     std::vector<GpuReal> hWeights;
     std::vector<GpuReal> hScales;
     std::vector<double> hAbsPaths;
@@ -3914,7 +3994,9 @@ __global__ void reduce_mueller_orient_kernel(const GpuReal *__restrict__ mOrient
     const int grid = (int)((long long)blockIdx.x * blockDim.x + threadIdx.x);
     if (grid >= gridCount) return;
 
-    GpuReal sum[16];
+    // Only the final reduction uses double in an FP32 build. Diffraction,
+    // storage and transfers retain their selected precision.
+    double sum[16];
 #pragma unroll
     for (int k = 0; k < 16; ++k)
         sum[k] = 0.0;
@@ -3946,7 +4028,7 @@ __global__ void reduce_mueller_orient_warp_kernel(
     const long long grid = warp * 2 + (lane >> 4);
     if (grid >= gridCount) return;
 
-    GpuReal sum = 0.0;
+    double sum = 0.0;
     for (int orient = 0; orient < nOrient; ++orient)
     {
         const long long src =
@@ -4261,6 +4343,10 @@ int HandlerPO::SelectGpuOrientationBatchSize(const std::vector<PreparedOrientati
     const bool fusedMueller = definitelyNoAtomics && ((fusedMuellerMode >= 0)
         ? (fusedMuellerMode != 0)
         : true);
+    // This estimator has no coherence argument. Conservatively reserve the
+    // staged buffer when requested, even if an incoherent launch will skip it.
+    const bool stageMueller = fusedMueller && !computeNoShadow
+        && gpu_stage_mueller_mode() == 1;
     GpuWorkspace &ws = g_gpuWorkspace;
 
     size_t usable = (size_t)(freeBytes * gpu_memory_fraction());
@@ -4305,6 +4391,9 @@ int HandlerPO::SelectGpuOrientationBatchSize(const std::vector<PreparedOrientati
         if (!fusedMueller && computeNoShadow)
             used += grow_bytes((size_t)nextCount * gridCount * 8,
                                ws.jNoShadowCap, sizeof(GpuReal));
+        if (stageMueller)
+            used += grow_bytes((size_t)nextCount * gridCount * 16,
+                               ws.mOrientCap, sizeof(GpuReal));
 
         if (count > 0 && used > usable)
             break;
@@ -5671,7 +5760,10 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         && !computeNoShadow
         && requestedNoAtomics != 0
         && requestedFusedMueller != 0
-        && (requestedStageMueller != 1 || allBeam8)
+        // Compact staged output has a warp kernel only. The scalar staged
+        // kernel reads GpuBeam, including on consumer GPUs whose default is
+        // not warp-based; packing GpuBeam8 there leaves ws.beams invalid.
+        && (requestedStageMueller != 1 || (allBeam8 && gpu_warp_beams_enabled()))
         && requestedNoVertexCache != 1;
     const bool packBeam8 = allBeam8 && canUseBeam8;
     const bool packMixedBeam8 = !allBeam8 && canUseBeam8
@@ -5682,9 +5774,9 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                          && requestedStageMueller != 1
                          && !gpu_warp_beams_enabled() && nBeams4 > 0;
     const bool fixedBeam34 = splitBeam4 && compactAllAtLeast3;
-    std::vector<GpuBeam> &hBeams = ws.hBeams;
-    std::vector<GpuBeam4> &hBeams4 = ws.hBeams4;
-    std::vector<GpuBeam8> &hBeams8 = ws.hBeams8;
+    GpuUploadVector<GpuBeam> &hBeams = ws.hBeams;
+    GpuUploadVector<GpuBeam4> &hBeams4 = ws.hBeams4;
+    GpuUploadVector<GpuBeam8> &hBeams8 = ws.hBeams8;
     std::vector<GpuReal> &hWeights = ws.hWeights;
     std::vector<int> &hBeamOffsets = ws.hBeamOffsets;
     std::vector<int> &hBeamOffsets4 = ws.hBeamOffsets4;
@@ -6721,7 +6813,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     {
         tAdd = gpu_now_ms() - t0;
         std::fprintf(stderr,
-                     "GPU timing diffract path=%s reduction=%s layout=%s block=%d orient=%d beams=%zu nAz=%d nZen=%d count=%.3fms pack=%.3fms ensure=%.3fms grid=%.3fms copy=%.3fms kernels=%.3fms d2h=%.3fms add=%.3fms total=%.3fms\n",
+                     "GPU timing diffract path=%s reduction=%s layout=%s block=%d orient=%d beams=%zu nAz=%d nZen=%d count=%.3fms pack=%.3fms ensure=%.3fms grid=%.3fms copy=%.3fms kernels=%.3fms d2h=%.3fms add=%.3fms total=%.3fms pinned_bytes=%zu\n",
                      splitBeam4 ? (useMixedBeam8
                              ? "beam4+8+generic" : "beam4+8")
                          : (useBeam8 ? "beam8"
@@ -6729,7 +6821,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                      useWarpBeams ? "warp" : "thread",
                      (useWarpGrid3D || useThreadGrid3D) ? "3d" : "flat",
                      block, nOrient, nBeams, nAz, nZen, tCount, tPack, tEnsure,
-                     tGrid, tCopy, tKernel, tD2h, tAdd, gpu_now_ms() - tStart);
+                     tGrid, tCopy, tKernel, tD2h, tAdd, gpu_now_ms() - tStart, ws.uploadBudget.used);
     }
 
     return true;

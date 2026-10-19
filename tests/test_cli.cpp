@@ -1042,7 +1042,15 @@ int main()
     auto gpuAuto=localAuto;gpuAuto[3]="cuda";gpuAuto.insert(gpuAuto.end(),{"--fullauto-gpus","auto"});
     try{ParseConfig(gpuAuto,false,true);Pass("native automatic visible GPUs");}catch(const std::exception& e){FailTest("native automatic visible GPUs",e.what());}
     auto badGpu=localAuto;badGpu[3]="cuda";badGpu.insert(badGpu.end(),{"--fullauto-gpus","0,0"});
-    ExpectFailureForBuild("duplicate automatic GPU list",badGpu,false,true,"invalid --fullauto-gpus list");
+    ExpectFailureForBuild("duplicate automatic GPU list",badGpu,false,true,"too many worker slots");
+    auto sharedGpu=localAuto;sharedGpu[3]="cuda";
+    sharedGpu.insert(sharedGpu.end(),{"--fullauto-resume-compatible","/bin/true","--fullauto-dispatch-gpus","0,0","--fullauto-dispatch-threads","6"});
+    try{(void)ParseConfig(sharedGpu,false,true);Pass("two bounded dispatch workers on one GPU");}catch(const std::exception& ex){FailTest("two bounded dispatch workers",ex.what());}
+    auto tripleGpu=sharedGpu;*std::find(tripleGpu.begin(),tripleGpu.end(),"0,0")="0,0,0";
+    ExpectFailureForBuild("three dispatch workers rejected",tripleGpu,false,true,"too many worker slots");
+    auto unboundedGpu=sharedGpu;unboundedGpu.resize(unboundedGpu.size()-2);
+    ExpectFailureForBuild("shared dispatch needs thread bound",unboundedGpu,false,true,"bounded CPU pool");
+
 
     for(const std::string flag:{"--fullauto-ratio-accuracy","--fullauto-phi-recheck","--fullauto-polarization-controls","--fullauto-final-audit","--fullauto-physics-audit","--fullauto-depth-sharing"}){
         auto valid=localAuto;valid.insert(valid.end(),{flag,"on"});ExpectSuccess("native fullauto modifier "+flag,valid);

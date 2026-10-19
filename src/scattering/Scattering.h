@@ -50,6 +50,11 @@ protected:
     double m_traceRefImportance = 0;
     bool m_trackIdsRequired = false;
     std::shared_ptr<TraceCutoffStatistics> m_traceCutoffStatistics;
+    // Only enabled for exclusively owned preparation clones. These are
+    // reporting counters, never the shared adaptive beam-limit state.
+    bool m_bufferTraceStatistics = false;
+    mutable long long m_bufferedTraceStatistics[5] = {};
+
 
 public:
     Scattering(Particle *particle, Light *incidentLight, bool isOpticalPath,
@@ -80,6 +85,9 @@ public:
     void SetTrackIdsRequired(bool value) { m_trackIdsRequired = value; }
     void CopyRuntimeOptionsFrom(const Scattering &source);
     std::string TraceCutoffReport() const;
+    void BufferTraceStatistics() { m_bufferTraceStatistics = true; }
+    void FlushTraceStatistics() const;
+
 
     virtual bool ScatterLight(double /*beta*/, double /*gamma*/, std::vector<Beam> &/*scaterredBeams*/)
     {

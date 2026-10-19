@@ -1,4 +1,5 @@
 #include "PreparedReuse.h"
+#include "HostMemoryReserve.h"
 #include "TracerPOTotal.h"
 #include "HandlerPOTotal.h"
 #include "HandlerPO.h"
@@ -760,11 +761,9 @@ static long long PreparedStorageBudgetBytes()
     if (availableKb <= 0)
         availableKb = 2LL * 1024LL * 1024LL;
 
-    const long long requestedReserveKb =
-        (long long)EnvInt("MBS_HOST_MEM_RESERVE_MB", 4096) * 1024LL;
-    const long long reserveKb = std::min(
-        requestedReserveKb,
-        std::max(256LL * 1024LL, availableKb / 4));
+    const long long reserveKb=HostMemoryReserve::ReserveKb(ReadMeminfoKb("MemTotal:"));
+    if(availableKb<=reserveKb+16LL*1024)
+        throw std::runtime_error("host RAM reserve exhausted before preparing next orientation chunk; free RAM or reduce concurrent jobs and resume the fullauto checkpoint");
     const double fraction = std::max(
         0.05, std::min(0.90, EnvDouble("MBS_HOST_MEM_FRACTION", 0.45)));
     long long budgetKb = (long long)(fraction
@@ -3310,6 +3309,10 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
         const int gammaFullCount = fastPole ? 1 : nGamma;
 
         const bool computeNoShadow = handlerPO->ComputeNoShadow();
+    // Convex tracing fixes pruning references from incident branches before
+    // traversing internal paths. They do not depend on the depth cap, so a
+    // pruned upper trace contains the exact pruned lower prefix too. Output
+    // thresholds are recomputed separately for each depth below.
         Arr2D betaM(nAz+1, nZen+1, 4, 4); betaM.ClearArr();
         Arr2D betaM_ns(computeNoShadow ? nAz+1 : 0,
                        computeNoShadow ? nZen+1 : 0,
@@ -5939,7 +5942,7 @@ void TracerPOTotal::TraceWeightedOrientations(
     }
     const bool computeNoShadow = handlerPO->ComputeNoShadow();
     if(m_pairedDepth&&(m_particle->IsConcave()||m_particle->isAggregated||m_mpiSize!=1||computeNoShadow||m_analyticFacetSamples||m_analyticBackscatter||m_analyticAzimuthGaussian
-       ||!handlerPO->isCoh||m_scattering->m_traceCutoffJRel>0||m_scattering->m_traceCutoffAreaRel>0||m_scattering->m_traceCutoffImportanceRel>0))
+       ||!handlerPO->isCoh))
         throw std::runtime_error("paired-depth cache unsupported for this geometry/pruning/diagnostic mode; use independent traces");
 
 
@@ -6284,6 +6287,9 @@ void TracerPOTotal::TraceWeightedOrientations(
             // Thread-local copies of all mutable tracing/preprocessing state.
             Particle localParticle = *m_particle;
             Scattering *localScatter = m_scattering->CloneFor(&localParticle, &m_incidentLight);
+            // This clone is owned by one preparation thread. Merge diagnostic
+            // pruning counters on destruction instead of contending per ray.
+            localScatter->BufferTraceStatistics();
             if(!allowResident)localScatter->m_gpuTracePrefilter=false;
 
             HandlerPO localHandler(&localParticle, &m_incidentLight,

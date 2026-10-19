@@ -29,12 +29,12 @@ bool AccumulateCachedPrefixBlock(int count,int offset,int total,const unsigned* 
         std::map<std::string,const Job*> used;
         for(size_t r=0;r<x.size();++r){
             const SourceRow source=allExact?SourceRow{exact[s],r}:rows[s].at(x[r]);
-            const Job& job=*source.first;const size_t index=source.second;Mueller matrix=job.matrix.at(index);
+            const Job& job=*source.first;const size_t index=source.second;const auto data=Payload(job);Mueller matrix=data->matrix.at(index);
             used[job.folder]=&job;
-            if(controls){const auto& c=job.controls.at(index);const auto& b=coefficients[r];
+            if(controls){const auto& c=data->controls.at(index);const auto& b=coefficients[r];
                 if(!allExact)matrix[0]=c[0]+b[0]*(c[1]-c[3])+b[1]*(c[2]-c[4]);
                 for(size_t k=0;k<5;++k)destination.controls[r][k]+=fraction*c[k];
-                refinement=std::max(refinement,job.controlRefinement);setup=job.controlSetup;
+                refinement=std::max(refinement,data->controlRefinement);setup=data->controlSetup;
             }
             for(size_t k=0;k<16;++k)destination.matrix[r][k]+=fraction*matrix[k];
         }

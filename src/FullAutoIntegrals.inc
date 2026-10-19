@@ -43,7 +43,14 @@ struct IntegralReader {
         // requesting area must neither read that scalar nor demand its revision.
         const auto path=folder+"/result/result"+(areaOnly||depth==s.depth?"":"_depth"+Number(depth))+"_integrals.tsv";
         IntegralScalar value;
-        if(Exists(path)){
+        if(Exists(folder+"/cutoff_sources.tsv")){
+            std::istringstream rows(ReadSource(folder+"/cutoff_sources.tsv"));int targetDepth,sign;std::string source;int terms=0;
+            while(rows>>targetDepth>>sign>>source)if(targetDepth==depth){
+                Require(sign==1||sign==-1,"invalid cutoff integral sign");
+                const auto part=Resolve(source,depth,areaOnly);value.area+=sign*part.area;value.ext+=sign*part.ext;++terms;
+            }
+            Require(rows.eof()&&terms==3,"incomplete signed cutoff integral recipe");
+        }else if(Exists(path)){
             if(!areaOnly&&depth!=s.depth){const auto revision=folder+"/result/result_depth"+Number(depth)+"_integrals_revision.txt";
                 if(!Exists(revision))throw LegacyPairedIntegral();
                 Require(ReadSource(revision)=="paired_extinction_v1\n","unsupported paired integral revision");}
