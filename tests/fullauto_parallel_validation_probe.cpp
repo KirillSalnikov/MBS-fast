@@ -13,7 +13,13 @@ int main(int argc,char**argv){try{
     std::vector<std::string> roots;for(const auto& job:original)roots.push_back(job.folder);
     e.dispatchThreads=1;const auto serial=e.PrefixStage(1024,e.seeds.data(),8,6,e.theta);
     e.dispatchThreads=4;const auto parallel=e.PrefixStage(1024,e.seeds.data(),8,6,e.theta);
+    // Small N can still reference a deep angular/prefix graph. Do not infer
+    // validation cost from the controller's native orientation-block size.
+    const int originalBlock=e.orientationBlock;e.orientationBlock=4096;
+    const auto historyBeforeSmall=Read(e.root+"/fullauto_history.jsonl").size();
     const auto exactStage=e.Stage(1024,e.seeds.data(),8,6,e.theta);
+    e.orientationBlock=originalBlock;
+    Require(Read(e.root+"/fullauto_history.jsonl").substr(historyBeforeSmall).find("\"count_per_seed\":1024,\"compound_roots\":true")!=std::string::npos,"small compound graph not prevalidated in parallel");
     for(size_t k=0;k<serial.size();++k)Require(exactStage[k].matrix==serial[k].matrix&&exactStage[k].controls==serial[k].controls,"parallel exact stage changed data");
     for(size_t k=0;k<serial.size();++k)Require(serial[k].matrix==parallel[k].matrix&&serial[k].controls==parallel[k].controls,"parallel prefix changed data");
 #ifdef _OPENMP

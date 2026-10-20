@@ -782,7 +782,7 @@ static long long PreparedStorageBudgetBytes()
                   << " MiB after the current process RSS"
                   << "\n  Fix: increase MBS_HOST_MEM_BUDGET_MB, reduce the "
                      "scattering grid, or run fewer concurrent jobs.";
-            throw std::runtime_error(error.str());
+            throw HostMemoryReserve::BudgetExhausted(error.str());
         }
         budgetKb = std::min(budgetKb, remainingKb);
     }

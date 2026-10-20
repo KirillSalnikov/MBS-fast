@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 namespace WorkerProtocol {
+// Retry the identical request once in a fresh process. Never accept its partial output.
+const int MemoryPressure = 75;
 inline bool Transfer(int fd,void* buffer,size_t bytes,bool sendData) {
     char* p=static_cast<char*>(buffer);
     while(bytes){ssize_t n=sendData?send(fd,p,bytes,MSG_NOSIGNAL):recv(fd,p,bytes,0);

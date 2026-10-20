@@ -32,7 +32,7 @@ void ExecutePersistent(std::vector<Job>& result,std::vector<std::vector<std::str
     // a changed resource budget or retain unused tuning workers.
     for(size_t slot=0;slot<services.size();++slot)if(services[slot]&&
         (slot>=slots||services[slot]->identity!=WorkerIdentity(workerGpus[slot])))services[slot].reset();
-    std::vector<int> slotJob(slots,-1);std::vector<double> begun(result.size());
+    std::vector<int> slotJob(slots,-1),memoryRetries(result.size(),0);std::vector<double> begun(result.size());
     size_t next=0,completed=0;
     auto launch=[&](size_t slot,size_t index){
         CheckHostMemory();
@@ -67,7 +67,18 @@ void ExecutePersistent(std::vector<Job>& result,std::vector<std::vector<std::str
             int rc;do{rc=poll(events.data(),events.size(),-1);}while(rc<0&&errno==EINTR);Require(rc>0,"cannot wait for persistent workers");
             for(size_t slot=0;slot<slots;++slot)if(events[slot].revents){
                 const size_t index=size_t(slotJob[slot]);Job& j=result[index];int status=-1;
-                Require(WorkerProtocol::Result(services[slot]->fd,status)&&status==0,"persistent worker failed; see "+j.folder+"/stdout.log");
+                const bool received=WorkerProtocol::Result(services[slot]->fd,status);
+                if(received&&status==WorkerProtocol::MemoryPressure&&memoryRetries[index]++==0){
+                    const pid_t failedPid=services[slot]->pid;
+                    services[slot].reset();slotJob[slot]=-1;j.pid=-1;
+                    std::remove((j.folder+"/worker.pid").c_str());
+                    const std::string savedLog=j.folder+"/stdout.memory-retry.log";
+                    Require(std::rename((j.folder+"/stdout.log").c_str(),savedLog.c_str())==0,"cannot preserve memory failure log");
+                    Log("worker_memory_retry","{\"folder\":"+Quoted(j.folder)+",\"old_pid\":"+Number(failedPid)
+                        +",\"retry\":1,\"same_sampling\":true,\"completed_blocks_preserved\":true,\"log\":"+Quoted(savedLog)+"}");
+                    launch(slot,index);continue;
+                }
+                Require(received&&status==0,"persistent worker failed; see "+j.folder+"/stdout.log");
                 j.pid=-1;j.seconds=Seconds()-begun[index];slotJob[slot]=-1;std::remove((j.folder+"/worker.pid").c_str());
                 // Feed the GPU before CPU validation and durable checkpoint I/O.
                 if(next<todo.size())launch(slot,todo[next++]);

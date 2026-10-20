@@ -4,8 +4,11 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <stdexcept>
 
 namespace HostMemoryReserve {
+// A recoverable per-process limit, distinct from invalid input or CUDA errors.
+struct BudgetExhausted : std::runtime_error { using std::runtime_error::runtime_error; };
 struct Snapshot {long long totalKb=0,availableKb=0;};
 inline Snapshot Read(){
     Snapshot s;std::ifstream input("/proc/meminfo");std::string line;

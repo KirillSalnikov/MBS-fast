@@ -5,7 +5,9 @@ std::string ExecutionHash()const{
     std::ostringstream s;s<<workerThreads<<' '<<workerChunk<<'\n';for(const auto& gpu:gpus)s<<gpu<<'\n';for(const auto& v:base)s<<v<<'\n';
     // A variance pilot of B_N+(O_m-B_m) is a different estimator from a
     // full-off pilot with the same seed. Never reuse the latter's cache.
-    if(phiCutoffPilot)s<<"matched-cutoff-phi-pilot-v1\n";return Hash(s.str());
+    if(phiCutoffPilot)s<<"matched-cutoff-phi-pilot-v1\n";
+    if(!angleBatchPilotRecipe.empty())s<<"angle-batch-pilot "<<angleBatchPilotRecipe<<'\n';
+    return Hash(s.str());
 }
 void RemoveOption(const std::string& option,int count=1){
     for(size_t i=0;i<base.size();)if(base[i]==option){Require(i+size_t(count)<base.size(),"incomplete worker option");base.erase(base.begin()+i,base.begin()+i+count+1);}else ++i;

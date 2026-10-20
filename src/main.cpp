@@ -51,6 +51,10 @@
 #include "RunConfig.h"
 #include "FullAuto.h"
 #include "WorkerProtocol.h"
+#include "HostMemoryReserve.h"
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 #include "PreparedReuse.h"
 #include <sys/prctl.h>
 #include <map>
@@ -3725,6 +3729,11 @@ int RunCalculation(int argc, const char* argv[])
     }
 
     }
+    catch (const HostMemoryReserve::BudgetExhausted &ex)
+    {
+        std::cerr << "ERROR: calculation failed: " << ex.what() << std::endl;
+        return persistentWorker ? WorkerProtocol::MemoryPressure : 1;
+    }
     catch (const std::bad_alloc &)
     {
         std::cerr << "ERROR: calculation failed: host memory allocation was denied"
@@ -3826,6 +3835,16 @@ static int RunWorkerService(int fd,const char* executable) {
         std::vector<const char*> args{executable};for(size_t i=3;i<request.size();++i)args.push_back(request[i].c_str());
         args.push_back(nullptr);
         const int rc=RunCalculation(int(args.size()-1),args.data());
+#if defined(__GLIBC__)
+        // Physics objects have been destroyed. Return freed per-thread arenas
+        // to the OS before the next request checks RSS against its RAM budget.
+        const auto retained=QueryRuntimeResourceSnapshot().processRssKb;
+        if(retained>256LL*1024){
+            malloc_trim(0);
+            std::cout<<"Persistent worker memory: rss_before_trim_kib="<<retained
+                <<" rss_after_trim_kib="<<QueryRuntimeResourceSnapshot().processRssKb<<std::endl;
+        }
+#endif
         std::cout.flush();std::cerr.flush();fflush(nullptr);
         if(!WorkerProtocol::Reply(fd,rc)||rc!=0)break; // Never reuse a failed CUDA/physics state.
     }

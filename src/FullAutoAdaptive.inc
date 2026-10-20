@@ -38,9 +38,9 @@ std::map<int,std::vector<Engine::WorkRequest>> PhiRequests(const Engine& e,const
             result[group.first].push_back(r);}
     }return result;
 }
-void PrefetchBudget(Engine& e,const std::vector<Engine::WorkRequest>& requests,const unsigned* seeds){
-    if(e.thetaPhi.empty()){e.Prefetch(requests,seeds);return;}
-    const auto groups=PhiRequests(e,requests);for(const auto& group:groups){PhiScope scope(e,group.first);e.Prefetch(group.second,seeds);}
+void PrefetchBudget(Engine& e,const std::vector<Engine::WorkRequest>& requests,const unsigned* seeds,size_t angleCap=0){
+    if(e.thetaPhi.empty()){e.Prefetch(requests,seeds,angleCap);return;}
+    const auto groups=PhiRequests(e,requests);for(const auto& group:groups){PhiScope scope(e,group.first);e.Prefetch(group.second,seeds,angleCap);}
 }
 #include "FullAutoWork.inc"
 void GateLocalCost(Engine& e,AdditionalWork& work,Budgets& proposed,const std::vector<int>& depths,const std::vector<size_t>& ids){
@@ -207,7 +207,8 @@ InterpolationResult InterpolateBudget(const Engine& e,const std::vector<size_t>&
         result.maximum=std::max(result.maximum,result.errors[r]);if(result.errors[r]>e.interpolation)result.bad.push_back(evaluated[r]);}
     return result;
 }
-InterpolationResult CommonPrefixInterpolationImpl(Engine& e,const AdaptiveState& state,const std::vector<int>& depths,const std::vector<size_t>& evaluated,const unsigned* seeds,bool mergeWork=false){
+#include "FullAutoAngleBatch.inc"
+InterpolationResult CommonPrefixInterpolationImpl(Engine& e,const AdaptiveState& state,const std::vector<int>& depths,const std::vector<size_t>& evaluated,const unsigned* seeds,bool mergeWork=false,size_t angleCap=0){
     InterpolationResult result;result.errors.assign(evaluated.size(),0);result.matrixErrors.resize(evaluated.size());result.ratioErrors.resize(evaluated.size());const size_t width=std::min(size_t(4),state.knots.size());
     const auto groups=FullAutoAuditPlan::Stencils(state.knots,state.counts,evaluated);
     // Plan every stencil before reading its sampled values. Merge only native
@@ -218,18 +219,22 @@ InterpolationResult CommonPrefixInterpolationImpl(Engine& e,const AdaptiveState&
     if(prefetched){
         std::vector<Engine::WorkRequest> requests;
         for(const auto& group:groups){
+            // Existing wide groups already amortize tracing. Splitting them
+            // to the FP32 fusion cap can add work, so keep their legacy path.
+            if(angleCap&&group.second.rows.size()>angleCap)continue;
             const std::vector<size_t> ids(group.second.rows.begin(),group.second.rows.end());
             const auto part=BudgetRequests(e,depths,StencilBudgets(e,state.counts,group),ids);
             requests.insert(requests.end(),part.begin(),part.end());
         }
-        const double started=Seconds();PrefetchBudget(e,requests,seeds);
+        const double started=Seconds();PrefetchBudget(e,requests,seeds,angleCap);
         e.Log("interpolation_work_prefetch","{\"stencil_groups\":"+Number(groups.size())
             +",\"requests\":"+Number(requests.size())+",\"seconds\":"+Number(Seconds()-started)
-            +",\"stencil_budgets_unchanged\":true,\"max_pending_jobs\":128}");
+            +",\"stencil_budgets_unchanged\":true,\"angle_batch_cap\":"+Number(angleCap)+",\"max_pending_jobs\":128}");
     }
     std::ostringstream sources,budgets;budgets<<"group,theta_deg";for(size_t l=0;l<depths.size();++l)budgets<<",N_level"<<l;budgets<<'\n';size_t groupNumber=0;
     for(const auto& group:groups){const std::vector<size_t> ids(group.second.rows.begin(),group.second.rows.end());const auto ns=StencilBudgets(e,state.counts,group);
-        auto stage=EvaluateBudget(e,depths,ns,ids,seeds,!prefetched);const Samples data=Combine(stage.levels);const Matrix reference=Mean(data);const auto x=Angles(e.theta,ids);
+        const bool groupPrefetched=prefetched&&(!angleCap||group.second.rows.size()<=angleCap);
+        auto stage=EvaluateBudget(e,depths,ns,ids,seeds,!groupPrefetched);const Samples data=Combine(stage.levels);const Matrix reference=Mean(data);const auto x=Angles(e.theta,ids);
         for(size_t interval:group.second.intervals){const size_t left=std::min(interval?interval-1:0,state.knots.size()-width),right=std::min(interval,state.knots.size()-width);
             std::vector<double> knots;Samples supports(8);for(size_t k=left;k<right+width;++k){const size_t row=std::lower_bound(ids.begin(),ids.end(),state.knots[k])-ids.begin();knots.push_back(e.theta[state.knots[k]]);for(int s=0;s<8;++s)supports[s].push_back(data[s][row]);}
             // Use the globally selected endpoint derivatives: their local
@@ -255,13 +260,20 @@ InterpolationResult CommonPrefixInterpolation(Engine& e,const AdaptiveState& sta
     // not require rereading their unchanged descendants. Direct checks remain.
     ValidationBatch validation("one common-prefix interpolation verification");
     auto& shared=*activeValidationBatch;const size_t checked=shared.checked,reused=shared.reused;const double start=Seconds();
-    const bool merge=e.MergeInterpolationWork();
-    auto result=CommonPrefixInterpolationImpl(e,state,depths,evaluated,seeds,merge);
+    bool merge=e.MergeInterpolationWork();size_t angleCap=0;
+#ifdef MBS_GPU_FP32
+    if(!merge&&VerifyInterpolationAngleBatches(e,state,depths,evaluated)){merge=true;angleCap=64;}
+#endif
+    e.Log("interpolation_batch_plan","{\"merge_native_stencils\":"+std::string(merge?"true":"false")
+        +",\"angle_batch_cap\":"+Number(angleCap)+",\"evaluated_theta\":"+Number(evaluated.size())
+        +",\"stencil_prefixes_unchanged\":true,\"production_counts_unchanged\":true}");
+    auto result=CommonPrefixInterpolationImpl(e,state,depths,evaluated,seeds,merge,angleCap);
     e.Log("interpolation_source_validation","{\"checked_nodes\":"+Number(shared.checked-checked)
         +",\"reused_compound_graphs\":"+Number(shared.reused-reused)+",\"graph_cache_bytes\":"+Number(shared.compounds.Bytes())
         +",\"graph_cache_limit_bytes\":"+Number(shared.compounds.Limit())+",\"verification_seconds\":"+Number(Seconds()-start)
         +",\"merge_native_stencils\":"+(merge?"true":"false")
-        +",\"native_grouping_policy\":"+Quoted(merge?"coalesced compatible requests":"preserve FP32 reduction grouping")
+        +",\"angle_batch_cap\":"+Number(angleCap)
+        +",\"native_grouping_policy\":"+Quoted(angleCap?"validated bounded FP32 batches":merge?"coalesced compatible requests":"preserve FP32 reduction grouping")
         +",\"scope\":"+Quoted(shared.scope)+",\"direct_files_and_markers_checked_each_call\":true}");
     return result;
 }

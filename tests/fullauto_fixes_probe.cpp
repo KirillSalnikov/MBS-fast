@@ -61,11 +61,21 @@ void SharedGpuResources(const std::string& root){
 int main(int argc,char** argv){try{
     Require(argc==2,"output directory required");
     using namespace FullAutoScheduling;
+    for(size_t n:{size_t(0),size_t(2),size_t(63),size_t(64),size_t(65),size_t(129),size_t(9000)}){
+        std::vector<double> angles;for(size_t i=0;i<n;++i)angles.push_back(double(i));
+        const auto parts=AngleBatches(angles,64);std::vector<double> restored;
+        for(const auto& part:parts){Require(part.size()>=2&&part.size()<=64,"bounded angular packet size");
+            restored.insert(restored.end(),part.begin(),part.end());}
+        Require(restored==angles,"angular partition lost, repeated or reordered a row");
+        if(n)Require(AngleBatches(angles,0)==std::vector<std::vector<double>>{angles},"uncapped grouping changed");
+    }
     Require(!Resolved(1e100)&&Resolved(.2),"unbounded interval ranked as resolved");
     Require(PilotLimit(512,1<<20,false)==4096&&PilotLimit(512,1<<20,true)==512,"pilot bounds/override changed");
     Require(ShortPacket(9,32,4096,256,false)&&ShortPacket(147,1,4096,0,false),"real short packets excluded");
     Require(!ShortPacket(9,32,4096,256,true)&&!ShortPacket(6318,64,8192,0,false),"explicit or wide packet modified");
     Require(!ShortPacket(4,32,4096,512,false,512)&&ShortPacket(4,32,4096,0,false,512),"float cap or existing cap ignored");
+    Require(ShortPacketCandidate(2,false)==512&&ShortPacketCandidate(8,false)==512&&ShortPacketCandidate(9,false)==1024,"narrow FP64 candidate selection");
+    Require(ShortPacketCandidate(2,true)==512&&ShortPacketCandidate(44,true)==512,"FP32 candidate changed");
     Require(!RetryPhi(1024,2048,1)&&RetryPhi(1024,4096,1)&&!RetryPhi(1024,4096,3),"phi retries not bounded");
     {ArgPP args;RunConfig config;Engine cpu(args,config);Require(cpu.MergeInterpolationWork(),"CPU grouping optimization disabled");
      config.useGpu=true;Engine gpu(args,config);

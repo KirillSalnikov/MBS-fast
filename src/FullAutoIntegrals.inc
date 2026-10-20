@@ -77,29 +77,61 @@ struct IntegralProduction {
     bool directTargetFallback=false;
     std::map<std::string,std::string> files;
 };
-IntegralProduction IntegralProductionSources(const std::string& sources,const std::vector<unsigned>& seeds){
+IntegralProduction IntegralProductionSources(const std::string& sources,const std::vector<unsigned>& seeds,int requestedThreads=1){
     struct Source {size_t level;int sign,count;unsigned seed;std::string folder;};
     std::vector<Source> rows;std::map<size_t,int> maximum;std::istringstream input(sources);std::string line;
     while(std::getline(input,line)){if(line.empty())continue;std::istringstream row(line);Source r;std::string extra;
         Require(bool(row>>r.level>>r.sign>>r.count>>r.seed>>r.folder)&&!(row>>extra)&&r.count>0&&(r.sign==1||r.sign==-1),"invalid integral estimator sources");
         maximum[r.level]=std::max(maximum[r.level],r.count);rows.push_back(r);}
     Require(!maximum.empty()&&maximum.begin()->first==0&&seeds.size()==8,"missing integral production samples");
-    auto collect=[&](bool directTarget){IntegralReader reader;IntegralProduction result;std::ostringstream selected;result.directTargetFallback=directTarget;
-    for(size_t level=0;level<maximum.size();++level){Require(maximum.count(level),"missing integral correction level");
-        if(directTarget&&level!=0&&level!=maximum.size()-1)continue;
-        for(size_t i=0;i<8;++i)for(int sign:{1,-1}){
-            if((level==0||directTarget)&&sign==-1)continue;
-            std::vector<std::string> folders;for(const auto& r:rows)if(r.level==level&&r.sign==sign&&r.count==maximum[level]&&r.seed==seeds[i])folders.push_back(r.folder);
-            std::sort(folders.begin(),folders.end());folders.erase(std::unique(folders.begin(),folders.end()),folders.end());Require(!folders.empty(),"missing integral seed/level");
-            const int depth=reader.Sampling(folders.front()).depth;
-            const bool areaOnly=directTarget&&level==0&&level!=maximum.size()-1;
-            const auto value=reader.Prefix(folders,maximum[level],0,depth,seeds[i],areaOnly);
-            if(!directTarget||level==maximum.size()-1)result.samples[i].ext+=sign*value.ext;
-            if(level==0)result.samples[i].area=value.area;
-            for(const auto& folder:folders)selected<<level<<' '<<sign<<' '<<maximum[level]<<' '<<seeds[i]<<' '<<folder<<'\n';
+    for(size_t level=0;level<maximum.size();++level)Require(maximum.count(level),"missing integral correction level");
+#ifdef _OPENMP
+    const int threads=std::max(1,std::min(4,requestedThreads));
+#else
+    const int threads=1;(void)requestedThreads;
+#endif
+    auto collect=[&](bool directTarget){
+        IntegralProduction result;result.directTargetFallback=directTarget;
+        std::array<std::map<std::string,std::string>,8> files;
+        std::vector<std::array<std::string,8>> selected(maximum.size());
+        std::array<std::exception_ptr,8> errors{};
+        // Replicas are independent. Preserve the original level/sign/window
+        // accumulation order inside each replica, and the published source order.
+        // At most four readers coexist; no full graph is copied to every thread.
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(threads) schedule(dynamic,1)
+#endif
+        for(int i=0;i<8;++i){try{
+            IntegralReader reader;
+            for(size_t level=0;level<maximum.size();++level){
+                if(directTarget&&level!=0&&level!=maximum.size()-1)continue;
+                std::ostringstream selectedRows;
+                for(int sign:{1,-1}){
+                    if((level==0||directTarget)&&sign==-1)continue;
+                    std::vector<std::string> folders;for(const auto& r:rows)if(r.level==level&&r.sign==sign&&r.count==maximum.at(level)&&r.seed==seeds[i])folders.push_back(r.folder);
+                    std::sort(folders.begin(),folders.end());folders.erase(std::unique(folders.begin(),folders.end()),folders.end());Require(!folders.empty(),"missing integral seed/level");
+                    const int depth=reader.Sampling(folders.front()).depth;
+                    const bool areaOnly=directTarget&&level==0&&level!=maximum.size()-1;
+                    const auto value=reader.Prefix(folders,maximum.at(level),0,depth,seeds[i],areaOnly);
+                    if(!directTarget||level==maximum.size()-1)result.samples[i].ext+=sign*value.ext;
+                    if(level==0)result.samples[i].area=value.area;
+                    for(const auto& folder:folders)selectedRows<<level<<' '<<sign<<' '<<maximum.at(level)<<' '<<seeds[i]<<' '<<folder<<'\n';
+                }
+                selected[level][i]=selectedRows.str();
+            }
+            files[i]=std::move(reader.files);
+        }catch(...){errors[i]=std::current_exception();}}
+        // A real integrity failure must never be hidden by a legacy fallback.
+        bool legacy=false;
+        for(const auto& error:errors)if(error){try{std::rethrow_exception(error);}catch(const LegacyPairedIntegral&){legacy=true;}}
+        if(legacy)throw LegacyPairedIntegral();
+        for(const auto& replica:files)for(const auto& entry:replica){
+            const auto old=result.files.find(entry.first);Require(old==result.files.end()||old->second==entry.second,"integral source changed between replicas");
+            result.files.insert(entry);
         }
-    }
-    result.files=reader.files;result.selectedSources=selected.str();return result;};
+        for(const auto& level:selected)for(const auto& replica:level)result.selectedSources+=replica;
+        return result;
+    };
     try{return collect(false);}catch(const LegacyPairedIntegral&){return collect(true);}
 }
 double FullAutoAngularIntegral(const std::vector<double>& theta,const Matrix& matrix,bool go){
@@ -137,7 +169,7 @@ void ValidateIntegralSources(const std::string& root){
 void WriteFullAutoIntegrals(Engine& e,const std::string& folder,const Samples& output,const std::string& sources,bool final){
     const double begun=Seconds();
     Require(output.size()==8,"integrals need eight production scrambles");Directory(folder);
-    auto production=IntegralProductionSources(sources,e.seeds);const Matrix matrix=Mean(output);
+    auto production=IntegralProductionSources(sources,e.seeds,e.dispatchThreads>0?e.dispatchThreads:e.workerThreads);const Matrix matrix=Mean(output);
     const double rad=std::acos(-1.)/180;std::vector<double> radians,m11;
     for(size_t i=0;i<e.theta.size();++i){radians.push_back(e.theta[i]*rad);m11.push_back(matrix[i][0]);}
     const bool full=e.go||HasFullAngularCoverage(radians),absorption=e.args.IsCatched("abs")||e.config.refractiveImag!=0;

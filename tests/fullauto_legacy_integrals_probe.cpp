@@ -49,6 +49,9 @@ int main(int argc,char** argv){try{
             if(legacy){pairedNative=first;pairedView=lower;}
         }
         Atomic(dir+"/sources.tsv",sources.str());const auto result=IntegralProductionSources(sources.str(),seeds);
+        const auto parallel=IntegralProductionSources(sources.str(),seeds,4);
+        Check(parallel.files==result.files&&parallel.selectedSources==result.selectedSources&&parallel.directTargetFallback==result.directTargetFallback,"parallel provenance/fallback differs");
+        for(size_t i=0;i<8;++i)Check(parallel.samples[i].area==result.samples[i].area&&parallel.samples[i].ext==result.samples[i].ext,"parallel scalar differs");
         Check(result.directTargetFallback,"fallback not recorded");
         for(size_t i=0;i<8;++i){Check(std::fabs(result.samples[i].area-(25+i))<1e-12,"wrong window-weighted base area");Check(result.samples[i].ext==100+i,"legacy extinction used or duplicated");}
         for(const auto& entry:result.files)Check(entry.first.find("_depth4_integrals.tsv")==std::string::npos,"fallback reads untrusted lower scalar");
@@ -59,7 +62,7 @@ int main(int argc,char** argv){try{
         try{quantities.Resolve(pairedView,4);}catch(const LegacyPairedIntegral&){rejected=true;}
         Check(rejected,"area cache masks invalid extinction");
         Atomic(pairedNative+"/result/result.dat","corrupt matrix\n");rejected=false;
-        try{IntegralProductionSources(sources.str(),seeds);}catch(const std::exception&){rejected=true;}
+        try{IntegralProductionSources(sources.str(),seeds,4);}catch(const std::exception&){rejected=true;}
         Check(rejected,"fallback bypasses source integrity");
     }
     std::cout<<"PASS: mixed/all legacy base views; eight replicas; explicit/derived area; nested prefixes; duplicate angles; weighted windows; quantity cache; corruption rejection\n";

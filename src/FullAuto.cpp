@@ -12,6 +12,7 @@
 #include "FullAutoPreparation.h"
 #include "FullAutoScheduling.h"
 #include "BoundedCache.h"
+#include "CheckedFileCache.h"
 #include "HostMemoryReserve.h"
 #include "IntegralCharacteristics.h"
 #include <poll.h>
@@ -70,27 +71,10 @@ std::string Hash(const std::string& s) {
     uint64_t h=14695981039346656037ULL;for(unsigned char c:s){h^=c;h*=1099511628211ULL;}
     std::ostringstream o;o<<std::hex<<h;return o.str();
 }
-std::string Read(const std::string& p) {
-    std::ifstream f(p.c_str(),std::ios::binary);Require(bool(f),"cannot read "+p);
-    return std::string(std::istreambuf_iterator<char>(f),std::istreambuf_iterator<char>());
-}
-// Reuse file digests only within this controller process. Both modification
-// and change times, inode and size must match; restart always rehashes files.
-std::string FileHash(const std::string& path) {
-    struct Entry {struct stat stamp;std::string hash;};
-    static thread_local BoundedCache<Entry> digests(32*1024*1024);
-    auto same=[](const struct stat& a,const struct stat& b){return a.st_dev==b.st_dev&&a.st_ino==b.st_ino&&a.st_size==b.st_size
-        &&a.st_mtim.tv_sec==b.st_mtim.tv_sec&&a.st_mtim.tv_nsec==b.st_mtim.tv_nsec
-        &&a.st_ctim.tv_sec==b.st_ctim.tv_sec&&a.st_ctim.tv_nsec==b.st_ctim.tv_nsec;};
-    struct stat before,after;Require(stat(path.c_str(),&before)==0,"cannot stat "+path);
-    const auto found=digests.Get(path);if(found&&same(before,found->stamp))return found->hash;
-    std::ifstream input(path.c_str(),std::ios::binary);Require(bool(input),"cannot read "+path);
-    uint64_t hash=14695981039346656037ULL;char buffer[65536];
-    while(input){input.read(buffer,sizeof(buffer));for(std::streamsize i=0;i<input.gcount();++i){hash^=static_cast<unsigned char>(buffer[i]);hash*=1099511628211ULL;}}
-    Require(input.eof(),"cannot hash "+path);std::ostringstream hex;hex<<std::hex<<hash;const std::string digest=hex.str();
-    Require(stat(path.c_str(),&after)==0&&same(before,after),"file changed while hashing "+path);
-    digests.Put(path,std::make_shared<Entry>(Entry{after,digest}),sizeof(Entry)+digest.capacity());return digest;
-}
+std::string Read(const std::string& p) { return CheckedFileCache::Read(p); }
+CheckedFileCache& ValidationFiles(){static thread_local CheckedFileCache files;return files;}
+std::string FileHash(const std::string& path) { return ValidationFiles().Hash(path); }
+std::string ReadValidationText(const std::string& path) { return ValidationFiles().Text(path); }
 bool Exists(const std::string& p) { struct stat s;return stat(p.c_str(),&s)==0; }
 // Explicit compatibility bridge for controller scheduling and CUDA scratch
 // allocation changes whose native optical matrices are numerically equivalent.
@@ -401,7 +385,7 @@ struct ValidationBatch {
 };
 void ValidateStoredJob(const std::string& folder,std::set<std::string>& visited){
     if(!visited.insert(folder).second)return;
-    const auto marker=Read(folder+"/complete.txt");
+    const auto marker=ReadValidationText(folder+"/complete.txt");
     auto* batch=activeValidationBatch;std::shared_ptr<const std::string> prior;
     if(batch){++batch->checked;prior=batch->compounds.Get(folder);if(!prior&&batch->fallback)prior=batch->fallback->compounds.Peek(folder);}
     const bool verifiedGraph=prior&&*prior==marker;
@@ -485,6 +469,7 @@ struct Engine {
     std::string angularAuditPolicy="auto",shortPacketPolicy="auto";
     bool balancedCorrection=false, correctionExecuting=false, phiCutoffPilot=false;
     bool shortPacketVerifying=false;std::map<std::string,bool> shortPacketChecks;
+    std::string angleBatchPilotRecipe;
     bool forbidNativeWork=false; // read-only checkpoint/planning probes only
     int dispatchThreads=0;
     std::vector<std::string> dispatchGpus;
@@ -1139,20 +1124,21 @@ struct Engine {
         return result;
     }
     #include "FullAutoWorkers.inc"
-    static int ShortPacketCandidate(){
+    static int ShortPacketCandidate(size_t rows){
 #ifdef MBS_GPU_FP32
-        return 512; // Smaller producer bursts reduced waits on RTX 3080 Ti.
+        return FullAutoScheduling::ShortPacketCandidate(rows,true);
 #else
-        return 1024;
+        return FullAutoScheduling::ShortPacketCandidate(rows,false);
 #endif
     }
     int ShortPacketChunk(const Job& job)const{
-        if(shortPacketVerifying||shortPacketPolicy=="off"||!config.useGpu||go||!kernel.pipeline||resourcePolicy!="auto"||!FullAutoScheduling::ShortPacket(job.inputAngles.size(),job.phi,job.count,workerChunk,args.IsCatched("chunk"),ShortPacketCandidate()))return 0;
-        return ShortPacketCandidate(); // cap the adaptive memory chunk; never bypass its memory guard
+        const int cap=ShortPacketCandidate(job.inputAngles.size());
+        if(shortPacketVerifying||shortPacketPolicy=="off"||!config.useGpu||go||!kernel.pipeline||resourcePolicy!="auto"||!FullAutoScheduling::ShortPacket(job.inputAngles.size(),job.phi,job.count,workerChunk,args.IsCatched("chunk"),cap))return 0;
+        return cap; // cap the adaptive memory chunk; never bypass its memory guard
     }
     bool VerifyShortPacketChunk(const Job& job,const std::vector<std::string>& actualCommand){
-        const int cap=ShortPacketCandidate();
-        const std::string key=Hash(std::string("short-packet-v4 ")+job.executionHash+Number(workerChunk)+" "+Number(cap)+" "+Number(job.depth)+" "+Number(job.pairedDepth)+" "+Number(job.phi)+" "+Number(job.mirrored)+" "+Number(job.hasControls)
+        const int cap=ShortPacketCandidate(job.inputAngles.size());
+        const std::string key=Hash(std::string("short-packet-v5 ")+job.executionHash+Number(workerChunk)+" "+Number(cap)+" "+Number(job.depth)+" "+Number(job.pairedDepth)+" "+Number(job.phi)+" "+Number(job.mirrored)+" "+Number(job.hasControls)
             +" "+Number(FullAutoPreparation::Bucket(job.inputAngles.size()))+" "+Number(int(job.inputAngles.front()/15))+" "+Number(int(job.inputAngles.back()/15)));
         auto known=shortPacketChecks.find(key);if(known!=shortPacketChecks.end())return known->second;
         const std::string path=root+"/short_packet_validation_"+key+".json";
@@ -1162,8 +1148,8 @@ struct Engine {
         double error=0,baselineSeconds=0,candidateSeconds=0;
         auto pilotJob=[&](unsigned seed,int chunk){
             Job j=job;j.count=2048;j.seed=seed;j.offset=0;j.assembled=false;j.pid=-1;
-            j.identity=Hash("short-packet-pilot-v4 "+binaryHash+key+Number(seed)+" "+Number(chunk));
-            j.executionHash=Hash(job.executionHash+" short-packet-validation-v4 "+Number(chunk));
+            j.identity=Hash("short-packet-pilot-v5 "+binaryHash+key+Number(seed)+" "+Number(chunk));
+            j.executionHash=Hash(job.executionHash+" short-packet-validation-v5 "+Number(chunk));
             j.folder=root+"/jobs/v"+j.identity;j.data=j.folder+"/result/result.dat";j.summary=j.folder+"/result/result_analytic_facets.tsv";
             if(cache.count(j.identity))return Materialize(cache.at(j.identity));
             if(Exists(j.folder+"/complete.txt")){std::set<std::string> seen;ValidateStoredJob(j.folder,seen);j=Load(j);CacheJob(j);return j;}
@@ -1199,7 +1185,7 @@ struct Engine {
         const double tolerance=std::min(1e-7,eps/1024);
 #endif
         const bool passed=error<=tolerance&&candidateSeconds<baselineSeconds*.97;
-        const std::string report="{\"execution_recipe\":"+Quoted(job.executionHash)+",\"paired_depth_checked\":"+Number(job.pairedDepth)+",\"passed\":"+std::string(passed?"true":"false")+",\"binary_fnv1a64\":"+Quoted(binaryHash)+",\"count_per_pilot\":2048,\"paired_pilots\":2,\"chunk_cap\":"+Number(cap)+",\"max_all16_and_ratios_difference\":"+Number(error)
+        const std::string report="{\"execution_recipe\":"+Quoted(job.executionHash)+",\"paired_depth_checked\":"+Number(job.pairedDepth)+",\"passed\":"+std::string(passed?"true":"false")+",\"binary_fnv1a64\":"+Quoted(binaryHash)+",\"count_per_pilot\":2048,\"paired_pilots\":2,\"theta_rows\":"+Number(job.inputAngles.size())+",\"baseline_chunk_cap\":"+Number(savedChunk)+",\"chunk_cap\":"+Number(cap)+",\"candidate_policy\":\"narrow-packets-512-v5\",\"max_all16_and_ratios_difference\":"+Number(error)
             +",\"numerical_tolerance\":"+Number(tolerance)+",\"baseline_processing_seconds\":"+Number(baselineSeconds)+",\"candidate_processing_seconds\":"+Number(candidateSeconds)+",\"minimum_saving_fraction\":0.03}";
         Record(path,report);Log("short_packet_validation",report);shortPacketChecks[key]=passed;return passed;
     }
@@ -1281,14 +1267,26 @@ struct Engine {
     }
     bool QueueEnabled()const{return (go||angularCache)&&workQueuePolicy!="off"&&(workQueuePolicy=="on"||config.useGpu||gpus.size()>1);}
     struct WorkRequest {int count,offset,depth,pairedDepth;std::vector<double> angles;};
-    void Prefetch(const std::vector<WorkRequest>& requests,const unsigned* seedSet){
+    void Prefetch(const std::vector<WorkRequest>& requests,const unsigned* seedSet,size_t angleCap=0){
         if(!QueueEnabled()||requests.empty())return;
         int maximum=0;for(const auto& request:requests)maximum=std::max(maximum,request.count);
         const int block=incremental?orientationBlock:maximum;
         int nextOffset=0;size_t nextLeaf=0;std::vector<WorkRequest> leaves;
+        std::vector<std::vector<double>> angleBatches;size_t nextAngleBatch=0;
+        WorkRequest boundedRequest;
+        auto prepareBatch=[&](){
+            const bool wasCollecting=collecting;collecting=true;
+            try{DirectStage(boundedRequest.count,seedSet,8,boundedRequest.depth,angleBatches[nextAngleBatch++],
+                    true,false,boundedRequest.offset,boundedRequest.pairedDepth);}
+            catch(...){collecting=wasCollecting;throw;}collecting=wasCollecting;
+        };
         // Stream at most one lookahead batch (128 descriptors). Its filesystem
         // and sampling-cache work runs after feeding another native GPU job.
         auto prepareOne=[&]()->bool{
+            // Emit only one bounded angular packet per lookahead step. A large
+            // union must not enqueue all its subdivisions beyond the 128-job
+            // descriptor limit.
+            if(nextAngleBatch<angleBatches.size()){prepareBatch();return true;}
             if(nextLeaf==leaves.size()){
                 if(nextOffset>=maximum)return false;
                 std::map<std::string,WorkRequest> merged;
@@ -1310,9 +1308,9 @@ struct Engine {
             std::vector<double> missing;for(double angle:x){bool complete=true;for(const auto& rows:covered)complete=complete&&rows.count(angle);if(!complete)missing.push_back(angle);}
             if(missing.size()==1){missing.push_back(x.front()==missing.front()?x.back():x.front());std::sort(missing.begin(),missing.end());}
             if(!missing.empty()){
-                const bool wasCollecting=collecting;collecting=true;
-                try{DirectStage(request.count,seedSet,8,request.depth,missing,true,false,request.offset,request.pairedDepth);}
-                catch(...){collecting=wasCollecting;throw;}collecting=wasCollecting;
+                boundedRequest=WorkRequest{request.count,request.offset,request.depth,request.pairedDepth,{}};
+                angleBatches=FullAutoScheduling::AngleBatches(missing,angleCap);nextAngleBatch=0;
+                prepareBatch();
             }
             return true;
         };
@@ -1344,9 +1342,12 @@ struct Engine {
         if(workerChunk>0){command.push_back("--orientation-chunk");command.push_back(Number(workerChunk));}
         command.push_back("--output");command.push_back(job.folder+"/result");std::ostringstream recipe;recipe<<exe<<'\n';for(const auto& v:command)recipe<<v<<'\n';return recipe.str();
     }
-    Job LowerView(const Job& source,int depth){
+    Job LowerView(const Job& source,int depth,bool materialize=true){
         const std::string identity=Hash(signature+"\npaired view\n"+source.identity+" "+Number(depth));
-        const auto resident=cache.find(identity);if(resident!=cache.end())return Materialize(resident->second);
+        // SharedStage registers all available lower views before selecting
+        // rows. Do not read matrices for discarded candidates. The selected
+        // rows still pass Payload's complete dependency validation.
+        const auto resident=cache.find(identity);if(resident!=cache.end())return materialize?Materialize(resident->second):resident->second;
         Job job=source;job.depth=depth;job.pairedDepth=0;job.assembled=true;job.identity=Hash(signature+"\npaired view\n"+source.identity+" "+Number(depth));job.folder=root+"/jobs/d"+job.identity;
         job.data=job.folder+"/result/result.dat";job.summary=job.folder+"/result/result_analytic_facets.tsv";job.matrix.clear();job.controls.clear();job.angles.clear();job.seconds=source.seconds*.5;
         if(!Exists(job.folder+"/complete.txt")){Directory(job.folder+"/result");const auto name=source.folder+"/result/result_depth"+Number(depth);
@@ -1372,16 +1373,68 @@ struct Engine {
             std::set<std::string> visited;ValidateStoredJob(job.folder,visited);job.matrix.clear();job.controls.clear();job.angles.clear();job=Load(job);CacheJob(job);result[s]=job;
         }return result;
     }
+    bool CachedPairPrefix(int n,const unsigned* seedSet,size_t ns,int upper,int lower,const std::vector<double>& x,
+                          std::pair<std::vector<Job>,std::vector<Job>>& result){
+        if(!angularCache||!incremental||n<=orientationBlock||!ns)return false;
+        const double started=Seconds();
+        const std::string wf=WriteWeights(x),weightHash=Hash(wf.empty()?"":Read(wf));
+        std::vector<std::string> upperKeys(ns,signature+"upper paired prefix"+Number(n));
+        std::vector<std::string> lowerKeys(ns,signature+"lower paired prefix"+Number(n));
+        for(int offset=0;offset<n;offset+=orientationBlock){
+            const int count=std::min(orientationBlock,n-offset);
+            for(size_t s=0;s<ns;++s){
+                std::set<double> covered;const Job* high=nullptr;const Job* low=nullptr;
+                for(const auto& entry:SamplingCandidates(count,seedSet[s],upper,offset)){
+                    const Job& job=*entry.second;if(!SameSampling(job,count,seedSet[s],upper,offset))continue;
+                    if(job.pairedDepth==lower){
+                        // A new lower view could change Stage's authoritative
+                        // identity. Fall back until all these views exist.
+                        if(!cache.count(Hash(signature+"\npaired view\n"+job.identity+" "+Number(lower))))return false;
+                        covered.insert(job.inputAngles.begin(),job.inputAngles.end());
+                    }
+                    if(job.inputAngles==x&&job.weightHash==weightHash)high=&job;
+                }
+                for(double angle:x)if(!covered.count(angle))return false;
+                for(const auto& entry:SamplingCandidates(count,seedSet[s],lower,offset)){
+                    const Job& job=*entry.second;
+                    if(SameSampling(job,count,seedSet[s],lower,offset)&&job.inputAngles==x&&job.weightHash==weightHash)low=&job;
+                }
+                // Same identity order and last-exact selection as Stage.
+                // No shortcut for partial angular assemblies.
+                if(!high||!low)return false;
+                upperKeys[s]+=high->identity;lowerKeys[s]+=low->identity;
+            }
+        }
+        std::vector<const Job*> high(ns),low(ns),roots;
+        for(size_t s=0;s<ns;++s){
+            auto a=cache.find(Hash(upperKeys[s])),b=cache.find(Hash(lowerKeys[s]));
+            if(a==cache.end()||b==cache.end())return false;
+            high[s]=&a->second;low[s]=&b->second;
+            if(high[s]->inputAngles!=x||low[s]->inputAngles!=x)return false;
+            roots.push_back(high[s]);roots.push_back(low[s]);
+        }
+        Require(FileHash(exe)==binaryHash,"binary changed during run");
+        ValidationBatch validation("cached paired prefix");
+        // Validate the stored prefix AND its entire selected source graph.
+        // Reusing a persisted result preserves its original summation order.
+        PrevalidateCachedJobs(roots,n,"cached paired prefix");
+        for(size_t s=0;s<ns;++s){result.first.push_back(Materialize(*high[s]));result.second.push_back(Materialize(*low[s]));}
+        Log("paired_prefix_reuse","{\"count_per_seed\":"+Number(n)+",\"seeds\":"+Number(ns)+",\"theta_rows\":"+Number(x.size())
+            +",\"blocks_per_seed\":"+Number((n-1)/orientationBlock+1)+",\"seconds\":"+Number(Seconds()-started)
+            +",\"source_identity_order_preserved\":true,\"dependency_validation_preserved\":true}");
+        return true;
+    }
     std::pair<std::vector<Job>,std::vector<Job>> SharedStage(int n,const unsigned* seedSet,size_t ns,int upper,int lower,const std::vector<double>& x){
+        std::pair<std::vector<Job>,std::vector<Job>> saved;if(CachedPairPrefix(n,seedSet,ns,upper,lower,x,saved))return saved;
         std::vector<std::vector<Job>> uppers,lowers;const int block=incremental?orientationBlock:n;
         for(int offset=0;offset<n;offset+=block){const int count=std::min(block,n-offset);std::vector<std::set<double>> covered(ns);std::vector<const Job*> candidates;
             for(size_t s=0;s<ns;++s)for(const auto& entry:SamplingCandidates(count,seedSet[s],upper,offset)){
                 const auto& job=*entry.second;if(job.pairedDepth!=lower||!SameSampling(job,count,seedSet[s],upper,offset))continue;
                 candidates.push_back(&job);covered[s].insert(job.inputAngles.begin(),job.inputAngles.end());}
-            for(const auto* job:candidates)LowerView(*job,lower);
+            for(const auto* job:candidates)LowerView(*job,lower,false);
             std::vector<double> missing;for(double angle:x){bool complete=true;for(const auto& rows:covered)complete=complete&&rows.count(angle);if(!complete)missing.push_back(angle);}
             if(missing.size()==1){missing.push_back(x.front()==missing.front()?x.back():x.front());std::sort(missing.begin(),missing.end());}
-            if(!missing.empty()){auto fresh=DirectStage(count,seedSet,ns,upper,missing,true,false,offset,lower);for(const auto& job:fresh)LowerView(job,lower);}
+            if(!missing.empty()){auto fresh=DirectStage(count,seedSet,ns,upper,missing,true,false,offset,lower);for(const auto& job:fresh)LowerView(job,lower,false);}
             auto jobs=Stage(count,seedSet,ns,upper,x,true,false,offset);auto views=Stage(count,seedSet,ns,lower,x,true,false,offset);
             for(auto& job:jobs){job.seconds*=.5;}
             uppers.push_back(jobs);lowers.push_back(views);}
@@ -1397,7 +1450,12 @@ struct Engine {
     }
     #include "FullAutoPrefixCache.inc"
     void PrevalidateCachedJobs(const std::vector<const Job*>& jobs,int count,const char* kind){
-        if(count/orientationBlock<32||jobs.size()<2)return;
+        if(jobs.size()<2)return;
+        // A small orientation count does not imply a cheap source graph:
+        // angular views can depend on many earlier grids at the SAME count.
+        // Retain the cheap-native cutoff, but verify compound roots in parallel.
+        const bool compound=std::any_of(jobs.begin(),jobs.end(),[](const Job* job){return job&&job->assembled;});
+        if(count/orientationBlock<32&&!compound)return;
         cpu_set_t allowed;CPU_ZERO(&allowed);const int available=sched_getaffinity(0,sizeof(allowed),&allowed)==0?std::max(1,CPU_COUNT(&allowed)):1;
         const int assigned=dispatchThreads>0?dispatchThreads:(args.IsCatched("threads")?workerThreads:available);
 #ifdef _OPENMP
@@ -1408,7 +1466,9 @@ struct Engine {
         if(threads==1)return;
         std::vector<std::string> roots;for(const auto* j:jobs)if(j&&!payloads.Peek(j->identity)&&Exists(j->folder+"/complete.txt"))roots.push_back(j->folder);
         if(roots.size()<2)return;
-        CheckHostMemory();const double started=Seconds();ValidateStoredRoots(roots,threads);
+        CheckHostMemory();const double started=Seconds();
+        Log("parallel_source_validation_start","{\"kind\":"+Quoted(kind)+",\"roots\":"+Number(roots.size())+",\"threads\":"+Number(std::min(threads,int(roots.size())))+",\"count_per_seed\":"+Number(count)+",\"compound_roots\":"+(compound?"true":"false")+"}");
+        ValidateStoredRoots(roots,threads);
         Log("parallel_source_validation","{\"kind\":"+Quoted(kind)+",\"roots\":"+Number(roots.size())+",\"threads\":"+Number(std::min(threads,int(roots.size())))
             +",\"seconds\":"+Number(Seconds()-started)+",\"temporary_graph_memo_limit_bytes\":67108864,\"thread_hash_cache_limit_bytes\":33554432,\"all_selected_source_checks_preserved\":true}");
     }

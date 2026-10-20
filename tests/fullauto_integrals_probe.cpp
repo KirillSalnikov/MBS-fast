@@ -25,6 +25,9 @@ int main(int argc,const char* argv[]){try{
     };
     for(size_t i=0;i<8;++i)save(e.root+"/replica"+FullAuto::Number(i)+".dat",samples[i]);
     save(e.root+"/frozen_matrix.dat",FullAuto::Mean(samples));
+    const auto serial=FullAuto::IntegralProductionSources(sources,e.seeds,1),parallel=FullAuto::IntegralProductionSources(sources,e.seeds,4);
+    FullAuto::Require(serial.files==parallel.files&&serial.selectedSources==parallel.selectedSources&&serial.directTargetFallback==parallel.directTargetFallback,"parallel integral provenance differs");
+    for(size_t i=0;i<8;++i)FullAuto::Require(serial.samples[i].area==parallel.samples[i].area&&serial.samples[i].ext==parallel.samples[i].ext,"parallel integral scalar differs");
     FullAuto::WriteFullAutoIntegrals(e,e.root,samples,sources,true);FullAuto::ValidateIntegralSources(e.root);
     // New native integral files must be covered by their completed-block receipt.
     auto entry=std::find_if(e.cache.begin(),e.cache.end(),[](const std::pair<const std::string,FullAuto::Job>& item){return !item.second.assembled;});

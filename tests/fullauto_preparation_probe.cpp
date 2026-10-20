@@ -12,14 +12,17 @@ int main(int argc,const char* argv[]){try{
             j.count=n;j.depth=4;j.phi=64;j.executionHash=e.ExecutionHash();j.inputAngles.resize(rows);
             j.preparationThreads=threads;j.traceSeconds=trace;j.diffractionSeconds=diffraction;e.CacheJob(j);}
         Require(input.eof()&&records>0,"invalid/empty production profiles");
-        Require(e.AutoPrepareThreads(8192,4,0,26)==8,"real 26-row production profile still limits CPU tracing to one thread");
-        Require(e.AutoPrepareThreads(8192,4,0,44)==8,"real 44-row production profile still limits CPU tracing to one thread");
-        std::cout<<"PASS: replayed "<<records<<" production profiles; 26-row and 44-row jobs select 8 preparation threads\n";return 0;
+        Require(e.AutoPrepareThreads(8192,4,0,26)==0,"split-only historical timings bypassed measured baseline requirement");
+        Require(e.AutoPrepareThreads(8192,4,0,44)==0,"split-only historical timings bypassed measured baseline requirement");
+        std::cout<<"PASS: replayed "<<records<<" split-only production profiles; measured baseline still required before a CPU-pool trial\n";return 0;
     }
     auto sample=[&](const std::string& name,int rows,double trace,double diffraction){
         Job j;j.identity=name;j.folder=name;j.count=8192;j.depth=4;j.phi=64;j.block=64;
         j.executionHash=e.ExecutionHash();j.inputAngles.resize(rows);j.preparationThreads=1;
-        j.traceSeconds=trace;j.diffractionSeconds=diffraction;return j;
+        j.traceSeconds=trace;j.diffractionSeconds=diffraction;
+        // Synthetic serial wall time: the current policy requires four
+        // comparable measured baseline observations before trying more cores.
+        j.processingSeconds=trace+diffraction;return j;
     };
     // Physical dispatch is not part of a saved estimator's execution identity.
     e.gpus={"0","1"};const std::string savedRecipe=e.ExecutionHash();
@@ -38,14 +41,17 @@ int main(int argc,const char* argv[]){try{
     Require(bare==std::vector<std::string>({"--threads","1","--po-prepare-threads","16"}),"controls were introduced into raw PO");
     Require(FullAutoOptionPolicy("fullauto_dispatch_threads")==FullAutoOptionPolicy("fullauto_gpus"),"dispatch threads leaked into native physics");
     e.dispatchThreads=0;
-    Job shortJob;shortJob.count=8192;shortJob.inputAngles.resize(7);e.kernel.pipeline=true;
-    Require(e.ShortPacketChunk(shortJob)==1024,"short native packet was not capped");
-    e.workerChunk=64;Require(e.ShortPacketChunk(shortJob)==0,"saved explicit chunk was overridden");e.workerChunk=0;
+    Job shortJob;shortJob.count=8192;shortJob.phi=64;shortJob.inputAngles.resize(7);e.kernel.pipeline=true;
+    Require(e.ShortPacketChunk(shortJob)==512,"very narrow native packet was not capped");
+    e.workerChunk=512;Require(e.ShortPacketChunk(shortJob)==0,"existing candidate cap was revalidated");e.workerChunk=0;
     e.resourcePolicy="off";Require(e.ShortPacketChunk(shortJob)==0,"disabled resource policy was overridden");e.resourcePolicy="auto";
     shortJob.inputAngles.resize(44);Require(e.ShortPacketChunk(shortJob)==0,"wide packet chunk changed");
     shortJob.inputAngles.resize(7);e.shortPacketPolicy="off";Require(e.ShortPacketChunk(shortJob)==0,"explicit short-packet opt-out ignored");e.shortPacketPolicy="auto";
+    {ArgPP fixed;RegisterCliOptions(fixed);const char* av[]={"probe","--orientation-chunk","64"};fixed.Parse(3,av);
+     Engine explicitEngine(fixed,config);explicitEngine.kernel.pipeline=true;
+     Require(explicitEngine.ShortPacketChunk(shortJob)==0,"explicit orientation chunk was overridden");}
     // Measured epyc1 production values, seconds per complete native block.
-    e.CacheJob(sample("comparable",26,1.890,.693));
+    for(int i=0;i<4;++i)e.CacheJob(sample("comparable"+Number(i),26,1.890,.693));
     for(int i=0;i<20;++i)e.CacheJob(sample("old_two_row_stall"+Number(i),2,1.743,7.8));
     Require(e.AutoPrepareThreads(8192,4,0,26)==8,"unrelated two-row GPU stalls disabled preparation pool");
     // A transient slow GPU in the same bucket cannot dominate its median.
