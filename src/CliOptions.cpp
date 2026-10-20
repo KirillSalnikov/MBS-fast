@@ -319,6 +319,8 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
          "Compare target depth with depth+2 and requested cutoffs with off on representative angles: on, off (default). Does not replace requested physics."},
         {"fullauto_depth_share", "fullauto-depth-sharing", 1, "MODE", "Orientation",
          "Share convex beam tracing for paired depths after an all-Mueller equivalence probe: on (default), off. Unsupported geometry uses independent traces."},
+        {"orientation_prefix_output", "orientation-prefix-output", 1, "M", "Orientation",
+         "Also save the first M equally weighted seeded Haar orientations during this native PO pass. Internal balanced-correction worker option; no additional tracing."},
         {"paired_depth", "paired-depth", 1, "LOWER", "Orientation",
          "Also output LOWER-depth coherent matrices from a shared convex trace; requires seeded Haar Sobol, no branch pruning or diagnostic samples."},
         {"adaptive_config", "adaptive-config", 1, "FILE", "Orientation",

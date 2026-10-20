@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <string>
 #include <vector>
 namespace WorkerProtocol {
@@ -34,4 +35,29 @@ inline bool Receive(int fd,std::vector<std::string>& words){
 }
 inline bool Reply(int fd,int code){int32_t value=code;return Transfer(fd,&value,sizeof(value),true);}
 inline bool Result(int fd,int& code){int32_t value=0;if(!Transfer(fd,&value,sizeof(value),false))return false;code=value;return true;}
+
+struct CompletionDispatchStats {
+    size_t readyBatches=0,readyBatchPeak=0,pendingPeak=0;
+};
+// A ready GPU must not wait behind another GPU's checkpoint/callback. First
+// consume the complete ready set (reap() also refills its worker), then commit
+// one result. Recheck between commits so a long CPU callback cannot postpone
+// every subsequent dispatch. Bound the queue to < 2*slots completed requests:
+// no unbounded backlog of uncommitted outputs or extra concurrent physics jobs.
+// pollReady(block) returns slot IDs; reap(slot,index) returns false for a
+// recovered request that was relaunched and has not completed successfully.
+template<class PollReady,class Reap,class Commit>
+CompletionDispatchStats DispatchCompletions(size_t total,size_t slots,PollReady pollReady,Reap reap,Commit commit) {
+    CompletionDispatchStats stats;std::deque<size_t> pending;size_t committed=0;
+    while(committed<total){
+        if(pending.size()<slots){
+            const auto ready=pollReady(pending.empty());
+            if(!ready.empty()){++stats.readyBatches;if(ready.size()>stats.readyBatchPeak)stats.readyBatchPeak=ready.size();}
+            for(size_t slot:ready){size_t index=0;if(reap(slot,index))pending.push_back(index);}
+            if(pending.size()>stats.pendingPeak)stats.pendingPeak=pending.size();
+        }
+        if(!pending.empty()){const size_t index=pending.front();commit(index);pending.pop_front();++committed;}
+    }
+    return stats;
+}
 }

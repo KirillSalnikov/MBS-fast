@@ -75,6 +75,7 @@ std::string Read(const std::string& p) { return CheckedFileCache::Read(p); }
 CheckedFileCache& ValidationFiles(){static thread_local CheckedFileCache files;return files;}
 std::string FileHash(const std::string& path) { return ValidationFiles().Hash(path); }
 std::string ReadValidationText(const std::string& path) { return ValidationFiles().Text(path); }
+std::string ReadVerifiedText(const std::string& path,const std::string& expected) { return ValidationFiles().VerifiedText(path,expected); }
 bool Exists(const std::string& p) { struct stat s;return stat(p.c_str(),&s)==0; }
 // Explicit compatibility bridge for controller scheduling and CUDA scratch
 // allocation changes whose native optical matrices are numerically equivalent.
@@ -107,6 +108,19 @@ void Atomic(const std::string& p,const std::string& text) {
     Require(rename(tmp.c_str(),p.c_str())==0,"rename failed "+p);
     const size_t slash=p.find_last_of('/');const std::string parent=slash==std::string::npos?".":p.substr(0,slash);
     fd=open(parent.c_str(),O_RDONLY|O_DIRECTORY);if(fd>=0){fsync(fd);close(fd);}
+}
+std::string SamplingIndexPath(const std::string& folder){
+    return folder+(Exists(folder+"/sampling.index")?"/sampling.index":"/complete.txt");
+}
+std::string DecodeSamplingIndex(const std::string& path,const std::string& text){
+    if(path.size()>=14&&path.substr(path.size()-14)=="sampling.index")return text;
+    const auto first=text.find('\n'),second=first==std::string::npos?first:text.find('\n',first+1);
+    Require(second!=std::string::npos,"missing compact sampling index");
+    std::istringstream header(text.substr(first+1,second-first-1));std::string magic,hash,extra;size_t size=0;
+    Require(bool(header>>magic>>hash>>size)&&!(header>>extra)&&magic=="MBS_SAMPLING_V1","invalid compact sampling header");
+    Require(size<=text.size()-second-1,"truncated compact sampling index");
+    const auto index=text.substr(second+1,size);
+    Require(Hash(index)==hash,"compact sampling index changed");return index;
 }
 std::string ProcessStart(pid_t pid){
     const std::string path="/proc/"+std::to_string(pid)+"/stat";if(!Exists(path))return "";
@@ -340,7 +354,7 @@ namespace {
 struct Kernel {bool pipeline=false;int block=64;std::string warp="auto";};
 struct Job {
     int offset=0,pairedDepth=0;
-    std::string folder,data,summary,identity,weightHash,executionHash;
+    std::string folder,data,summary,identity,weightHash,executionHash,indexMarkerHash;
     Matrix matrix;std::vector<double> angles,inputAngles;std::vector<std::array<double,5>> controls;
     int preparationThreads=0,dispatchChunk=0;double assemblySeconds=0;
     double seconds=0,controlRefinement=0,controlSetup=0,traceSeconds=0,diffractionSeconds=0,processingSeconds=-1,preparedWaitSeconds=-1,producerWaitSeconds=-1;pid_t pid=-1;
@@ -389,18 +403,18 @@ void ValidateStoredJob(const std::string& folder,std::set<std::string>& visited)
     auto* batch=activeValidationBatch;std::shared_ptr<const std::string> prior;
     if(batch){++batch->checked;prior=batch->compounds.Get(folder);if(!prior&&batch->fallback)prior=batch->fallback->compounds.Peek(folder);}
     const bool verifiedGraph=prior&&*prior==marker;
-    std::istringstream metadata(marker);std::string id,dataHash,summaryHash,sourceHash,integralHash;double seconds=0;
+    std::istringstream metadata(marker.substr(0,marker.find('\n')));std::string id,dataHash,summaryHash,sourceHash,integralHash;double seconds=0;
     Require(bool(metadata>>id>>seconds>>dataHash>>summaryHash)&&seconds>0,"invalid cached metadata");metadata>>sourceHash>>integralHash;
     Require(FileHash(folder+"/result/result.dat")==dataHash&&(summaryHash=="none"||FileHash(folder+"/result/result_analytic_facets.tsv")==summaryHash),"cached job changed; do not reuse corrupted files");
     if(!integralHash.empty()){
-        const auto manifest=Read(folder+"/integral_outputs.fnv");Require(Hash(manifest)==integralHash,"worker integral manifest changed");
+        const auto manifest=ReadVerifiedText(folder+"/integral_outputs.fnv",integralHash);
         std::istringstream rows(manifest);std::string path,hash;while(rows>>path>>hash)Require(FileHash(path)==hash,"worker integral output changed");
     }
-    if(Exists(folder+"/paired_depth.tsv")){const std::string manifest=Read(folder+"/paired_depth.tsv");if(!Exists(folder+"/cutoff_sources.tsv"))Require(Hash(manifest)==sourceHash,"paired depth manifest changed");
+    if(Exists(folder+"/paired_depth.tsv")){const std::string manifest=ReadValidationText(folder+"/paired_depth.tsv");if(!Exists(folder+"/cutoff_sources.tsv"))Require(Hash(manifest)==sourceHash,"paired depth manifest changed");
         else Require(!integralHash.empty(),"missing corrected depth integrity manifest");
         std::istringstream rows(manifest);std::string path,hash;while(rows>>path>>hash)Require(FileHash(path)==hash,"paired depth matrix changed");}
     if(Exists(folder+"/angular_sources.tsv")){
-        const std::string sources=Read(folder+"/angular_sources.tsv");Require(Hash(sources)==sourceHash,"angular cache provenance changed");
+        const std::string sources=ReadVerifiedText(folder+"/angular_sources.tsv",sourceHash);
         std::istringstream rows(sources);std::string row;while(std::getline(rows,row)){
             size_t tab=row.find('\t');Require(tab!=std::string::npos,"invalid angular cache source");
             const std::string source=row.substr(0,tab);Require(FileHash(source+"/complete.txt")==row.substr(tab+1),"angular cache source metadata changed");
@@ -527,14 +541,17 @@ struct Engine {
     static size_t JobBytes(const Job& job){
         size_t bytes=sizeof(Job)+job.matrix.capacity()*sizeof(Mueller)+job.angles.capacity()*sizeof(double)
             +job.inputAngles.capacity()*sizeof(double)+job.controls.capacity()*sizeof(std::array<double,5>);
-        for(const auto* value:{&job.folder,&job.data,&job.summary,&job.identity,&job.weightHash,&job.executionHash,&job.warp})bytes+=value->capacity();
+        for(const auto* value:{&job.folder,&job.data,&job.summary,&job.identity,&job.weightHash,&job.executionHash,&job.warp,&job.indexMarkerHash})bytes+=value->capacity();
         return bytes;
     }
     std::shared_ptr<const Job> Payload(const Job& job){
         auto found=payloads.Get(job.identity);if(found)return found;
         // Restored indices are candidates only. Validate the complete source
         // graph before first use; eviction never removes this integrity check.
-        if(job.matrix.empty()){std::set<std::string> verified;ValidateStoredJob(job.folder,verified);}
+        if(job.matrix.empty()){
+            if(!job.indexMarkerHash.empty())Require(FileHash(job.folder+"/complete.txt")==job.indexMarkerHash,"journal source marker changed");
+            std::set<std::string> verified;ValidateStoredJob(job.folder,verified);
+        }
         auto loaded=std::make_shared<Job>(job.matrix.empty()?Load(job,false):job);
         Require(loaded->angles.size()==loaded->inputAngles.size(),"sampling coordinates changed");
         for(size_t row=0;row<loaded->angles.size();++row)Require(std::fabs(loaded->angles[row]-loaded->inputAngles[row])<1e-10,"sampling coordinates changed");
@@ -551,6 +568,7 @@ struct Engine {
     static SamplingKey SamplingSlot(int n,unsigned seed,int depth,int offset){
         return {{uint64_t(n),uint64_t(seed),uint64_t(depth),uint64_t(offset)}};
     }
+    #include "FullAutoCompactIndex.inc"
     void CacheJob(const Job& job){
         const auto key=SamplingSlot(job.count,job.seed,job.depth,job.offset);
         auto found=cache.find(job.identity);
@@ -559,11 +577,13 @@ struct Engine {
             Require(SamplingSlot(old.count,old.seed,old.depth,old.offset)==key&&old.folder==job.folder,
                     "cached identity changed sampling coordinates");
         }
+        const bool newEntry=found==cache.end();
         Job metadata=job;DropPayload(metadata);
         Job& stored=cache[job.identity];stored=std::move(metadata);
         if(!job.matrix.empty())payloads.Put(job.identity,std::make_shared<Job>(job),JobBytes(job));
         else payloads.Erase(job.identity);
         samplingIndex[key][job.identity]=&stored;folderIndex[job.folder]=&stored;
+        if(newEntry)AppendIndex(job);
     }
     const JobBucket& SamplingCandidates(int n,unsigned seed,int depth,int offset=0)const{
         static const JobBucket empty;
@@ -942,20 +962,21 @@ struct Engine {
             for(double& v:m)Require(bool(r>>v)&&std::isfinite(v),"invalid worker matrix "+j.data);
             std::string extra;Require(!(r>>extra),"extra worker columns");j.matrix.push_back(m);}
         LoadDiagnostics(j,true);
+        j.indexMarkerHash.clear();
 
-        std::ostringstream index;index<<signature<<' '<<j.identity<<' '<<j.count<<' '<<j.offset<<' '<<j.seed<<' '<<j.depth<<' '<<j.phi<<' '<<j.block<<' '<<j.pipeline<<' '<<j.mirrored<<' '<<j.paired<<' '<<j.assembled<<' '<<j.hasControls<<' '<<j.pairedDepth<<' '<<j.warp<<' '<<j.weightHash<<' '<<j.executionHash<<'\n';
-        for(double angle:j.inputAngles)index<<Number(angle)<<'\n';
-        if(publishIndex){Atomic(j.folder+"/sampling.index",index.str());Atomic(j.folder+"/sampling.index.fnv",Hash(index.str()));}
+        if(publishIndex&&!compactIndex){const auto index=SamplingText(j);
+            Atomic(j.folder+"/sampling.index",index);Atomic(j.folder+"/sampling.index.fnv",Hash(index));}
         return j;
     }
     bool ReadCachedIndex(const std::string& folder,Job& j) const {
-        if(!Exists(folder+"/complete.txt")||!Exists(folder+"/sampling.index"))return false;
-        const std::string text=Read(folder+"/sampling.index");Require(Hash(text)==Read(folder+"/sampling.index.fnv"),"sampling index changed");
-        std::istringstream input(text);std::string configuration;
-        Require(bool(input>>configuration>>j.identity>>j.count>>j.offset>>j.seed>>j.depth>>j.phi>>j.block>>j.pipeline>>j.mirrored>>j.paired>>j.assembled>>j.hasControls>>j.pairedDepth>>j.warp>>j.weightHash>>j.executionHash),"invalid sampling index");
-        if(configuration!=signature||j.hasControls!=controls)return false;
-        double angle;while(input>>angle)j.inputAngles.push_back(angle);Require(input.eof()&&j.inputAngles.size()>=2,"invalid indexed grid");
-        j.folder=folder;j.data=folder+"/result/result.dat";j.summary=folder+"/result/result_analytic_facets.tsv";
+        if(!Exists(folder+"/complete.txt"))return false;
+        const auto path=SamplingIndexPath(folder);
+        if(path==folder+"/complete.txt"&&Read(path).find("\nMBS_SAMPLING_V1 ")==std::string::npos)return false;
+        const auto stored=Read(path);
+        const std::string text=DecodeSamplingIndex(path,stored);
+        if(path==folder+"/sampling.index")Require(Hash(text)==Read(folder+"/sampling.index.fnv"),"sampling index changed");
+        if(!ParseSampling(text,folder,j))return false;
+        if(path==folder+"/complete.txt")ReadCompactDiagnostics(stored,text,j);
         std::istringstream meta(Read(folder+"/complete.txt"));std::string identity;meta>>identity>>j.seconds;Require(identity==j.identity&&std::isfinite(j.seconds)&&j.seconds>0,"sampling identity changed");
         // Keep scheduling/control metadata identical to eager restoration.
         // Payload() verifies the immutable source graph and coordinates
@@ -969,8 +990,16 @@ struct Engine {
         if(warmedCacheControls.count(controls)){
             Log("cache_restore_reuse","{\"indexed_jobs\":"+Number(cache.size())+",\"controls\":"+(controls?"true":"false")+"}");return;
         }
+        const double journalStarted=Seconds();
+        struct RestoreScope {bool& flag;explicit RestoreScope(bool& v):flag(v){flag=true;}~RestoreScope(){flag=false;}} restoreScope(restoringIndex);
+        const size_t journalJobs=RestoreIndexJournal();
         DIR* directory=opendir((root+"/jobs").c_str());if(!directory)return;std::vector<std::string> folders;
-        while(auto* entry=readdir(directory)){if(entry->d_name[0]!='.')folders.push_back(root+"/jobs/"+entry->d_name);}closedir(directory);
+        while(auto* entry=readdir(directory)){if(entry->d_name[0]!='.'){
+            const auto folder=root+"/jobs/"+entry->d_name;
+            if(!compactIndex||!folderIndex.count(folder))folders.push_back(folder);
+        }}closedir(directory);
+        Log("cache_index_journal","{\"enabled\":"+std::string(compactIndex?"true":"false")+",\"journal_jobs\":"+Number(journalJobs)
+            +",\"fallback_folders\":"+Number(folders.size())+",\"seconds\":"+Number(Seconds()-journalStarted)+"}");
         cpu_set_t allowed;CPU_ZERO(&allowed);
         const int available=sched_getaffinity(0,sizeof(allowed),&allowed)==0?std::max(1,CPU_COUNT(&allowed)):1;
         const int assigned=dispatchThreads>0?dispatchThreads:(args.IsCatched("threads")?workerThreads:available);
@@ -980,11 +1009,12 @@ struct Engine {
         const int restoreThreads=1;
         (void)requestedRestoreThreads;
 #endif
-        const double started=Seconds();double reported=-1;size_t scanned=0;
+        const double started=journalStarted;double reported=-1;size_t scanned=0;
         auto progress=[&](bool finished){
             const double now=Seconds();if(!finished&&reported>=0&&now-reported<5)return;reported=now;
             Record(root+"/cache_restore_status.json","{\"status\":"+Quoted(finished?"indexed":"indexing")+",\"controller_pid\":"+Number(getpid())
-                +",\"restore_threads\":"+Number(restoreThreads)+",\"scanned_folders\":"+Number(scanned)+",\"total_folders\":"+Number(folders.size())+",\"indexed_jobs\":"+Number(cache.size())
+                +",\"restore_threads\":"+Number(restoreThreads)+",\"scanned_folders\":"+Number(journalJobs+scanned)+",\"total_folders\":"+Number(journalJobs+folders.size())+",\"indexed_jobs\":"+Number(cache.size())
+                +",\"journal_jobs\":"+Number(journalJobs)+",\"fallback_folders\":"+Number(folders.size())
                 +",\"elapsed_seconds\":"+Number(now-started)+",\"payload_validation\":\"before use, including dependencies\"}");
         };
         progress(false);
@@ -1005,7 +1035,8 @@ struct Engine {
             }
             for(size_t k=0;k<count;++k){
                 if(errors[k])std::rethrow_exception(errors[k]);
-                if(ready[k])CacheJob(jobs[k]);++scanned;progress(false);
+                if(ready[k]){CacheJob(jobs[k]);if(compactIndex){restoringIndex=false;AppendIndex(jobs[k]);restoringIndex=true;}}
+                ++scanned;progress(false);
             }
         }
         warmedCacheControls.insert(controls);
@@ -1354,7 +1385,7 @@ struct Engine {
             Atomic(job.data,Read(name+".dat"));if(controls)Atomic(job.summary,Read(name+"_analytic_facets.tsv"));Atomic(job.folder+"/command.args",Replay(job,job.inputAngles));
             Atomic(job.folder+"/stdout.log","Validated paired-depth view; standalone replay recipe.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");
             const std::string sources=source.folder+"\t"+FileHash(source.folder+"/complete.txt")+"\n";Atomic(job.folder+"/angular_sources.tsv",sources);
-            Atomic(job.folder+"/complete.txt",job.identity+" "+Number(job.seconds)+" "+FileHash(job.data)+" "+(controls?FileHash(job.summary):"none")+" "+Hash(sources)+"\n");}
+            PublishComplete(job,job.identity+" "+Number(job.seconds)+" "+FileHash(job.data)+" "+(controls?FileHash(job.summary):"none")+" "+Hash(sources)+"\n");}
         std::set<std::string> visited;ValidateStoredJob(job.folder,visited);job=Load(job);CacheJob(job);return job;
     }
     std::vector<Job> AssemblePairParts(const std::vector<std::vector<Job>>& parts,int n,const std::vector<double>& x,const std::string& tag){
@@ -1369,7 +1400,7 @@ struct Engine {
             if(!Exists(job.folder+"/complete.txt")){WriteMatrix(job.data,x,job.matrix);if(controls){std::ostringstream summary;summary<<std::setprecision(17)<<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n";
                     for(size_t r=0;r<x.size();++r){const auto& c=job.controls[r];const auto& b=coefficients[r];summary<<x[r];for(double v:c)summary<<'\t'<<v;summary<<'\t'<<c[0]-b[0]*c[3]-b[1]*c[4]<<'\t'<<job.matrix[r][0]<<'\t'<<job.controlRefinement<<'\t'<<job.controlSetup<<'\t'<<b[0]<<'\t'<<b[1]<<'\n';}Atomic(job.summary,summary.str());}
                 Atomic(job.folder+"/command.args",Replay(job,x));Atomic(job.folder+"/stdout.log","Exact paired Sobol-prefix assembly.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");Atomic(job.folder+"/angular_sources.tsv",dependencies.str());
-                Atomic(job.folder+"/complete.txt",job.identity+" "+Number(job.seconds)+" "+FileHash(job.data)+" "+(controls?FileHash(job.summary):"none")+" "+Hash(dependencies.str())+"\n");}
+                PublishComplete(job,job.identity+" "+Number(job.seconds)+" "+FileHash(job.data)+" "+(controls?FileHash(job.summary):"none")+" "+Hash(dependencies.str())+"\n");}
             std::set<std::string> visited;ValidateStoredJob(job.folder,visited);job.matrix.clear();job.controls.clear();job.angles.clear();job=Load(job);CacheJob(job);result[s]=job;
         }return result;
     }
@@ -1535,7 +1566,7 @@ struct Engine {
             Atomic(j.folder+"/stdout.log","Controller exact Sobol-prefix assembly; command.args is a full-prefix replay recipe.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");
             Atomic(j.folder+"/angular_sources.tsv",sources[s].str());
             Atomic(j.folder+"/orientation_reuse.json","{\"kind\":\"exact_sobol_prefix\",\"count\":"+Number(n)+",\"block\":"+Number(orientationBlock)+",\"seconds_scope\":\"represented full native work, including reused blocks\"}\n");
-            Atomic(j.folder+"/complete.txt",j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+" "+Hash(sources[s].str())+"\n");
+            PublishComplete(j,j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+" "+Hash(sources[s].str())+"\n");
             j.matrix.clear();j.controls.clear();j.angles.clear();j=Load(j);CacheJob(j);
         }
         Log("prefix_assembly_profile","{\"count\":"+Number(n)+",\"depth\":"+Number(depth)+",\"theta_rows\":"+Number(x.size())+",\"seeds\":"+Number(ns)+",\"cached_blocks_without_intermediate_views\":"+Number(cachedBlocks)+",\"elapsed_seconds\":"+Number(Seconds()-assemblyStarted)+",\"native_block_checkpoints_unchanged\":true}");
@@ -1645,7 +1676,7 @@ struct Engine {
             j.assemblySeconds=Seconds()-assemblyStarted;
             std::ostringstream provenance;provenance<<"{\"controller_assembly_seconds\":"<<Number(j.assemblySeconds)<<",\"kind\":\"angular_assembly\",\"requested_rows\":"<<x.size()<<",\"reused_rows\":"<<reused<<",\"new_worker_rows\":"<<missing.size()<<",\"cost_scope\":\"full-grid forecast from matching native jobs; not assembly wall time\",\"represented_native_seconds\":"<<Number(representedSeconds)<<",\"forecast_full_grid_seconds\":"<<Number(j.seconds)<<",\"M11_rebased_to_authoritative_full_grid_means\":"<<(controls?"true":"false")<<"}\n";
             Atomic(j.folder+"/angular_reuse.json",provenance.str());
-            Atomic(j.folder+"/complete.txt",j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+" "+Hash(dependencies.str())+"\n");
+            PublishComplete(j,j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+" "+Hash(dependencies.str())+"\n");
             j.matrix.clear();j.controls.clear();j.angles.clear();j=Load(j);CacheJob(j);++assembledJobs;reusedRows+=reused;newRows+=missing.size();
             std::cout<<"fullauto angular cache: seed="<<seedSet[s]<<" N="<<n<<" depth="<<depth<<" reused="<<reused<<" new="<<missing.size()<<std::endl;
         }
@@ -1756,8 +1787,8 @@ struct Engine {
         Log("theta_pilot_normalization","{\"native_M11\":"+std::string(controls?"true":"false")+",\"signed_control_residuals_retained\":"+(controls?"true":"false")+"}");return knots;
     }
     #include "FullAutoTuning.inc"
-    void Calibrate(const std::vector<double>& x,bool working=false) {
-        const int previousPhi=phi;weightTheta=x;weights.clear();polarWeights.clear();phi=fixedPhi?fixedPhi:4;Matrix ref;double fastest=std::numeric_limits<double>::max();Kernel winner=kernel;
+    void Calibrate(const std::vector<double>& x,bool working=false,bool kernelOnly=false) {
+        const int previousPhi=phi;weightTheta=x;weights.clear();polarWeights.clear();phi=fixedPhi?fixedPhi:std::max(minPhi,std::min(maxPhi,4));Matrix ref;double fastest=std::numeric_limits<double>::max();Kernel winner=kernel;
         if(config.useGpu&&!working&&!startupKernel){std::vector<Kernel> candidates(5);candidates[1].pipeline=candidates[2].pipeline=candidates[3].pipeline=candidates[4].pipeline=true;candidates[2].block=128;candidates[3].block=256;candidates[4].warp="thread";
             for(auto k:candidates){
                 if(fixedPipeline&&!k.pipeline)continue;if(fixedBlock)k.block=kernel.block;if(fixedWarp)k.warp=kernel.warp;
@@ -1770,6 +1801,7 @@ struct Engine {
                 const double native=std::max(1e-6,jobs[0].seconds-jobs[0].controlSetup);
                 if(error<=eps/1024&&native<fastest){fastest=native;winner=k;}}
             Require(fastest<std::numeric_limits<double>::max(),"no validated GPU kernel");kernel=winner;}
+        if(kernelOnly){Log("startup_kernel_only","{\"phi\":"+Number(phi)+",\"full_phi_search_deferred\":true}");return;}
         double best=std::numeric_limits<double>::max();bool bestResolved=false;int chosen=4;std::vector<std::array<double,2>> selected;
         std::vector<std::array<Mueller,2>> selectedPolar;std::vector<int> phiCandidates;
         for(int p:{1,2,4,8,16,32,64})if(p>=minPhi&&p<=maxPhi)phiCandidates.push_back(p);
@@ -1883,6 +1915,7 @@ int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],do
     std::unique_ptr<Engine> controller(new Engine(args,config));controller->Init(argc,argv,maximumEdge,maximumDiameter,volume);
     Lock lock(controller->root+"/controller.lock");
     const std::string identity=controller->root+"/configuration.txt";
+    controller->ConfigureIndex(!Exists(identity));
     if(Exists(identity))Require(Read(identity)==controller->signature+"\n","resume inputs/binary/environment changed; choose a new output directory");else Atomic(identity,controller->signature+"\n");
     controller->RecordFinalChecksPolicy();
     // A legacy audit may have committed native blocks but never assembled or

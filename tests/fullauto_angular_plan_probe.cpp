@@ -10,10 +10,10 @@ int main(int argc,const char* argv[]){try{
     std::vector<int> depths;for(int d:{std::max(1,e.target-4),std::max(1,e.target-2),e.target})if(depths.empty()||depths.back()!=d)depths.push_back(d);
     AdaptiveState state;state.counts=Budgets(depths.size(),std::vector<int>(e.theta.size(),e.minimum));state.counts[0].assign(e.theta.size(),e.initial);state.previous=Matrix(e.theta.size());state.valid.assign(e.theta.size(),false);state.coarse.assign(e.theta.size(),false);Require(RestoreAdaptive(e,state),"copied state not restored");
     std::istringstream list(Read(e.root+"/selected_jobs.txt"));std::string folder;size_t count=0;std::set<std::string> visited;
-    while(std::getline(list,folder)){Job j;std::istringstream index(Read(folder+"/sampling.index"));std::string signature;
+    while(std::getline(list,folder)){Job j;const auto path=SamplingIndexPath(folder);std::istringstream index(DecodeSamplingIndex(path,Read(path)));std::string signature;
         Require(bool(index>>signature>>j.identity>>j.count>>j.offset>>j.seed>>j.depth>>j.phi>>j.block>>j.pipeline>>j.mirrored>>j.paired>>j.assembled>>j.hasControls>>j.pairedDepth>>j.warp>>j.weightHash>>j.executionHash)&&signature==e.signature,"copied matrix sampling differs");
         if(j.hasControls!=e.controls)continue;double x;while(index>>x)j.inputAngles.push_back(x);j.folder=folder;j.data=folder+"/result/result.dat";j.summary=folder+"/result/result_analytic_facets.tsv";
-        ValidateStoredJob(folder,visited);std::istringstream meta(Read(folder+"/complete.txt"));std::string identity;meta>>identity>>j.seconds;Require(identity==j.identity,"copied identity differs");e.CacheJob(e.Load(j));++count;
+        ValidateStoredJob(folder,visited);std::istringstream meta(Read(folder+"/complete.txt"));std::string identity;meta>>identity>>j.seconds;Require(identity==j.identity,"copied identity differs");e.CacheJob(e.Load(j,false));++count;
     }
     const auto productionIds=AdaptiveGuards(state.knots,e.theta.size());auto ids=AdaptiveGuards(state.knots,e.theta.size(),true);if(e.theta.size()<=4097){ids.clear();for(size_t i=0;i<e.theta.size();++i)ids.push_back(i);}
     FullAutoAuditPlan::Extend(state.counts,productionIds,ids);const std::string queue=e.workQueuePolicy;e.workQueuePolicy="off";e.angularAuditPolicy="on";const bool sharing=e.depthSharing;e.depthSharing=false;

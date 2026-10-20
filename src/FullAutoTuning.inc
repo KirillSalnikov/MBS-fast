@@ -64,14 +64,17 @@ bool RestoreTuning(){
 void TuneResources(const std::vector<double>& x){
     const unsigned seedSet[2]={8001,8023};const int n=std::min(kernelCount,maxCount);
     std::ostringstream report;report<<"{\"policy\":"<<Quoted(resourcePolicy)<<",\"gpu_candidates\":[";
-    std::vector<std::pair<double,std::string>> speed;Matrix reference;bool first=true;
+    std::vector<std::pair<double,std::string>> speed;Matrix reference,scale;bool first=true;
+    auto pilotScale=[&](const Job& job){Matrix result=job.matrix;
+        if(controls)for(size_t row=0;row<result.size();++row)result[row][0]=job.controls.at(row)[0];
+        return result;};
     const auto allowed=gpus;
     if(autoGpus){for(const auto& gpu:allowed){
             const int device=int(std::find(gpuCandidates.begin(),gpuCandidates.end(),gpu)-gpuCandidates.begin());long long freeBytes=0,totalBytes=0;std::string memoryError;
             if(!QueryVisibleGpuMemory(device,freeBytes,totalBytes,memoryError)||freeBytes<512LL*1024*1024){
                 report<<(first?"":",")<<"{\"device\":"<<Quoted(gpu)<<",\"skipped\":true,\"free_bytes\":"<<freeBytes<<",\"reason\":"<<Quoted(memoryError.empty()?"less than 512 MiB free":memoryError)<<"}";first=false;continue;}
-            gpus={gpu};auto jobs=DirectStage(n,seedSet,2,target,x,false);double time=jobs[0].seconds+jobs[1].seconds,error=0;
-            if(reference.empty())reference=jobs[0].matrix;else error=Difference(jobs[0].matrix,reference,reference);
+            gpus={gpu};auto jobs=DirectStage(n,seedSet,2,target,x,controls);double time=jobs[0].seconds+jobs[1].seconds,error=0;
+            if(reference.empty()){reference=jobs[0].matrix;scale=pilotScale(jobs[0]);}else error=Difference(jobs[0].matrix,reference,scale);
             report<<(first?"":",")<<"{\"device\":"<<Quoted(gpu)<<",\"seconds\":"<<Number(time)<<",\"all16_difference\":"<<Number(error)<<"}";first=false;
             if(error<std::min(1e-7,eps/1024))speed.emplace_back(time,gpu);}
         Require(!speed.empty(),"no equivalent GPU pilot");std::sort(speed.begin(),speed.end());gpus.clear();
@@ -81,8 +84,8 @@ void TuneResources(const std::vector<double>& x){
     }else gpus=allowed;
     const auto selected=gpus;const int baselineThreads=workerThreads,baselineChunk=workerChunk;
     const int cap=std::max(1,QueryRuntimeResourceSnapshot().physicalCores/int(selected.size()));
-    gpus={selected.front()};auto baseline=DirectStage(n,seedSet,2,target,x,false);
-    reference=baseline[0].matrix;double best=baseline[0].seconds+baseline[1].seconds;int chosenThreads=workerThreads,chosenChunk=workerChunk;
+    gpus={selected.front()};auto baseline=DirectStage(n,seedSet,2,target,x,controls);
+    reference=baseline[0].matrix;scale=pilotScale(baseline[0]);double best=baseline[0].seconds+baseline[1].seconds;int chosenThreads=workerThreads,chosenChunk=workerChunk;
     report<<"],\"resource_candidates\":[{\"threads\":"<<workerThreads<<",\"chunk\":"<<workerChunk<<",\"seconds\":"<<Number(best)<<",\"all16_difference\":0}";
     double nativePilot=0;for(const auto& job:baseline)nativePilot+=job.NativeWall();
     const double forecastNative=nativePilot*double(initial+4LL*minimum)/n*4/std::max(size_t(1),selected.size());
@@ -91,20 +94,20 @@ void TuneResources(const std::vector<double>& x){
     if(resourcePolicy=="auto"&&amortized){
         std::set<int> threads;if(!args.IsCatched("threads"))for(int t:{1,2,4,8,16,32})if(t<=cap)threads.insert(t);
         threads.insert(workerThreads);
-        for(int t:threads){workerThreads=t;auto jobs=DirectStage(n,seedSet,2,target,x,false);const double seconds=jobs[0].seconds+jobs[1].seconds;
-            const double error=std::max(Difference(jobs[0].matrix,baseline[0].matrix,reference),Difference(jobs[1].matrix,baseline[1].matrix,reference));
+        for(int t:threads){workerThreads=t;auto jobs=DirectStage(n,seedSet,2,target,x,controls);const double seconds=jobs[0].seconds+jobs[1].seconds;
+            const double error=std::max(Difference(jobs[0].matrix,baseline[0].matrix,scale),Difference(jobs[1].matrix,baseline[1].matrix,scale));
             Log("resource_candidate","{\"threads\":"+Number(workerThreads)+",\"chunk\":"+Number(workerChunk)+",\"seconds\":"+Number(seconds)+",\"all16_difference_scaled_M11\":"+Number(error)+",\"budget\":"+Number(std::min(1e-7,eps/1024))+",\"numerically_accepted\":"+(error<std::min(1e-7,eps/1024)?"true":"false")+"}");
             report<<",{\"threads\":"<<t<<",\"chunk\":"<<workerChunk<<",\"seconds\":"<<Number(seconds)<<",\"all16_difference\":"<<Number(error)<<"}";
             if(error<std::min(1e-7,eps/1024)&&seconds<best*.95){best=seconds;chosenThreads=t;}}
         workerThreads=chosenThreads;
         if(!args.IsCatched("chunk"))for(int chunk:{64,256,1024,4096})if(chunk<=n||chunk==64){workerChunk=chunk;
-            auto jobs=DirectStage(n,seedSet,2,target,x,false);const double seconds=jobs[0].seconds+jobs[1].seconds;
-            const double error=std::max(Difference(jobs[0].matrix,baseline[0].matrix,reference),Difference(jobs[1].matrix,baseline[1].matrix,reference));
+            auto jobs=DirectStage(n,seedSet,2,target,x,controls);const double seconds=jobs[0].seconds+jobs[1].seconds;
+            const double error=std::max(Difference(jobs[0].matrix,baseline[0].matrix,scale),Difference(jobs[1].matrix,baseline[1].matrix,scale));
             Log("resource_candidate","{\"threads\":"+Number(workerThreads)+",\"chunk\":"+Number(workerChunk)+",\"seconds\":"+Number(seconds)+",\"all16_difference_scaled_M11\":"+Number(error)+",\"budget\":"+Number(std::min(1e-7,eps/1024))+",\"numerically_accepted\":"+(error<std::min(1e-7,eps/1024)?"true":"false")+"}");
             report<<",{\"threads\":"<<workerThreads<<",\"chunk\":"<<chunk<<",\"seconds\":"<<Number(seconds)<<",\"all16_difference\":"<<Number(error)<<"}";
             if(error<std::min(1e-7,eps/1024)&&seconds<best*.95){best=seconds;chosenChunk=chunk;}}
     }
-    workerThreads=chosenThreads;workerChunk=chosenChunk;auto chosen=DirectStage(n,seedSet,2,target,x,false);
+    workerThreads=chosenThreads;workerChunk=chosenChunk;auto chosen=DirectStage(n,seedSet,2,target,x,controls);
     double overhead=0,perOrientation=0;bool processingMeasured=true;for(const auto& job:chosen){
         overhead+=job.OutsideProcessing();perOrientation+=job.NativeWall()/n;processingMeasured=processingMeasured&&job.processingSeconds>=0;}
     overhead/=2;perOrientation/=2;
@@ -116,13 +119,32 @@ void TuneResources(const std::vector<double>& x){
         orientationBlock=proposed;
     }
     gpus=selected;report<<"],\"selected_gpus\":[";for(size_t i=0;i<gpus.size();++i)report<<(i?",":"")<<Quoted(gpus[i]);
-    report<<"],\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"selected_threads\":"<<workerThreads<<",\"selected_chunk\":"<<workerChunk<<",\"selected_orientation_block\":"<<orientationBlock
+    report<<"],\"phi\":"<<phi<<",\"depth\":"<<target<<",\"theta_rows\":"<<x.size()<<",\"controls\":"<<(controls?"true":"false")
+        <<",\"balanced_correction\":"<<(balancedCorrection?"true":"false")
+        <<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"selected_threads\":"<<workerThreads<<",\"selected_chunk\":"<<workerChunk<<",\"selected_orientation_block\":"<<orientationBlock
         <<",\"search_amortized\":"<<(amortized?"true":"false")<<",\"forecast_native_production_seconds\":"<<Number(forecastNative)<<",\"forecast_search_seconds\":"<<Number(predictedSearch)
         <<",\"explicit_threads_preserved\":"<<(args.IsCatched("threads")?"true":"false")<<",\"explicit_chunk_preserved\":"<<(args.IsCatched("chunk")?"true":"false")
         <<",\"outside_processing_seconds_per_worker\":"<<Number(overhead)<<",\"processing_seconds_per_orientation\":"<<Number(perOrientation)
         <<",\"processing_wall_measured\":"<<(processingMeasured?"true":"false")
         <<",\"block_model\":\"worker wall minus processing wall (overlapping phases are not summed); aim <=5% outside-processing overhead and <=120s processing work, bounded by 4096..1048576 and max orientations\",\"baseline_threads\":"<<baselineThreads<<",\"baseline_chunk\":"<<baselineChunk<<"}";
     Record(root+"/resource_calibration.json",report.str());
+}
+void TuneFinalResources(const std::vector<double>& angles){
+    if(resourcePolicy!="auto"&&!autoGpus)return;
+    std::vector<double> x;const size_t rows=std::min(size_t(17),angles.size());
+    for(size_t i=0;i<rows;++i)x.push_back(angles[i*(angles.size()-1)/std::max(size_t(1),rows-1)]);
+    // Analytic shared means are defined on the requested grid. Use its nearest
+    // actual nodes around backscatter instead of introducing new coordinates.
+    for(double angle:{170.,175.,178.,179.,179.5,180.})if(angle>=theta.front()&&angle<=theta.back()){
+        auto at=std::lower_bound(theta.begin(),theta.end(),angle);
+        if(at==theta.end())--at;
+        if(at!=theta.begin()&&std::fabs(*std::prev(at)-angle)<std::fabs(*at-angle))--at;
+        x.push_back(*at);}
+    std::sort(x.begin(),x.end());x.erase(std::unique(x.begin(),x.end()),x.end());
+    Log("final_resource_calibration","{\"phi\":"+Number(phi)+",\"depth\":"+Number(target)+",\"theta_rows\":"+Number(x.size())
+        +",\"controls\":"+(controls?"true":"false")+",\"balanced_correction\":"+(balancedCorrection?"true":"false")
+        +",\"complete_phi_selection_finished\":true,\"explicit_options_preserved\":true}");
+    TuneResources(x);SaveTuning();
 }
 void TuneRotations(const std::vector<double>& x){
     if(args.IsCatched("sym")){rotationBeta=args.GetIntValue("sym",0);rotationGamma=args.GetIntValue("sym",1);Record(root+"/rotation_verification.json","{\"explicit_override\":true}");return;}
@@ -213,8 +235,20 @@ void PrepareTuning(const std::vector<double>& angles){
     }
     Record(root+"/automatic_cutoff_validation.json","{\"enabled\":false}");
     std::vector<double> x;const size_t rows=std::min(size_t(17),angles.size());for(size_t i=0;i<rows;++i)x.push_back(angles[i*(angles.size()-1)/(rows-1)]);
-    const bool oldControls=controls;controls=false;SetMirror(false);phi=fixedPhi?fixedPhi:4;
-    if(resourcePolicy=="auto"||autoGpus)TuneResources(x);else Record(root+"/resource_calibration.json","{\"policy\":\"off\"}");
+    const bool oldControls=controls;controls=false;SetMirror(false);phi=fixedPhi?fixedPhi:std::max(minPhi,std::min(maxPhi,4));
+    if(autoGpus&&!go){
+        // Keep the original resource probe's availability guard before any
+        // final phi workers run, without benchmarking the wrong phi recipe.
+        std::vector<std::string> available;
+        for(const auto& gpu:gpus){const int device=int(std::find(gpuCandidates.begin(),gpuCandidates.end(),gpu)-gpuCandidates.begin());
+            long long freeBytes=0,totalBytes=0;std::string reason;
+            if(QueryVisibleGpuMemory(device,freeBytes,totalBytes,reason)&&freeBytes>=512LL*1024*1024)available.push_back(gpu);
+            else Log("gpu_availability_skip","{\"device\":"+Quoted(gpu)+",\"free_bytes\":"+Number(freeBytes)+",\"reason\":"+Quoted(reason.empty()?"less than 512 MiB free":reason)+"}");}
+        Require(!available.empty(),"no GPU with enough free memory for calibration");gpus=available;
+    }
+    if((resourcePolicy=="auto"||autoGpus)&&go)TuneResources(x);
+    else if(resourcePolicy=="auto"||autoGpus)Record(root+"/resource_calibration.json","{\"policy\":"+Quoted(resourcePolicy)+",\"deferred_until_final_phi\":true}");
+    else Record(root+"/resource_calibration.json","{\"policy\":\"off\"}");
     TuneRotations(x);
     TuneCutoffs(x);controls=oldControls;SetMirror(false);SaveTuning();
 }

@@ -2,6 +2,7 @@
 namespace {
 using Budgets=std::vector<std::vector<int>>;
 struct AdaptiveData {std::vector<Samples> levels;std::vector<std::vector<double>> costs;std::vector<double> analytic;std::string sources;};
+#include "FullAutoInterpolationCheckpoint.inc"
 std::vector<int> PeakBudgets(const Budgets& n){std::vector<int> result;for(const auto& level:n)result.push_back(*std::max_element(level.begin(),level.end()));return result;}
 double StatisticalError(const Engine& e,const Statistics& stats){return e.ratios?std::max(stats.maxInterval,stats.maxRatioInterval):stats.maxInterval;}
 bool VaryingBudgets(const Budgets& ns,const std::vector<size_t>& ids){for(const auto& level:ns)for(size_t id:ids)if(level[id]!=level[ids.front()])return true;return false;}
@@ -194,22 +195,41 @@ void HistoryRecord(Engine& e,int round,const std::string& record){
 std::vector<double> WorkingGrid(const Engine& e,const std::vector<size_t>& evaluated){std::vector<double> grid;const size_t n=std::min(size_t(257),evaluated.size());
     for(size_t i=0;i<n;++i)grid.push_back(e.theta[evaluated[i*(evaluated.size()-1)/(n-1)]]);
     return grid;}
-struct InterpolationResult {Samples output;Matrix matrixErrors,ratioErrors;std::vector<double> errors;std::vector<size_t> bad;double maximum=0;};
+struct InterpolationGrowth {
+    bool biasDominated=false,ratio=false;
+    int element=0,level=-1,phi=0;
+    double upper=0,mean=0,noise=0,seconds=0,reduction=0;
+    std::vector<std::pair<size_t,int>> counts;
+    std::vector<int> observedCounts;
+};
+struct InterpolationResult {
+    Samples output;Matrix matrixErrors,ratioErrors,matrixMeans,matrixNoise,ratioMeans,ratioNoise;
+    std::vector<double> errors;std::vector<size_t> bad;double maximum=0;
+    std::vector<InterpolationGrowth> growth;
+};
+#include "FullAutoInterpolationNoise.inc"
 #include "FullAutoCorrectionProbe.inc"
-InterpolationResult InterpolateBudget(const Engine& e,const std::vector<size_t>& knots,const std::vector<size_t>& evaluated,const Samples& samples){
+InterpolationResult InterpolateBudget(const Engine& e,const std::vector<size_t>& knots,const std::vector<size_t>& evaluated,const Samples& samples,
+        const AdaptiveData* stage=nullptr,const Budgets* counts=nullptr){
     InterpolationResult result;result.output.resize(8);result.errors.resize(evaluated.size());result.matrixErrors.resize(evaluated.size());result.ratioErrors.resize(evaluated.size());Samples predicted(8);const auto x=Angles(e.theta,evaluated),sx=Angles(e.theta,knots);const auto support=Support(samples,evaluated,knots);
+    InitInterpolationNoise(result,evaluated.size());
     for(int s=0;s<8;++s){predicted[s]=LocalCubicInterpolate(sx,support[s],x);result.output[s]=LocalCubicInterpolate(sx,support[s],e.theta);}
     const auto delta=Subtract(predicted,samples);const auto mean=Mean(delta),variance=Variance(delta),reference=Mean(samples),prediction=Mean(predicted);
-    for(size_t r=0;r<evaluated.size();++r){Require(reference[r][0]>0,"nonpositive interpolation reference");for(int j=0;j<16;++j){result.matrixErrors[r][j]=(std::fabs(mean[r][j])+t95*std::sqrt(variance[r][j]/8))/reference[r][0];result.errors[r]=std::max(result.errors[r],result.matrixErrors[r][j]);}
+    for(size_t r=0;r<evaluated.size();++r){Require(reference[r][0]>0,"nonpositive interpolation reference");for(int j=0;j<16;++j){result.matrixErrors[r][j]=(std::fabs(mean[r][j])+t95*std::sqrt(variance[r][j]/8))/reference[r][0];result.errors[r]=std::max(result.errors[r],result.matrixErrors[r][j]);
+            ObserveInterpolationNoise(e,result,r,j,false,result.matrixErrors[r][j],std::fabs(mean[r][j])/reference[r][0],t95*std::sqrt(variance[r][j]/8)/reference[r][0]);}
         if(e.ratios&&prediction[r][0]>0)for(int j=1;j<16;++j){const double a=prediction[r][j]/prediction[r][0],b=reference[r][j]/reference[r][0];double variance=0;
             for(int s=0;s<8;++s){const double influence=(predicted[s][r][j]-a*predicted[s][r][0])/prediction[r][0]-(samples[s][r][j]-b*samples[s][r][0])/reference[r][0];variance+=influence*influence/7;}
-            result.ratioErrors[r][j]=std::fabs(a-b)+t95*std::sqrt(variance/8);result.errors[r]=std::max(result.errors[r],result.ratioErrors[r][j]);}
+            result.ratioErrors[r][j]=std::fabs(a-b)+t95*std::sqrt(variance/8);result.errors[r]=std::max(result.errors[r],result.ratioErrors[r][j]);
+            ObserveInterpolationNoise(e,result,r,j,true,result.ratioErrors[r][j],std::fabs(a-b),t95*std::sqrt(variance/8));}
+        if(stage&&counts&&result.errors[r]>e.interpolation){
+            PlanInterpolationNoise(e,result.growth[r],*stage,*counts,evaluated,QueryWeights(e,knots,x[r]),evaluated[r],prediction[r],reference[r]);}
         result.maximum=std::max(result.maximum,result.errors[r]);if(result.errors[r]>e.interpolation)result.bad.push_back(evaluated[r]);}
     return result;
 }
 #include "FullAutoAngleBatch.inc"
 InterpolationResult CommonPrefixInterpolationImpl(Engine& e,const AdaptiveState& state,const std::vector<int>& depths,const std::vector<size_t>& evaluated,const unsigned* seeds,bool mergeWork=false,size_t angleCap=0){
     InterpolationResult result;result.errors.assign(evaluated.size(),0);result.matrixErrors.resize(evaluated.size());result.ratioErrors.resize(evaluated.size());const size_t width=std::min(size_t(4),state.knots.size());
+    InitInterpolationNoise(result,evaluated.size());
     const auto groups=FullAutoAuditPlan::Stencils(state.knots,state.counts,evaluated);
     // Plan every stencil before reading its sampled values. Merge only native
     // requests with identical seed, offset, depth and phi; retain each stencil's
@@ -223,7 +243,10 @@ InterpolationResult CommonPrefixInterpolationImpl(Engine& e,const AdaptiveState&
             // to the FP32 fusion cap can add work, so keep their legacy path.
             if(angleCap&&group.second.rows.size()>angleCap)continue;
             const std::vector<size_t> ids(group.second.rows.begin(),group.second.rows.end());
-            const auto part=BudgetRequests(e,depths,StencilBudgets(e,state.counts,group),ids);
+            const auto ns=StencilBudgets(e,state.counts,group);
+            const auto key=InterpolationGroupKey(e,depths,ns,ids,seeds);
+            if(Exists(InterpolationGroupPath(e,key)))continue; // validated below, before consuming any value
+            const auto part=BudgetRequests(e,depths,ns,ids);
             requests.insert(requests.end(),part.begin(),part.end());
         }
         const double started=Seconds();PrefetchBudget(e,requests,seeds,angleCap);
@@ -234,16 +257,30 @@ InterpolationResult CommonPrefixInterpolationImpl(Engine& e,const AdaptiveState&
     std::ostringstream sources,budgets;budgets<<"group,theta_deg";for(size_t l=0;l<depths.size();++l)budgets<<",N_level"<<l;budgets<<'\n';size_t groupNumber=0;
     for(const auto& group:groups){const std::vector<size_t> ids(group.second.rows.begin(),group.second.rows.end());const auto ns=StencilBudgets(e,state.counts,group);
         const bool groupPrefetched=prefetched&&(!angleCap||group.second.rows.size()<=angleCap);
-        auto stage=EvaluateBudget(e,depths,ns,ids,seeds,!groupPrefetched);const Samples data=Combine(stage.levels);const Matrix reference=Mean(data);const auto x=Angles(e.theta,ids);
+        const auto key=InterpolationGroupKey(e,depths,ns,ids,seeds);AdaptiveData stage;
+        if(!RestoreInterpolationGroup(e,key,depths.size(),ids.size(),stage)){
+            stage=EvaluateBudget(e,depths,ns,ids,seeds,!groupPrefetched);SaveInterpolationGroup(e,key,stage);}
+        const Samples data=Combine(stage.levels);const Matrix reference=Mean(data);const auto x=Angles(e.theta,ids);
         for(size_t interval:group.second.intervals){const size_t left=std::min(interval?interval-1:0,state.knots.size()-width),right=std::min(interval,state.knots.size()-width);
-            std::vector<double> knots;Samples supports(8);for(size_t k=left;k<right+width;++k){const size_t row=std::lower_bound(ids.begin(),ids.end(),state.knots[k])-ids.begin();knots.push_back(e.theta[state.knots[k]]);for(int s=0;s<8;++s)supports[s].push_back(data[s][row]);}
+            std::vector<double> knots;std::vector<size_t> supportIds;Samples supports(8);for(size_t k=left;k<right+width;++k){const size_t row=std::lower_bound(ids.begin(),ids.end(),state.knots[k])-ids.begin();knots.push_back(e.theta[state.knots[k]]);supportIds.push_back(state.knots[k]);for(int s=0;s<8;++s)supports[s].push_back(data[s][row]);}
             // Use the globally selected endpoint derivatives: their local
             // four-node windows are entirely contained in this stencil.
-            std::vector<double> query;std::vector<size_t> rows,positions;for(size_t r=0;r<evaluated.size();++r)if(evaluated[r]>=state.knots[interval]&&evaluated[r]<=state.knots[interval+1]){query.push_back(e.theta[evaluated[r]]);rows.push_back(std::lower_bound(ids.begin(),ids.end(),evaluated[r])-ids.begin());positions.push_back(r);}
+            // Stencils validates sorted, unique evaluated indices. Include
+            // both endpoints as before: shared knots belong to both adjacent
+            // intervals, in the same order, without rescanning all angles.
+            const auto first=std::lower_bound(evaluated.begin(),evaluated.end(),state.knots[interval]);
+            const auto last=std::upper_bound(first,evaluated.end(),state.knots[interval+1]);
+            std::vector<double> query;std::vector<size_t> rows,positions;for(auto at=first;at!=last;++at){query.push_back(e.theta[*at]);rows.push_back(std::lower_bound(ids.begin(),ids.end(),*at)-ids.begin());positions.push_back(at-evaluated.begin());}
             Samples predicted(8);for(int s=0;s<8;++s)predicted[s]=LocalCubicInterpolate(knots,supports[s],query);const Matrix pm=Mean(predicted);
             for(size_t r=0;r<rows.size();++r){double error=0;const auto& ref=reference[rows[r]];Require(ref[0]>0,"nonpositive common-prefix interpolation reference");
+                const double previousWorst=result.growth[positions[r]].upper;
                 for(int j=0;j<16;++j){double mean=0,var=0;for(int s=0;s<8;++s)mean+=(predicted[s][r][j]-data[s][rows[r]][j])/8;for(int s=0;s<8;++s)var+=std::pow(predicted[s][r][j]-data[s][rows[r]][j]-mean,2)/7;const double raw=(std::fabs(mean)+t95*std::sqrt(var/8))/ref[0];result.matrixErrors[positions[r]][j]=std::max(result.matrixErrors[positions[r]][j],raw);error=std::max(error,raw);
-                    if(e.ratios&&j&&pm[r][0]>0){const double a=pm[r][j]/pm[r][0],b=ref[j]/ref[0];double v=0;for(int s=0;s<8;++s){const double influence=(predicted[s][r][j]-a*predicted[s][r][0])/pm[r][0]-(data[s][rows[r]][j]-b*data[s][rows[r]][0])/ref[0];v+=influence*influence/7;}const double ratio=std::fabs(a-b)+t95*std::sqrt(v/8);result.ratioErrors[positions[r]][j]=std::max(result.ratioErrors[positions[r]][j],ratio);error=std::max(error,ratio);}}
+                    ObserveInterpolationNoise(e,result,positions[r],j,false,raw,std::fabs(mean)/ref[0],t95*std::sqrt(var/8)/ref[0]);
+                    if(e.ratios&&j&&pm[r][0]>0){const double a=pm[r][j]/pm[r][0],b=ref[j]/ref[0];double v=0;for(int s=0;s<8;++s){const double influence=(predicted[s][r][j]-a*predicted[s][r][0])/pm[r][0]-(data[s][rows[r]][j]-b*data[s][rows[r]][0])/ref[0];v+=influence*influence/7;}const double ratio=std::fabs(a-b)+t95*std::sqrt(v/8);result.ratioErrors[positions[r]][j]=std::max(result.ratioErrors[positions[r]][j],ratio);error=std::max(error,ratio);
+                        ObserveInterpolationNoise(e,result,positions[r],j,true,ratio,std::fabs(a-b),t95*std::sqrt(v/8));}}
+                if(result.growth[positions[r]].upper>std::max(previousWorst,e.interpolation)){
+                    auto weights=LocalCubicWeights(knots,query[r]);for(auto& w:weights)w.first=supportIds[w.first];
+                    PlanInterpolationNoise(e,result.growth[positions[r]],stage,ns,ids,weights,evaluated[positions[r]],pm[r],ref);}
                 result.errors[positions[r]]=std::max(result.errors[positions[r]],error);}
         }
         std::istringstream records(stage.sources);std::string line;while(std::getline(records,line))sources<<groupNumber<<' '<<line<<'\n';
@@ -484,7 +521,7 @@ bool IndependentAudit(Engine& e,AdaptiveState& state,const std::vector<int>& dep
             interp=InterpolateBudget(e,state.knots,ids,combined);
             if(common&&!angular){AdaptiveState checked=state;checked.counts=validationCounts;
                 const auto guards=CommonPrefixInterpolation(e,checked,depths,ids,seeds.data());
-                interp.errors=guards.errors;interp.matrixErrors=guards.matrixErrors;interp.ratioErrors=guards.ratioErrors;interp.maximum=guards.maximum;interp.bad=guards.bad;
+                CopyInterpolationCheck(interp,guards);
             }
         }catch(...){e.workQueuePolicy=savedQueue;throw;}
         e.workQueuePolicy=savedQueue;
@@ -554,6 +591,12 @@ int RunAdaptive(Engine& e){
     }
     if(resumed){RestoreWorkingPhi(e,state);RestoreCorrectionProbe(e,state);}
     PreparePointwisePolicy(e,state,resumed);
+    e.Record(e.root+"/interpolation_refinement_policy.json",
+        "{\"policy\":\"noise before angular refinement\",\"decision_scope\":\"production scheduling only\","
+        "\"noise_first_when\":\"every failing component has mean<=tolerance or mean<=noise95\","
+        "\"growth_per_selected_stencil_level\":2,\"allocation_uses_observed_stencil_prefix\":true,"
+        "\"all16_and_normalized_ratios\":true,\"count_cap_falls_back_to_theta\":true,"
+        "\"accuracy_gates_unchanged\":true,\"independent_audit_policy_unchanged\":true}");
     e.Record(e.root+"/allocation_policy.json","{\"model\":\"centered joint eight-scramble covariance and Fieller forecast\",\"max_growth_per_round\":4,\"correction_subrounds_per_round\":2,\"correction_subround_max_theta\":33,\"correction_subround_max_base_cost_fraction\":0.1,\"working_phi_recheck\":"+std::string(e.phiRecheck&&!e.fixedPhi&&!e.args.IsCatched("fullauto_pilot")?"true":"false")+",\"forecast_accepts_accuracy\":false,\"pointwise_error_budget_and_independent_audit\":"+std::string(e.finalAudit?"true":"false")+",\"production_error_budget_active\":true}");
     if(!resumed){const size_t initial=std::min(e.theta.size(),size_t(e.startTheta));for(size_t i=0;i<initial;++i)state.knots.push_back(i*(e.theta.size()-1)/(initial-1));
         auto ids=AdaptiveGuards(state.knots,e.theta.size());auto x=Angles(e.theta,ids);e.State("calibrating",0,PeakBudgets(state.counts),ids.size(),0,0,0);
@@ -568,6 +611,7 @@ int RunAdaptive(Engine& e){
         // common budget. Explicit 'on' remains available for experiments.
         if(e.localPolicy=="auto"&&e.theta.size()*size_t(e.phi)<=256)e.local=false;
         e.TuneTracing(WorkingGrid(e,ids));
+        e.TuneFinalResources(WorkingGrid(e,ids));
         SaveAdaptive(e,state);
     }
     double lastCI=0,lastInterpolation=0;size_t lastNodes=0;
@@ -584,10 +628,10 @@ int RunAdaptive(Engine& e){
         Budgets half=state.counts;std::vector<size_t> check;for(size_t id:ids)if(!state.coarse[id]&&state.counts[0][id]>=2*e.initial){half[0][id]/=2;check.push_back(id);}
         if(!check.empty()){auto previous=EvaluateBudget(e,{depths[0]},{half[0]},check,e.seeds.data());const auto pm=Mean(previous.levels[0]),cm=Mean(stage.levels[0]);
             for(size_t k=0;k<check.size();++k){const size_t r=std::lower_bound(ids.begin(),ids.end(),check[k])-ids.begin();double change=0;for(int j=0;j<16;++j)change=std::max(change,std::fabs(cm[r][j]-pm[k][j])/stats.mean[r][0]);state.coarse[check[k]]=change<=NumericalBudget(e);}}
-        auto interp=InterpolateBudget(e,state.knots,ids,data);
+        auto interp=InterpolateBudget(e,state.knots,ids,data,&stage,&state.counts);
         const bool common=e.local&&VaryingBudgets(state.counts,ids);
         e.Record(e.root+"/interpolation_production_mode.json","{\"common_prefix\":"+std::string(common?"true":"false")+"}");
-        if(common){auto checked=CommonPrefixInterpolation(e,state,depths,ids,e.seeds.data());interp.errors=checked.errors;interp.matrixErrors=checked.matrixErrors;interp.ratioErrors=checked.ratioErrors;interp.maximum=checked.maximum;interp.bad=checked.bad;}
+        if(common){auto checked=CommonPrefixInterpolation(e,state,depths,ids,e.seeds.data());CopyInterpolationCheck(interp,checked);}
         bool positive=true;for(const auto& m:Mean(interp.output))positive=positive&&m[0]>0;
 
         Statistics output;if(positive)output=Estimate(interp.output);double outputCI=positive?StatisticalError(e,output):1e100;
@@ -596,6 +640,7 @@ int RunAdaptive(Engine& e){
         PointwiseDecision budget;if(positive)budget=CheckPointwiseBudget(e,stats,output,interp,ids,"production");
         const bool pass=positive&&budget.directPass&&budget.outputPass&&interp.maximum<=e.interpolation&&change<=NumericalBudget(e)&&coarse;
         const std::string roundSnapshot=SaveRoundDiagnostics(e,state,stage,stats,ids,interp.errors,x);
+        WriteInterpolationNoise(e,interp,ids,roundSnapshot);
         if(positive){Atomic(roundSnapshot+"/pointwise_budget.csv",Read(e.root+"/pointwise_budget_production.csv"));WriteFullAutoIntegrals(e,roundSnapshot,interp.output,stage.sources,false);
             WritePOOutputAnnotations(e,roundSnapshot,state.knots,ids,stats,output,interp,common);}
         e.Log("round_decision","{\"round\":"+Number(state.round)+",\"statistics_pass\":"+(budget.directPass?"true":"false")
@@ -635,8 +680,7 @@ int RunAdaptive(Engine& e){
             state.streak=0;std::fill(state.valid.begin(),state.valid.end(),false);SaveAdaptive(e,state);continue;
         }
         for(size_t r=0;r<ids.size();++r){state.previous[ids[r]]=stats.mean[r];state.valid[ids[r]]=true;}
-        if(!interp.bad.empty()||!positive){std::set<size_t> next(state.knots.begin(),state.knots.end());next.insert(interp.bad.begin(),interp.bad.end());if(!positive)next.insert(ids.begin(),ids.end());
-            state.knots.assign(next.begin(),next.end());ExtendPhiBudgets(e,state.counts,ids,AdaptiveGuards(state.knots,e.theta.size()));state.streak=0;SaveAdaptive(e,state);continue;}
+        if(!interp.bad.empty()||!positive){RefineInterpolationFailures(e,state,ids,interp,positive);continue;}
         Budgets proposed=state.counts;bool grew=false;
         for(size_t r=0;r<ids.size();++r){const size_t id=ids[r];double error=0;for(int j=0;j<16;++j){error=std::max(error,stats.interval[r][j]);if(e.ratios)error=std::max(error,stats.ratioInterval[r][j]);}
             const auto residual=ResidualAt(e,interp,ids,id);

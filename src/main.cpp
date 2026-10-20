@@ -1678,7 +1678,7 @@ AngleRange GetRange(const ArgPP &parser, const std::string &key,
 
 static std::string PreparedRecipe(const ArgPP& args){
     // Observation coordinates and output destinations cannot affect a beam.
-    const std::set<std::string> omit={"o","close","log","profile_phases","grid","tgrid","nphi","trace_cache_mb","po_prepare_threads","threads","chunk","orientation_pipeline"};
+    const std::set<std::string> omit={"o","close","log","profile_phases","grid","tgrid","nphi","trace_cache_mb","po_prepare_threads","threads","chunk","orientation_pipeline","orientation_prefix_output"};
     std::ostringstream key;
     for(const auto& spec:GetCliOptionSpecs())if(args.IsCatched(spec.key)&&!omit.count(spec.key)){
         key<<spec.key.size()<<':'<<spec.key;
@@ -1768,7 +1768,7 @@ int RunCalculation(int argc, const char* argv[])
     }
 
     long long cacheMb=args.IsCatched("trace_cache_mb")?args.GetIntValue("trace_cache_mb"):(persistentWorker?256:0);
-    const auto resources=QueryRuntimeResourceSnapshot();cacheMb=std::min(cacheMb,std::max(0LL,resources.ramAvailableKb/1024/32));
+    const auto resources=QueryRuntimeMemorySnapshot();cacheMb=std::min(cacheMb,std::max(0LL,resources.ramAvailableKb/1024/32));
     if(const char* budget=getenv("MBS_HOST_MEM_BUDGET_MB"))cacheMb=std::min(cacheMb,std::max(0LL,std::atoll(budget)/16));
     PreparedReuse::Configure(size_t(cacheMb)*1024*1024);
 #ifdef USE_CUDA
@@ -2914,6 +2914,7 @@ int RunCalculation(int argc, const char* argv[])
                 ? args.GetIntValue("analytic_return_order",0) : 1;
             tracer->m_haarAlpha = args.IsCatched("haar_alpha") || args.IsCatched("so3_rule");
             tracer->m_pairedDepth = args.IsCatched("paired_depth")?args.GetIntValue("paired_depth"):0;
+            tracer->m_orientationPrefixOutput = args.IsCatched("orientation_prefix_output")?args.GetIntValue("orientation_prefix_output"):0;
             tracer->m_haarMirrorAudit = args.IsCatched("haar_mirror_audit");
             tracer->m_haarRotationAudit = args.IsCatched("haar_rotation_audit")?args.GetStringValue("haar_rotation_audit"):"";
             tracer->m_sobolOffset = args.IsCatched("sobol_offset")
@@ -3838,11 +3839,11 @@ static int RunWorkerService(int fd,const char* executable) {
 #if defined(__GLIBC__)
         // Physics objects have been destroyed. Return freed per-thread arenas
         // to the OS before the next request checks RSS against its RAM budget.
-        const auto retained=QueryRuntimeResourceSnapshot().processRssKb;
+        const auto retained=QueryRuntimeMemorySnapshot().processRssKb;
         if(retained>256LL*1024){
             malloc_trim(0);
             std::cout<<"Persistent worker memory: rss_before_trim_kib="<<retained
-                <<" rss_after_trim_kib="<<QueryRuntimeResourceSnapshot().processRssKb<<std::endl;
+                <<" rss_after_trim_kib="<<QueryRuntimeMemorySnapshot().processRssKb<<std::endl;
         }
 #endif
         std::cout.flush();std::cerr.flush();fflush(nullptr);

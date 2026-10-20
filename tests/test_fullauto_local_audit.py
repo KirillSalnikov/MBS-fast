@@ -3,7 +3,7 @@
 import argparse,json,os,signal,subprocess,time
 from pathlib import Path
 import numpy as np
-from audit_fullauto_v2 import matrix,grid,reconstruct,intervals,local_spline,common_bounds,interpolation_bounds
+from audit_fullauto_v2 import matrix,grid,reconstruct,intervals,local_spline,common_bounds,interpolation_bounds,sampling_text
 ROOT=Path(__file__).resolve().parents[1]
 def main():
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--probe',type=Path,required=True);p.add_argument('--worker',type=Path,required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args();root=a.output.resolve();root.mkdir(parents=True,exist_ok=True)
@@ -20,7 +20,7 @@ def main():
      assert process.poll() is None,'probe ended before interruption'
      if (out/'independent_audit_plan.json').exists():
       saved={str(p):p.stat().st_mtime_ns for p in (out/'jobs').glob('j*/complete.txt')
-             if int((p.parent/'sampling.index').read_text().splitlines()[0].split()[4])>=1000000000}
+             if int(sampling_text(p.parent).splitlines()[0].split()[4])>=1000000000}
       if saved:break
      time.sleep(.03)
     else:raise AssertionError('no committed holdout before timeout')

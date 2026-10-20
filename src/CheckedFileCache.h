@@ -60,6 +60,13 @@ public:
     size_t Limit()const{return entries.Limit();}
     std::string Hash(const std::string& path){return Get(path,false)->hash;}
     std::string Text(const std::string& path){return Get(path,true)->text;}
+    // Verify and return the same bytes with one freshness check. A cached
+    // digest alone must never authenticate a separately reopened manifest.
+    std::string VerifiedText(const std::string& path,const std::string& expected){
+        const auto value=Get(path,true);
+        Check(value->hash==expected,"cached manifest changed "+path);
+        return value->text;
+    }
     static std::string Read(const std::string& path){
         std::ifstream input(path.c_str(),std::ios::binary);Check(bool(input),"cannot read "+path);
         std::string result;char buffer[65536];

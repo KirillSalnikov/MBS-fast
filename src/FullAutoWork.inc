@@ -7,21 +7,47 @@ class AdditionalWork {
     using Depth=std::pair<int,int>;
     using Slot=std::array<uint64_t,5>; // N, offset, depth, paired depth, seed
     std::map<Depth,Profile> profiles;
-    std::map<Slot,std::vector<const Job*>> coverage;
+    struct Coverage {std::vector<const Job*> candidates;std::unique_ptr<double[]> angles;size_t size=0;bool indexed=false;};
+    struct CoverageBudget {size_t bytes=0,limit;explicit CoverageBudget(size_t maximum):limit(maximum){}};
+    std::shared_ptr<CoverageBudget> coverageBudget;
+    std::map<Slot,Coverage> coverage;
     std::map<std::string,WorkForecast> forecasts;
     std::map<int,std::unique_ptr<AdditionalWork>> phiWork;
     Slot Key(int n,int offset,int depth,int paired,unsigned seed)const{return {{uint64_t(n),uint64_t(offset),uint64_t(depth),uint64_t(paired),seed}};}
     bool Covered(int n,int offset,int depth,int paired,unsigned seed,double angle){
         if(ignoreCoverage)return false;
         const auto key=Key(n,offset,depth,paired,seed);auto found=coverage.find(key);
-        if(found==coverage.end()){std::vector<const Job*> candidates;for(const auto& item:e.SamplingCandidates(n,seed,depth,offset)){
-            const Job& job=*item.second;if(e.SameSampling(job,n,seed,depth,offset)&&(!paired||job.pairedDepth==paired))candidates.push_back(&job);}
-            found=coverage.emplace(key,candidates).first;}
-        for(const Job* job:found->second)if(std::binary_search(job->inputAngles.begin(),job->inputAngles.end(),angle))return true;return false;
+        if(found==coverage.end()){
+            Coverage value;size_t rawAngles=0;bool fits=true;
+            const size_t available=(coverageBudget->limit-coverageBudget->bytes)/sizeof(double);
+            for(const auto& item:e.SamplingCandidates(n,seed,depth,offset)){
+                const Job& job=*item.second;
+                if(e.SameSampling(job,n,seed,depth,offset)&&(!paired||job.pairedDepth==paired)){
+                    value.candidates.push_back(&job);
+                    if(fits){if(job.inputAngles.size()>available-rawAngles)fits=false;else rawAngles+=job.inputAngles.size();}
+                }
+            }
+            // Prebound the unmerged input, including duplicates, before any
+            // angle allocation. A full budget retains the original exact
+            // candidate lookup; neither case changes saved-work coverage.
+            if(fits){
+                if(rawAngles){
+                    value.angles.reset(new double[rawAngles]);double* next=value.angles.get();
+                    for(const Job* job:value.candidates)next=std::copy(job->inputAngles.begin(),job->inputAngles.end(),next);
+                    std::sort(value.angles.get(),next);
+                    value.size=std::unique(value.angles.get(),next)-value.angles.get();
+                }
+                coverageBudget->bytes+=rawAngles*sizeof(double);value.indexed=true;
+                std::vector<const Job*>().swap(value.candidates);
+            }
+            found=coverage.emplace(key,std::move(value)).first;
+        }
+        if(found->second.indexed)return found->second.size&&std::binary_search(found->second.angles.get(),found->second.angles.get()+found->second.size,angle);
+        for(const Job* job:found->second.candidates)if(std::binary_search(job->inputAngles.begin(),job->inputAngles.end(),angle))return true;return false;
     }
 
 public:
-    AdditionalWork(Engine& engine,const unsigned* seedSet,bool ignoreSaved=false,bool productionProfilesOnly=false,bool uniform=false):e(engine),ignoreCoverage(ignoreSaved),productionOnly(productionProfilesOnly),uniformPhi(uniform){
+    AdditionalWork(Engine& engine,const unsigned* seedSet,bool ignoreSaved=false,bool productionProfilesOnly=false,bool uniform=false,size_t coverageLimit=8*1024*1024):e(engine),ignoreCoverage(ignoreSaved),productionOnly(productionProfilesOnly),uniformPhi(uniform),coverageBudget(new CoverageBudget(coverageLimit)){
         std::copy(seedSet,seedSet+8,seeds.begin());const auto recipe=e.ExecutionHash();
         for(const auto& item:e.cache){const Job& j=item.second;
             if(productionProfilesOnly&&std::find(e.seeds.begin(),e.seeds.end(),j.seed)==e.seeds.end())continue;
@@ -39,10 +65,12 @@ public:
         }
         for(auto& item:profiles){auto& p=item.second;p.trace/=p.observations;p.diffraction/=p.observations;p.setup/=p.observations;p.overlap/=p.observations;}
     }
+    size_t CoverageIndexBytes()const{return coverageBudget->bytes;}
+    size_t CoverageIndexLimit()const{return coverageBudget->limit;}
     WorkForecast Forecast(const std::vector<Engine::WorkRequest>& requests){
         if(!uniformPhi&&!e.thetaPhi.empty()){
             WorkForecast total;const auto groups=PhiRequests(e,requests);
-            for(const auto& group:groups){PhiScope scope(e,group.first);auto& work=phiWork[group.first];if(!work)work.reset(new AdditionalWork(e,seeds.data(),ignoreCoverage,productionOnly,true));const auto part=work->Forecast(group.second);
+            for(const auto& group:groups){PhiScope scope(e,group.first);auto& work=phiWork[group.first];if(!work){work.reset(new AdditionalWork(e,seeds.data(),ignoreCoverage,productionOnly,true));work->coverageBudget=coverageBudget;}const auto part=work->Forecast(group.second);
                 total.seconds+=part.seconds;total.jobs+=part.jobs;total.profiled=total.profiled&&part.profiled;}return total;
         }
         std::ostringstream name;for(const auto& r:requests){name<<r.count<<':'<<r.depth<<':'<<r.pairedDepth<<':';for(double q:r.angles)name<<Number(q)<<',';name<<';';}

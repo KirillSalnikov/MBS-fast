@@ -15,8 +15,9 @@ void CompleteNative(Job& j) {
     }
     if(j.pairedDepth){const auto path=j.folder+"/result/result_depth"+Number(j.pairedDepth)+"_integrals_revision.txt";
         if(Exists(path))integrals<<path<<' '<<FileHash(path)<<'\n';}
+    AppendNativePrefixIntegrity(j,integrals);
     Atomic(j.folder+"/integral_outputs.fnv",integrals.str());
-    Atomic(j.folder+"/complete.txt",j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")
+    PublishComplete(j,j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")
         +(pairHash.empty()?" none":pairHash)+" "+Hash(integrals.str())+"\n");CacheJob(j);ObservePreparation(j);
     Log("worker_complete","{\"folder\":"+Quoted(j.folder)+",\"seconds\":"+Number(j.seconds)+",\"trace_prepare_seconds\":"+Number(j.traceSeconds)
         +",\"diffraction_and_controls_seconds\":"+Number(j.diffractionSeconds)+",\"processing_wall_seconds\":"+Number(j.NativeWall())
@@ -33,7 +34,7 @@ void ExecutePersistent(std::vector<Job>& result,std::vector<std::vector<std::str
     for(size_t slot=0;slot<services.size();++slot)if(services[slot]&&
         (slot>=slots||services[slot]->identity!=WorkerIdentity(workerGpus[slot])))services[slot].reset();
     std::vector<int> slotJob(slots,-1),memoryRetries(result.size(),0);std::vector<double> begun(result.size());
-    size_t next=0,completed=0;
+    size_t next=0;double checkpointSeconds=0,callbackSeconds=0;
     auto launch=[&](size_t slot,size_t index){
         CheckHostMemory();
         Job& j=result[index];ApplyAutomaticPreparation(j,commands[index]);begun[index]=Seconds();
@@ -62,11 +63,12 @@ void ExecutePersistent(std::vector<Job>& result,std::vector<std::vector<std::str
     };
     try {
         for(size_t slot=0;slot<slots&&next<todo.size();++slot)launch(slot,todo[next++]);
-        while(completed<todo.size()){
+        const auto dispatch=WorkerProtocol::DispatchCompletions(todo.size(),slots,[&](bool block){
             std::vector<pollfd> events(slots);for(size_t slot=0;slot<slots;++slot){events[slot].fd=slotJob[slot]>=0?services[slot]->fd:-1;events[slot].events=POLLIN;}
-            int rc;do{rc=poll(events.data(),events.size(),-1);}while(rc<0&&errno==EINTR);Require(rc>0,"cannot wait for persistent workers");
-            for(size_t slot=0;slot<slots;++slot)if(events[slot].revents){
-                const size_t index=size_t(slotJob[slot]);Job& j=result[index];int status=-1;
+            int rc;do{rc=poll(events.data(),events.size(),block?-1:0);}while(rc<0&&errno==EINTR);Require(rc>=0,"cannot wait for persistent workers");
+            std::vector<size_t> ready;for(size_t slot=0;slot<slots;++slot)if(events[slot].revents)ready.push_back(slot);return ready;
+        },[&](size_t slot,size_t& index){
+                index=size_t(slotJob[slot]);Job& j=result[index];int status=-1;
                 const bool received=WorkerProtocol::Result(services[slot]->fd,status);
                 if(received&&status==WorkerProtocol::MemoryPressure&&memoryRetries[index]++==0){
                     const pid_t failedPid=services[slot]->pid;
@@ -76,14 +78,21 @@ void ExecutePersistent(std::vector<Job>& result,std::vector<std::vector<std::str
                     Require(std::rename((j.folder+"/stdout.log").c_str(),savedLog.c_str())==0,"cannot preserve memory failure log");
                     Log("worker_memory_retry","{\"folder\":"+Quoted(j.folder)+",\"old_pid\":"+Number(failedPid)
                         +",\"retry\":1,\"same_sampling\":true,\"completed_blocks_preserved\":true,\"log\":"+Quoted(savedLog)+"}");
-                    launch(slot,index);continue;
+                    launch(slot,index);return false;
                 }
                 Require(received&&status==0,"persistent worker failed; see "+j.folder+"/stdout.log");
                 j.pid=-1;j.seconds=Seconds()-begun[index];slotJob[slot]=-1;std::remove((j.folder+"/worker.pid").c_str());
                 // Feed the GPU before CPU validation and durable checkpoint I/O.
                 if(next<todo.size())launch(slot,todo[next++]);
-                CompleteNative(j);++completed;if(onComplete)onComplete(index);
-            }
-        }
+                return true;
+        },[&](size_t index){
+            const double checkpointBegin=Seconds();CompleteNative(result[index]);checkpointSeconds+=Seconds()-checkpointBegin;
+            if(onComplete){const double callbackBegin=Seconds();onComplete(index);callbackSeconds+=Seconds()-callbackBegin;}
+        });
+        Log("worker_dispatch_summary","{\"requests\":"+Number(todo.size())+",\"slots\":"+Number(slots)
+            +",\"ready_batches\":"+Number(dispatch.readyBatches)+",\"ready_batch_peak\":"+Number(dispatch.readyBatchPeak)
+            +",\"completed_pending_checkpoint_peak\":"+Number(dispatch.pendingPeak)+",\"completed_pending_checkpoint_limit\":"+Number(2*slots-1)
+            +",\"checkpoint_seconds\":"+Number(checkpointSeconds)+",\"callback_seconds\":"+Number(callbackSeconds)
+            +",\"refill_before_checkpoint\":true}");
     }catch(...){for(auto& service:services)service.reset();throw;}
 }

@@ -5,13 +5,9 @@ from pathlib import Path
 import subprocess
 import numpy as np
 from scipy.interpolate import CubicHermiteSpline
+from fullauto_sampling import fnv, sampling_text
 
 T=2.3646242510102993
-
-def fnv(data):
-    value=14695981039346656037
-    for byte in data:value=((value^byte)*1099511628211)&((1<<64)-1)
-    return format(value,'x')
 
 def grid(path):return np.loadtxt(path,ndmin=1)
 def matrix(path):return np.loadtxt(path,skiprows=1,ndmin=2)
@@ -41,7 +37,7 @@ def stored_path(path,root):
 def validate(folder,seen,root):
     folder=stored_path(folder,root)
     if folder in seen:return
-    seen.add(folder);meta=(folder/'complete.txt').read_text().split()
+    seen.add(folder);meta=(folder/'complete.txt').read_text().splitlines()[0].split()
     assert fnv((folder/'result/result.dat').read_bytes())==meta[2],folder
     if meta[3]!='none':assert fnv((folder/'result/result_analytic_facets.tsv').read_bytes())==meta[3]
     sources=folder/'angular_sources.tsv'
@@ -110,7 +106,7 @@ def reconstruct(root,state,angles,budgets,source,seeds,records=None):
             for j in range(1,16):
                 wr=np.interp(raw[:,0],coefficients[:,0],coefficients[:,1+2*j]);ws=np.interp(raw[:,0],coefficients[:,0],coefficients[:,2+2*j])
                 values[:,j]+=wr*(control[:,2]-control[:,4])+ws*(control[:,3]-control[:,5])
-        sampling=(folder/'sampling.index').read_text().split();phi=int(sampling[6])
+        sampling=sampling_text(folder).split();phi=int(sampling[6])
         target=np.flatnonzero((budgets[:,level]==count)&(rules==phi));rows=nearest_rows(raw[:,0],angles[target]);ok=rows<len(raw)
         ok &= np.isclose(raw[np.minimum(rows,len(raw)-1),0],angles[target],rtol=0,atol=1e-10)
         target=target[ok];rows=rows[ok];sign_slot=0 if sign==1 else 1

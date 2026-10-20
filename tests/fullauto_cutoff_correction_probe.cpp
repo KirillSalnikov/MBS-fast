@@ -1,11 +1,25 @@
 #include "../src/FullAuto.cpp"
 using namespace FullAuto;
 void Setup(Engine& e,const std::string& root,const std::string& binary,bool controls,bool absorbing){
+    e.compactIndex=true;
     e.root=root;e.signature="cutoff-correction-regression-v1";Directory(root);Directory(root+"/jobs");e.exe=binary;e.binaryHash=FileHash(binary);
     e.controls=controls;e.depthSharing=true;e.gpus={""};e.seeds.assign(production,production+8);e.workerThreads=1;e.hostBudgetMb=512;
     e.phi=4;e.target=8;e.theta={170,175,180};e.initial=1024;e.orientationBlock=512;e.workerPolicy="process";e.resourcePolicy="off";
     e.base={"--method","po","--backend","cpu","--particle","1","2","1","--ri","1.3116",absorbing?".001":"0","--wavelength-um",".532","--symmetry","1","1","--cutoff-profile","off"};e.selectedCutoff="off";
     WriteGrid(root+"/requested_theta.csv",e.theta);
+}
+// A normal interruption cannot leave a durable journal record without its
+// marker: publishing the marker precedes appending/fsyncing the record. Remove
+// both in this fixture to simulate stopping before either commit; leaving only
+// the durable record is deliberate corruption and is tested separately.
+void DropUncommittedJournalJobs(const std::string& root,const std::set<std::string>& folders){
+    const auto path=root+"/completed_jobs.journal";if(!Exists(path))return;
+    std::istringstream in(Read(path));std::ostringstream kept;std::string header;
+    while(std::getline(in,header)){size_t length=0;std::string hash;std::istringstream h(header);Require(bool(h>>length>>hash),"invalid test journal");
+        std::string body(length,'\0');in.read(&body[0],length);char newline=0;Require(size_t(in.gcount())==length&&bool(in.get(newline))&&newline=='\n'&&Hash(body)==hash,"damaged test journal");
+        const auto name=body.substr(0,body.find('\n'));if(!folders.count(root+"/jobs/"+name))kept<<header<<'\n'<<body<<'\n';
+    }
+    Atomic(path,kept.str());
 }
 void Close(double a,double b,const char* message){Require(std::fabs(a-b)<=2e-12*std::max(1.,std::max(std::fabs(a),std::fabs(b))),message);}
 int main(int argc,char** argv){try{
@@ -19,11 +33,18 @@ int main(int argc,char** argv){try{
             state.round=1;noisy.maxInterval=1;Require(!WorkingPhiPilotDue(e,state,noisy),"one-round pilot triggered");e.initial=initial;}
         auto old=e.DirectStage(512,e.seeds.data(),8,8,e.theta);const auto oldHash=FileHash(old[0].folder+"/complete.txt");
         e.balancedCorrection=true;auto reused=e.DirectStage(512,e.seeds.data(),8,8,e.theta);Require(!reused[0].assembled&&FileHash(old[0].folder+"/complete.txt")==oldHash,"old off blocks rewritten");
-        // Queue batches five native legs per paired block, followed by assembly.
+        // New transactions need two native legs; the balanced prefix is captured in B_N.
         e.collecting=true;e.DirectStage(512,e.seeds.data(),8,8,e.theta,true,false,512,6);e.collecting=false;
         std::vector<size_t> todo;for(size_t i=0;i<e.pendingJobs.size();++i)todo.push_back(i);e.ExecutePrepared(e.pendingJobs,e.pendingCommands,todo);e.pendingJobs.clear();e.pendingCommands.clear();
         auto corrected=e.DirectStage(512,e.seeds.data(),8,8,e.theta,true,false,512,6);
         for(const auto& j:corrected){Require(j.assembled&&j.pairedDepth==6,"paired correction missing");IntegralReader reader;
+            Require(Read(j.folder+"/cutoff_prefix_recipe.txt")=="embedded-prefix-v1\n","new correction did not save its balanced prefix");
+            std::istringstream signedRows(Read(j.folder+"/cutoff_sources.tsv"));int sourceDepth,sourceSign;std::string sourceFolder;int prefixViews=0,nativeLegs=0;
+            while(signedRows>>sourceDepth>>sourceSign>>sourceFolder)if(sourceDepth==8){const Job source=e.Materialize(*e.folderIndex.at(sourceFolder));
+                if(sourceSign==-1){Require(source.assembled&&source.count==64,"balanced prefix was traced twice");++prefixViews;
+                    const auto replay=Read(source.folder+"/command.args");Require(replay.find("--cutoff-profile\nbalanced\n")!=std::string::npos&&replay.find("--orientation-prefix-output")==std::string::npos,"prefix standalone replay changed its estimator");}
+                else {Require(!source.assembled,"unexpected native correction source");++nativeLegs;}}
+            Require(prefixViews==1&&nativeLegs==2,"correction lost its two-leg transaction");
             for(int depth:{8,6}){const Job target=depth==8?j:e.LowerView(j,6);Matrix expected(3,Mueller{});IntegralScalar integrals;
                 std::istringstream sources(Read(j.folder+"/cutoff_sources.tsv"));int d,sign;std::string folder;
                 while(sources>>d>>sign>>folder)if(d==depth){const auto source=e.Materialize(*e.folderIndex.at(folder));const auto v=reader.Resolve(folder,depth);
@@ -74,12 +95,41 @@ int main(int argc,char** argv){try{
         auto mixed=restored.PrefixStage(1024,e.seeds.data(),8,8,e.theta);Require(mixed[0].matrix==prefix[0].matrix,"resume changed mixed estimator");
         auto isolated=e.DirectStage(512,e.seeds.data(),1,8,e.theta,true,false,2048);
         const auto folder=isolated[0].folder;std::remove((folder+"/complete.txt").c_str());
+        if(e.compactIndex){Engine missing(args,config);Setup(missing,root,argv[2],controls,controls);missing.balancedCorrection=true;missing.WarmCache();missing.forbidNativeWork=true;
+            bool rejected=false;try{missing.DirectStage(512,e.seeds.data(),1,8,e.theta,true,false,2048);}catch(const std::exception&){rejected=true;}
+            Require(rejected,"missing durably indexed marker was accepted");}
+        DropUncommittedJournalJobs(root,{folder});
         Engine interrupted(args,config);Setup(interrupted,root,argv[2],controls,controls);interrupted.balancedCorrection=true;interrupted.WarmCache();interrupted.forbidNativeWork=true;
         auto recovered=interrupted.DirectStage(512,e.seeds.data(),1,8,e.theta,true,false,2048);
         Require(recovered[0].matrix==isolated[0].matrix,"interrupted assembly changed or reran children");
+        // Rebuild a lost prefix view and parent using only its durable native
+        // products. The prefix source is hashed even though no worker ran for it.
+        std::istringstream prefixSources(Read(folder+"/cutoff_sources.tsv"));int pd,ps;std::string pf,prefixFolder,balancedFolder;
+        while(prefixSources>>pd>>ps>>pf)if(pd==8){if(ps==-1)prefixFolder=pf;else if(e.folderIndex.at(pf)->count==512)balancedFolder=pf;}
+        Require(!prefixFolder.empty()&&!balancedFolder.empty(),"missing embedded prefix provenance");
+        const auto nativePrefix=balancedFolder+"/result/result_prefix64.dat",prefixOriginal=Read(nativePrefix);
+        Atomic(nativePrefix,prefixOriginal+"corruption\n");bool prefixRejected=false;
+        try{std::set<std::string> seen;ValidateStoredJob(folder,seen);}catch(const std::exception&){prefixRejected=true;}
+        Require(prefixRejected,"changed embedded prefix was accepted");Atomic(nativePrefix,prefixOriginal);
+        std::remove((folder+"/complete.txt").c_str());std::remove((prefixFolder+"/complete.txt").c_str());
+        DropUncommittedJournalJobs(root,{folder,prefixFolder});
+        Require(std::rename((folder+"/result").c_str(),(folder+"/saved_before_prefix_recovery").c_str())==0,"cannot preserve test assembly");
+        Engine prefixRecovered(args,config);Setup(prefixRecovered,root,argv[2],controls,controls);prefixRecovered.balancedCorrection=true;prefixRecovered.WarmCache();prefixRecovered.forbidNativeWork=true;
+        auto rebuilt=prefixRecovered.DirectStage(512,e.seeds.data(),1,8,e.theta,true,false,2048);
+        Require(rebuilt[0].matrix==isolated[0].matrix,"lost prefix view caused native replay or changed matrix");
         const auto provenance=Read(folder+"/cutoff_sources.tsv");Atomic(folder+"/cutoff_sources.tsv",provenance+"corruption\n");bool rejected=false;
         try{std::set<std::string> seen;ValidateStoredJob(folder,seen);}catch(const std::exception&){rejected=true;}
         Require(rejected,"changed signed estimator was accepted");Atomic(folder+"/cutoff_sources.tsv",provenance);
+        // An interrupted pre-prefix transaction keeps its original five
+        // native legs; never silently reinterpret or discard existing work.
+        e.collecting=true;e.DirectStage(512,e.seeds.data(),1,8,e.theta,true,false,4096,6);e.collecting=false;
+        Require(e.pendingJobs.size()==1,"legacy test queued unexpected jobs");
+        const auto legacyIdentity=Hash(e.pendingJobs[0].identity+"\ncutoff-child-v1 512 8 0 1");Directory(root+"/jobs/c"+legacyIdentity);
+        e.ExecutePrepared(e.pendingJobs,e.pendingCommands,{0});const Job legacy=e.pendingJobs[0];
+        Require(!Exists(legacy.folder+"/cutoff_prefix_recipe.txt"),"interrupted legacy correction changed recipes");
+        std::istringstream legacySources(Read(legacy.folder+"/cutoff_sources.tsv"));int ld,ls;std::string lf;int independentBalanced=0;
+        while(legacySources>>ld>>ls>>lf){const Job part=e.Materialize(*e.folderIndex.at(lf));if(!part.assembled&&part.pairedDepth==0)++independentBalanced;}
+        Require(independentBalanced==4,"legacy independent-depth children were not preserved");e.pendingJobs.clear();e.pendingCommands.clear();
 
 
     }

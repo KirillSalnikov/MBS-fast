@@ -19,3 +19,18 @@ mkdir -p "$task_root/tests/.build"
 for task_fixture in epyc1 dima; do
     "$task_root/tests/.build/fullauto_audit_plan_probe" "$task_root/tests/data/local_audit/${task_fixture}_allocation.txt"
 done
+"${CXX:-g++}" -std=c++11 -O1 -ffunction-sections -fdata-sections -Wl,--gc-sections \
+    -I"$task_root/src" -I"$task_root/src/cuda" \
+    "$task_root/tests/fullauto_interpolation_noise_probe.cpp" \
+    "$task_root/src/CliOptions.cpp" "$task_root/src/RuntimeInfo.cpp" \
+    "$task_root/src/RunConfig.cpp" "$task_root/src/AdaptiveConfig.cpp" \
+    "$task_root/src/IntegralCharacteristics.cpp" "$task_root/cpu/GpuSupportStub.cpp" \
+    -o "$task_root/tests/.build/fullauto_interpolation_noise_probe"
+task_noise_dir="$(mktemp -d "$task_root/tests/.build/interpolation-noise.XXXXXX")"
+trap 'rm -rf "$task_noise_dir"' EXIT
+"$task_root/tests/.build/fullauto_interpolation_noise_probe" "$task_noise_dir"
+"${CXX:-g++}" -std=c++11 -O2 -I"$task_root/src" -I"$task_root/src/cuda" \
+    "$task_root/tests/test_runtime_memory.cpp" "$task_root/src/RuntimeInfo.cpp" \
+    "$task_root/cpu/GpuSupportStub.cpp" \
+    -o "$task_root/tests/.build/test_runtime_memory"
+"$task_root/tests/.build/test_runtime_memory"

@@ -1240,6 +1240,12 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
     }
     if(args.IsCatched("go_fullauto_worker")&&(config.method!=RunMethod::GeometricalOptics||mode!=OrientationMode::SobolSeed||args.IsCatched("fullauto")))
         Fail("--go-fullauto-worker is a seeded GO worker option.","use only a GO controller worker recipe.");
+    if(args.IsCatched("orientation_prefix_output")){
+        RequirePositiveInt(args,"orientation_prefix_output");
+        if(!args.IsCatched("sobol_seed")||!args.IsCatched("haar_alpha")||config.method!=RunMethod::PhysicalOptics
+            ||IntValue(args,"orientation_prefix_output")>=IntValue(args,"sobol_seed")||args.IsCatched("fullauto"))
+            Fail("--orientation-prefix-output requires a native PO seeded Haar Sobol worker with 0 < M < N.","remove the internal worker modifier or specify a smaller prefix.");
+    }
     if(args.IsCatched("paired_depth")){
         RequirePositiveInt(args,"paired_depth");
         if(!args.IsCatched("sobol_seed")||!args.IsCatched("haar_alpha")||config.method!=RunMethod::PhysicalOptics||IntValue(args,"paired_depth")>=config.maxReflections)

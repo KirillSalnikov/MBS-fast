@@ -30,19 +30,25 @@ std::string Trim(const std::string &value)
     return value.substr(first, last - first + 1);
 }
 
-long long ReadNamedKb(const char *path, const std::string &key)
+void ReadMemoryPair(const char *path,
+                    const std::string &firstKey, long long &first,
+                    const std::string &secondKey, long long &second)
 {
     std::ifstream input(path);
     std::string line;
+    unsigned found = 0;
     while (std::getline(input, line))
     {
         std::istringstream fields(line);
         std::string name;
         long long value = 0;
-        if (fields >> name >> value && name == key)
-            return value;
+        if (!(fields >> name >> value))
+            continue;
+        if (name == firstKey) { first = value; found |= 1; }
+        else if (name == secondKey) { second = value; found |= 2; }
+        if (found == 3)
+            break;
     }
-    return 0;
 }
 
 std::string ReadCpuModel()
@@ -117,6 +123,18 @@ bool IsExperimentalEnvironmentName(const std::string &name)
 
 } // namespace
 
+RuntimeMemorySnapshot QueryRuntimeMemorySnapshot()
+{
+    RuntimeMemorySnapshot snapshot;
+    // Do not cache these values: every request must see current free RAM and
+    // process RSS, including the immediate effect of malloc_trim.
+    ReadMemoryPair("/proc/meminfo", "MemTotal:", snapshot.ramTotalKb,
+                   "MemAvailable:", snapshot.ramAvailableKb);
+    ReadMemoryPair("/proc/self/status", "VmRSS:", snapshot.processRssKb,
+                   "VmHWM:", snapshot.processPeakRssKb);
+    return snapshot;
+}
+
 RuntimeResourceSnapshot QueryRuntimeResourceSnapshot()
 {
     RuntimeResourceSnapshot snapshot;
@@ -137,10 +155,11 @@ RuntimeResourceSnapshot QueryRuntimeResourceSnapshot()
 #else
     snapshot.openmpMaxThreads = 1;
 #endif
-    snapshot.ramTotalKb = ReadNamedKb("/proc/meminfo", "MemTotal:");
-    snapshot.ramAvailableKb = ReadNamedKb("/proc/meminfo", "MemAvailable:");
-    snapshot.processRssKb = ReadNamedKb("/proc/self/status", "VmRSS:");
-    snapshot.processPeakRssKb = ReadNamedKb("/proc/self/status", "VmHWM:");
+    const auto memory = QueryRuntimeMemorySnapshot();
+    snapshot.ramTotalKb = memory.ramTotalKb;
+    snapshot.ramAvailableKb = memory.ramAvailableKb;
+    snapshot.processRssKb = memory.processRssKb;
+    snapshot.processPeakRssKb = memory.processPeakRssKb;
     return snapshot;
 }
 

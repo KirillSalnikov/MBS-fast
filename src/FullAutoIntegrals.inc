@@ -11,10 +11,11 @@ struct IntegralReader {
     std::map<std::tuple<std::string,int,bool>,IntegralScalar> values;
     std::set<std::tuple<std::string,int,bool>> active;
     std::set<std::string> verified;
-    std::string ReadSource(const std::string& path){const auto text=Read(path);files[path]=Hash(text);return text;}
+    std::string ReadSource(const std::string& path){const auto text=ReadValidationText(path);files[path]=Hash(text);return text;}
     IntegralSampling Sampling(const std::string& folder){
         const auto found=sampling.find(folder);if(found!=sampling.end())return found->second;
-        std::istringstream in(ReadSource(folder+"/sampling.index"));std::string signature,identity;IntegralSampling s;
+        const auto path=SamplingIndexPath(folder);
+        std::istringstream in(DecodeSamplingIndex(path,ReadSource(path)));std::string signature,identity;IntegralSampling s;
         Require(bool(in>>signature>>identity>>s.count>>s.offset>>s.seed>>s.depth)&&s.count>0&&s.offset>=0,"invalid integral sampling index");
         sampling[folder]=s;return s;
     }
@@ -77,14 +78,39 @@ struct IntegralProduction {
     bool directTargetFallback=false;
     std::map<std::string,std::string> files;
 };
+// Keep only the largest existing prefix per level while parsing the source
+// list. Angular groups often repeat the same orientation source. Index and
+// deduplicate them once, including when legacy extinction needs a second pass.
+// Moving to a larger prefix releases the discarded groups immediately.
+struct IntegralSourcePlan {
+    struct Level {
+        int count=0;
+        std::map<std::pair<int,unsigned>,std::vector<std::string>> groups;
+    };
+    std::map<size_t,Level> levels;
+    explicit IntegralSourcePlan(const std::string& sources){
+        std::istringstream input(sources);std::string line;
+        while(std::getline(input,line)){if(line.empty())continue;
+            std::istringstream row(line);size_t level;int sign,count;unsigned seed;std::string folder,extra;
+            Require(bool(row>>level>>sign>>count>>seed>>folder)&&!(row>>extra)&&count>0&&(sign==1||sign==-1),"invalid integral estimator sources");
+            auto& entry=levels[level];
+            if(count>entry.count){entry.count=count;entry.groups.clear();}
+            if(count==entry.count)entry.groups[{sign,seed}].push_back(std::move(folder));
+        }
+        Require(!levels.empty()&&levels.begin()->first==0,"missing integral production samples");
+        for(size_t level=0;level<levels.size();++level)Require(levels.count(level),"missing integral correction level");
+        for(auto& level:levels)for(auto& entry:level.second.groups){
+            auto& folders=entry.second;std::sort(folders.begin(),folders.end());
+            folders.erase(std::unique(folders.begin(),folders.end()),folders.end());
+        }
+    }
+    const std::vector<std::string>& Folders(size_t level,int sign,unsigned seed)const{
+        const auto& groups=levels.at(level).groups;const auto found=groups.find({sign,seed});
+        Require(found!=groups.end()&&!found->second.empty(),"missing integral seed/level");return found->second;
+    }
+};
 IntegralProduction IntegralProductionSources(const std::string& sources,const std::vector<unsigned>& seeds,int requestedThreads=1){
-    struct Source {size_t level;int sign,count;unsigned seed;std::string folder;};
-    std::vector<Source> rows;std::map<size_t,int> maximum;std::istringstream input(sources);std::string line;
-    while(std::getline(input,line)){if(line.empty())continue;std::istringstream row(line);Source r;std::string extra;
-        Require(bool(row>>r.level>>r.sign>>r.count>>r.seed>>r.folder)&&!(row>>extra)&&r.count>0&&(r.sign==1||r.sign==-1),"invalid integral estimator sources");
-        maximum[r.level]=std::max(maximum[r.level],r.count);rows.push_back(r);}
-    Require(!maximum.empty()&&maximum.begin()->first==0&&seeds.size()==8,"missing integral production samples");
-    for(size_t level=0;level<maximum.size();++level)Require(maximum.count(level),"missing integral correction level");
+    const IntegralSourcePlan plan(sources);Require(seeds.size()==8,"missing integral production samples");
 #ifdef _OPENMP
     const int threads=std::max(1,std::min(4,requestedThreads));
 #else
@@ -93,7 +119,7 @@ IntegralProduction IntegralProductionSources(const std::string& sources,const st
     auto collect=[&](bool directTarget){
         IntegralProduction result;result.directTargetFallback=directTarget;
         std::array<std::map<std::string,std::string>,8> files;
-        std::vector<std::array<std::string,8>> selected(maximum.size());
+        std::vector<std::array<std::string,8>> selected(plan.levels.size());
         std::array<std::exception_ptr,8> errors{};
         // Replicas are independent. Preserve the original level/sign/window
         // accumulation order inside each replica, and the published source order.
@@ -103,19 +129,18 @@ IntegralProduction IntegralProductionSources(const std::string& sources,const st
 #endif
         for(int i=0;i<8;++i){try{
             IntegralReader reader;
-            for(size_t level=0;level<maximum.size();++level){
-                if(directTarget&&level!=0&&level!=maximum.size()-1)continue;
+            for(size_t level=0;level<plan.levels.size();++level){
+                if(directTarget&&level!=0&&level!=plan.levels.size()-1)continue;
                 std::ostringstream selectedRows;
                 for(int sign:{1,-1}){
                     if((level==0||directTarget)&&sign==-1)continue;
-                    std::vector<std::string> folders;for(const auto& r:rows)if(r.level==level&&r.sign==sign&&r.count==maximum.at(level)&&r.seed==seeds[i])folders.push_back(r.folder);
-                    std::sort(folders.begin(),folders.end());folders.erase(std::unique(folders.begin(),folders.end()),folders.end());Require(!folders.empty(),"missing integral seed/level");
+                    const auto& folders=plan.Folders(level,sign,seeds[i]);const int count=plan.levels.at(level).count;
                     const int depth=reader.Sampling(folders.front()).depth;
-                    const bool areaOnly=directTarget&&level==0&&level!=maximum.size()-1;
-                    const auto value=reader.Prefix(folders,maximum.at(level),0,depth,seeds[i],areaOnly);
-                    if(!directTarget||level==maximum.size()-1)result.samples[i].ext+=sign*value.ext;
+                    const bool areaOnly=directTarget&&level==0&&level!=plan.levels.size()-1;
+                    const auto value=reader.Prefix(folders,count,0,depth,seeds[i],areaOnly);
+                    if(!directTarget||level==plan.levels.size()-1)result.samples[i].ext+=sign*value.ext;
                     if(level==0)result.samples[i].area=value.area;
-                    for(const auto& folder:folders)selectedRows<<level<<' '<<sign<<' '<<maximum.at(level)<<' '<<seeds[i]<<' '<<folder<<'\n';
+                    for(const auto& folder:folders)selectedRows<<level<<' '<<sign<<' '<<count<<' '<<seeds[i]<<' '<<folder<<'\n';
                 }
                 selected[level][i]=selectedRows.str();
             }

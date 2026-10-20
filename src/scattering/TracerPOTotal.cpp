@@ -5941,6 +5941,14 @@ void TracerPOTotal::TraceWeightedOrientations(
         throw std::exception();
     }
     const bool computeNoShadow = handlerPO->ComputeNoShadow();
+    if(m_orientationPrefixOutput){
+        if(m_mpiSize!=1||m_orientationPrefixOutput>=nOrient||computeNoShadow||m_analyticBackscatter
+            ||m_analyticFacetSamples||m_analyticAzimuthGaussian)
+            throw std::runtime_error("orientation prefix output requires one-rank native PO without diagnostic or no-shadow outputs");
+        for(const auto& orientation:orientations)
+            if(std::fabs(orientation.weight-1./nOrient)>1e-14/nOrient)
+                throw std::runtime_error("orientation prefix output requires equally weighted orientations");
+    }
     if(m_pairedDepth&&(m_particle->IsConcave()||m_particle->isAggregated||m_mpiSize!=1||computeNoShadow||m_analyticFacetSamples||m_analyticBackscatter||m_analyticAzimuthGaussian
        ||!handlerPO->isCoh))
         throw std::runtime_error("paired-depth cache unsupported for this geometry/pruning/diagnostic mode; use independent traces");
@@ -6087,6 +6095,22 @@ void TracerPOTotal::TraceWeightedOrientations(
     std::unique_ptr<Arr2D> pairedMatrices;
     double pairedExtinctionOt=0;
     if(m_pairedDepth){pairedMatrices.reset(new Arr2D(nAz+1,nZen+1,4,4));pairedMatrices->ClearArr();}
+    std::unique_ptr<Arr2D> prefixMatrices,prefixLowerMatrices;
+    std::vector<double> prefixReflection,prefixShadow;
+    double prefixIncoming=0,prefixOutgoing=0,prefixExtinction=0,prefixLowerExtinction=0;
+    int prefixCollected=0;
+    if(m_orientationPrefixOutput){
+        prefixReflection.assign(facetReflectionCells.size(),0);prefixShadow.assign(facetShadowCells.size(),0);
+        prefixMatrices.reset(new Arr2D(nAz+1,nZen+1,4,4));prefixMatrices->ClearArr();
+        if(m_pairedDepth){prefixLowerMatrices.reset(new Arr2D(nAz+1,nZen+1,4,4));prefixLowerMatrices->ClearArr();}
+    }
+    // Split a scheduled range at the fixed prefix boundary. This also works
+    // when the CPU/GPU producers finish disjoint ranges out of order.
+    const auto prefixBoundedChunk=[&](int start,int count){
+        return m_orientationPrefixOutput&&start<m_orientationPrefixOutput
+            ?std::min(count,m_orientationPrefixOutput-start):count;
+    };
+
 
 
     const long long availMB = EffectiveMemAvailableMb();
@@ -6427,11 +6451,19 @@ void TracerPOTotal::TraceWeightedOrientations(
                     // its own before upper preparation mutates polarization.
                     std::vector<Beam> lowerRaw;bool reusePrepared=true;
                     if(m_pairedDepth){double upperMax[3]={},lowerMax[3]={};
-                        for(const auto& beam:localBeams){if(beam.nActs<=m_pairedDepth||beam.lastFacetId==__INT_MAX__)lowerRaw.push_back(beam);
+                        for(const auto& beam:localBeams){
                             if(beam.lastFacetId==__INT_MAX__)continue;const double j=beam.J.Norm(),a=beam.Area();const double value[3]={j,a,j*a};
                             for(int k=0;k<3;++k){upperMax[k]=std::max(upperMax[k],value[k]);if(beam.nActs<=m_pairedDepth)lowerMax[k]=std::max(lowerMax[k],value[k]);}}
                         for(int k=0;k<3;++k)reusePrepared=reusePrepared&&upperMax[k]==lowerMax[k];
-                        if(!reusePrepared)localHandler.PrepareBeams(lowerRaw,weight,block.lower[i]);}
+                        // The common path reuses prepared upper beams. Avoid
+                        // copying their large raw polygons into an unused
+                        // vector; only the different-cutoff-maxima path needs
+                        // an independent lower set before upper mutation.
+                        if(!reusePrepared){
+                            for(const auto& beam:localBeams)
+                                if(beam.nActs<=m_pairedDepth||beam.lastFacetId==__INT_MAX__)
+                                    lowerRaw.push_back(beam);
+                            localHandler.PrepareBeams(lowerRaw,weight,block.lower[i]);}}
                     double beforeOutput = localHandler.m_outputEnergy;
                     localHandler.PrepareBeams(localBeams, weight, chunkPrepared[i]);
                     if(m_pairedDepth&&reusePrepared){auto& lower=block.lower[i];lower.sinZenith=weight;
@@ -6494,12 +6526,20 @@ void TracerPOTotal::TraceWeightedOrientations(
     auto processBlock = [&](PreparedBlock &block)
     {
         const int iStart=block.start,thisChunk=block.count,iEnd=iStart+thisChunk;
+        const bool collectPrefix=m_orientationPrefixOutput&&iStart<m_orientationPrefixOutput;
+        if(collectPrefix&&iEnd>m_orientationPrefixOutput)
+            throw std::runtime_error("orientation prefix scheduler crossed its boundary");
+        if(collectPrefix)prefixCollected+=thisChunk;
+
         auto &chunkPrepared=block.prepared;
         const auto &bodyFrames=block.frames;
         const auto &chunkEnergies=block.energies,&chunkOutputEnergies=block.outputEnergies;
         rotationCpuSeconds+=block.rotation;traceCpuSeconds+=block.trace;prepareCpuSeconds+=block.prepare;
         // Accumulate scalar counters sequentially after the parallel region.
         for (int i = 0; i < thisChunk; ++i) {
+            if(collectPrefix){prefixIncoming+=chunkEnergies[i];prefixOutgoing+=chunkOutputEnergies[i];
+                prefixExtinction+=chunkPrepared[i].extinctionOt;
+                if(m_pairedDepth)prefixLowerExtinction+=block.lower[i].extinctionOt;}
             m_incomingEnergy += chunkEnergies[i];
             handlerPO->m_outputEnergy += chunkOutputEnergies[i];
             handlerPO->m_extinctionCrossSectionOt +=
@@ -6553,6 +6593,7 @@ void TracerPOTotal::TraceWeightedOrientations(
         if(block.residentFull){
             for(int p=0;p<nAz;++p)for(int t=0;t<=nZen;++t){
                 handlerPO->M.insert(p,t,(*block.residentFull)(p,t));
+                if(collectPrefix)prefixMatrices->insert(p,t,(*block.residentFull)(p,t));
                 if(computeNoShadow)handlerPO->M_noshadow.insert(p,t,(*block.residentNS)(p,t));}
         }
         else if (handlerPO->IsGpuEnabled())
@@ -6573,7 +6614,8 @@ void TracerPOTotal::TraceWeightedOrientations(
                     ref,shadow,m_analyticFacetSamples ? &samples : nullptr,&analyticError))
                     throw std::runtime_error("CUDA analytic aperture kernel failed: "+analyticError);
                 for(size_t cell=0;cell<ref.size();++cell)
-                {facetReflectionCells[cell]+=ref[cell];facetShadowCells[cell]+=shadow[cell];}
+                {facetReflectionCells[cell]+=ref[cell];facetShadowCells[cell]+=shadow[cell];
+                    if(collectPrefix){prefixReflection[cell]+=ref[cell];prefixShadow[cell]+=shadow[cell];}}
                 if(m_analyticFacetSamples)
                     for(int i=0;i<thisChunk;++i)for(int t=0;t<facetRows;++t)
                         facetSampleControls[static_cast<size_t>(iStart+i)*facetRows+t]=samples[static_cast<size_t>(i)*facetRows+t];
@@ -6648,6 +6690,7 @@ void TracerPOTotal::TraceWeightedOrientations(
                 for (int t = 0; t <= nZen; ++t)
                 {
                     handlerPO->M.insert(p, t, localM(p, t));
+                    if(collectPrefix)prefixMatrices->insert(p,t,localM(p,t));
                     if (computeNoShadow)
                         handlerPO->M_noshadow.insert(
                             p, t, localM_ns(p, t));
@@ -6736,10 +6779,12 @@ void TracerPOTotal::TraceWeightedOrientations(
                 {
                     if(facetControl)
                         for(size_t cell=0;cell<facetReflectionCells.size();++cell)
-                        {facetReflectionCells[cell]+=localFacetRef[cell];facetShadowCells[cell]+=localFacetShadow[cell];}
+                        {facetReflectionCells[cell]+=localFacetRef[cell];facetShadowCells[cell]+=localFacetShadow[cell];
+                            if(collectPrefix){prefixReflection[cell]+=localFacetRef[cell];prefixShadow[cell]+=localFacetShadow[cell];}}
                     for (int p = 0; p < nAz; ++p)
                         for (int t = 0; t <= nZen; ++t) {
                             handlerPO->M.insert(p, t, localM(p, t));
+                            if(collectPrefix)prefixMatrices->insert(p,t,localM(p,t));
                             if (computeNoShadow)
                                 handlerPO->M_noshadow.insert(
                                     p, t, localM_ns(p, t));
@@ -6748,7 +6793,8 @@ void TracerPOTotal::TraceWeightedOrientations(
             }
         }
         if(m_pairedDepth&&block.residentLower){
-            for(int p=0;p<nAz;++p)for(int t=0;t<=nZen;++t)pairedMatrices->insert(p,t,(*block.residentLower)(p,t));
+            for(int p=0;p<nAz;++p)for(int t=0;t<=nZen;++t){pairedMatrices->insert(p,t,(*block.residentLower)(p,t));
+                if(collectPrefix)prefixLowerMatrices->insert(p,t,(*block.residentLower)(p,t));}
         }else if(m_pairedDepth){
             Arr2D lower(nAz+1,nZen+1,4,4),dummy(nAz+1,nZen+1,4,4);lower.ClearArr();dummy.ClearArr();
             if(handlerPO->IsGpuEnabled()){
@@ -6766,7 +6812,8 @@ void TracerPOTotal::TraceWeightedOrientations(
                     {for(int p=0;p<nAz;++p)for(int t=0;t<=nZen;++t)lower.insert(p,t,local(p,t));}
                 }
             }
-            for(int p=0;p<nAz;++p)for(int t=0;t<=nZen;++t)pairedMatrices->insert(p,t,lower(p,t));
+            for(int p=0;p<nAz;++p)for(int t=0;t<=nZen;++t){pairedMatrices->insert(p,t,lower(p,t));
+                if(collectPrefix)prefixLowerMatrices->insert(p,t,lower(p,t));}
             memoryChunks.Update(block.lower,"Paired depth",m_mpiRank);
         }
         phase2_total += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - tp2).count();
@@ -6833,7 +6880,7 @@ void TracerPOTotal::TraceWeightedOrientations(
                         condition.wait(lock,[&](){return stop || nextStart>=myEnd || int(ready.size())<reserve;});
                         producerBlocked+=std::chrono::duration<double>(std::chrono::steady_clock::now()-waitStarted).count();
                         if(stop || nextStart>=myEnd)break;
-                        start=nextStart;size=cpuMemory.Next(myEnd-start);nextStart+=size;
+                        start=nextStart;size=prefixBoundedChunk(start,cpuMemory.Next(myEnd-start));nextStart+=size;
                     }
                     PreparedBlock block=prepareBlock(start,size,false,cpuThreads);
                     cpuMemory.Update(block.prepared,"Hybrid CPU reserve",m_mpiRank);
@@ -6884,7 +6931,7 @@ void TracerPOTotal::TraceWeightedOrientations(
                     if(!ready.empty()){
                         block=std::move(ready.front());ready.pop_front();condition.notify_all();
                     }else if(nextStart<myEnd){
-                        start=nextStart;size=memoryChunks.Next(myEnd-start);nextStart+=size;
+                        start=nextStart;size=prefixBoundedChunk(start,memoryChunks.Next(myEnd-start));nextStart+=size;
                     }else if(producerDone)break;
                     else {
                         const auto waitStarted=std::chrono::steady_clock::now();
@@ -6957,7 +7004,7 @@ void TracerPOTotal::TraceWeightedOrientations(
         };
         try
         {
-            int nextStart=myStart;const int initial=memoryChunks.Next(myEnd-nextStart);
+            int nextStart=myStart;const int initial=prefixBoundedChunk(nextStart,memoryChunks.Next(myEnd-nextStart));
             request(nextStart,initial);nextStart+=initial;
             for(;;)
             {
@@ -6973,7 +7020,7 @@ void TracerPOTotal::TraceWeightedOrientations(
                 const bool more=nextStart<myEnd;
                 if(more)
                 {
-                    const int size=memoryChunks.Next(myEnd-nextStart);
+                    const int size=prefixBoundedChunk(nextStart,memoryChunks.Next(myEnd-nextStart));
                     request(nextStart,size);nextStart+=size;
                 }
                 processBlock(*block);
@@ -6985,7 +7032,7 @@ void TracerPOTotal::TraceWeightedOrientations(
     }
     else for(int start=myStart;start<myEnd;)
     {
-        const int size=memoryChunks.Next(myEnd-start);
+        const int size=prefixBoundedChunk(start,memoryChunks.Next(myEnd-start));
         PreparedBlock block=prepareBlock(start,size,true,preparationThreads);processBlock(block);start+=size;
     }
     if(!m_preparedReuseKey.empty()){
@@ -6995,6 +7042,43 @@ void TracerPOTotal::TraceWeightedOrientations(
         std::cout<<log.str()<<std::endl;AppendTextLog(log.str()+"\n");
     }
     const double processingWall=std::chrono::duration<double>(std::chrono::steady_clock::now()-processingStarted).count();
+
+    if(m_orientationPrefixOutput){
+        if(prefixCollected!=m_orientationPrefixOutput)
+            throw std::runtime_error("orientation prefix accumulator count mismatch");
+        const double scale=double(nOrient)/m_orientationPrefixOutput;
+        for(size_t cell=0;cell<prefixReflection.size();++cell){prefixReflection[cell]*=scale;prefixShadow[cell]*=scale;}
+        if(m_mirrorGamma&&m_haarAlpha&&facetControl){
+            const auto oldRef=prefixReflection,oldShadow=prefixShadow;
+            for(int p=0;p<nAz;++p)for(int t=0;t<facetRows;++t){const size_t cell=size_t(p)*facetRows+t,other=size_t((nAz-p)%nAz)*facetRows+t;
+                prefixReflection[cell]=.5*(oldRef[cell]+oldRef[other]);prefixShadow[cell]=.5*(oldShadow[cell]+oldShadow[other]);}
+        }
+        const auto writePrefix=[&](Arr2D& matrix,double extinction,const std::string& suffix){
+            for(int p=0;p<nAz;++p)for(int t=0;t<=nZen;++t)for(int i=0;i<4;++i)for(int j=0;j<4;++j)matrix(p,t,i,j)*=scale;
+            if(m_mirrorGamma)ApplyMirrorGammaMueller(matrix,nAz,nZen);
+            std::string name=m_resultDirName+"_prefix"+std::to_string(m_orientationPrefixOutput)+suffix;
+            if(facetControl){
+                std::ofstream summary((name+"_analytic_facets.tsv").c_str());summary<<std::setprecision(17)
+                    <<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n";
+                for(int t=0;t<facetRows;++t){const auto known=facetControl->Mean(t);const double wr=facetWeights[t][0],ws=facetWeights[t][1];double raw=0,ref=0,shadow=0;
+                    for(int p=0;p<nAz;++p){const size_t cell=size_t(p)*facetRows+t;raw+=matrix(p,t,0,0)/nAz;ref+=prefixReflection[cell]/nAz;shadow+=prefixShadow[cell]/nAz;
+                        matrix(p,t,0,0)+=wr*(known.reflection-prefixReflection[cell])+(shadowOff?0:ws*(known.shadow-prefixShadow[cell]));}
+                    summary<<RadToDeg(facetTheta[t])<<'\t'<<raw<<'\t'<<known.reflection<<'\t'<<(shadowOff?0:known.shadow)<<'\t'<<ref<<'\t'<<(shadowOff?0:shadow)
+                        <<'\t'<<raw-wr*ref-(shadowOff?0:ws*shadow)<<'\t'<<raw+wr*(known.reflection-ref)+(shadowOff?0:ws*(known.shadow-shadow))
+                        <<'\t'<<facetControl->RefinementError()<<'\t'<<facetSetupSeconds<<'\t'<<wr<<'\t'<<ws<<'\n';}
+                summary.flush();if(!summary)throw std::runtime_error("cannot write orientation prefix controls");
+            }
+            const double savedExtinction=handlerPO->m_extinctionCrossSectionOt,savedOutgoing=handlerPO->m_outputEnergy;
+            handlerPO->m_extinctionCrossSectionOt=extinction*scale;handlerPO->m_outputEnergy=prefixOutgoing*scale;
+            std::swap(handlerPO->M,matrix);handlerPO->WriteMatricesToFile(name,prefixIncoming*scale);std::swap(handlerPO->M,matrix);
+            handlerPO->m_extinctionCrossSectionOt=savedExtinction;handlerPO->m_outputEnergy=savedOutgoing;
+            if(!suffix.empty()){std::ofstream revision((name+"_integrals_revision.txt").c_str());revision<<"paired_extinction_v1\n";
+                revision.close();if(!revision)throw std::runtime_error("cannot write orientation prefix integral revision");}
+        };
+        writePrefix(*prefixMatrices,prefixExtinction,"");
+        if(m_pairedDepth)writePrefix(*prefixLowerMatrices,prefixLowerExtinction,"_depth"+std::to_string(m_pairedDepth));
+        std::cout<<"Orientation prefix: "<<prefixCollected<<" of "<<nOrient<<" orientations saved from the same native pass; no repeated trace or diffraction"<<std::endl;
+    }
 
     // MPI: reduce Mueller matrices from all ranks to rank 0
     MPI_ReduceMueller(handlerPO, nAz, nZen, m_incomingEnergy, m_mpiRank);

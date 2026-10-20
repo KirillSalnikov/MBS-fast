@@ -15,8 +15,8 @@ BudgetResidual ResidualAt(const Engine& e,const InterpolationResult& interp,cons
 }
 double RemainingStatistics(const Engine& e,const BudgetResidual& residual){
     double used=0;for(int j=0;j<16;++j){used=std::max(used,residual.matrix[j]);if(e.ratios&&j)used=std::max(used,residual.ratio[j]);}
-    // Only a scheduling target. Interpolation failures refine the angular grid
-    // before orientation allocation. Acceptance tests each component below.
+    // Only a scheduling target. Interpolation failures first distinguish
+    // noisy residuals from angular structure. Acceptance tests each component below.
     return std::max(e.statistical,NumericalBudget(e)-used);
 }
 double BudgetUsed(double stat,double residual){

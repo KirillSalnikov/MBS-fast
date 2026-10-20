@@ -19,6 +19,7 @@ public:
     std::string m_haarRotationAudit;
     unsigned int m_sobolOffset = 0;
     int m_pairedDepth = 0;
+    int m_orientationPrefixOutput = 0;
 	bool m_analyticFacetAverage = false;
 	bool m_analyticFacetSamples = false;
 	bool m_analyticAzimuthGaussian = false;
