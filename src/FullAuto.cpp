@@ -79,6 +79,26 @@ std::string FileHash(const std::string& path) { return ValidationFiles().Hash(pa
 std::string ReadValidationText(const std::string& path) { return ValidationFiles().Text(path); }
 std::string ReadVerifiedText(const std::string& path,const std::string& expected) { return ValidationFiles().VerifiedText(path,expected); }
 bool Exists(const std::string& p) { struct stat s;return stat(p.c_str(),&s)==0; }
+// A deployment may certify another exact binary pair after numerical tests.
+// The receipt is an installation artifact, not inferred from a version label.
+bool VerifiedCompatibleExecutable(const std::string& executable,const std::string& origin,const std::string& current){
+    const auto path=executable+".native-compatibility.tsv";if(!Exists(path))return false;
+    const auto text=Read(path);const auto split=text.find('\n');
+    Require(split!=std::string::npos&&Hash(text.substr(split+1))==text.substr(0,split),"native compatibility receipt changed");
+    std::istringstream rows(text.substr(split+1));std::string magic,line;
+    Require(bool(std::getline(rows,magic))&&magic=="FULLAUTO_NATIVE_COMPATIBILITY_V1","unsupported native compatibility receipt");
+    bool matched=false;
+    while(std::getline(rows,line)){
+        if(line.empty())continue;
+        std::istringstream row(line);std::string oldHash,newHash,evidence,digest,extra;
+        Require(bool(row>>oldHash>>newHash>>evidence>>digest)&&!(row>>extra),"invalid native compatibility record");
+        if(oldHash==origin&&newHash==current){
+            Require(!evidence.empty()&&evidence[0]=='/'&&FileHash(evidence)==digest,"native compatibility evidence changed");
+            matched=true;
+        }
+    }
+    return matched;
+}
 // Explicit compatibility bridge for controller scheduling and CUDA scratch
 // allocation changes whose native optical matrices are numerically equivalent.
 // Normal resume still requires the exact executable hash. Never extend this
@@ -907,8 +927,8 @@ struct Engine {
             compatibleHash=FileHash(compatibleBinary);
             const std::string oldVersion=ExecutableVersion(compatibleBinary),newVersion=ExecutableVersion(exe);
             const size_t oldLine=oldVersion.find('\n'),newLine=newVersion.find('\n');
-            Require(oldLine!=std::string::npos&&(oldVersion.substr(0,oldLine)=="MBS-fast 8ae9e85"||oldVersion.substr(0,oldLine)=="MBS-fast 89f83a3"||oldVersion.substr(0,oldLine)=="MBS-fast 336ef78"||oldVersion.substr(0,oldLine)=="MBS-fast ef50662"||oldVersion.substr(0,oldLine)=="MBS-fast a866f0d"||oldVersion.substr(0,oldLine)=="MBS-fast bbe6cea"||oldVersion.substr(0,oldLine)=="MBS-fast 3522122"||oldVersion.substr(0,oldLine)=="MBS-fast 0ee3a83"||oldVersion.substr(0,oldLine)=="MBS-fast e26308f"),
-                "compatible resume is verified only from releases 8ae9e85, 89f83a3, 336ef78, ef50662, a866f0d, bbe6cea, 3522122, 0ee3a83 and e26308f");
+            Require(oldLine!=std::string::npos&&(oldVersion.substr(0,oldLine)=="MBS-fast 8ae9e85"||oldVersion.substr(0,oldLine)=="MBS-fast 89f83a3"||oldVersion.substr(0,oldLine)=="MBS-fast 336ef78"||oldVersion.substr(0,oldLine)=="MBS-fast ef50662"||oldVersion.substr(0,oldLine)=="MBS-fast a866f0d"||oldVersion.substr(0,oldLine)=="MBS-fast bbe6cea"||oldVersion.substr(0,oldLine)=="MBS-fast 3522122"||oldVersion.substr(0,oldLine)=="MBS-fast 0ee3a83"||oldVersion.substr(0,oldLine)=="MBS-fast e26308f"||VerifiedCompatibleExecutable(exe,compatibleHash,binaryHash)),
+                "compatible resume requires a known origin or a native-compatibility.tsv receipt for these exact binaries");
             Require(newLine!=std::string::npos&&oldVersion.substr(oldLine)==newVersion.substr(newLine),
                 "compatible resume requires identical CUDA architecture, precision, phase math, compiler, OpenMP and MPI profiles");
         }

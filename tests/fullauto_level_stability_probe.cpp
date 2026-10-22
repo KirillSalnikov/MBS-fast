@@ -7,6 +7,24 @@ void CloseStability(double actual,double expected,double scale,const char* why){
     Require(std::fabs(actual-expected)<=1e-12*std::max(1.,scale),why);
 }
 
+void CompatibilityReceipt(const std::string& root){
+    Directory(root);const auto binary=root+"/solver",evidence=root+"/comparison.json";
+    const std::string old="old-exact-hash",current="new-exact-hash";
+    Require(!VerifiedCompatibleExecutable(binary,old,current),"uncertified binary pair accepted");
+    Atomic(evidence,"{\"status\":\"passed\"}\n");
+    const auto body="FULLAUTO_NATIVE_COMPATIBILITY_V1\n"+old+" "+current+" "+evidence+" "+FileHash(evidence)+"\n";
+    Atomic(binary+".native-compatibility.tsv",Hash(body)+"\n"+body);
+    Require(VerifiedCompatibleExecutable(binary,old,current),"certified exact binary pair rejected");
+    Require(!VerifiedCompatibleExecutable(binary,"other",current)&&!VerifiedCompatibleExecutable(binary,old,"other"),
+            "compatibility certificate leaked to a different binary");
+    Atomic(evidence,"changed evidence\n");bool rejected=false;
+    try{VerifiedCompatibleExecutable(binary,old,current);}catch(const std::exception&){rejected=true;}
+    Require(rejected,"changed compatibility evidence accepted");
+    Atomic(binary+".native-compatibility.tsv",Hash(body)+"\n"+body+"tamper");rejected=false;
+    try{VerifiedCompatibleExecutable(binary,old,current);}catch(const std::exception&){rejected=true;}
+    Require(rejected,"tampered compatibility receipt accepted");
+}
+
 void AdversarialLevelChanges(){
     Mueller total{},current{},alternate{};total[0]=100;
     // Each Mueller entry must independently prevent a pass. The test uses a
@@ -414,6 +432,7 @@ int main(int argc,char** argv){try{
         std::cout<<','<<unstable<<'\n';
     }
     std::string trailing;Require(!(in>>trailing),"unparsed fixture data");
+    CompatibilityReceipt(std::string(argv[2])+"/binary_compatibility");
     AdversarialLevelChanges();
     JointLevelInstability();
     CachedPrefixPromotion();
