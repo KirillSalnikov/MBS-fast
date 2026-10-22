@@ -638,6 +638,22 @@ struct Engine {
         const auto found=samplingIndex.find(SamplingSlot(n,seed,depth,offset));
         return found==samplingIndex.end()?empty:found->second;
     }
+    // Grids are sorted. Narrow interpolation stencils must not scan every row
+    // of each wide saved matrix just to select a handful of exact coordinates.
+    // The caller still visits candidates in identity order, preserving the
+    // first overlapping source and the last complete exact source.
+    template<class Consumer> static void MatchingAngularRows(const std::vector<double>& stored,
+            const std::vector<double>& requested,Consumer consume){
+        if(requested.size()<stored.size()/8){
+            for(double angle:requested){const auto at=std::lower_bound(stored.begin(),stored.end(),angle);
+                if(at!=stored.end()&&*at==angle)consume(size_t(at-stored.begin()));}
+        }else{
+            size_t q=0;for(size_t r=0;r<stored.size()&&q<requested.size();++r){
+                while(q<requested.size()&&requested[q]<stored[r])++q;
+                if(q<requested.size()&&requested[q]==stored[r])consume(r);
+            }
+        }
+    }
     int initial=1024,minimum=256,maxCount=67108864,roundLimit=32,startTheta=33;
     int maxTheta=2147483647,stablePasses=2,minPhi=1,maxPhi=2147483647;
     int prepareThreadCap=1;std::map<std::string,FullAutoPreparation::Profile> preparationProfiles;
@@ -1615,7 +1631,7 @@ struct Engine {
         auto prepared=TakePreparedPrefix(n,seedSet,ns,depth,x);
         if(prepared){cachedBlocks=prepared->blocks;for(size_t s=0;s<ns;++s){
             auto& j=result[s];auto& p=prepared->values[s];j.matrix=std::move(p.matrix);j.controls=std::move(p.controls);
-            j.seconds=p.seconds;j.controlRefinement=p.controlRefinement;j.controlSetup=p.controlSetup;sources[s]=std::move(prepared->sources[s]);
+            j.seconds=p.seconds;j.controlRefinement=p.controlRefinement;j.controlSetup=p.controlSetup;
         }savedOrientationBlocks+=ns*cachedBlocks;
             Record(root+"/orientation_progress.json","{\"completed_prefix\":"+Number(n)+",\"requested_prefix\":"+Number(n)+",\"depth\":"+Number(depth)
                 +",\"seeds\":"+Number(ns)+",\"theta_rows\":"+Number(x.size())+",\"phase\":\"prefix_assembly_batch\",\"native_work\":0}\n");
@@ -1653,9 +1669,14 @@ struct Engine {
             if(!wf.empty()){command.push_back("--analytic-control-weights");command.push_back(wf);}command.push_back("--output");command.push_back(j.folder+"/result");
             std::string recipe=exe+"\n";for(const auto& v:command)recipe+=v+"\n";Atomic(j.folder+"/command.args",recipe);
             Atomic(j.folder+"/stdout.log","Controller exact Sobol-prefix assembly; command.args is a full-prefix replay recipe.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");
-            Atomic(j.folder+"/angular_sources.tsv",sources[s].str());
+            std::string provenance;
+            if(prepared){std::ostringstream text;for(const auto& source:prepared->references[s])
+                text<<source.first->folder<<'\t'<<std::hex<<source.second<<std::dec<<'\n';
+                provenance=text.str();std::vector<PrefixSource>().swap(prepared->references[s]);
+            }else provenance=sources[s].str();
+            Atomic(j.folder+"/angular_sources.tsv",provenance);
             Atomic(j.folder+"/orientation_reuse.json","{\"kind\":\"exact_sobol_prefix\",\"count\":"+Number(n)+",\"block\":"+Number(orientationBlock)+",\"seconds_scope\":\"represented full native work, including reused blocks\"}\n");
-            PublishComplete(j,j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+" "+Hash(sources[s].str())+"\n");
+            PublishComplete(j,j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+" "+Hash(provenance)+"\n");
             j.matrix.clear();j.controls.clear();j.angles.clear();j=Load(j);CacheJob(j);
         }
         Log("prefix_assembly_profile","{\"count\":"+Number(n)+",\"depth\":"+Number(depth)+",\"theta_rows\":"+Number(x.size())+",\"seeds\":"+Number(ns)+",\"cached_blocks_without_intermediate_views\":"+Number(cachedBlocks)+",\"elapsed_seconds\":"+Number(Seconds()-assemblyStarted)+",\"native_block_checkpoints_unchanged\":true}");
@@ -1681,11 +1702,11 @@ struct Engine {
         const std::string wf=weighted?WriteWeights(x):"",weightHash=Hash(wf.empty()?"":Read(wf));
         typedef std::pair<const Job*,size_t> SourceRow;std::vector<std::map<double,SourceRow>> rows(ns);
         std::vector<const Job*> exactSources(ns,nullptr);
-        std::set<double> requested(x.begin(),x.end());bool everySeedHasRows=true,exact=true;
+        bool everySeedHasRows=true,exact=true;
         for(size_t s=0;s<ns;++s){bool exactSeed=false;
             for(const auto& cached:SamplingCandidates(n,seedSet[s],depth,offset)){const Job& j=*cached.second;if(!SameSampling(j,n,seedSet[s],depth,offset))continue;
                 if(j.inputAngles==x&&j.weightHash==weightHash){exactSeed=true;exactSources[s]=&j;}
-                for(size_t r=0;r<j.inputAngles.size();++r)if(requested.count(j.inputAngles[r]))rows[s].insert({j.inputAngles[r],{&j,r}});
+                MatchingAngularRows(j.inputAngles,x,[&](size_t r){rows[s].insert({j.inputAngles[r],{&j,r}});});
             }
             exact=exact&&exactSeed;everySeedHasRows=everySeedHasRows&&!rows[s].empty();
         }

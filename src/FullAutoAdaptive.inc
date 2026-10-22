@@ -277,7 +277,11 @@ InterpolationResult CommonPrefixInterpolationImpl(Engine& e,const AdaptiveState&
     std::vector<Engine::WorkRequest> prefixRequests;
     for(const auto& group:groups){const std::vector<size_t> ids(group.second.rows.begin(),group.second.rows.end());
         const auto part=BudgetRequests(e,depths,StencilBudgets(e,state.counts,group),ids);prefixRequests.insert(prefixRequests.end(),part.begin(),part.end());}
-    e.SetPrefixAssemblyPlan(prefixRequests,seeds);
+    e.ClearPrefixAssemblyPlan();
+    if(e.thetaPhi.empty())e.AddPrefixAssemblyPlan(prefixRequests,seeds);
+    else for(const auto& group:PhiRequests(e,prefixRequests)){
+        PhiScope scope(e,group.first);e.AddPrefixAssemblyPlan(group.second,seeds);
+    }
     struct ClearPrefixPlan {Engine& engine;~ClearPrefixPlan(){engine.ClearPrefixAssemblyPlan();}} clearPrefixPlan{e};
     std::ostringstream sources,budgets;budgets<<"group,theta_deg";for(size_t l=0;l<depths.size();++l)budgets<<",N_level"<<l;budgets<<'\n';size_t groupNumber=0;
     for(const auto& group:groups){const std::vector<size_t> ids(group.second.rows.begin(),group.second.rows.end());const auto ns=StencilBudgets(e,state.counts,group);
