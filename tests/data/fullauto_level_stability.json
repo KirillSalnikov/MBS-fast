@@ -1,0 +1,40 @@
+{
+  "description": "Saved prism L446.7 D147.1, backward PO, wavelength 0.532, m=1.3116.",
+  "source_directory": "/home/user/BEM-CUDA/artifacts/fullauto_back_validation_20261021/all16",
+  "source_sha256": {
+    "saved_replicas.json": "ba096289d6c878799a6c2c5506ac770562c1bab0f0bddcb1e3df37e8187bf3b0",
+    "saved_controls.json": "b949ddca58daa9e8ed72ed8ecd828a41048880701d3af664ee0b4837d1f77d13",
+    "all16_replay.json": "9df8de5df940619bf30ccf624bf046ef498d351187d50880f039fe051d5e73ca"
+  },
+  "fixture_sha256": "687a7399b2bfd99a3fa0ad9a2fc52b546d4118e58ac1de8f81470f7a9c42f7cb",
+  "seeds": [
+    11,
+    23,
+    37,
+    53,
+    71,
+    89,
+    107,
+    131
+  ],
+  "level_depths": [
+    8,
+    10,
+    12
+  ],
+  "level_definition": [
+    "M(n=8)",
+    "M(n=10)-M(n=8)",
+    "M(n=12)-M(n=10)"
+  ],
+  "analytic_controls": "Saved per-angle polarization weights applied before level subtraction.",
+  "precision": "17 significant digits; eight complete replicas, all 16 Mueller entries.",
+  "scope": "Low/high saved estimators use different prefix lengths and mixed cutoff history. They test acceptance of a changed correction, not cutoff-isolated bias or an exact half-prefix optical identity. No new optical runs.",
+  "theta": [
+    171.08140947752128,
+    171.0854597002835,
+    171.08950992304577,
+    171.09356014580803
+  ],
+  "format": "Header: angle_count, levels, seeds, elements. Per angle: theta; then low and high: three counts, level-major seed-major matrix rows; expected complete mean, scaled Student-t halfwidths, Fieller halfwidths."
+}

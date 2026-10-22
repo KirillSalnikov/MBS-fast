@@ -140,6 +140,17 @@ void ReplayMeasuredGroup(const std::string& fixture,const std::string& root){
     PlanInterpolationNoise(e,plan,data,observed,ids,weights,query,prediction,reference);
     Require(!plan.biasDominated&&plan.level>=0&&plan.phi==64&&!plan.counts.empty(),
         "measured noisy new-phi residual did not select phi64 growth");
+    // The direct estimate must be scheduled even while this guard fails.
+    // Its measured matrices and original sampling counts remain unchanged.
+    state.counts=observed;
+    InterpolationResult directResidual;directResidual.matrixErrors.resize(rows);
+    directResidual.ratioErrors.resize(rows);
+    const auto directStats=Estimate(samples);
+    const auto directPlan=PlanPointwiseStatistics(e,state,data,ids,directStats,directResidual);
+    Require(directPlan[1][query]>observed[1][query]||directPlan[2][query]>observed[2][query],
+        "measured 794 noisy correction was starved by interpolation failure");
+    Require(directPlan[0][query]==observed[0][query],
+        "measured 794 correction unnecessarily grew the large base");
     std::ostringstream report;report<<"{\"fixture\":"<<Quoted(fixture)
         <<",\"theta_deg\":"<<Number(e.theta[query])<<",\"absolute_mean\":"<<Number(plan.mean)
         <<",\"noise95\":"<<Number(plan.noise)<<",\"upper95\":"<<Number(plan.upper)
@@ -406,6 +417,26 @@ int main(int argc,char** argv){try{
         const auto result=InterpolateBudget(e,state.knots,ids,Combine(data.levels),&data,&state.counts);
         CheckUnchangedGates(e,state,data,result);
         Require(result.bad.empty()&&result.maximum<1e-13,"paired angular cancellation lost");
+        ++passed;
+    }
+    // Noisy support values can cancel completely from the interpolation
+    // residual. A separate angular failure must not freeze their statistics.
+    for(int j=0;j<16;++j){
+        Engine e(args,config);AdaptiveState state;Init(e,state,root+"/starved"+Number(j));
+        e.ratios=false;auto data=Quiet();
+        for(int s=0;s<8;++s)for(size_t r=0;r<5;++r)data.levels[1][s][r][j]=5*signs[s];
+        for(int s=0;s<8;++s)data.levels[0][s][1][15]+=3;
+        const auto samples=Combine(data.levels);const auto stats=Estimate(samples);
+        const auto interp=InterpolateBudget(e,state.knots,ids,samples,&data,&state.counts);
+        Require(!interp.bad.empty()&&interp.errors[0]<1e-12,"starvation fixture needs a quiet support and failing guard");
+        const auto before=state.counts;
+        const auto proposal=PlanPointwiseStatistics(e,state,data,ids,stats,interp);
+        Require(proposal[1][0]>before[1][0]&&proposal[0]==before[0],"noisy support did not grow its cheap correction");
+        RefineInterpolationFailures(e,state,ids,interp,true);const auto interpolationCounts=state.counts;
+        MergeGrowingBudgets(state.counts,proposal);
+        Require(state.counts[1][0]>before[1][0],"interpolation refinement erased the statistical proposal");
+        for(size_t l=0;l<before.size();++l)for(size_t r=0;r<ids.size();++r)
+            Require(state.counts[l][r]>=interpolationCounts[l][r],"statistical merge reduced angular work");
         ++passed;
     }
     if(argc==3){ReplayMeasuredGroup(argv[2],root);++passed;}

@@ -87,6 +87,7 @@ Job CutoffPrefixView(const Job& source,int count){
 // independent, cached numerical check of the FINAL corrected estimator.
 std::map<std::string,bool> cutoffPrefixChecks;
 bool VerifyCutoffPrefix(const Job& job,const std::vector<std::string>& actualCommand){
+    if(!NativeWorkerCapabilities::OrientationPrefixOutput())return false;
 #ifndef MBS_GPU_FP32
     (void)job;(void)actualCommand;return true;
 #else
@@ -157,6 +158,43 @@ bool VerifyCutoffPrefix(const Job& job,const std::vector<std::string>& actualCom
     Record(path,report);Log("cutoff_prefix_validation",report);cutoffPrefixChecks[key]=passed;return passed;
 #endif
 }
+// A completed native source can still be read after a controller-only upgrade
+// removes the ability to produce new embedded prefixes. Never reinterpret or
+// overwrite such a source; validate all prefix products before retaining it.
+bool CompleteEmbeddedCutoffSource(const Job& parent,int prefix){
+    Job source=parent;
+    source.identity=Hash(parent.identity+"\ncutoff-child-v1 "+Number(parent.count)+" "+Number(parent.depth)+" "+Number(parent.pairedDepth)+" 1 prefix-v1 "+Number(prefix));
+    source.folder=root+"/jobs/c"+source.identity;
+    const auto found=cache.find(source.identity);if(found!=cache.end())source=found->second;
+    if(!Exists(source.folder+"/complete.txt")){
+        Require(found==cache.end(),"indexed embedded cutoff source lost its completion marker");return false;
+    }
+    std::set<std::string> visited;ValidateStoredJob(source.folder,visited);
+    std::istringstream marker(Read(source.folder+"/complete.txt"));std::string identity;marker>>identity;
+    Require(identity==source.identity,"embedded cutoff source identity changed");
+    const auto command=Read(source.folder+"/command.args");
+    Require(command.find("\n--orientation-prefix-output\n"+Number(prefix)+"\n")!=std::string::npos,
+        "completed embedded cutoff source lacks its prefix recipe");
+    std::ostringstream products;AppendNativePrefixIntegrity(source,products);return true;
+}
+bool RestoreCutoffPrefixRecipe(const Job& parent,int prefix){
+    const auto path=parent.folder+"/cutoff_prefix_recipe.txt",recipe=Read(path);
+    if(recipe=="three-leg-v1\n")return false;
+    Require(recipe=="embedded-prefix-v1\n","unsupported cutoff prefix recipe");
+    if(NativeWorkerCapabilities::OrientationPrefixOutput()||CompleteEmbeddedCutoffSource(parent,prefix))return true;
+    Require(!Exists(parent.folder+"/complete.txt")&&!cache.count(parent.identity),
+        "cannot migrate a completed cutoff estimator");
+    // Commit the explanation and the original recipe first. If interrupted,
+    // retrying this migration is safe and all partial native files remain.
+    const auto saved=parent.folder+"/cutoff_prefix_recipe.before_fallback.txt";
+    if(Exists(saved))Require(Read(saved)==recipe,"saved cutoff prefix recipe changed");else Atomic(saved,recipe);
+    const auto receipt="{\"policy\":\"unavailable-native-prefix-three-leg-v1\",\"parent_identity\":"+Quoted(parent.identity)
+        +",\"native_prefix_output\":false,\"old_recipe\":\"embedded-prefix-v1\",\"new_recipe\":\"three-leg-v1\""
+        +",\"estimator\":\"B_N + O_m - B_m\",\"count\":"+Number(parent.count)+",\"prefix_count\":"+Number(prefix)
+        +",\"completed_embedded_source\":false,\"partial_sources_preserved\":true}";
+    Record(parent.folder+"/cutoff_prefix_fallback.json",receipt);
+    Atomic(path,"three-leg-v1\n");Log("cutoff_prefix_recipe_fallback",receipt);return false;
+}
 bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::string>>& commands,const std::vector<size_t>& todo,const std::function<void(size_t)>& onComplete){
     bool any=false;for(size_t i:todo)any=any||CorrectCutoffJob(result[i]);if(!any)return false;
     struct Recipe {size_t parent;bool embeddedPrefix=false;std::vector<size_t> children;};std::vector<Recipe> recipes;
@@ -188,13 +226,13 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
             const auto identity=Hash(j.identity+"\ncutoff-child-v1 "+Number(n)+" "+Number(depth)+" 0 1");
             if(cache.count(identity)||Exists(root+"/jobs/c"+identity))pairedBalanced=false;
         }
-        bool prefixEligible=true;
+        bool prefixEligible=NativeWorkerCapabilities::OrientationPrefixOutput();
         for(const char* flag:{"--no-shadow-output","--analytic-backscatter","--analytic-facet-samples","--analytic-azimuth-gaussian"})
             if(std::find(commands[i].begin(),commands[i].end(),flag)!=commands[i].end())prefixEligible=false;
         // Existing interrupted transactions retain their exact native recipe.
         // The durable choice is written before dispatching any of its children.
         const auto prefixRecipe=j.folder+"/cutoff_prefix_recipe.txt";
-        if(Exists(prefixRecipe)){Require(Read(prefixRecipe)=="embedded-prefix-v1\n","unsupported cutoff prefix recipe");recipe.embeddedPrefix=true;}
+        if(Exists(prefixRecipe))recipe.embeddedPrefix=RestoreCutoffPrefixRecipe(j,m);
         else if(prefixEligible&&(!j.pairedDepth||pairedBalanced)){
             bool existing=false;
             for(int n:{j.count,m})for(int depth:{j.depth,j.pairedDepth})if(depth)for(bool balanced:{false,true})for(int pair:{0,j.pairedDepth}){
@@ -203,6 +241,9 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
             }
             if(!existing&&VerifyCutoffPrefix(j,commands[i])){Atomic(prefixRecipe,"embedded-prefix-v1\n");recipe.embeddedPrefix=true;}
         }
+        // An embedded recipe was created only with paired balanced depths.
+        // Unrelated incomplete ordinary children must not change that identity.
+        if(recipe.embeddedPrefix)pairedBalanced=j.pairedDepth!=0;
         recipe.children.push_back(add(j,commands[i],j.count,j.depth,pairedBalanced?j.pairedDepth:0,true,recipe.embeddedPrefix?m:0));
         recipe.children.push_back(add(j,commands[i],m,j.depth,j.pairedDepth,false,0));
         if(recipe.embeddedPrefix){
@@ -212,7 +253,7 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
         }else recipe.children.push_back(add(j,commands[i],m,j.depth,pairedBalanced?j.pairedDepth:0,true,0));
         if(j.pairedDepth&&!pairedBalanced){recipe.children.push_back(add(j,commands[i],j.count,j.pairedDepth,0,true,0));recipe.children.push_back(add(j,commands[i],m,j.pairedDepth,0,true,0));}
         recipes.push_back(recipe);
-        Log("cutoff_correction_start","{\"folder\":"+Quoted(j.folder)+",\"profile\":\"balanced\",\"physical_target\":\"off\",\"count\":"+Number(j.count)+",\"correction_count\":"+Number(m)+",\"seed\":"+Number(j.seed)+",\"offset\":"+Number(j.offset)+",\"depth\":"+Number(j.depth)+",\"paired_depth\":"+Number(j.pairedDepth)+",\"native_trace_jobs\":"+Number(recipe.children.size()-(recipe.embeddedPrefix?1:0))+",\"embedded_balanced_prefix\":"+(recipe.embeddedPrefix?"true":"false")+",\"paired_balanced_depths\":"+(pairedBalanced?"true":"false")+",\"fraction_selected_before_samples\":true}");
+        Log("cutoff_correction_start","{\"folder\":"+Quoted(j.folder)+",\"profile\":\"balanced\",\"physical_target\":\"off\",\"count\":"+Number(j.count)+",\"correction_count\":"+Number(m)+",\"seed\":"+Number(j.seed)+",\"offset\":"+Number(j.offset)+",\"depth\":"+Number(j.depth)+",\"paired_depth\":"+Number(j.pairedDepth)+",\"native_trace_jobs\":"+Number(recipe.children.size()-(recipe.embeddedPrefix?1:0))+",\"native_prefix_output_capability\":"+(NativeWorkerCapabilities::OrientationPrefixOutput()?"true":"false")+",\"embedded_balanced_prefix\":"+(recipe.embeddedPrefix?"true":"false")+",\"paired_balanced_depths\":"+(pairedBalanced?"true":"false")+",\"fraction_selected_before_samples\":true}");
     }
     // Each parent is committed immediately after its last native source. The
     // executor has already fed the next GPU request before calling this code.

@@ -2,6 +2,22 @@
 // authority for an optical result. Each referenced complete marker and source
 // graph is verified before a restored payload can enter an estimator.
 bool compactIndex=false,restoringIndex=false,indexJournalRestored=false;
+int indexImportFd=-1;size_t indexImportPendingBytes=0;
+void BeginIndexImport(){
+    Require(indexImportFd<0,"nested job index import");
+    if(compactIndex){indexImportFd=open((root+"/completed_jobs.journal").c_str(),O_WRONLY|O_CREAT|O_APPEND,0644);
+        Require(indexImportFd>=0,"cannot open imported job index");indexImportPendingBytes=0;}
+}
+void FinishIndexImport(){
+    if(indexImportFd<0)return;
+    const int fd=indexImportFd;indexImportFd=-1;indexImportPendingBytes=0;
+    const bool okay=fsync(fd)==0;close(fd);Require(okay,"cannot flush imported job index");
+}
+void CancelIndexImport(){
+    // The index is only an accelerator. Its incomplete final append is repaired
+    // on resume; authoritative completed jobs remain untouched.
+    if(indexImportFd>=0){close(indexImportFd);indexImportFd=-1;indexImportPendingBytes=0;}
+}
 std::string SamplingText(const Job& j)const{
     std::ostringstream out;
     out<<signature<<' '<<j.identity<<' '<<j.count<<' '<<j.offset<<' '<<j.seed<<' '<<j.depth<<' '<<j.phi<<' '<<j.block
@@ -23,7 +39,10 @@ bool ParseSampling(const std::string& text,const std::string& folder,Job& j,bool
 void ConfigureIndex(bool fresh){
     const auto path=root+"/job_index_format.txt";
     if(Exists(path)){Require(Read(path)=="compact_v1\n","unsupported job index format");compactIndex=true;}
-    else if(fresh){Atomic(path,"compact_v1\n");compactIndex=true;}
+    else if(fresh||!refinementParent.empty()){
+        Atomic(path,"compact_v1\n");compactIndex=true;
+        if(!fresh)Record(root+"/legacy_index_upgrade.json","{\"format\":\"compact_v1\",\"scope\":\"child metadata only\",\"parent_unchanged\":true,\"sampling_unchanged\":true,\"payload_validation\":\"before use, including dependencies\"}");
+    }
 }
 std::string DiagnosticText(const Job& j)const{
     std::ostringstream d;d<<std::setprecision(17)
@@ -56,14 +75,22 @@ void PublishComplete(const Job& j,const std::string& metadata){
 }
 void AppendIndex(const Job& j){
     if(!compactIndex||restoringIndex)return;
-    std::ostringstream body;body<<j.folder.substr(root.size()+6)<<'\n'<<FileHash(j.folder+"/complete.txt")<<'\n'
+    const auto local=root+"/jobs/",parent=refinementParent+"/jobs/";
+    const bool inLocal=j.folder.compare(0,local.size(),local)==0;
+    Require(inLocal||(!refinementParent.empty()&&j.folder.compare(0,parent.size(),parent)==0),"job index source lies outside this continuation");
+    const auto name=j.folder.substr(inLocal?local.size():parent.size());
+    Require(!name.empty()&&name.find('/')==std::string::npos&&name!="."&&name!="..","invalid job index source name");
+    std::ostringstream body;body<<name<<'\n'<<(j.indexMarkerHash.empty()?FileHash(j.folder+"/complete.txt"):j.indexMarkerHash)<<'\n'
         <<DiagnosticText(j)<<SamplingText(j);
     const auto data=body.str(),record=Number(data.size())+" "+Hash(data)+"\n"+data+"\n";
-    const auto path=root+"/completed_jobs.journal";int fd=open(path.c_str(),O_WRONLY|O_CREAT|O_APPEND,0644);
+    const auto path=root+"/completed_jobs.journal";const bool batched=indexImportFd>=0;
+    int fd=batched?indexImportFd:open(path.c_str(),O_WRONLY|O_CREAT|O_APPEND,0644);
     Require(fd>=0,"cannot append job index journal");size_t done=0;
     while(done<record.size()){ssize_t n=write(fd,record.data()+done,record.size()-done);if(n<0&&errno==EINTR)continue;
-        if(n<=0){close(fd);Require(false,"job index journal write failed");}done+=size_t(n);}
-    const bool okay=fsync(fd)==0;close(fd);Require(okay,"job index journal flush failed");
+        if(n<=0){if(!batched)close(fd);Require(false,"job index journal write failed");}done+=size_t(n);}
+    if(batched){indexImportPendingBytes+=record.size();
+        if(indexImportPendingBytes>=1024*1024){Require(fsync(fd)==0,"imported job index flush failed");indexImportPendingBytes=0;}}
+    else{const bool okay=fsync(fd)==0;close(fd);Require(okay,"job index journal flush failed");}
 }
 size_t RestoreIndexJournal(){
     if(!compactIndex||indexJournalRestored)return 0;
@@ -81,7 +108,7 @@ size_t RestoreIndexJournal(){
         Require(bool(std::getline(row,name)&&std::getline(row,marker)&&std::getline(row,diagnostics))
             &&!name.empty()&&name.find('/')==std::string::npos&&name!="."&&name!="..","invalid journal job path");
         std::ostringstream index;index<<row.rdbuf();Job j;
-        if(ParseSampling(index.str(),root+"/jobs/"+name,j,false)){
+        if(ParseSampling(index.str(),CachedJobFolder(name),j,false)){
             ParseDiagnostics(diagnostics,j);
             j.indexMarkerHash=marker;CacheJob(j);++restored;
             if(restored%1024==0)CheckHostMemory();

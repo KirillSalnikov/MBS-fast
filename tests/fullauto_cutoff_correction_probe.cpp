@@ -1,3 +1,5 @@
+// This probe explicitly tests a native build with prefix-output support.
+#define MBS_NATIVE_ORIENTATION_PREFIX_OUTPUT 1
 #include "../src/FullAuto.cpp"
 using namespace FullAuto;
 void Setup(Engine& e,const std::string& root,const std::string& binary,bool controls,bool absorbing){

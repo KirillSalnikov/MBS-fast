@@ -2,8 +2,8 @@
 // group, not an accepted-accuracy decision. Frozen inputs include coefficients
 // and every sampling/execution choice; source graphs remain authoritative.
 std::string InterpolationGroupKey(const Engine& e,const std::vector<int>& depths,const Budgets& counts,
-                                  const std::vector<size_t>& ids,const unsigned* seeds){
-    std::ostringstream s;s<<std::setprecision(17)<<"interpolation-group-v1\n"<<e.signature<<'\n'<<e.binaryHash<<'\n'<<e.ExecutionHash()<<'\n'
+                                  const std::vector<size_t>& ids,const unsigned* seeds,const std::string& binary=""){
+    std::ostringstream s;s<<std::setprecision(17)<<"interpolation-group-v1\n"<<e.signature<<'\n'<<(binary.empty()?e.binaryHash:binary)<<'\n'<<e.ExecutionHash()<<'\n'
         <<e.kernel.block<<' '<<e.kernel.pipeline<<' '<<e.kernel.warp<<' '<<e.phi<<' '<<e.controls<<' '<<e.sharedMeans<<' '
         <<e.mirror<<' '<<e.depthSharing<<' '<<e.balancedCorrection<<' '<<e.orientationBlock<<' '<<e.ratios<<'\n';
     for(int seed=0;seed<8;++seed)s<<seeds[seed]<<' ';s<<'\n';
@@ -16,7 +16,25 @@ std::string InterpolationGroupKey(const Engine& e,const std::vector<int>& depths
             for(int j=1;j<16;++j)for(int c=0;c<2;++c)s<<' '<<polar[c][j];}
         s<<'\n';
     }
-    return Hash(s.str());
+    const auto key=Hash(s.str());
+    if(!binary.empty()||Exists(e.root+"/interpolation_groups/"+key+".tsv"))return key;
+    // Carry completed groups across an explicitly verified controller-only
+    // deployment. The receipt is bound to both binaries and this calculation;
+    // a later build cannot inherit this exception automatically.
+    const auto compatibility=e.root+"/interpolation_group_compatibility.tsv";
+    if(Exists(compatibility)){
+        const auto text=Read(compatibility);const auto split=text.find('\n');
+        Require(split!=std::string::npos&&Hash(text.substr(split+1))==text.substr(0,split),"interpolation compatibility receipt changed");
+        std::istringstream rows(text.substr(split+1));std::string line;
+        while(std::getline(rows,line)){std::istringstream row(line);std::string signature,current,previous,extra;
+            Require(bool(row>>signature>>current>>previous)&&!(row>>extra),"invalid interpolation compatibility receipt");
+            if(signature==e.signature&&current==e.binaryHash){
+                const auto candidate=InterpolationGroupKey(e,depths,counts,ids,seeds,previous);
+                if(Exists(e.root+"/interpolation_groups/"+candidate+".tsv"))return candidate;
+            }
+        }
+    }
+    return key;
 }
 std::string InterpolationGroupPath(const Engine& e,const std::string& key){
     return e.root+"/interpolation_groups/"+key+".tsv";
@@ -50,7 +68,10 @@ bool RestoreInterpolationGroup(Engine& e,const std::string& key,size_t levels,si
         Require(FileHash(source+"/complete.txt")==digest,"interpolation group source completion changed");paths.push_back(source);}
     // Reuse never bypasses corruption checks in a descendant. ValidationBatch
     // shares only unchanged dependency graphs across neighbouring groups.
-    ValidateStoredRoots(paths,std::max(1,std::min(4,e.workerThreads)));
+    const int validationThreads=e.SourceValidationThreads();
+    e.Log("interpolation_group_validation_start","{\"key\":"+Quoted(key)+",\"source_roots\":"+Number(paths.size())
+        +",\"threads\":"+Number(validationThreads)+",\"source_graphs_required\":true}");
+    ValidateStoredRoots(paths,validationThreads);
     result.levels.assign(levels,Samples(8,Matrix(rows)));result.costs.assign(levels,std::vector<double>(rows));result.analytic.resize(rows);
     auto scalar=[&](double& value){Require(bool(input>>value)&&std::isfinite(value),"invalid interpolation group value");};
     for(size_t row=0;row<rows;++row){scalar(result.analytic[row]);

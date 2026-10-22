@@ -8,11 +8,13 @@
 #include "cuda/GpuSupport.h"
 #include "RuntimeInfo.h"
 #include "WorkerProtocol.h"
+#include "NativeWorkerCapabilities.h"
 #include "FullAutoAuditPlan.h"
 #include "FullAutoPreparation.h"
 #include "FullAutoScheduling.h"
 #include "BoundedCache.h"
 #include "CheckedFileCache.h"
+#include "ValidatedGraphCache.h"
 #include "HostMemoryReserve.h"
 #include "IntegralCharacteristics.h"
 #include <poll.h>
@@ -384,16 +386,17 @@ void ReadPhaseTimings(Job& j,const std::string& text){
     }
 }
 // A completed source graph is immutable while its controller owns the output
-// lock. Share graph traversal within one evaluation or one common-prefix interpolation verification,
-// never between separate verification passes or restarts. Root payloads/manifests and direct source markers
-// are still checked on every call. Cache only compound nodes, not native leaves.
+// lock. Share graph traversal within one adaptive round (or the local evaluation
+// scope when called outside that loop), never across rounds or restarts. Root
+// payloads/manifests and direct source markers are still checked on every call.
+// Cache only compound nodes, not native leaves.
 struct ValidationBatch;
 thread_local ValidationBatch* activeValidationBatch=nullptr;
 struct ValidationBatch {
     ValidationBatch* previous;const char* scope;const ValidationBatch* fallback;
-    BoundedCache<std::string> compounds{64*1024*1024};
+    ValidatedGraphCache compounds;
     size_t checked=0,reused=0;
-    explicit ValidationBatch(const char* name="one evaluation",bool isolated=false,const ValidationBatch* shared=nullptr,size_t limit=64*1024*1024)
+    explicit ValidationBatch(const char* name="one evaluation",bool isolated=false,const ValidationBatch* shared=nullptr,size_t limit=256*1024*1024)
         :previous(activeValidationBatch),scope(name),fallback(shared){compounds.SetLimit(limit);if(isolated||!previous)activeValidationBatch=this;}
     ~ValidationBatch(){if(activeValidationBatch==this)activeValidationBatch=previous;}
 };
@@ -476,6 +479,28 @@ const char* BudgetPolicy();
 struct Engine {
     const ArgPP& args;const RunConfig& config;std::string exe,root,signature,binaryHash,weightFile;
     std::string compatibleBinary,compatibleHash;
+    bool refinementWindow=false;double refinementLo=0,refinementHi=0,refinementEps=0;
+    std::string refinementParent,refinementPolicy,meanReferenceOverride;
+    std::set<std::string> refinementLocalJobs;bool refinementLocalJobsIndexed=false;
+    void IndexRefinementLocalJobs(){
+        if(refinementParent.empty()||refinementLocalJobsIndexed)return;
+        DIR* directory=opendir((root+"/jobs").c_str());Require(directory!=nullptr,"cannot open refinement jobs");
+        while(auto* entry=readdir(directory))if(entry->d_name[0]!='.'&&Exists(root+"/jobs/"+entry->d_name+"/complete.txt"))
+            refinementLocalJobs.insert(entry->d_name);
+        closedir(directory);refinementLocalJobsIndexed=true;
+    }
+    std::string CachedJobFolder(const std::string& name){
+        if(refinementParent.empty())return root+"/jobs/"+name;
+        IndexRefinementLocalJobs();
+        return (refinementLocalJobs.count(name)?root:refinementParent)+"/jobs/"+name;
+    }
+    std::string MeanReferenceGrid()const{return meanReferenceOverride.empty()?root+"/requested_theta.csv":meanReferenceOverride;}
+    std::string RefinementFields()const{
+        if(!refinementWindow)return "";
+        return ",\"refinement_window\":{\"theta_min\":"+Number(refinementLo)+",\"theta_max\":"+Number(refinementHi)
+            +",\"target_epsilon\":"+Number(refinementEps)+",\"parent_output\":"+Quoted(refinementParent)
+            +",\"policy_fnv1a64\":"+Quoted(refinementPolicy)+",\"outside_window_revalidated\":false}";
+    }
     std::set<bool> warmedCacheControls;
     long pendingLegacyAuditSerial=-1;int pendingLegacyAuditRound=-1;std::string pendingLegacyAuditSources;
     std::ofstream journal;std::string requestedOptions;size_t journalSequence=0;double runStarted=Seconds();
@@ -578,6 +603,9 @@ struct Engine {
                     "cached identity changed sampling coordinates");
         }
         const bool newEntry=found==cache.end();
+        if(newEntry&&job.count<=orientationBlock)++prefixLeafGeneration;
+        if(!refinementParent.empty()&&job.folder.compare(0,root.size()+6,root+"/jobs/")==0)
+            refinementLocalJobs.insert(job.folder.substr(root.size()+6));
         Job metadata=job;DropPayload(metadata);
         Job& stored=cache[job.identity];stored=std::move(metadata);
         if(!job.matrix.empty())payloads.Put(job.identity,std::make_shared<Job>(job),JobBytes(job));
@@ -643,7 +671,7 @@ struct Engine {
     std::string Parameters(const std::string& state)const{
         std::ostringstream out;out<<"{\"configuration_fnv1a64\":"<<Quoted(signature)<<",\"binary_fnv1a64\":"<<Quoted(binaryHash)
             <<",\"compatible_origin_binary_fnv1a64\":"<<Quoted(compatibleHash)
-            <<",\"requested_options\":"<<requestedOptions<<",\"effective_worker_base\":[";
+            <<RefinementFields()<<",\"requested_options\":"<<requestedOptions<<",\"effective_worker_base\":[";
         for(size_t i=0;i<base.size();++i)out<<(i?",":"")<<Quoted(base[i]);
         out<<"],\"epsilon\":"<<Number(eps)<<",\"interpolation_budget\":"<<Number(interpolation)<<",\"statistical_budget\":"<<Number(statistical)<<",\"error_budget_policy\":"<<Quoted(go?"fixed-go":BudgetPolicy())<<",\"statistical_budget_role\":\"conservative floor; PO uses component pointwise sums\""
             <<",\"pilot_count\":"<<pilot<<",\"kernel_pilot_count\":"<<kernelCount<<",\"dense_theta_pilot_count\":"<<thetaAuditCount
@@ -695,6 +723,13 @@ struct Engine {
         Require(root.find('%')==std::string::npos,"output placeholders are not supported; use an explicit directory");Directory(root);
         char* full=realpath(root.c_str(),nullptr);Require(full!=nullptr,"cannot resolve output directory");root=full;free(full);
         eps=args.GetDoubleValue("fullauto");interpolation=eps*.25;statistical=eps-interpolation;
+        if(args.IsCatched("fullauto_refine_window")){
+            refinementWindow=true;refinementLo=args.GetDoubleValue("fullauto_refine_window",0);
+            refinementHi=args.GetDoubleValue("fullauto_refine_window",1);refinementEps=args.GetDoubleValue("fullauto_refine_window",2);
+            Require(!go&&std::isfinite(refinementLo)&&std::isfinite(refinementHi)&&refinementLo>=0&&refinementHi<=180&&refinementLo<refinementHi,
+                "refinement window requires PO and 0 <= TH1 < TH2 <= 180");
+            Require(std::isfinite(refinementEps)&&refinementEps>0&&refinementEps<1,"refinement tolerance must be a fraction in (0,1)");
+        }
         localPolicy=args.IsCatched("fullauto_local")?args.GetStringValue("fullauto_local"):"auto";local=localPolicy!="off";ratios=On("fullauto_ratios");phiRecheck=On("fullauto_phi_recheck");
         polarControls=On("fullauto_polar_controls");finalChecks=On("fullauto_final_checks");finalAudit=finalChecks&&On("fullauto_final_audit");physicsAudit=On("fullauto_physics_audit",false);
         coherent=!go&&!args.IsCatched("incoh");depthSharing=!go&&coherent&&On("fullauto_depth_share");
@@ -881,6 +916,7 @@ struct Engine {
         for(int i=1;i<argc;++i){
             std::string option=argv[i];while(!option.empty()&&option[0]=='-')option.erase(0,1);
             if(argv[i][0]=='-' && (option=="fullauto-resume-compatible"||option=="fullauto_resume_compatible"||option=="fullauto-dispatch-gpus"||option=="fullauto_dispatch_gpus"||option=="fullauto-dispatch-threads"||option=="fullauto_dispatch_threads"||option=="fullauto-final-checks"||option=="fullauto_final_checks")){++i;continue;}
+            if(argv[i][0]=='-'&&(option=="fullauto-refine-window"||option=="fullauto_refine_window")){i+=3;continue;}
             fingerprint<<argv[i]<<'\n';
         }
         // Canonical reconstruction avoids shell quoting and option aliases.
@@ -910,7 +946,7 @@ struct Engine {
     }
     void State(const std::string& status,int round,const std::vector<int>& counts,size_t nodes,double ci,double ie,int streak) {
         std::ostringstream s;s<<std::setprecision(17)<<"{\n\"status\":"<<Quoted(status)<<",\"configuration_fnv1a64\":"<<Quoted(signature)
-            <<",\"resident_matrix_cache_bytes\":"<<payloads.Bytes()<<",\"resident_matrix_cache_limit_bytes\":"<<payloads.Limit()
+            <<RefinementFields()<<",\"resident_matrix_cache_bytes\":"<<payloads.Bytes()<<",\"resident_matrix_cache_limit_bytes\":"<<payloads.Limit()
             <<",\"resident_matrix_cache_evictions\":"<<payloads.evictions<<",\"cached_job_metadata_count\":"<<cache.size()
             <<",\"method\":"<<Quoted(go?"go":"po")<<",\"cpu_workers\":"<<(config.useGpu?0:gpus.size())<<",\"controller_pid\":"<<getpid()<<",\"round\":"<<round<<",\"counts_per_seed\":[";
         for(size_t i=0;i<counts.size();++i)s<<(i?",":"")<<counts[i];
@@ -977,7 +1013,9 @@ struct Engine {
         if(path==folder+"/sampling.index")Require(Hash(text)==Read(folder+"/sampling.index.fnv"),"sampling index changed");
         if(!ParseSampling(text,folder,j))return false;
         if(path==folder+"/complete.txt")ReadCompactDiagnostics(stored,text,j);
-        std::istringstream meta(Read(folder+"/complete.txt"));std::string identity;meta>>identity>>j.seconds;Require(identity==j.identity&&std::isfinite(j.seconds)&&j.seconds>0,"sampling identity changed");
+        const auto marker=path==folder+"/complete.txt"?stored:Read(folder+"/complete.txt");
+        std::istringstream meta(marker);std::string identity;meta>>identity>>j.seconds;Require(identity==j.identity&&std::isfinite(j.seconds)&&j.seconds>0,"sampling identity changed");
+        j.indexMarkerHash=Hash(marker);
         // Keep scheduling/control metadata identical to eager restoration.
         // Payload() verifies the immutable source graph and coordinates
         // before any of these rows can enter an optical estimator.
@@ -993,11 +1031,18 @@ struct Engine {
         const double journalStarted=Seconds();
         struct RestoreScope {bool& flag;explicit RestoreScope(bool& v):flag(v){flag=true;}~RestoreScope(){flag=false;}} restoreScope(restoringIndex);
         const size_t journalJobs=RestoreIndexJournal();
-        DIR* directory=opendir((root+"/jobs").c_str());if(!directory)return;std::vector<std::string> folders;
-        while(auto* entry=readdir(directory)){if(entry->d_name[0]!='.'){
-            const auto folder=root+"/jobs/"+entry->d_name;
-            if(!compactIndex||!folderIndex.count(folder))folders.push_back(folder);
-        }}closedir(directory);
+        struct ImportScope {Engine& e;explicit ImportScope(Engine& v):e(v){e.BeginIndexImport();}~ImportScope(){e.CancelIndexImport();}} importScope(*this);
+        std::vector<std::string> folders,cacheRoots{root};
+        if(!refinementParent.empty()){IndexRefinementLocalJobs();cacheRoots.push_back(refinementParent);}
+        for(const auto& cacheRoot:cacheRoots){
+            DIR* directory=opendir((cacheRoot+"/jobs").c_str());if(!directory)continue;
+            while(auto* entry=readdir(directory)){if(entry->d_name[0]!='.'){
+                const std::string name=entry->d_name;
+                if(cacheRoot!=root&&refinementLocalJobs.count(name))continue;
+                const auto folder=cacheRoot+"/jobs/"+name;
+                if(!compactIndex||!folderIndex.count(folder))folders.push_back(folder);
+            }}closedir(directory);
+        }
         Log("cache_index_journal","{\"enabled\":"+std::string(compactIndex?"true":"false")+",\"journal_jobs\":"+Number(journalJobs)
             +",\"fallback_folders\":"+Number(folders.size())+",\"seconds\":"+Number(Seconds()-journalStarted)+"}");
         cpu_set_t allowed;CPU_ZERO(&allowed);
@@ -1039,6 +1084,7 @@ struct Engine {
                 ++scanned;progress(false);
             }
         }
+        FinishIndexImport();
         warmedCacheControls.insert(controls);
         progress(true);
         Log("cache_restored","{\"restore_threads\":"+Number(restoreThreads)+",\"indexed_jobs\":"+Number(cache.size())+",\"payload_validation\":\"before use, including dependencies\",\"seconds\":"+Number(Seconds()-started)+"}");
@@ -1132,7 +1178,7 @@ struct Engine {
             if(offset){command.push_back("--sobol-offset");command.push_back(std::to_string(offset));}
             if(pairedDepth){command.push_back("--paired-depth");command.push_back(std::to_string(pairedDepth));}
             if(!go)command.push_back("--profile-phases");
-            if(controls){command.push_back("--analytic-mean-threads");command.push_back(Number(analyticMeanThreads));command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache(gridHash));if(sharedMeans){command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");}}
+            if(controls){command.push_back("--analytic-mean-threads");command.push_back(Number(analyticMeanThreads));command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache(gridHash));if(sharedMeans){command.push_back("--analytic-mean-reference-grid");command.push_back(MeanReferenceGrid());}}
             if(workerChunk>0){command.push_back("--orientation-chunk");command.push_back(Number(workerChunk));}
             if(kernel.pipeline)command.push_back("--orientation-pipeline");
             if(!wf.empty()){command.push_back("--analytic-control-weights");command.push_back(wf);}
@@ -1168,6 +1214,10 @@ struct Engine {
         return cap; // cap the adaptive memory chunk; never bypass its memory guard
     }
     bool VerifyShortPacketChunk(const Job& job,const std::vector<std::string>& actualCommand){
+        // The pilot changes N to 2048. Retaining a larger requested prefix can
+        // make M >= N, and testing only the full matrix does not validate the
+        // separately accumulated prefix after changing chunk boundaries.
+        if(std::find(actualCommand.begin(),actualCommand.end(),"--orientation-prefix-output")!=actualCommand.end())return false;
         const int cap=ShortPacketCandidate(job.inputAngles.size());
         const std::string key=Hash(std::string("short-packet-v5 ")+job.executionHash+Number(workerChunk)+" "+Number(cap)+" "+Number(job.depth)+" "+Number(job.pairedDepth)+" "+Number(job.phi)+" "+Number(job.mirrored)+" "+Number(job.hasControls)
             +" "+Number(FullAutoPreparation::Bucket(job.inputAngles.size()))+" "+Number(int(job.inputAngles.front()/15))+" "+Number(int(job.inputAngles.back()/15)));
@@ -1221,6 +1271,7 @@ struct Engine {
         Record(path,report);Log("short_packet_validation",report);shortPacketChecks[key]=passed;return passed;
     }
     void ApplyShortPacketChunk(Job& job,std::vector<std::string>& command){
+        if(std::find(command.begin(),command.end(),"--orientation-prefix-output")!=command.end()){job.dispatchChunk=0;return;}
         job.dispatchChunk=ShortPacketChunk(job);if(!job.dispatchChunk)return;
         if(!VerifyShortPacketChunk(job,command)){job.dispatchChunk=0;return;}
         bool found=false;for(size_t i=0;i+1<command.size();++i)if(command[i]=="--orientation-chunk"){command[i+1]=Number(job.dispatchChunk);found=true;}
@@ -1369,7 +1420,7 @@ struct Engine {
         std::ostringstream coordinates;for(double v:x)coordinates<<Number(v)<<'\n';const std::string grid=root+"/theta_"+Hash(coordinates.str())+".csv";Atomic(grid,coordinates.str());
         std::vector<std::string> command=base;for(const auto& v:std::vector<std::string>{"--max-reflections",Number(job.depth),"--sobol-seed",Number(job.count),Number(job.seed),"--haar-alpha","--theta-grid-file",grid,"--phi-points",Number(phi),"--threads",Number(workerThreads),"--close"})command.push_back(v);
         if(job.offset){command.push_back("--sobol-offset");command.push_back(Number(job.offset));}if(mirror)command.push_back("--mirror-gamma");
-        if(controls){command.push_back("--analytic-mean-threads");command.push_back(Number(analyticMeanThreads));command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache("shared"));command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");const auto wf=WriteWeights(x);if(!wf.empty()){command.push_back("--analytic-control-weights");command.push_back(wf);}}
+        if(controls){command.push_back("--analytic-mean-threads");command.push_back(Number(analyticMeanThreads));command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache("shared"));command.push_back("--analytic-mean-reference-grid");command.push_back(MeanReferenceGrid());const auto wf=WriteWeights(x);if(!wf.empty()){command.push_back("--analytic-control-weights");command.push_back(wf);}}
         if(workerChunk>0){command.push_back("--orientation-chunk");command.push_back(Number(workerChunk));}
         command.push_back("--output");command.push_back(job.folder+"/result");std::ostringstream recipe;recipe<<exe<<'\n';for(const auto& v:command)recipe<<v<<'\n';return recipe.str();
     }
@@ -1396,7 +1447,9 @@ struct Engine {
             job.matrix.assign(x.size(),Mueller{});job.controls.assign(controls?x.size():0,std::array<double,5>{});job.angles=x;job.seconds=0;
             for(const auto& group:parts){const auto& p=group[s];const double fraction=double(p.count)/n;key<<p.identity;dependencies<<p.folder<<'\t'<<FileHash(p.folder+"/complete.txt")<<'\n';job.seconds+=p.seconds;
                 for(size_t r=0;r<x.size();++r){for(int j=0;j<16;++j)job.matrix[r][j]+=fraction*p.matrix[r][j];if(controls)for(int j=0;j<5;++j)job.controls[r][j]+=fraction*p.controls[r][j];}}
-            job.identity=Hash(key.str());job.folder=root+"/jobs/q"+job.identity;job.data=job.folder+"/result/result.dat";job.summary=job.folder+"/result/result_analytic_facets.tsv";Directory(job.folder+"/result");
+            job.identity=Hash(key.str());
+            const auto existing=cache.find(job.identity);if(existing!=cache.end()){result[s]=Materialize(existing->second);continue;}
+            job.folder=root+"/jobs/q"+job.identity;job.data=job.folder+"/result/result.dat";job.summary=job.folder+"/result/result_analytic_facets.tsv";Directory(job.folder+"/result");
             if(!Exists(job.folder+"/complete.txt")){WriteMatrix(job.data,x,job.matrix);if(controls){std::ostringstream summary;summary<<std::setprecision(17)<<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n";
                     for(size_t r=0;r<x.size();++r){const auto& c=job.controls[r];const auto& b=coefficients[r];summary<<x[r];for(double v:c)summary<<'\t'<<v;summary<<'\t'<<c[0]-b[0]*c[3]-b[1]*c[4]<<'\t'<<job.matrix[r][0]<<'\t'<<job.controlRefinement<<'\t'<<job.controlSetup<<'\t'<<b[0]<<'\t'<<b[1]<<'\n';}Atomic(job.summary,summary.str());}
                 Atomic(job.folder+"/command.args",Replay(job,x));Atomic(job.folder+"/stdout.log","Exact paired Sobol-prefix assembly.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");Atomic(job.folder+"/angular_sources.tsv",dependencies.str());
@@ -1480,6 +1533,16 @@ struct Engine {
         depthVerified=true;Record(root+"/depth_sharing_verification.json","{\"enabled\":"+std::string(depthSharing?"true":"false")+",\"max_all16_difference_scaled_M11\":"+Number(maximum)+",\"probe_count\":"+Number(n)+",\"scope\":\"convex trace prefix with separate coherent diffraction; unsupported shapes use independent traces\"}");
     }
     #include "FullAutoPrefixCache.inc"
+    #include "FullAutoPrefixBatch.inc"
+    int SourceValidationThreads()const{
+        cpu_set_t allowed;CPU_ZERO(&allowed);const int available=sched_getaffinity(0,sizeof(allowed),&allowed)==0?std::max(1,CPU_COUNT(&allowed)):1;
+        const int assigned=dispatchThreads>0?dispatchThreads:(args.IsCatched("threads")?workerThreads:available);
+#ifdef _OPENMP
+        return std::max(1,std::min(4,std::min(available,assigned)));
+#else
+        (void)assigned;return 1;
+#endif
+    }
     void PrevalidateCachedJobs(const std::vector<const Job*>& jobs,int count,const char* kind){
         if(jobs.size()<2)return;
         // A small orientation count does not imply a cheap source graph:
@@ -1487,13 +1550,7 @@ struct Engine {
         // Retain the cheap-native cutoff, but verify compound roots in parallel.
         const bool compound=std::any_of(jobs.begin(),jobs.end(),[](const Job* job){return job&&job->assembled;});
         if(count/orientationBlock<32&&!compound)return;
-        cpu_set_t allowed;CPU_ZERO(&allowed);const int available=sched_getaffinity(0,sizeof(allowed),&allowed)==0?std::max(1,CPU_COUNT(&allowed)):1;
-        const int assigned=dispatchThreads>0?dispatchThreads:(args.IsCatched("threads")?workerThreads:available);
-#ifdef _OPENMP
-        const int threads=std::max(1,std::min(4,std::min(available,assigned)));
-#else
-        const int threads=1;
-#endif
+        const int threads=SourceValidationThreads();
         if(threads==1)return;
         std::vector<std::string> roots;for(const auto* j:jobs)if(j&&!payloads.Peek(j->identity)&&Exists(j->folder+"/complete.txt"))roots.push_back(j->folder);
         if(roots.size()<2)return;
@@ -1511,7 +1568,7 @@ struct Engine {
         std::ostringstream coordinates;for(double q:x)coordinates<<Number(q)<<'\n';
         const std::string gridHash=Hash(coordinates.str()),grid=root+"/theta_"+gridHash+".csv";Atomic(grid,coordinates.str());
         ValidationBatch prefixValidation("one prefix assembly");
-        std::vector<Job> result(ns);bool ready=true;
+        std::vector<Job> result(ns);std::vector<bool> completed(ns,false);bool ready=true;
         for(size_t s=0;s<ns;++s){Job j;SetSampling(j,n,seedSet[s],depth,x,false);j.assembled=true;j.weightHash=weightHash;
             j.identity=Hash(signature+ExecutionHash()+"\norientation prefix v1\n"+Number(n)+" "+Number(seedSet[s])+" "+Number(depth)+" "+Number(phi)+" "+Number(kernel.block)+" "+Number(kernel.pipeline)+" "+kernel.warp+" "+Number(mirror)+" "+Number(controls)+"\n"+gridHash+"\n"+weightHash);
             j.folder=root+"/jobs/p"+j.identity;j.data=j.folder+"/result/result.dat";j.summary=j.folder+"/result/result_analytic_facets.tsv";
@@ -1520,9 +1577,9 @@ struct Engine {
         std::vector<const Job*> candidates;for(const auto& job:result)candidates.push_back(&job);
         PrevalidateCachedJobs(candidates,n,"prefix");
         for(size_t s=0;s<ns;++s){Job j=result[s];
-            if(cache.count(j.identity))j=Materialize(cache.at(j.identity));
+            if(cache.count(j.identity)){j=Materialize(cache.at(j.identity));completed[s]=true;}
             else if(Exists(j.folder+"/complete.txt")){std::set<std::string> visited;ValidateStoredJob(j.folder,visited);
-                std::istringstream meta(Read(j.folder+"/complete.txt"));std::string id;meta>>id>>j.seconds;Require(id==j.identity,"prefix cache identity changed");j=Load(j);CacheJob(j);
+                std::istringstream meta(Read(j.folder+"/complete.txt"));std::string id;meta>>id>>j.seconds;Require(id==j.identity,"prefix cache identity changed");j=Load(j);CacheJob(j);completed[s]=true;
             }else{ready=false;j.matrix.assign(x.size(),Mueller{});if(controls)j.controls.assign(x.size(),std::array<double,5>{{0,0,0,0,0}});}
             result[s]=j;
         }
@@ -1535,7 +1592,15 @@ struct Engine {
         std::vector<std::array<double,2>> coefficients(x.size(),{{1.,1.}});
         if(!wf.empty()){std::istringstream f(Read(wf));std::string header;std::getline(f,header);for(auto& b:coefficients){double theta;Require(bool(f>>theta>>b[0]>>b[1]),"incomplete prefix weights");}}
         const double assemblyStarted=Seconds();double progressAt=-1;size_t cachedBlocks=0;
-        for(int start=0;start<n;start+=orientationBlock){const int count=std::min(orientationBlock,n-start);
+        auto prepared=TakePreparedPrefix(n,seedSet,ns,depth,x);
+        if(prepared){cachedBlocks=prepared->blocks;for(size_t s=0;s<ns;++s){
+            auto& j=result[s];auto& p=prepared->values[s];j.matrix=std::move(p.matrix);j.controls=std::move(p.controls);
+            j.seconds=p.seconds;j.controlRefinement=p.controlRefinement;j.controlSetup=p.controlSetup;sources[s]=std::move(prepared->sources[s]);
+        }savedOrientationBlocks+=ns*cachedBlocks;
+            Record(root+"/orientation_progress.json","{\"completed_prefix\":"+Number(n)+",\"requested_prefix\":"+Number(n)+",\"depth\":"+Number(depth)
+                +",\"seeds\":"+Number(ns)+",\"theta_rows\":"+Number(x.size())+",\"phase\":\"prefix_assembly_batch\",\"native_work\":0}\n");
+        }
+        else for(int start=0;start<n;start+=orientationBlock){const int count=std::min(orientationBlock,n-start);
             const bool cached=AccumulateCachedPrefixBlock(count,start,n,seedSet,ns,depth,x,weightHash,coefficients,result,sources,verified);
             if(cached)++cachedBlocks;
             else{auto parts=Stage(count,seedSet,ns,depth,x,true,false,start);const double fraction=double(count)/n;
@@ -1551,7 +1616,11 @@ struct Engine {
             const double now=Seconds();if(progressAt<0||now-progressAt>=2||start+count==n){
                 Record(root+"/orientation_progress.json","{\"completed_prefix\":"+Number(start+count)+",\"requested_prefix\":"+Number(n)+",\"depth\":"+Number(depth)+",\"seeds\":"+Number(ns)+",\"block_size\":"+Number(orientationBlock)+",\"theta_rows\":"+Number(x.size())+",\"theta_grid_fnv1a64\":"+Quoted(gridHash)+",\"phase\":\"prefix_assembly\",\"scope\":\"verified saved blocks, per seed; intermediate status throttled to two seconds\"}\n");progressAt=now;}
         }
-        for(size_t s=0;s<ns;++s){Job& j=result[s];Directory(j.folder+"/result");WriteMatrix(j.data,x,j.matrix);
+        for(size_t s=0;s<ns;++s){Job& j=result[s];
+            // A partial eight-seed prefix must never rewrite already complete
+            // source payloads, especially when they belong to a frozen parent.
+            if(completed[s]){j=Materialize(cache.at(j.identity));continue;}
+            Directory(j.folder+"/result");WriteMatrix(j.data,x,j.matrix);
             if(controls){std::ostringstream f;f<<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n"<<std::setprecision(17);
                 for(size_t r=0;r<x.size();++r){const auto& c=j.controls[r];const auto& b=coefficients[r];f<<x[r];for(double v:c)f<<'\t'<<v;
                     f<<'\t'<<c[0]-b[0]*c[3]-b[1]*c[4]<<'\t'<<j.matrix[r][0]<<'\t'<<j.controlRefinement<<'\t'<<j.controlSetup<<'\t'<<b[0]<<'\t'<<b[1]<<'\n';}Atomic(j.summary,f.str());}
@@ -1560,7 +1629,7 @@ struct Engine {
             if(mirror)command.push_back("--mirror-gamma");
             if(workerChunk>0){command.push_back("--orientation-chunk");command.push_back(Number(workerChunk));}
             if(kernel.pipeline)command.push_back("--orientation-pipeline");
-            if(controls){command.push_back("--analytic-mean-threads");command.push_back(Number(analyticMeanThreads));command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache("shared"));command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");}
+            if(controls){command.push_back("--analytic-mean-threads");command.push_back(Number(analyticMeanThreads));command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache("shared"));command.push_back("--analytic-mean-reference-grid");command.push_back(MeanReferenceGrid());}
             if(!wf.empty()){command.push_back("--analytic-control-weights");command.push_back(wf);}command.push_back("--output");command.push_back(j.folder+"/result");
             std::string recipe=exe+"\n";for(const auto& v:command)recipe+=v+"\n";Atomic(j.folder+"/command.args",recipe);
             Atomic(j.folder+"/stdout.log","Controller exact Sobol-prefix assembly; command.args is a full-prefix replay recipe.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");
@@ -1639,6 +1708,14 @@ struct Engine {
         std::vector<std::array<double,2>> coefficients(x.size(),{{1.,1.}});
         if(!wf.empty()){std::istringstream file(Read(wf));std::string header;std::getline(file,header);
             for(size_t r=0;r<x.size();++r){double angle;Require(bool(file>>angle>>coefficients[r][0]>>coefficients[r][1]),"invalid assembled control weights");}}
+        // A new angular view has no completed root to prevalidate above.
+        // Verify its selected existing sources together before Payload loads
+        // them one by one. Selection and matrix accumulation stay unchanged.
+        std::map<std::string,const Job*> partialSources;
+        for(size_t s=0;s<ns;++s)if(!cache.count(result[s].identity))
+            for(const auto& row:rows[s])partialSources.emplace(row.second.first->identity,row.second.first);
+        std::vector<const Job*> partialRoots;for(const auto& entry:partialSources)partialRoots.push_back(entry.second);
+        PrevalidateCachedJobs(partialRoots,n,"partial angular source rows");
         for(size_t s=0;s<ns;++s){Job& j=result[s];if(cache.count(j.identity))continue;
             const double assemblyStarted=Seconds();
             std::set<std::string> sources;size_t reused=0;
@@ -1668,7 +1745,7 @@ struct Engine {
             if(offset){command.push_back("--sobol-offset");command.push_back(std::to_string(offset));}
             if(workerChunk>0){command.push_back("--orientation-chunk");command.push_back(Number(workerChunk));}
             if(kernel.pipeline)command.push_back("--orientation-pipeline");
-            if(controls){command.push_back("--analytic-mean-threads");command.push_back(Number(analyticMeanThreads));command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache(gridHash));if(sharedMeans){command.push_back("--analytic-mean-reference-grid");command.push_back(root+"/requested_theta.csv");}}
+            if(controls){command.push_back("--analytic-mean-threads");command.push_back(Number(analyticMeanThreads));command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache(gridHash));if(sharedMeans){command.push_back("--analytic-mean-reference-grid");command.push_back(MeanReferenceGrid());}}
             if(!wf.empty()){command.push_back("--analytic-control-weights");command.push_back(wf);}command.push_back("--output");command.push_back(j.folder+"/result");
             std::string recipe=exe+"\n";for(const auto& v:command)recipe+=v+"\n";Atomic(j.folder+"/command.args",recipe);
             Atomic(j.folder+"/stdout.log","Controller angular assembly; command.args is a reproducible full-grid recipe, not a launched worker.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");
@@ -1910,10 +1987,13 @@ namespace { double PhysicalDepthBound(const Samples&,const Samples&,const Matrix
 #include "FullAutoAdaptive.inc"
 #include "FullAutoGO.inc"
 #include "FullAutoPhysics.inc"
+#include "FullAutoWindow.inc"
 
 int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],double maximumEdge,double maximumDiameter,double volume) {
     std::unique_ptr<Engine> controller(new Engine(args,config));controller->Init(argc,argv,maximumEdge,maximumDiameter,volume);
     Lock lock(controller->root+"/controller.lock");
+    std::unique_ptr<Lock> refinementLock;
+    if(controller->refinementWindow){PrepareRefinementWindow(*controller);refinementLock.reset(new Lock(controller->root+"/controller.lock"));}
     const std::string identity=controller->root+"/configuration.txt";
     controller->ConfigureIndex(!Exists(identity));
     if(Exists(identity))Require(Read(identity)==controller->signature+"\n","resume inputs/binary/environment changed; choose a new output directory");else Atomic(identity,controller->signature+"\n");
@@ -1971,6 +2051,7 @@ int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],do
             throw;
         }
         controller.reset(new Engine(args,config));controller->Init(argc,argv,maximumEdge,maximumDiameter,volume);
+        if(controller->refinementWindow)PrepareRefinementWindow(*controller);
     }
 }
 }

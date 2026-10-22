@@ -19,6 +19,14 @@ int main(int argc,char** argv){try{
         AdaptiveData saved;Require(RestoreInterpolationGroup(e,key,depths.size(),rows.size(),saved),"missing saved group");
         const auto direct=EvaluateBudget(e,depths,counts,rows,e.seeds.data(),false);
         Require(saved.levels==direct.levels&&saved.costs==direct.costs&&saved.analytic==direct.analytic&&saved.sources==direct.sources,"checkpoint roundtrip changed eight-replica data");
+        const auto priorBinary=e.binaryHash;e.binaryHash="verified-controller-only-update";
+        Require(InterpolationGroupKey(e,depths,counts,rows,e.seeds.data())!=key,"binary change reused a group without authorization");
+        const std::string compatibility=e.signature+" "+e.binaryHash+" "+priorBinary+"\n";
+        Atomic(e.root+"/interpolation_group_compatibility.tsv",Hash(compatibility)+"\n"+compatibility);
+        Require(InterpolationGroupKey(e,depths,counts,rows,e.seeds.data())==key,"verified controller deployment lost completed group");
+        ++e.phi;Require(InterpolationGroupKey(e,depths,counts,rows,e.seeds.data())!=key,"compatibility ignored changed sampling");--e.phi;
+        e.binaryHash="another-unverified-update";Require(InterpolationGroupKey(e,depths,counts,rows,e.seeds.data())!=key,"compatibility leaked to a different executable");
+        e.binaryHash=priorBinary;
         e.payloads.SetLimit(1);std::vector<double> assemblyTimes,receiptTimes;
         for(int trial=0;trial<5;++trial){
             const double begin=Seconds();const auto assembled=EvaluateBudget(e,depths,counts,rows,e.seeds.data(),false);assemblyTimes.push_back(Seconds()-begin);
