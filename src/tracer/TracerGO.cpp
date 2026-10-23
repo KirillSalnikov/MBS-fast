@@ -430,7 +430,8 @@ void TracerGO::TraceMonteCarlo(const AngleRange &betaRange, const AngleRange &ga
 }
 
 void TracerGO::TraceSobol(int nOrientations, unsigned int seed,
-                          double betaMax, double gammaMax, unsigned int offset)
+                          double betaMax, double gammaMax, unsigned int offset,
+                          bool mirror, bool pairedMirrorAudit)
 {
 #ifdef _CHECK_ENERGY_BALANCE
     m_incomingEnergy = 0;
@@ -453,13 +454,24 @@ void TracerGO::TraceSobol(int nOrientations, unsigned int seed,
     const double dCos = 1.0 - cosMin;
 
     long long count = 0;
-    std::vector<double> betas(nOrientations);
-    std::vector<double> gammas(nOrientations);
+    const int baseCount=nOrientations;
+    const double sampledGamma=(mirror||pairedMirrorAudit)?gammaMax/2:gammaMax;
+    std::vector<double> betas(size_t(nOrientations)*(pairedMirrorAudit?2:1));
+    std::vector<double> gammas(betas.size());
     for (int i = 0; i < nOrientations; ++i)
     {
         betas[i] = acos(1.0 - su[i]*dCos);
-        gammas[i] = sv[i]*gammaMax;
+        gammas[i] = sv[i]*sampledGamma;
+        if (pairedMirrorAudit) {
+            betas[baseCount+i]=betas[i];
+            gammas[baseCount+i]=gammaMax-gammas[i];
+        }
     }
+    if (pairedMirrorAudit) nOrientations*=2;
+    if (mirror||pairedMirrorAudit)
+        cout << "GO gamma mirror: " << (mirror?"parity reconstruction":"explicit paired audit")
+             << ", beta=0.." << RadToDeg(betaMax) << ", sampled gamma=0.."
+             << RadToDeg(sampledGamma) << ", base count=" << baseCount << endl;
 
     HandlerGO *handlerGO = dynamic_cast<HandlerGO*>(m_handler);
     HandlerTotalGO *handlerTotal = dynamic_cast<HandlerTotalGO*>(m_handler);

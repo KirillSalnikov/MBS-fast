@@ -15,6 +15,7 @@
 #include "ArgPP.h"
 #include "CliOptions.h"
 #include "OrientationFile.h"
+#include "GOMirror.h"
 
 namespace
 {
@@ -896,9 +897,9 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
             if(config.useGpu||workers<1||workers>8)Fail("--fullauto-cpu-workers requires CPU and a count in 1..8.","select CPU and a valid worker count.");
         }
         if(config.method==RunMethod::GeometricalOptics){
-            for(const char* key:{"analytic_facet_average","analytic_shadow_control","analytic_mean_cache","analytic_mean_threads","haar_alpha","mirror_gamma","orientation_pipeline","gpu_trace","no_gpu_trace","fullauto_angular_cache","fullauto_pilot","fullauto_kernel","fullauto_correction","fullauto_theta_start","fullauto_theta_audit","fullauto_theta_range","tgrid","max_phi_points","chunk"})
+            for(const char* key:{"analytic_facet_average","analytic_shadow_control","analytic_mean_cache","analytic_mean_threads","haar_alpha","orientation_pipeline","gpu_trace","no_gpu_trace","fullauto_angular_cache","fullauto_pilot","fullauto_kernel","fullauto_correction","fullauto_theta_start","fullauto_theta_audit","fullauto_theta_range","tgrid","max_phi_points","chunk"})
                 if(args.IsCatched(key))Fail(CliCanonicalFlag(key)+" is not used by GO fullauto.","remove this PO-specific/grid modifier.");
-            for(const char* key:{"fullauto_controls","fullauto_depth_share","fullauto_polar_controls","fullauto_phi_recheck","fullauto_mirror","fullauto_rotation","fullauto_cutoffs","fullauto_resources","fullauto_local"})
+            for(const char* key:{"fullauto_controls","fullauto_depth_share","fullauto_polar_controls","fullauto_phi_recheck","fullauto_rotation","fullauto_cutoffs","fullauto_resources","fullauto_local"})
                 if(args.IsCatched(key)&&args.GetStringValue(key)!="off")Fail(CliCanonicalFlag(key)+" must be off for GO fullauto.","GO uses fixed finite bins, analytic alpha and explicit trace cutoffs.");
             if(args.IsCatched("cutoff_profile")&&args.GetStringValue("cutoff_profile")!="off")
                 Fail("GO fullauto uses individual trace cutoffs or cutoff-profile off.","remove the PO cutoff preset and set trace-cutoff thresholds explicitly.");
@@ -1133,10 +1134,10 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
     }
     if (args.IsCatched("haar_mirror_audit"))
     {
-        if (config.method!=RunMethod::PhysicalOptics || !args.IsCatched("haar_alpha")
+        if ((config.method==RunMethod::PhysicalOptics && !args.IsCatched("haar_alpha"))
             || (mode!=OrientationMode::Sobol && mode!=OrientationMode::SobolSeed))
-            Fail("--haar-mirror-audit requires PO Sobol with --haar-alpha.",
-                 "select --sobol-seed N SEED --haar-alpha.");
+            Fail("--haar-mirror-audit requires seeded Sobol (and --haar-alpha for PO).",
+                 "select --sobol-seed N SEED; add --haar-alpha only for PO.");
         if (args.IsCatched("mirror_gamma"))
             Fail("--haar-mirror-audit cannot be combined with --mirror-gamma.",
                  "compare two separate runs with the same base count and seed.");
@@ -1151,6 +1152,17 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
             Fail("--fullauto-mirror expects auto, on or off.","choose auto, on or off.");
         if (value=="off" && args.IsCatched("mirror_gamma"))
             Fail("--fullauto-mirror off conflicts with --mirror-gamma.","remove one of the conflicting options.");
+    }
+    if (config.method==RunMethod::GeometricalOptics) {
+        const bool seeded=mode==OrientationMode::Sobol||mode==OrientationMode::SobolSeed;
+        const bool required=args.IsCatched("haar_mirror_audit")
+            || (args.IsCatched("mirror_gamma")&&(seeded||args.IsCatched("fullauto")))
+            || (args.IsCatched("fullauto_mirror")&&args.GetStringValue("fullauto_mirror")=="on");
+        if (required&&!SupportsGOMirror(args))
+            Fail("GO mirror reconstruction requires nonabsorbing built-in particle 1 or 10 and a supported symmetry domain.",
+                 "use imaginary index zero, beta factor 1 or 2 and gamma factor 1, 2, 3 or 6; otherwise use fullauto-mirror off.");
+        if (seeded&&args.IsCatched("mirror_gamma")&&args.IsCatched("tr"))
+            Fail("GO mirror reconstruction does not support selected ray tracks.","use the total Mueller matrix.");
     }
     if(args.IsCatched("fullauto_work_queue")&&args.GetStringValue("fullauto_work_queue")=="on"&&args.IsCatched("fullauto_angular_cache")&&args.GetStringValue("fullauto_angular_cache")=="off")
         Fail("--fullauto-work-queue on requires --fullauto-angular-cache on.","enable the angular cache or disable the work queue.");

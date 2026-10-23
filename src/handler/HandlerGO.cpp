@@ -38,6 +38,7 @@ void HandlerGO::ConfigureForThreadLocal(const HandlerGO &source,
     m_riIm = source.m_riIm;
     m_absMag = source.m_absMag;
     m_absorptionPointCount = source.m_absorptionPointCount;
+    reconstructGammaMirror = source.reconstructGammaMirror;
 }
 
 void HandlerGO::MergeTotalContributionFrom(const HandlerGO &source)
@@ -156,6 +157,12 @@ matrix HandlerGO::ComputeMueller(double /*zenAng*/, Beam &beam)
             int fff = 0;
 #endif
     MultiplyMueller(beam, m);
+    // Restore the omitted reflection partner in the scattering-plane basis.
+    // After analytic alpha averaging: (M + P M P)/2, P=diag(1,1,-1,-1).
+    // Apply to every beam before binning, including the forward/back deltas.
+    if (reconstructGammaMirror)
+        for (int i=0;i<4;++i) for (int j=0;j<4;++j)
+            if ((i<2)!=(j<2)) m[i][j]=0;
     return m;
 }
 

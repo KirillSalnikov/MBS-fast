@@ -122,10 +122,10 @@ int RunGO(Engine& e){
                         Require(std::find(e.seeds.begin(),e.seeds.end(),fresh[i])==e.seeds.end(),"GO physics/production seed overlap");}
                     auto original=GoSample(e,count,fresh),deep=GoSample(e,count,fresh,e.target+2);
                     auto bound=[&](const Samples& other){return PhysicalDepthBound(original,other,result.stats.mean,true,bins,e.ratios);};
-                    const double depthError=bound(deep);const auto savedBase=e.base;const auto savedCutoff=e.selectedCutoff;double cutoffError=0;
+                    const double depthError=bound(deep);const auto savedBase=e.base;const auto savedCutoff=e.selectedCutoff;const bool savedMirror=e.mirror;double cutoffError=0;
                     if(e.physicsAudit){e.SetCutoff("off");try{cutoffError=bound(GoSample(e,count,fresh));}
-                    catch(...){e.base=savedBase;e.selectedCutoff=savedCutoff;e.SetMirror(false);throw;}
-                    e.base=savedBase;e.selectedCutoff=savedCutoff;e.SetMirror(false);}
+                    catch(...){e.base=savedBase;e.selectedCutoff=savedCutoff;e.SetMirror(savedMirror);throw;}
+                    e.base=savedBase;e.selectedCutoff=savedCutoff;e.SetMirror(savedMirror);}
                     physics=depthError<=(e.autoDepth?e.depthBudget:e.eps)&&cutoffError<=e.eps;
                     e.Record(e.root+"/physics_validation.json","{\"enabled\":true,\"passed\":"+(physics?std::string("true"):"false")+",\"depth_plus2_residual95_scaled_M11\":"+Number(depthError)+",\"cutoffs_off_residual95_scaled_M11\":"+Number(cutoffError)+",\"depth_pass\":"+std::string(depthError<=(e.autoDepth?e.depthBudget:e.eps)?"true":"false")+",\"cutoff_pass\":"+std::string(cutoffError<=e.eps?"true":"false")+",\"cutoffs_checked\":"+std::string(e.physicsAudit?"true":"false")+",\"depth_budget\":"+Number(e.autoDepth?e.depthBudget:e.eps)+",\"count_per_seed\":"+Number(count)+",\"requested_physics_retained\":true}");
                 }else e.Record(e.root+"/physics_validation.json","{\"enabled\":false,\"passed\":false,\"requested_physics_retained\":true}");

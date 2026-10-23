@@ -5,6 +5,7 @@
 #include "ArgPP.h"
 #include "CliOptions.h"
 #include "RunConfig.h"
+#include "GOMirror.h"
 #include "cuda/GpuSupport.h"
 #include "RuntimeInfo.h"
 #include "WorkerProtocol.h"
@@ -818,7 +819,8 @@ struct Engine {
         if(controlPolicy=="auto"&&(args.IsCatched("analytic_facet_average")||args.IsCatched("analytic_shadow_control")))controlPolicy="on";
         controls=!go&&coherent&&controlPolicy!="off"&&config.refractiveReal>=1.;
         Require(controlPolicy!="on"||controls,"analytic facet controls require refractive REAL>=1");
-        if(go){angularCache=false;pilot=0;kernelCount=0;thetaAuditCount=0;minimum=0;startTheta=0;controlPolicy="off";resourcePolicy="off";rotationPolicy="off";cutoffPolicy="off";mirrorPolicy="off";
+        if(go){angularCache=false;pilot=0;kernelCount=0;thetaAuditCount=0;minimum=0;startTheta=0;controlPolicy="off";resourcePolicy="off";rotationPolicy="off";cutoffPolicy="off";
+            if(!args.IsCatched("fullauto_mirror")&&!args.IsCatched("mirror_gamma"))mirrorPolicy="off";
             interpolation=0;statistical=eps;local=false;localPolicy="off";phi=1;fixedPhi=1;phiRecheck=false;polarControls=false;depthSharing=false;}
         SetMirror(false);
         seeds.assign(production,production+8);if(args.IsCatched("owen_seeds")){Require(args.GetArgNumber("owen_seeds")==8,"need exactly eight production seeds");
@@ -1807,6 +1809,15 @@ struct Engine {
             for(int j=1;j<16;++j)m[r][j]+=b[0][j]*(c[1]-c[3])+b[1][j]*(c[2]-c[4]);}s.push_back(m);}return s;}
     double Cost(const std::vector<Job>& j,int n){double s=0;for(const auto& v:j)s+=v.seconds;return s/j.size()/n;}
     void SetMirror(bool value){if(mirror!=value)mirrorError=0;mirror=value;statistical=eps-interpolation-depthBudget-(mirror?eps/256:0)-(controls?eps/64:0)-((rotationBeta>1||rotationGamma>1)?eps/256:0)-(selectedCutoff!="requested"&&selectedCutoff!="off"?eps/8:0)-((resourcePolicy=="auto"||config.useGpu)?eps/1024:0);}
+    void PrepareGOMirror(){
+        const bool supported=SupportsGOMirror(args);
+        Require(mirrorPolicy!="on"||supported,"unsupported GO mirror geometry/domain");
+        SetMirror(mirrorPolicy!="off"&&supported);
+        Record(root+"/mirror_verification.json","{\"method\":\"go\",\"policy\":"+Quoted(mirrorPolicy)
+            +",\"enabled\":"+(mirror?std::string("true"):"false")
+            +",\"geometry_supported\":"+(supported?std::string("true"):"false")
+            +",\"verification\":\"nonabsorbing built-in regular hexagonal type 1/10 and supported rotational domain\",\"reconstruction\":\"(M+PMP)/2, P=diag(1,1,-1,-1); includes finite bins and pole masses\",\"numerical_pilot_performed\":false}");
+    }
     void PrepareMirror(const std::vector<double>& x){
         if(mirrorPolicy=="off")return;
         SetMirror(true);unsigned seed=3001;
@@ -2058,6 +2069,7 @@ int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],do
     if(!controller->compatibleHash.empty())Atomic(controller->root+"/controller_resume_command.json",replay.str());
     signal(SIGTERM,StopWorkers);signal(SIGINT,StopWorkers);
     for(;;){Engine& e=*controller;
+        if(e.go)e.PrepareGOMirror();
         e.Record(e.root+"/explicit_options.json",e.requestedOptions);e.Record(e.root+"/fullauto_parameters.json",e.Parameters("{}"));
         WriteGrid(e.root+"/requested_theta.csv",e.theta);Directory(e.root+"/jobs");
         try {
