@@ -4,7 +4,9 @@
 #include <sys/syscall.h>
 
 static std::string failFlushPath;
+static size_t flushCalls=0;
 extern "C" int fsync(int fd){
+    ++flushCalls;
     if(!failFlushPath.empty()){
         char path[4096];const auto name="/proc/self/fd/"+std::to_string(fd);
         const auto length=readlink(name.c_str(),path,sizeof(path));
@@ -22,40 +24,44 @@ void SharedSources(const std::string& root){
     auto write=[&](const std::string& folder,bool commit){
         Directory(folder+"/result");AtomicFileBatch files(folder);
         Atomic(folder+"/result/result.dat","derived\n");engine.WriteSharedSources(folder+"/angular_sources.tsv",sources);
-        Require(files.durableLinks.count(folder+"/angular_sources.tsv"),"durable manifest link was not registered");
         if(!commit)return;
         files.Commit();Atomic(folder+"/complete.txt","derived 1 "+Hash("derived\n")+" none "+Hash(sources)+"\n");
         std::set<std::string> checked;ValidateStoredJob(folder,checked);
     };
     const auto first=root+"/jobs/first",second=root+"/jobs/second";
-    write(first,true);write(second,true);
+    auto before=flushCalls;write(first,true);const auto uniqueFlushes=flushCalls-before;
+    before=flushCalls;write(second,true);
+    Require(uniqueFlushes==7&&flushCalls-before==6,"unique source added flushes or repeated source was flushed again");
+    Require(!Exists(root+"/shared_source_manifests"),"unique source created an extra storage directory");
     struct stat a={},b={};Require(stat((first+"/angular_sources.tsv").c_str(),&a)==0&&stat((second+"/angular_sources.tsv").c_str(),&b)==0,"shared source stat failed");
     Require(a.st_dev==b.st_dev&&a.st_ino==b.st_ino&&engine.sharedSourceCreates==1,"identical source lists were rewritten");
+    const auto third=root+"/jobs/third";write(third,true);
     const auto interrupted=root+"/jobs/interrupted";
     const auto child=fork();Require(child>=0,"cannot fork interruption test");
     if(child==0){write(interrupted,false);_exit(86);}
     int status=0;Require(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==86,"interruption fixture failed");
     Require(!Exists(interrupted+"/complete.txt"),"unfinished shared view is committed");
-    engine.durableSourceManifests.clear();write(interrupted,true);
+    engine.sharedSourcePaths.clear();write(interrupted,true);
     for(bool sourceFence:{true,false}){
         const auto failed=root+"/jobs/failed"+Number(sourceFence);
-        engine.durableSourceManifests.clear();
-        failFlushPath=sourceFence?root+"/shared_source_manifests/"+Hash(sources)+".tsv":failed;
+        engine.sharedSourcePaths.clear();
+        failFlushPath=sourceFence?failed+"/angular_sources.tsv":failed;
         bool failedSafely=false;try{write(failed,true);}catch(const std::exception&){failedSafely=true;}
         failFlushPath.clear();
         Require(failedSafely&&!Exists(failed+"/complete.txt")&&!activeAtomicFileBatch,"failed durable write published completion");
         write(failed,true);
     }
-    // Ordinary files remain self-contained even after the shared store entry
-    // is removed: existing hard links retain the exact source list.
-    const auto shared=root+"/shared_source_manifests/"+Hash(sources)+".tsv";
-    Require(unlink(shared.c_str())==0,"cannot unlink shared-store fixture");
+    // Removing another job's pathname cannot remove this job's source list.
+    Require(unlink((second+"/angular_sources.tsv").c_str())==0,"cannot unlink source alias fixture");
     std::set<std::string> checked;ValidateStoredJob(first,checked);
     // In-place corruption through either alias must still invalidate a job.
-    {std::ofstream corrupt((second+"/angular_sources.tsv").c_str(),std::ios::app);corrupt<<"changed\n";}
+    {std::ofstream corrupt((third+"/angular_sources.tsv").c_str(),std::ios::app);corrupt<<"changed\n";}
     bool rejected=false;try{std::set<std::string> seen;ValidateStoredJob(first,seen);}catch(const std::exception&){rejected=true;}
     Require(rejected,"modified shared source content was accepted");
-    std::cout<<"PASS source manifests: one inode, exact content, interrupted publication recovery, source/directory flush failures, independent paths, corruption rejection\n";
+    sources+=root+"/jobs/leaf\t"+FileHash(root+"/jobs/leaf/complete.txt")+"\n";
+    before=flushCalls;write(root+"/jobs/unique",true);
+    Require(flushCalls-before==uniqueFlushes,"different source list incurred sharing overhead");
+    std::cout<<"PASS source manifests: one inode, exact content, no added writes/flushes for unique lists, interrupted publication recovery, source/directory flush failures, independent paths, corruption rejection\n";
 }
 
 void JournalBatch(const std::string& root,const std::string& binary){
