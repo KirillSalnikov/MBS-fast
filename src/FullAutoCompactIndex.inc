@@ -3,6 +3,7 @@
 // graph is verified before a restored payload can enter an estimator.
 bool compactIndex=false,restoringIndex=false,indexJournalRestored=false;
 int indexImportFd=-1;size_t indexImportPendingBytes=0;
+size_t indexJournalFlushes=0;
 void BeginIndexImport(){
     Require(indexImportFd<0,"nested job index import");
     if(compactIndex){indexImportFd=open((root+"/completed_jobs.journal").c_str(),O_WRONLY|O_CREAT|O_APPEND,0644);
@@ -11,13 +12,22 @@ void BeginIndexImport(){
 void FinishIndexImport(){
     if(indexImportFd<0)return;
     const int fd=indexImportFd;indexImportFd=-1;indexImportPendingBytes=0;
-    const bool okay=fsync(fd)==0;close(fd);Require(okay,"cannot flush imported job index");
+    const bool okay=fsync(fd)==0;close(fd);Require(okay,"cannot flush imported job index");++indexJournalFlushes;
 }
 void CancelIndexImport(){
     // The index is only an accelerator. Its incomplete final append is repaired
     // on resume; authoritative completed jobs remain untouched.
     if(indexImportFd>=0){close(indexImportFd);indexImportFd=-1;indexImportPendingBytes=0;}
 }
+// The journal accelerates discovery only: each job's completion marker is
+// already durable. Flush an eight-seed publication once, retaining the same
+// checksummed records and the existing torn-tail/fallback recovery protocol.
+struct IndexAppendBatch {
+    Engine& engine;bool owner,done=false;
+    explicit IndexAppendBatch(Engine& e):engine(e),owner(e.indexImportFd<0){if(owner)engine.BeginIndexImport();}
+    ~IndexAppendBatch(){if(owner&&!done)engine.CancelIndexImport();}
+    void Commit(){if(owner)engine.FinishIndexImport();done=true;}
+};
 std::string SamplingText(const Job& j)const{
     std::ostringstream out;
     out<<signature<<' '<<j.identity<<' '<<j.count<<' '<<j.offset<<' '<<j.seed<<' '<<j.depth<<' '<<j.phi<<' '<<j.block
@@ -89,8 +99,8 @@ void AppendIndex(const Job& j){
     while(done<record.size()){ssize_t n=write(fd,record.data()+done,record.size()-done);if(n<0&&errno==EINTR)continue;
         if(n<=0){if(!batched)close(fd);Require(false,"job index journal write failed");}done+=size_t(n);}
     if(batched){indexImportPendingBytes+=record.size();
-        if(indexImportPendingBytes>=1024*1024){Require(fsync(fd)==0,"imported job index flush failed");indexImportPendingBytes=0;}}
-    else{const bool okay=fsync(fd)==0;close(fd);Require(okay,"job index journal flush failed");}
+        if(indexImportPendingBytes>=1024*1024){Require(fsync(fd)==0,"imported job index flush failed");++indexJournalFlushes;indexImportPendingBytes=0;}}
+    else{const bool okay=fsync(fd)==0;close(fd);Require(okay,"job index journal flush failed");++indexJournalFlushes;}
 }
 size_t RestoreIndexJournal(){
     if(!compactIndex||indexJournalRestored)return 0;

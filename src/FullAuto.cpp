@@ -130,7 +130,7 @@ void Directory(const std::string& p) {
 struct AtomicFileBatch;
 thread_local AtomicFileBatch* activeAtomicFileBatch=nullptr;
 struct AtomicFileBatch {
-    std::string folder;std::set<std::string> files,directories;
+    std::string folder;std::set<std::string> files,directories,durableLinks;
     explicit AtomicFileBatch(const std::string& path):folder(path){
         Require(!activeAtomicFileBatch,"nested derived-file transaction");
         Require(!Exists(folder+"/complete.txt"),"cannot rewrite completed derived job");
@@ -140,8 +140,9 @@ struct AtomicFileBatch {
     bool Accepts(const std::string& path)const{return path.compare(0,folder.size()+1,folder+"/")==0;}
     void Added(const std::string& path){
         Require(path!=folder+"/complete.txt","derived completion precedes file flush");
-        files.insert(path);directories.insert(path.substr(0,path.find_last_of('/')));
+        files.insert(path);durableLinks.erase(path);directories.insert(path.substr(0,path.find_last_of('/')));
     }
+    void AddedDurableLink(const std::string& path){Added(path);durableLinks.insert(path);}
     static void FlushPath(const std::string& path,bool directory){
         const int fd=open(path.c_str(),O_RDONLY|(directory?O_DIRECTORY:0));
         Require(fd>=0,"cannot open checkpoint for flush "+path);int rc;
@@ -150,7 +151,7 @@ struct AtomicFileBatch {
     }
     void Commit(){
         Require(activeAtomicFileBatch==this,"inactive derived-file transaction");
-        for(const auto& path:files)FlushPath(path,false);
+        for(const auto& path:files)if(!durableLinks.count(path))FlushPath(path,false);
         directories.insert(folder);
         for(const auto& path:directories)FlushPath(path,true);
         // Persist the new job directory itself as well as its contents.
@@ -667,6 +668,7 @@ struct Engine {
         return {{uint64_t(n),uint64_t(seed),uint64_t(depth),uint64_t(offset)}};
     }
     #include "FullAutoCompactIndex.inc"
+    #include "FullAutoSharedSources.inc"
     void CacheJob(const Job& job){
         const auto key=SamplingSlot(job.count,job.seed,job.depth,job.offset);
         auto found=cache.find(job.identity);
@@ -1681,6 +1683,7 @@ struct Engine {
         std::vector<std::array<double,2>> coefficients(x.size(),{{1.,1.}});
         if(!wf.empty()){std::istringstream f(Read(wf));std::string header;std::getline(f,header);for(auto& b:coefficients){double theta;Require(bool(f>>theta>>b[0]>>b[1]),"incomplete prefix weights");}}
         const double assemblyStarted=Seconds();double progressAt=-1;size_t cachedBlocks=0;
+        const auto sourceLinksBefore=sharedSourceLinks,sourceBytesBefore=sharedSourceBytes,journalFlushesBefore=indexJournalFlushes;
         auto prepared=TakePreparedPrefix(n,seedSet,ns,depth,x);
         if(prepared){cachedBlocks=prepared->blocks;for(size_t s=0;s<ns;++s){
             auto& j=result[s];auto& p=prepared->values[s];j.matrix=std::move(p.matrix);j.controls=std::move(p.controls);
@@ -1705,6 +1708,7 @@ struct Engine {
             const double now=Seconds();if(progressAt<0||now-progressAt>=2||start+count==n){
                 Record(root+"/orientation_progress.json","{\"completed_prefix\":"+Number(start+count)+",\"requested_prefix\":"+Number(n)+",\"depth\":"+Number(depth)+",\"seeds\":"+Number(ns)+",\"block_size\":"+Number(orientationBlock)+",\"theta_rows\":"+Number(x.size())+",\"theta_grid_fnv1a64\":"+Quoted(gridHash)+",\"phase\":\"prefix_assembly\",\"scope\":\"verified saved blocks, per seed; intermediate status throttled to two seconds\"}\n");progressAt=now;}
         }
+        IndexAppendBatch indexWrites(*this);
         for(size_t s=0;s<ns;++s){Job& j=result[s];
             // A partial eight-seed prefix must never rewrite already complete
             // source payloads, especially when they belong to a frozen parent.
@@ -1728,13 +1732,16 @@ struct Engine {
                 text<<source.first->folder<<'\t'<<std::hex<<source.second<<std::dec<<'\n';
                 provenance=text.str();std::vector<PrefixSource>().swap(prepared->references[s]);
             }else provenance=sources[s].str();
-            Atomic(j.folder+"/angular_sources.tsv",provenance);
+            WriteSharedSources(j.folder+"/angular_sources.tsv",provenance);
             Atomic(j.folder+"/orientation_reuse.json","{\"kind\":\"exact_sobol_prefix\",\"count\":"+Number(n)+",\"block\":"+Number(orientationBlock)+",\"seconds_scope\":\"represented full native work, including reused blocks\"}\n");
             outputFiles.Commit();
             PublishComplete(j,j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+" "+Hash(provenance)+"\n");
             j.matrix.clear();j.controls.clear();j.angles.clear();j=Load(j);CacheJob(j);
         }
-        Log("prefix_assembly_profile","{\"count\":"+Number(n)+",\"depth\":"+Number(depth)+",\"theta_rows\":"+Number(x.size())+",\"seeds\":"+Number(ns)+",\"cached_blocks_without_intermediate_views\":"+Number(cachedBlocks)+",\"elapsed_seconds\":"+Number(Seconds()-assemblyStarted)+",\"native_block_checkpoints_unchanged\":true}");
+        indexWrites.Commit();
+        Log("prefix_assembly_profile","{\"count\":"+Number(n)+",\"depth\":"+Number(depth)+",\"theta_rows\":"+Number(x.size())+",\"seeds\":"+Number(ns)+",\"cached_blocks_without_intermediate_views\":"+Number(cachedBlocks)+",\"elapsed_seconds\":"+Number(Seconds()-assemblyStarted)
+            +",\"shared_source_links\":"+Number(sharedSourceLinks-sourceLinksBefore)+",\"shared_source_linked_bytes\":"+Number(sharedSourceBytes-sourceBytesBefore)
+            +",\"index_journal_flushes\":"+Number(indexJournalFlushes-journalFlushesBefore)+",\"native_block_checkpoints_unchanged\":true}");
         return result;
     }
     double ForecastFullGridCost(int n,unsigned seed,int depth,size_t points,double setup,double conservative)const{
@@ -1812,6 +1819,7 @@ struct Engine {
             for(const auto& row:rows[s])partialSources.emplace(row.second.first->identity,row.second.first);
         std::vector<const Job*> partialRoots;for(const auto& entry:partialSources)partialRoots.push_back(entry.second);
         PrevalidateCachedJobs(partialRoots,n,"partial angular source rows");
+        IndexAppendBatch indexWrites(*this);
         for(size_t s=0;s<ns;++s){Job& j=result[s];if(cache.count(j.identity))continue;
             const double assemblyStarted=Seconds();
             std::set<std::string> sources;size_t reused=0;
@@ -1846,7 +1854,7 @@ struct Engine {
             if(!wf.empty()){command.push_back("--analytic-control-weights");command.push_back(wf);}command.push_back("--output");command.push_back(j.folder+"/result");
             std::string recipe=exe+"\n";for(const auto& v:command)recipe+=v+"\n";Atomic(j.folder+"/command.args",recipe);
             Atomic(j.folder+"/stdout.log","Controller angular assembly; command.args is a reproducible full-grid recipe, not a launched worker.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");
-            Atomic(j.folder+"/angular_sources.tsv",dependencies.str());
+            WriteSharedSources(j.folder+"/angular_sources.tsv",dependencies.str());
             j.assemblySeconds=Seconds()-assemblyStarted;
             std::ostringstream provenance;provenance<<"{\"controller_assembly_seconds\":"<<Number(j.assemblySeconds)<<",\"kind\":\"angular_assembly\",\"requested_rows\":"<<x.size()<<",\"reused_rows\":"<<reused<<",\"new_worker_rows\":"<<missing.size()<<",\"cost_scope\":\"full-grid forecast from matching native jobs; not assembly wall time\",\"represented_native_seconds\":"<<Number(representedSeconds)<<",\"forecast_full_grid_seconds\":"<<Number(j.seconds)<<",\"M11_rebased_to_authoritative_full_grid_means\":"<<(controls?"true":"false")<<"}\n";
             Atomic(j.folder+"/angular_reuse.json",provenance.str());
@@ -1855,6 +1863,7 @@ struct Engine {
             j.matrix.clear();j.controls.clear();j.angles.clear();j=Load(j);CacheJob(j);++assembledJobs;reusedRows+=reused;newRows+=missing.size();
             std::cout<<"fullauto angular cache: seed="<<seedSet[s]<<" N="<<n<<" depth="<<depth<<" reused="<<reused<<" new="<<missing.size()<<std::endl;
         }
+        indexWrites.Commit();
         return result;
     }
     bool DisableUnsupportedControls(const std::exception& error){
