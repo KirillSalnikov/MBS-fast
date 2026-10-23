@@ -14,6 +14,7 @@
 #include "FullAutoScheduling.h"
 #include "BoundedCache.h"
 #include "CheckedFileCache.h"
+#include "CheckpointTableReader.h"
 #include "ValidatedGraphCache.h"
 #include "HostMemoryReserve.h"
 #include "IntegralCharacteristics.h"
@@ -1067,11 +1068,10 @@ struct Engine {
     }
     void LoadDiagnostics(Job& j,bool loadControls) const {
         if(Exists(j.folder+"/cutoff_sources.tsv"))j.assembled=true;
-        std::string line;
-        if(j.hasControls){std::istringstream s(Read(j.summary));std::getline(s,line);while(std::getline(s,line)){if(line.empty())continue;std::istringstream r(line);double angle;std::array<double,5> a;
-            Require(bool(r>>angle),"invalid controls");for(double& v:a)Require(bool(r>>v)&&std::isfinite(v),"invalid control summary");if(loadControls)j.controls.push_back(a);
+        if(j.hasControls){CheckpointTableReader r(Read(j.summary));while(r.Next()){double angle;std::array<double,5> a;
+            Require(r.Number(angle),"invalid controls");for(double& v:a)Require(r.Number(v),"invalid control summary");if(loadControls)j.controls.push_back(a);
             double residual,hybrid,refinement,setup,wr,ws;
-            Require(bool(r>>residual>>hybrid>>refinement>>setup>>wr>>ws)&&std::isfinite(refinement)&&std::isfinite(setup),"invalid control diagnostic fields");
+            Require(r.Number(residual)&&r.Number(hybrid)&&r.Number(refinement)&&r.Number(setup)&&r.Number(wr)&&r.Number(ws),"invalid control diagnostic fields");
             j.controlRefinement=refinement;j.controlSetup=setup;
         }if(loadControls)Require(j.controls.size()==j.matrix.size(),"incomplete controls");}
         const std::string log=Read(j.folder+"/stdout.log");const auto preparation=log.find("PO preparation threads: ");
@@ -1085,9 +1085,9 @@ struct Engine {
     }
     Job Load(Job j,bool publishIndex=true) {
         if(Exists(j.folder+"/cutoff_sources.tsv"))j.assembled=true;
-        std::istringstream f(Read(j.data));std::string line;std::getline(f,line);while(std::getline(f,line)){if(line.empty())continue;std::istringstream r(line);double thetaValue,area;Require(bool(r>>thetaValue>>area)&&std::isfinite(thetaValue)&&std::isfinite(area),"invalid worker angle");j.angles.push_back(thetaValue);Mueller m;
-            for(double& v:m)Require(bool(r>>v)&&std::isfinite(v),"invalid worker matrix "+j.data);
-            std::string extra;Require(!(r>>extra),"extra worker columns");j.matrix.push_back(m);}
+        CheckpointTableReader r(Read(j.data));while(r.Next()){double thetaValue,area;Require(r.Number(thetaValue)&&r.Number(area),"invalid worker angle");j.angles.push_back(thetaValue);Mueller m;
+            for(double& v:m)Require(r.Number(v),"invalid worker matrix "+j.data);
+            Require(r.End(),"extra worker columns");j.matrix.push_back(m);}
         LoadDiagnostics(j,true);
         j.indexMarkerHash.clear();
 
