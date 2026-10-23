@@ -65,7 +65,10 @@ std::unique_ptr<PreparedPrefix> TakePreparedPrefix(int n,const unsigned* seeds,s
         const auto key=PrefixBatchKey(n,depth,angles);
         if(selected.count(key)||preparedPrefixes.count(key))return;
         const size_t cost=PrefixPlanEstimate(n,orientationBlock,ns,angles.size())+ns*angles.size()*(sizeof(Mueller)+sizeof(std::array<double,5>));
-        if(cost>limit-estimate||plans.size()>=8)return;
+        // Narrow stencils often occupy less than 1 MiB per prefix. The old
+        // eight-prefix ceiling reread the same native blocks for every group
+        // of eight even with almost the entire 128 MiB allowance unused.
+        if(cost>limit-estimate||plans.size()>=64)return;
         estimate+=cost;selected.insert(key);std::unique_ptr<PreparedPrefix> p(new PreparedPrefix);
         p->count=n;p->depth=depth;p->angles=angles;p->values.resize(ns);p->references.resize(ns);
         p->coefficients.assign(angles.size(),{{1.,1.}});const auto wf=WriteWeights(angles);p->weightHash=Hash(wf.empty()?"":Read(wf));

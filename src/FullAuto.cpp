@@ -122,10 +122,58 @@ void Directory(const std::string& p) {
     size_t slash=p.find_last_of('/');if(slash!=std::string::npos)Directory(p.substr(0,slash));
     Require(mkdir(p.c_str(),0755)==0 || errno==EEXIST,"cannot create "+p);
 }
+// New derived jobs are private until complete.txt is published. Write their
+// small files together, then flush every file and each directory before that
+// commit marker. This lets the filesystem coalesce writeback instead of
+// forcing a separate directory/journal transaction for every tiny file.
+// Native blocks and already completed jobs never enter this transaction.
+struct AtomicFileBatch;
+thread_local AtomicFileBatch* activeAtomicFileBatch=nullptr;
+struct AtomicFileBatch {
+    std::string folder;std::set<std::string> files,directories;
+    explicit AtomicFileBatch(const std::string& path):folder(path){
+        Require(!activeAtomicFileBatch,"nested derived-file transaction");
+        Require(!Exists(folder+"/complete.txt"),"cannot rewrite completed derived job");
+        activeAtomicFileBatch=this;
+    }
+    ~AtomicFileBatch(){if(activeAtomicFileBatch==this)activeAtomicFileBatch=nullptr;}
+    bool Accepts(const std::string& path)const{return path.compare(0,folder.size()+1,folder+"/")==0;}
+    void Added(const std::string& path){
+        Require(path!=folder+"/complete.txt","derived completion precedes file flush");
+        files.insert(path);directories.insert(path.substr(0,path.find_last_of('/')));
+    }
+    static void FlushPath(const std::string& path,bool directory){
+        const int fd=open(path.c_str(),O_RDONLY|(directory?O_DIRECTORY:0));
+        Require(fd>=0,"cannot open checkpoint for flush "+path);int rc;
+        do{rc=fsync(fd);}while(rc<0&&errno==EINTR);close(fd);
+        Require(rc==0,"checkpoint flush failed "+path);
+    }
+    void Commit(){
+        Require(activeAtomicFileBatch==this,"inactive derived-file transaction");
+        for(const auto& path:files)FlushPath(path,false);
+        directories.insert(folder);
+        for(const auto& path:directories)FlushPath(path,true);
+        // Persist the new job directory itself as well as its contents.
+        FlushPath(folder.substr(0,folder.find_last_of('/')),true);
+        activeAtomicFileBatch=nullptr;
+    }
+};
 void Atomic(const std::string& p,const std::string& text) {
-    if(Exists(p)&&Read(p)==text)return;
+    if(Exists(p)&&Read(p)==text){
+        // A prior interrupted transaction may have left matching but not yet
+        // flushed files. Include them in this transaction's durability fence.
+        if(activeAtomicFileBatch&&activeAtomicFileBatch->Accepts(p))activeAtomicFileBatch->Added(p);
+        return;
+    }
     const std::string tmp=p+".tmp";std::ofstream f(tmp.c_str());Require(bool(f),"cannot write "+tmp);
     f<<text;f.close();Require(bool(f),"write failed "+tmp);
+    if(activeAtomicFileBatch&&activeAtomicFileBatch->Accepts(p)){
+        // Without complete.txt these files are an unfinished derived view,
+        // and a restart reconstructs them from the durable source blocks.
+        Require(p!=activeAtomicFileBatch->folder+"/complete.txt","derived completion precedes file flush");
+        Require(rename(tmp.c_str(),p.c_str())==0,"rename failed "+p);
+        activeAtomicFileBatch->Added(p);return;
+    }
     int fd=open(tmp.c_str(),O_RDONLY);Require(fd>=0&&fsync(fd)==0,"checkpoint flush failed "+tmp);close(fd);
     Require(rename(tmp.c_str(),p.c_str())==0,"rename failed "+p);
     const size_t slash=p.find_last_of('/');const std::string parent=slash==std::string::npos?".":p.substr(0,slash);
@@ -425,7 +473,12 @@ void ValidateStoredJob(const std::string& folder,std::set<std::string>& visited)
     const auto marker=ReadValidationText(folder+"/complete.txt");
     auto* batch=activeValidationBatch;std::shared_ptr<const std::string> prior;
     if(batch){++batch->checked;prior=batch->compounds.Get(folder);if(!prior&&batch->fallback)prior=batch->fallback->compounds.Peek(folder);}
-    const bool verifiedGraph=prior&&*prior==marker;
+    // Compact markers contain the whole sampling grid and diagnostics. Keep
+    // their existing integrity digest in the graph memo, not another copy of
+    // that grid for every compound node. Direct payloads and source markers
+    // below are still checked on every visit; the memo dies with this scope.
+    const auto markerHash=Hash(marker);
+    const bool verifiedGraph=prior&&*prior==markerHash;
     std::istringstream metadata(marker.substr(0,marker.find('\n')));std::string id,dataHash,summaryHash,sourceHash,integralHash;double seconds=0;
     Require(bool(metadata>>id>>seconds>>dataHash>>summaryHash)&&seconds>0,"invalid cached metadata");metadata>>sourceHash>>integralHash;
     Require(FileHash(folder+"/result/result.dat")==dataHash&&(summaryHash=="none"||FileHash(folder+"/result/result_analytic_facets.tsv")==summaryHash),"cached job changed; do not reuse corrupted files");
@@ -444,7 +497,7 @@ void ValidateStoredJob(const std::string& folder,std::set<std::string>& visited)
             if(!verifiedGraph)ValidateStoredJob(source,visited);
         }
         if(batch){if(verifiedGraph)++batch->reused;
-            batch->compounds.Put(folder,std::make_shared<std::string>(marker),sizeof(std::string)+marker.capacity());}
+            batch->compounds.Put(folder,std::make_shared<std::string>(markerHash),sizeof(std::string)+markerHash.capacity());}
     }
 }
 // Independent replica roots can be verified concurrently. Parent memo entries
@@ -1656,6 +1709,7 @@ struct Engine {
             // A partial eight-seed prefix must never rewrite already complete
             // source payloads, especially when they belong to a frozen parent.
             if(completed[s]){j=Materialize(cache.at(j.identity));continue;}
+            AtomicFileBatch outputFiles(j.folder);
             Directory(j.folder+"/result");WriteMatrix(j.data,x,j.matrix);
             if(controls){std::ostringstream f;f<<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n"<<std::setprecision(17);
                 for(size_t r=0;r<x.size();++r){const auto& c=j.controls[r];const auto& b=coefficients[r];f<<x[r];for(double v:c)f<<'\t'<<v;
@@ -1676,6 +1730,7 @@ struct Engine {
             }else provenance=sources[s].str();
             Atomic(j.folder+"/angular_sources.tsv",provenance);
             Atomic(j.folder+"/orientation_reuse.json","{\"kind\":\"exact_sobol_prefix\",\"count\":"+Number(n)+",\"block\":"+Number(orientationBlock)+",\"seconds_scope\":\"represented full native work, including reused blocks\"}\n");
+            outputFiles.Commit();
             PublishComplete(j,j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+" "+Hash(provenance)+"\n");
             j.matrix.clear();j.controls.clear();j.angles.clear();j=Load(j);CacheJob(j);
         }
@@ -1776,6 +1831,7 @@ struct Engine {
             for(const std::string& source:sources){ValidateStoredJob(source,visited);dependencies<<source<<'\t'<<FileHash(source+"/complete.txt")<<'\n';
                 const auto cached=folderIndex.find(source);if(cached!=folderIndex.end())j.seconds+=cached->second->seconds;}
             Require(j.seconds>0,"missing angular source cost");const double representedSeconds=j.seconds;
+            AtomicFileBatch outputFiles(j.folder);
             j.seconds=ForecastFullGridCost(n,seedSet[s],depth,x.size(),j.controlSetup,j.seconds);Directory(j.folder+"/result");WriteMatrix(j.data,x,j.matrix);
             if(controls){std::ostringstream table;table<<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n"<<std::setprecision(17);
                 for(size_t r=0;r<x.size();++r){const auto& c=j.controls[r];const auto& b=coefficients[r];table<<x[r];for(double v:c)table<<'\t'<<v;
@@ -1794,6 +1850,7 @@ struct Engine {
             j.assemblySeconds=Seconds()-assemblyStarted;
             std::ostringstream provenance;provenance<<"{\"controller_assembly_seconds\":"<<Number(j.assemblySeconds)<<",\"kind\":\"angular_assembly\",\"requested_rows\":"<<x.size()<<",\"reused_rows\":"<<reused<<",\"new_worker_rows\":"<<missing.size()<<",\"cost_scope\":\"full-grid forecast from matching native jobs; not assembly wall time\",\"represented_native_seconds\":"<<Number(representedSeconds)<<",\"forecast_full_grid_seconds\":"<<Number(j.seconds)<<",\"M11_rebased_to_authoritative_full_grid_means\":"<<(controls?"true":"false")<<"}\n";
             Atomic(j.folder+"/angular_reuse.json",provenance.str());
+            outputFiles.Commit();
             PublishComplete(j,j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+" "+Hash(dependencies.str())+"\n");
             j.matrix.clear();j.controls.clear();j.angles.clear();j=Load(j);CacheJob(j);++assembledJobs;reusedRows+=reused;newRows+=missing.size();
             std::cout<<"fullauto angular cache: seed="<<seedSet[s]<<" N="<<n<<" depth="<<depth<<" reused="<<reused<<" new="<<missing.size()<<std::endl;
