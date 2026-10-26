@@ -31,6 +31,7 @@ public:
 	bool m_orientationPipeline = false;
     int m_prepareThreads=0;
 	bool m_profilePhases = false;
+    void TraceExtinctionOnly(int nOrient, const std::vector<double> &diameters);
 	TracerPOTotal(Particle *particle, int nActs, const std::string &resultFileName);
 	void TraceRandom(const AngleRange &betaRange,
 					 const AngleRange &gammaRange) override;

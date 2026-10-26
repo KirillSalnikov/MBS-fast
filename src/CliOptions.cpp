@@ -470,6 +470,8 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
          "Write trajectory group diagnostics.", true},
 
         // Output and diagnostics.
+        {"extinction_only", "extinction-only", 0, "", "Output",
+         "Compute CPU Hammersley forward-OT extinction only: reuse convex ray geometry for all sizes, omit the angular Mueller grid. Ray-energy albedo is explicitly approximate."},
         {"o", "output", 1, "PATH", "Output",
          "Output directory/result prefix. Optional placeholders use %[INDEX]OPTION_, for example %0p_."},
         {"close", "close", 0, "", "Output",
