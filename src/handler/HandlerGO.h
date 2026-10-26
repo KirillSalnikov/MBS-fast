@@ -1,11 +1,16 @@
 #pragma once
 
 #include "Handler.h"
+#include "CutoffStatistics.h"
+#include <memory>
 
 class HandlerGO : public Handler
 {
 public:
+    std::string cutoffProfileName="legacy-default";
+    std::string BeamCutoffReport() const;
     bool fullautoOutput=false;
+    bool reconstructGammaMirror=false;
     HandlerGO(Particle *particle, Light *incidentLight, int nTheta,
               double wavelength);
 
@@ -26,6 +31,8 @@ protected:
     std::vector<matrixC> m_groupMatrices;
 
 protected:
+    void FilterOutputBeams(std::vector<Beam>& beams);
+    std::shared_ptr<BeamCutoffStatistics> beamCutoffStatistics;
     matrix ComputeMueller(double zenAng, Beam &beam);
     void RotateMuller(const Point3f &dir, matrix &bf);
     void AverageOverAlpha(int EDF, double norm, ContributionGO &contrib,

@@ -139,6 +139,8 @@ void ApplyBeamCutoffOptions(const ArgPP &args, Handler *handler)
             ? "custom" : "legacy-default");
     if (po)
         po->m_cutoffProfileName = profile;
+    if (HandlerGO *go = dynamic_cast<HandlerGO *>(handler))
+        go->cutoffProfileName = profile;
     if (profile == "off")
     {
         handler->m_targetEps = 0.0;
@@ -3717,14 +3719,14 @@ int RunCalculation(int argc, const char* argv[])
             double gammaMax = particle->GetSymmetry().gamma;
             if(args.IsCatched("sym")){betaMax=M_PI/args.GetIntValue("sym",0);gammaMax=2*M_PI/args.GetIntValue("sym",1);}
 
-            if (args.IsCatched("mirror_gamma"))
-                gammaMax *= 0.5;
-
             additionalSummary += hasSeed ? ", Sobol nested Owen seed\n\n"
                                          : ", Sobol quasi-random\n\n";
             cout << additionalSummary;
             tracer.m_summary = additionalSummary;
-            tracer.TraceSobol(nOr, seed, betaMax, gammaMax, args.IsCatched("sobol_offset")?static_cast<unsigned int>(args.GetIntValue("sobol_offset")):0u);
+            handler->reconstructGammaMirror=args.IsCatched("mirror_gamma");
+            tracer.TraceSobol(nOr, seed, betaMax, gammaMax,
+                args.IsCatched("sobol_offset")?static_cast<unsigned int>(args.GetIntValue("sobol_offset")):0u,
+                args.IsCatched("mirror_gamma"),args.IsCatched("haar_mirror_audit"));
         }
 
     }

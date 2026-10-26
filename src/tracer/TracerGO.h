@@ -12,7 +12,8 @@ public:
     void TraceMonteCarlo(const AngleRange &betaRange, const AngleRange &gammaRange,
                          int nOrientations);
     void TraceSobol(int nOrientations, unsigned int seed,
-                    double betaMax, double gammaMax, unsigned int offset=0);
+                    double betaMax, double gammaMax, unsigned int offset=0,
+                    bool mirror=false, bool pairedMirrorAudit=false);
 
 protected:
 	double CalcNorm(long long orNum);

@@ -16,6 +16,7 @@
 #include "global.h"
 #include "macro.h"
 #include "HandlerPO.h"
+#include "HandlerGO.h"
 #include "RuntimeInfo.h"
 //#ifdef _TRACK_ALLOW
 //ofstream trackMapFile("tracks_deb.dat", ios::out);
@@ -300,6 +301,8 @@ void Tracer::AppendFinalResourceReport()
         m_summary += handlerPO->BeamCutoffReport();
         m_summary += handlerPO->FftReport();
     }
+    if (const HandlerGO *go = dynamic_cast<const HandlerGO *>(m_handler))
+        m_summary += go->BeamCutoffReport();
     if (m_scattering)
         m_summary += m_scattering->TraceCutoffReport();
     m_summary += FormatRuntimeResourceReport("final", gpuActive);
