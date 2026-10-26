@@ -263,6 +263,12 @@ test_forward_depth:
 test_fixed_threads: cpu
 	MBS_BIN=cpu/bin/mbs_po_mpi tests/run_fixed_po_threading_test.sh
 
+.PHONY: test_absorbing_cutoff
+test_absorbing_cutoff: cpu
+	OPENBLAS_NUM_THREADS=1 python3 tests/test_absorbing_cutoff.py --binary cpu/bin/mbs_po_mpi --output "$$(mktemp -d /tmp/mbs-absorbing-cutoff.XXXXXX)"
+
+test: test_absorbing_cutoff
+
 test_concave_visibility:
 	tests/run_concave_visibility_test.sh
 

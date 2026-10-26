@@ -1,0 +1,92 @@
+Absorbing PO output cutoffs: reference consistency fix (2026-10-26)
+
+Problem
+-------
+PrepareBeams computed the Jones/importance reference maxima from the
+unabsorbed traced rays, then compared the absorbed beam against those
+maxima. Increasing the physical size therefore silently changed which
+internal paths survived otherwise dimensionless relative cutoffs. This
+could remove a substantial fraction of a weak cross-polarized signal.
+
+Change
+------
+Use the saved unabsorbed Jones matrix for both the per-beam squared norm
+and Jones-intensity-times-area selection. Retain absorption in the actual
+Jones field, phases, energy accounting and diffraction. Area cutoffs and
+trace limits are unchanged. CLI help and the output cutoff report identify
+the unabsorbed reference. These thresholds are heuristics, NOT an error
+bound on coherent interference or on an individual Mueller difference.
+
+In particular, this fix does not make the previous custom thresholds safe
+for arbitrary weak polarization channels. Validate against output cutoffs
+off on identical orientations; reducing only orientation sampling error
+does not measure cutoff bias.
+
+Regression
+----------
+make test_absorbing_cutoff
+
+Or run the same fixture against CPU/CUDA builds and an unpatched baseline:
+python3 tests/test_absorbing_cutoff.py --binary /path/to/fixed \
+  --reference /path/to/baseline --backend cuda --output /tmp/cutoff-test
+
+The fixture is a unit-volume-equivalent-radius irregular Sahara particle
+(p0000, aspect=1, source family labelled "20"; the DAT has 68 triangular
+facets). The checked-in SO3 rule contains eight equally
+weighted campaign Sobol orientations in beta/gamma/alpha degrees.
+The test compares geometrically similar r_eq=5 and 10 um particles at
+lambda=0.340 um, n=1.465, k=0 or 0.009653489, max-reflections=8.
+
+Old absorbing selection: 87386 candidates at either radius, but 1326 and
+459 retained. Fixed: 7959 retained at both radii. The unpatched binary
+fails this size-invariance assertion; the fixed binary passes on CPU
+and CUDA. Nonabsorbing results and absorbing output-cutoffs-off results
+match the baseline across all 16 elements / 181 angles to <1e-11 of M11.
+The unchanged off result explicitly guards against accidentally omitting
+absorption from the retained field.
+
+Additional checks passed:
+- CLI suite (all cases).
+- Coherent beam-sum regression: relative Jones difference 1.226e-16.
+- CUDA multisize phase-cache regression, k=0 and 0.01: cached/uncached
+  and per-size paths agree to at worst 5.616e-13 of M11.
+
+Paired campaign controls
+------------------------
+Baseline source: 1df49a0. FP64 CUDA sm70, precise math, GCC7, LTO.
+Original campaign binary and unmodified 1df49a0 gave identical matrices
+in the initial 32-pose controls. Expanded comparison: p0000, p0069 (source
+family "20"), p0140, p0209 (source family "40"), each at aspects 1 and 2.0736; 64 identical
+Sobol poses per shape, theta=0..180 by 1 degree, phi=4, n=1.465,
+k=0.009653489, lambda=0.340 um, max-reflections=8, trace-max-beams=20000.
+All jobs had zero incomplete orientations and zero hard tree-limit hits.
+Each reported mean averages matrices over four shapes BEFORE forming LDR.
+These are paired numerical controls, not the complete 280-shape ensemble.
+
+Previous output thresholds (Jones, area, importance): .001, .002, .0001.
+Tight output thresholds: .00001, .00002, .000001 (all divided by 100).
+Off reference: all three output thresholds zero, same depth/trace limits.
+
+Signed relative LDR(180) error versus output-cutoffs-off, percent:
+aspect   r_eq   baseline/old thresholds   fixed/old thresholds   fixed/tight
+1         5         -60.4000                   -3.1272              -0.00252
+1        10          -6.6966                   -0.2065              +0.05171
+2.0736    5         -32.9417                   -3.7439              -0.00057
+2.0736   10          -3.7443                   -1.8820              -0.02436
+
+Maximum all-element/all-angle difference divided by reference M11,
+for fixed/tight: 0.003605%, 0.002913%, 0.010203%, 0.006125%, respectively.
+These results support the tighter settings on this control sample; they
+are not a universal bound over shapes, sizes or refractive indices.
+
+Validated binaries (SHA256; distinguish by hash, not the incremental
+build's inherited version banner):
+baseline: 680fa994dfecf65a67efe013fcb982fae414808c1b36296a31791c621c867722
+fixed:    25015eac25c6170fd4e92f9542ee40f31fe88da1cff31604249f247087c2f385
+
+Existing absorbing results with nonzero output cutoffs change numerically
+and must not be mixed with fixed results or marked compatible merely
+because their orientation counts match. Normal native fullauto caches
+include the binary hash. Do not override compatibility to reuse affected
+old blocks; use a fresh result namespace. No running campaign or existing
+scientific archive was modified during these tests.

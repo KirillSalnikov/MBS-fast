@@ -33,6 +33,7 @@ std::string FormatBeamCutoffReport(
     std::ostringstream out;
     out << "\n===== OUTPUT BEAM CUTOFF REPORT =====\n";
     out << "Profile: " << profile << "\n";
+    out << "Jones/importance reference: unabsorbed field (both passes)\n";
     out << std::scientific << std::setprecision(3);
     out << "Relative thresholds: Jones=" << jonesRelative
         << ", area=" << areaRelative

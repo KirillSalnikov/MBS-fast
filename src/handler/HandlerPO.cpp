@@ -1666,7 +1666,7 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
     const bool useBeamCutoff = (jRel > 0.0) || (areaRel > 0.0)
                             || (importanceRel > 0.0);
 
-    // Pass 1: compute max |J|^2 and max area for relative cutoffs.
+    // Pass 1: compute unabsorbed max |J|^2 and max area for relative cutoffs.
     double maxJnorm = 0, maxArea = 0, maxImportance = 0;
     if (useBeamCutoff)
     {
@@ -1771,7 +1771,12 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
             const double mueller00 = PreparedMueller00(beam.J);
             localEnergy += unabsorbedCrossSection*mueller00*sinZenith;
 
-            double jn = beam.J.Norm();
+            // Match the unabsorbed reference in pass 1. Comparing an absorbed
+            // Jones matrix with that reference makes selection depend on k*L:
+            // a size sweep silently drops internal paths and biases weak
+            // polarization channels. Absorption belongs in the field above,
+            // not in only one side of this relative geometry/Fresnel cutoff.
+            double jn = unabsorbedJ.Norm();
             double ar = info.area;
             double importance = jn * ar;
             if (useBeamCutoff)
