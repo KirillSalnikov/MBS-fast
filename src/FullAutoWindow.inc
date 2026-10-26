@@ -25,6 +25,7 @@ AdaptiveState ProjectRefinementWindow(Engine& e,const AdaptiveState& original,co
     const auto oldPhi=e.thetaPhi;const auto grid=RefinementGrid(parentTheta,e.refinementLo,e.refinementHi);
     AdaptiveState result;result.round=0;result.streak=0;result.auditSerial=original.auditSerial;
     result.counts=Budgets(original.counts.size(),std::vector<int>(grid.size()));
+    if(!original.interpolationCounts.empty())result.interpolationCounts=Budgets(original.counts.size(),std::vector<int>(grid.size()));
     result.previous=Matrix(grid.size());result.valid.assign(grid.size(),false);result.coarse.assign(grid.size(),false);
     std::set<size_t> knots{0,grid.size()-1};e.thetaPhi.clear();
     auto phiAt=[&](size_t id){const auto found=oldPhi.find(id);return found==oldPhi.end()?e.phi:found->second;};
@@ -33,6 +34,7 @@ AdaptiveState ProjectRefinementWindow(Engine& e,const AdaptiveState& original,co
         const size_t hi=size_t(upper-parentTheta.begin());
         if(upper!=parentTheta.end()&&*upper==grid[row]){
             for(size_t level=0;level<result.counts.size();++level)result.counts[level][row]=original.counts[level][hi];
+            for(size_t level=0;level<result.interpolationCounts.size();++level)result.interpolationCounts[level][row]=original.interpolationCounts[level][hi];
             result.previous[row]=original.previous[hi];result.valid[row]=original.valid[hi];
             if(std::binary_search(original.knots.begin(),original.knots.end(),hi))knots.insert(row);
             if(phiAt(hi)!=e.phi)e.thetaPhi[row]=phiAt(hi);
@@ -40,6 +42,8 @@ AdaptiveState ProjectRefinementWindow(Engine& e,const AdaptiveState& original,co
             Require(hi>0&&hi<parentTheta.size(),"new refinement endpoint lacks neighboring saved angles");
             for(size_t level=0;level<result.counts.size();++level)
                 result.counts[level][row]=std::max(original.counts[level][hi-1],original.counts[level][hi]);
+            for(size_t level=0;level<result.interpolationCounts.size();++level)
+                result.interpolationCounts[level][row]=std::max(original.interpolationCounts[level][hi-1],original.interpolationCounts[level][hi]);
             // This is a new estimator, never a mixture of adjacent phi rules.
             const int phi=std::max(phiAt(hi-1),phiAt(hi));if(phi!=e.phi)e.thetaPhi[row]=phi;
         }

@@ -760,6 +760,7 @@ struct Engine {
         const bool json=name.size()>5&&name.substr(name.size()-5)==".json";
         Log("parameter_snapshot","{\"file\":"+Quoted(name)+",\"value\":"+(json?text:Quoted(text))+"}");
     }
+    #include "FullAutoExecutionProgress.inc"
     std::string Parameters(const std::string& state)const{
         std::ostringstream out;out<<"{\"configuration_fnv1a64\":"<<Quoted(signature)<<",\"binary_fnv1a64\":"<<Quoted(binaryHash)
             <<",\"compatible_origin_binary_fnv1a64\":"<<Quoted(compatibleHash)
@@ -786,6 +787,13 @@ struct Engine {
     int Int(const std::string& key,int fallback){return args.IsCatched(key)?args.GetIntValue(key):fallback;}
     bool On(const char* key,bool fallback=true){return args.IsCatched(key)?args.GetStringValue(key)=="on":fallback;}
     bool PhysicalAuditEnabled()const{return finalChecks&&(physicsAudit||autoDepth);}
+    int RequiredProductionPasses() const {
+        // Disabling final rechecks must not silently leave an extra production
+        // pass. Explicit CLI/config requests retain their original priority.
+        const int count=(!finalChecks&&!args.IsCatched("convergence_passes")&&!config.adaptive.loadedFromFile)
+            ?1:config.adaptive.stablePasses;
+        Require(count>=1&&count<=8,"convergence passes must be in [1,8]");return count;
+    }
     void RecordFinalChecksPolicy(){
         const std::string path=root+"/final_checks_policy.json";
         const bool saved= !Exists(path)||CompactJson(Read(path)).find("\"final_checks\":false")==std::string::npos;
@@ -795,6 +803,8 @@ struct Engine {
         Record(path,"{\"schema\":1,\"final_checks\":"+std::string(finalChecks?"true":"false")
             +",\"independent_audit_enabled\":"+(finalAudit?"true":"false")
             +",\"final_physics_audit_enabled\":"+(PhysicalAuditEnabled()?"true":"false")
+            +",\"required_production_passes\":"+Number(stablePasses)
+            +",\"production_passes_explicit\":"+((args.IsCatched("convergence_passes")||config.adaptive.loadedFromFile)?"true":"false")
             +",\"production_convergence_retained\":true,\"startup_depth_selection_retained\":true,\"skipped_checks_are_unverified\":true}");
     }
     void Init(int argc,const char* argv[],double edge=0,double diameter=0,double volume=0) {
@@ -862,7 +872,7 @@ struct Engine {
         if(fixedPhi){phi=fixedPhi;minPhi=fixedPhi;if(!args.IsCatched("max_phi_points"))maxPhi=fixedPhi;}
         if(!args.IsCatched("fullauto_theta_start"))startTheta=std::min(startTheta,std::max(2,(maxTheta<1000?(maxTheta+3)/4:33)));
         Require(startTheta<=maxTheta,"initial theta support exceeds explicit theta limit");
-        stablePasses=config.adaptive.stablePasses;
+        stablePasses=RequiredProductionPasses();
         if(!args.IsCatched("fullauto_initial"))initial=std::min(initial,maxCount);
         if(!args.IsCatched("fullauto_correction"))minimum=std::min(minimum,maxCount);
         if(!args.IsCatched("fullauto_pilot"))pilot=std::min(pilot,maxCount);
@@ -1037,6 +1047,7 @@ struct Engine {
         }supplied<<"]}";requestedOptions=supplied.str();
     }
     void State(const std::string& status,int round,const std::vector<int>& counts,size_t nodes,double ci,double ie,int streak) {
+        SetExecutionPhase(status,round);
         std::ostringstream s;s<<std::setprecision(17)<<"{\n\"status\":"<<Quoted(status)<<",\"configuration_fnv1a64\":"<<Quoted(signature)
             <<RefinementFields()<<",\"resident_matrix_cache_bytes\":"<<payloads.Bytes()<<",\"resident_matrix_cache_limit_bytes\":"<<payloads.Limit()
             <<",\"resident_matrix_cache_evictions\":"<<payloads.evictions<<",\"cached_job_metadata_count\":"<<cache.size()
@@ -1398,7 +1409,7 @@ struct Engine {
         for(size_t index:todo){ApplyDispatchThreads(result[index],commands[index]);ApplyShortPacketChunk(result[index],commands[index]);}
         if(PersistentEnabled()){ExecutePersistent(result,commands,todo,onComplete);return;}
         for(auto& service:services)service.reset();
-        WorkerCleanup cleanup;
+        WorkerCleanup cleanup;DispatchProgressScope progress(*this,todo.size());
         const auto& workerGpus=WorkerGpus();
         const size_t slots=std::min(workerGpus.size(),size_t(8));
         std::vector<int> slotSeed(slots,-1);std::vector<double> begun(result.size());
@@ -1416,16 +1427,16 @@ struct Engine {
                     +",\"gpu\":"+Quoted(workerGpus[slot])+WorkerResourceFields(workerGpus[slot])+",\"count\":"+Number(j.count)+",\"offset\":"+Number(j.offset)+",\"seed\":"+Number(j.seed)
                     +",\"depth\":"+Number(j.depth)+",\"paired_depth\":"+Number(j.pairedDepth)+",\"phi\":"+Number(j.phi)+",\"theta_rows\":"+Number(j.inputAngles.size())
                     +",\"block\":"+Number(j.block)+",\"warp\":"+Quoted(j.warp)+",\"pipeline\":"+(j.pipeline?"true":"false")+",\"threads\":"+Number(workerThreads)+",\"chunk\":"+Number(j.dispatchChunk?j.dispatchChunk:workerChunk)+"}");std::string boot=Read("/proc/sys/kernel/random/boot_id");
-                Atomic(j.folder+"/worker.pid",std::to_string(j.pid)+" "+ProcessStart(j.pid)+" "+boot);};
+                Atomic(j.folder+"/worker.pid",std::to_string(j.pid)+" "+ProcessStart(j.pid)+" "+boot);NativeStarted(j,workerGpus[slot]);};
         for(size_t slot=0;slot<slots&&next<todo.size();++slot)launch(slot,todo[next++]);
         while(completed<todo.size()){
                 int status=0;pid_t waited;do{waited=waitpid(-1,&status,0);}while(waited<0&&errno==EINTR);
                 Require(waited>0,"cannot reap worker");
                 size_t slot=0;while(slot<slots&&activeWorkers[slot]!=waited)++slot;Require(slot<slots,"unknown worker PID");
-                size_t s=size_t(slotSeed[slot]);Job& j=result[s];j.pid=-1;activeWorkers[slot]=0;slotSeed[slot]=-1;j.seconds=Seconds()-begun[s];std::remove((j.folder+"/worker.pid").c_str());
+                size_t s=size_t(slotSeed[slot]);Job& j=result[s];NativeReturned(j);j.pid=-1;activeWorkers[slot]=0;slotSeed[slot]=-1;j.seconds=Seconds()-begun[s];std::remove((j.folder+"/worker.pid").c_str());
                 Require(WIFEXITED(status)&&WEXITSTATUS(status)==0,"worker failed; see "+j.folder+"/stdout.log");
                 if(next<todo.size())launch(slot,todo[next++]);
-                CompleteNative(j);++completed;if(onComplete)onComplete(s);
+                const double commitBegin=Seconds();CompleteNative(j);NativeCommitted(j,Seconds()-commitBegin);++completed;if(onComplete)onComplete(s);
         }
     }
     bool MergeInterpolationWork()const{

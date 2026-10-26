@@ -7,6 +7,17 @@ std::vector<int> PeakBudgets(const Budgets& n){std::vector<int> result;for(const
 double StatisticalError(const Engine& e,const Statistics& stats){return e.ratios?std::max(stats.maxInterval,stats.maxRatioInterval):stats.maxInterval;}
 bool VaryingBudgets(const Budgets& ns,const std::vector<size_t>& ids){for(const auto& level:ns)for(size_t id:ids)if(level[id]!=level[ids.front()])return true;return false;}
 struct PhiScope {Engine& e;int saved;PhiScope(Engine& engine,int phi):e(engine),saved(engine.phi){e.phi=phi;}~PhiScope(){e.phi=saved;}};
+int ResidualPhi(const Engine& e){int phi=e.phi;for(const auto& p:e.thetaPhi)phi=std::max(phi,p.second);return phi;}
+bool MixedResidualPhi(const Engine& e){const int phi=ResidualPhi(e);if(phi!=e.phi)return true;for(const auto& p:e.thetaPhi)if(p.second!=phi)return true;return false;}
+// Haar alpha makes a uniform observation-azimuth rule unbiased for the same
+// orientation average. Use one rule on both sides of the LINEAR residual so
+// its fluctuations cancel. Production estimators keep their own phi rules.
+struct ResidualPhiScope {
+    Engine& e;int saved;bool enabled;std::map<size_t,int> rules;
+    ResidualPhiScope(Engine& engine,bool active):e(engine),saved(engine.phi),enabled(active){
+        if(enabled){e.phi=ResidualPhi(e);rules.swap(e.thetaPhi);}}
+    ~ResidualPhiScope(){if(enabled){e.phi=saved;rules.swap(e.thetaPhi);}}
+};
 #include "FullAutoCachedPromotion.inc"
 void ExtendPhiBudgets(const Engine& e,Budgets& counts,const std::vector<size_t>& production,const std::vector<size_t>& requested){
     if(e.thetaPhi.empty()){FullAutoAuditPlan::Extend(counts,production,requested);return;}
@@ -16,6 +27,13 @@ void ExtendPhiBudgets(const Engine& e,Budgets& counts,const std::vector<size_t>&
             if(p<id)left=p;else if(right==e.theta.size())right=p;}
         for(size_t l=0;l<counts.size();++l){int n=l?e.minimum:e.initial;if(left<e.theta.size())n=std::max(n,before[l][left]);if(right<e.theta.size())n=std::max(n,before[l][right]);counts[l][id]=n;}
     }
+}
+// New production guards start with the requested size-dependent pilot, not
+// a neighbour's expensive final allocation. Every acceptance gate still runs.
+void ExtendProductionGuards(const Engine& e,Budgets& counts,const std::vector<size_t>& production,const std::vector<size_t>& requested){
+    ExtendPhiBudgets(e,counts,production,requested);
+    if(e.local)for(size_t id:requested)if(!std::binary_search(production.begin(),production.end(),id))
+        for(size_t l=0;l<counts.size();++l)counts[l][id]=std::min(counts[l][id],l?e.minimum:e.initial);
 }
 Budgets StencilBudgets(const Engine& e,const Budgets& counts,const std::pair<const std::vector<int>,FullAutoAuditPlan::StencilGroup>& group){
     Budgets result;for(int n:group.first)result.push_back(std::vector<int>(e.theta.size(),n));
@@ -127,10 +145,11 @@ std::vector<int> AllocateRow(const Engine& e,const AdaptiveData& data,const Budg
 }
 #include "FullAutoRefinement.inc"
 #include "FullAutoRoundWork.inc"
-struct AdaptiveState {int round=0,streak=0;unsigned auditSerial=0;std::vector<size_t> knots;Budgets counts;Matrix previous;std::vector<bool> valid,coarse;};
+struct AdaptiveState {int round=0,streak=0,interpolationPhi=0;unsigned auditSerial=0;std::vector<size_t> knots;Budgets counts,interpolationCounts;Matrix previous;std::vector<bool> valid,coarse;};
+#include "FullAutoResidualBudget.inc"
 std::string SaveRoundDiagnostics(Engine& e,const AdaptiveState& state,const AdaptiveData& stage,const Statistics& stats,const std::vector<size_t>& ids,const std::vector<double>& errors,const std::vector<double>& x){
     const std::string folder=e.root+"/round_snapshots/round"+Number(state.round)+"_"+Hash(stage.sources);
-    Directory(folder);WriteMatrix(folder+"/mueller_evaluated.dat",x,stats.mean);WriteGrid(folder+"/theta_support.csv",Angles(e.theta,state.knots));
+    Directory(folder);ResidualBudgetFile(e,state,ids,folder);WriteMatrix(folder+"/mueller_evaluated.dat",x,stats.mean);WriteGrid(folder+"/theta_support.csv",Angles(e.theta,state.knots));
     Atomic(folder+"/stage_sources.tsv",stage.sources);
     std::ostringstream table;table<<"theta_deg,is_support,interpolation_residual95,previous_available,half_prefix_stable";
     for(size_t l=0;l<state.counts.size();++l)table<<",N_level"<<l;
@@ -171,7 +190,14 @@ void SaveAdaptive(Engine& e,const AdaptiveState& state,const std::string& phase=
     for(const auto& row:e.thetaPhi)saved.insert(row.first);
     payload<<state.counts.size()<<' '<<saved.size()<<'\n';for(size_t i:saved){payload<<i<<' '<<state.valid[i]<<' '<<state.coarse[i];for(const auto& level:state.counts)payload<<' '<<level[i];for(double v:state.previous[i])payload<<' '<<v;payload<<'\n';}
     if(!e.thetaPhi.empty()){payload<<"theta_phi "<<e.thetaPhi.size()<<'\n';for(const auto& row:e.thetaPhi)payload<<row.first<<' '<<row.second<<'\n';}
-    Atomic(e.root+"/adaptive_checkpoint.tsv",std::string(e.thetaPhi.empty()?"3 ":"4 ")+Hash(payload.str())+"\n"+payload.str());
+    if(!state.interpolationCounts.empty()){
+        if(e.thetaPhi.empty())payload<<"theta_phi 0\n";
+        Require(state.interpolationCounts.size()==state.counts.size(),"residual checkpoint level mismatch");
+        payload<<"interpolation_counts "<<state.interpolationCounts.size()<<' '<<saved.size()<<'\n';
+        for(size_t id:saved){payload<<id;for(const auto& level:state.interpolationCounts)payload<<' '<<level.at(id);payload<<'\n';}
+        if(state.interpolationPhi)payload<<"interpolation_phi "<<state.interpolationPhi<<'\n';
+    }
+    Atomic(e.root+"/adaptive_checkpoint.tsv",std::string(!state.interpolationCounts.empty()?(state.interpolationPhi?"6 ":"5 "):e.thetaPhi.empty()?"3 ":"4 ")+Hash(payload.str())+"\n"+payload.str());
     std::ostringstream history;history<<"{\"phase\":"<<Quoted(phase)<<",\"round\":"<<state.round<<",\"pass_streak\":"<<state.streak<<",\"phi\":"<<e.phi<<",\"theta_support_indices\":[";
     for(size_t i=0;i<state.knots.size();++i)history<<(i?",":"")<<state.knots[i];history<<"],\"counts_by_level\":[";
     for(size_t level=0;level<state.counts.size();++level){if(level)history<<',';std::map<int,std::vector<size_t>> groups;for(size_t id:saved)groups[state.counts[level][id]].push_back(id);
@@ -181,7 +207,7 @@ void SaveAdaptive(Engine& e,const AdaptiveState& state,const std::string& phase=
 }
 bool RestoreAdaptive(Engine& e,AdaptiveState& state,bool warmCache=true){
     const std::string path=e.root+"/adaptive_checkpoint.tsv";if(!Exists(path))return false;
-    const std::string text=Read(path);const size_t newline=text.find('\n');std::istringstream header(text.substr(0,newline));int version;std::string hash;Require(bool(header>>version>>hash)&&(version==2||version==3||version==4),"unsupported checkpoint schema");
+    const std::string text=Read(path);const size_t newline=text.find('\n');std::istringstream header(text.substr(0,newline));int version;std::string hash;Require(bool(header>>version>>hash)&&(version>=2&&version<=6),"unsupported checkpoint schema");
     const std::string payload=text.substr(newline+1);Require(Hash(payload)==hash,"controller checkpoint changed");std::istringstream file(payload);std::string signature,phase;
     Require(bool(file>>signature>>phase>>state.round>>state.streak>>e.phi>>e.controls>>e.sharedMeans>>e.mirror>>e.mirrorError>>e.kernel.block>>e.kernel.pipeline>>e.kernel.warp)&&signature==e.signature,"checkpoint inputs changed");
     if(version>=3)file>>state.auditSerial;else state.auditSerial=unsigned(state.round)*8u+8u;
@@ -194,9 +220,19 @@ bool RestoreAdaptive(Engine& e,AdaptiveState& state,bool warmCache=true){
         for(auto& level:state.counts){int n;Require(bool(file>>n)&&n>0&&n<=e.maxCount&&(n&(n-1))==0,"invalid checkpoint count");level[i]=n;}
         for(double& v:state.previous[i])Require(bool(file>>v)&&std::isfinite(v),"invalid checkpoint matrix");}
     e.thetaPhi.clear();std::string extra;
-    if(version==4){size_t size;Require(bool(file>>extra>>size)&&extra=="theta_phi"&&size<=e.theta.size(),"invalid theta phi map");
+    if(version>=4){size_t size;Require(bool(file>>extra>>size)&&extra=="theta_phi"&&size<=e.theta.size(),"invalid theta phi map");
         for(size_t r=0;r<size;++r){size_t id;int phi;Require(bool(file>>id>>phi)&&id<e.theta.size()&&phi>=e.minPhi&&phi<=e.maxPhi
             &&(!e.fixedPhi||phi==e.fixedPhi)&&e.thetaPhi.emplace(id,phi).second,"invalid or duplicate theta phi rule");}}
+    state.interpolationCounts.clear();state.interpolationPhi=0;
+    if(version>=5){size_t levels,rows;
+        Require(bool(file>>extra>>levels>>rows)&&extra=="interpolation_counts"&&levels==state.counts.size()&&rows==saved,"invalid residual checkpoint dimensions");
+        state.interpolationCounts=Budgets(levels,std::vector<int>(e.theta.size(),e.minimum));std::set<size_t> seen;
+        for(size_t r=0;r<rows;++r){size_t id;Require(bool(file>>id)&&id<e.theta.size()&&seen.insert(id).second,"invalid residual checkpoint row");
+            for(auto& level:state.interpolationCounts){int n;Require(bool(file>>n)&&n>0&&n<=e.maxCount&&!(n&(n-1)),"invalid residual checkpoint count");level[id]=n;}}
+        for(size_t id:AdaptiveGuards(state.knots,e.theta.size()))Require(seen.count(id),"missing evaluated residual checkpoint row");
+        if(version>=6)Require(bool(file>>extra>>state.interpolationPhi)&&extra=="interpolation_phi"
+            &&state.interpolationPhi>=e.minPhi&&state.interpolationPhi<=e.maxPhi,"invalid residual phi checkpoint");
+    }
     Require(!(file>>extra),"extra checkpoint fields");
     if(phase=="converged"&&Exists(e.root+"/final_outputs.fnv")){std::istringstream hashes(Read(e.root+"/final_outputs.fnv"));std::string path,digest;
         while(hashes>>path>>digest)Require(Hash(Read(e.root+"/"+path))==digest,"completed output changed");
@@ -301,12 +337,24 @@ InterpolationResult CommonPrefixInterpolationImpl(Engine& e,const AdaptiveState&
             const auto last=std::upper_bound(first,evaluated.end(),state.knots[interval+1]);
             std::vector<double> query;std::vector<size_t> rows,positions;for(auto at=first;at!=last;++at){query.push_back(e.theta[*at]);rows.push_back(std::lower_bound(ids.begin(),ids.end(),*at)-ids.begin());positions.push_back(at-evaluated.begin());}
             Samples predicted(8);for(int s=0;s<8;++s)predicted[s]=LocalCubicInterpolate(knots,supports[s],query);const Matrix pm=Mean(predicted);
-            for(size_t r=0;r<rows.size();++r){double error=0;const auto& ref=reference[rows[r]];Require(ref[0]>0,"nonpositive common-prefix interpolation reference");
+            for(size_t r=0;r<rows.size();++r){double error=0;const auto& ref=reference[rows[r]];
+                if(!(ref[0]>0)&&!state.interpolationCounts.empty()){
+                    // A short control-variate prefix can have a nonpositive
+                    // reference. This is a failed check, never a fatal worker
+                    // error or a silently zero residual. Grow the base cohort.
+                    const size_t pos=positions[r];auto& plan=result.growth[pos];
+                    result.errors[pos]=1e100;result.matrixErrors[pos].fill(1e100);result.ratioErrors[pos].fill(1e100);
+                    plan.upper=plan.noise=1e100;plan.mean=0;plan.biasDominated=false;plan.level=0;plan.phi=0;
+                    plan.counts.clear();plan.observedCounts.clear();
+                    for(size_t id:ids){const int n=ns[0][id];if(n<e.maxCount){plan.counts.push_back({id,std::min(e.maxCount,n*2)});plan.observedCounts.push_back(n);}}
+                    if(plan.counts.empty())plan.level=-1;continue;
+                }
+                Require(ref[0]>0,"nonpositive common-prefix interpolation reference");
                 const double previousWorst=result.growth[positions[r]].upper;
                 for(int j=0;j<16;++j){double mean=0,var=0;for(int s=0;s<8;++s)mean+=(predicted[s][r][j]-data[s][rows[r]][j])/8;for(int s=0;s<8;++s)var+=std::pow(predicted[s][r][j]-data[s][rows[r]][j]-mean,2)/7;const double raw=(std::fabs(mean)+t95*std::sqrt(var/8))/ref[0];result.matrixErrors[positions[r]][j]=std::max(result.matrixErrors[positions[r]][j],raw);error=std::max(error,raw);
-                    ObserveInterpolationNoise(e,result,positions[r],j,false,raw,std::fabs(mean)/ref[0],t95*std::sqrt(var/8)/ref[0]);
+                    ObserveInterpolationNoise(e,result,positions[r],j,false,raw,std::fabs(mean)/ref[0],t95*std::sqrt(var/8)/ref[0],!state.interpolationCounts.empty());
                     if(e.ratios&&j&&pm[r][0]>0){const double a=pm[r][j]/pm[r][0],b=ref[j]/ref[0];double v=0;for(int s=0;s<8;++s){const double influence=(predicted[s][r][j]-a*predicted[s][r][0])/pm[r][0]-(data[s][rows[r]][j]-b*data[s][rows[r]][0])/ref[0];v+=influence*influence/7;}const double ratio=std::fabs(a-b)+t95*std::sqrt(v/8);result.ratioErrors[positions[r]][j]=std::max(result.ratioErrors[positions[r]][j],ratio);error=std::max(error,ratio);
-                        ObserveInterpolationNoise(e,result,positions[r],j,true,ratio,std::fabs(a-b),t95*std::sqrt(v/8));}}
+                        ObserveInterpolationNoise(e,result,positions[r],j,true,ratio,std::fabs(a-b),t95*std::sqrt(v/8),!state.interpolationCounts.empty());}}
                 if(result.growth[positions[r]].upper>std::max(previousWorst,e.interpolation)){
                     auto weights=LocalCubicWeights(knots,query[r]);for(auto& w:weights)w.first=supportIds[w.first];
                     PlanInterpolationNoise(e,result.growth[positions[r]],stage,ns,ids,weights,evaluated[positions[r]],pm[r],ref);}
@@ -321,6 +369,17 @@ InterpolationResult CommonPrefixInterpolationImpl(Engine& e,const AdaptiveState&
 }
 
 InterpolationResult CommonPrefixInterpolation(Engine& e,const AdaptiveState& state,const std::vector<int>& depths,const std::vector<size_t>& evaluated,const unsigned* seeds){
+    const bool ownResidual=!state.interpolationCounts.empty();
+    const size_t productionRules=e.thetaPhi.size();ResidualPhiScope phiScope(e,ownResidual);
+    if(ownResidual){
+        const auto policy="{\"policy\":\"separate matched residual prefixes with common phi v2\",\"replicas\":8,\"phi\":"+Number(e.phi)
+            +",\"initial_base_fraction\":0.125,\"sampling_choices_frozen_before_residual\":true,\"production_counts_preserved\":true"
+            ",\"production_phi_preserved\":true,\"all16_and_normalized_ratios\":true,\"tolerance\":"+Number(e.interpolation)+",\"accuracy_gates_unchanged\":true}";
+        const auto path=e.root+"/interpolation_sampling_policy.json";
+        if(!Exists(path)||Read(path)!=policy)e.Record(path,policy);
+        e.Log("interpolation_common_phi","{\"phi\":"+Number(e.phi)+",\"production_phi_exceptions\":"+Number(productionRules)
+            +",\"production_sampling_preserved\":true,\"choice_before_residual_values\":true}");
+    }
     // All completed source graphs are immutable under the controller lock.
     // Adjacent guard stencils share these graphs; changing the stencil does
     // not require rereading their unchanged descendants. Direct checks remain.
@@ -550,7 +609,7 @@ bool IndependentAudit(Engine& e,AdaptiveState& state,const std::vector<int>& dep
                     e.Log("independent_audit_fallback",report);fraction=1;continue;}}
             stats=Estimate(combined);
             interp=InterpolateBudget(e,state.knots,ids,combined);
-            if(common&&!angular){AdaptiveState checked=state;checked.counts=validationCounts;
+            if(common&&!angular){AdaptiveState checked=state;checked.counts=validationCounts;checked.interpolationCounts.clear();
                 const auto guards=CommonPrefixInterpolation(e,checked,depths,ids,seeds.data());
                 CopyInterpolationCheck(interp,guards);
             }
@@ -606,6 +665,7 @@ bool PhysicsAudit(Engine& e,const AdaptiveState& state,const std::vector<size_t>
     e.Record(e.root+"/physics_validation.json","{\"enabled\":true,\"passed\":"+std::string(pass?"true":"false")+",\"depth_plus2_residual95_scaled_M11\":"+Number(depthError)+",\"cutoffs_off_residual95_scaled_M11\":"+Number(cutoffError)+",\"depth_pass\":"+std::string(depthError<=(e.autoDepth?e.depthBudget:e.eps)?"true":"false")+",\"cutoff_pass\":"+std::string(cutoffError<=e.eps?"true":"false")+",\"cutoffs_checked\":"+std::string(e.physicsAudit?"true":"false")+",\"depth_budget\":"+Number(e.autoDepth?e.depthBudget:e.eps)+",\"count_per_seed\":"+Number(count)+",\"checked_theta\":"+Number(x.size())+",\"requested_physics_retained\":true,\"scope\":\"requested evaluated angles (up to 4097 in automatic depth); depth+2 and optional cutoff sensitivity estimates; no ADDA or infinite-depth guarantee\"}");return pass;
 }
 #include "FullAutoLevelStability.inc"
+#include "FullAutoResumeRound.inc"
 int RunAdaptive(Engine& e){
     std::vector<int> depths;for(int d:{std::max(1,e.target-4),std::max(1,e.target-2),e.target})if(depths.empty()||depths.back()!=d)depths.push_back(d);
     AdaptiveState state;state.counts=Budgets(depths.size(),std::vector<int>(e.theta.size(),e.minimum));state.counts[0].assign(e.theta.size(),e.initial);
@@ -631,9 +691,10 @@ int RunAdaptive(Engine& e){
     if(resumed){RestoreWorkingPhi(e,state);RestoreCorrectionProbe(e,state);}
     PreparePointwisePolicy(e,state,resumed);
     PreparePrefixStabilityPolicy(e,state,resumed);
+    if(resumed){RevisitPublishedPass(e,state);BoundResumedRound(e,state,depths);}
     e.Record(e.root+"/interpolation_refinement_policy.json",
         "{\"policy\":\"noise before angular refinement\",\"decision_scope\":\"production scheduling only\","
-        "\"noise_first_when\":\"every failing component has mean<=tolerance or mean<=noise95\","
+        "\"noise_first_when\":\"separate residual: lower95<=tolerance; legacy: mean<=tolerance or mean<=noise95\","
         "\"growth_per_selected_stencil_level\":2,\"allocation_uses_observed_stencil_prefix\":true,"
         "\"all16_and_normalized_ratios\":true,\"count_cap_falls_back_to_theta\":true,"
         "\"accuracy_gates_unchanged\":true,\"independent_audit_policy_unchanged\":true}");
@@ -656,6 +717,7 @@ int RunAdaptive(Engine& e){
     }
     double lastCI=0,lastInterpolation=0;size_t lastNodes=0;
     for(;state.round<e.roundLimit;++state.round){
+        PrepareResidualBudget(e,state);
         const auto ids=AdaptiveGuards(state.knots,e.theta.size());Require(ids.size()<=size_t(e.maxTheta),"theta budget exhausted");const auto x=Angles(e.theta,ids);lastNodes=ids.size();SaveAdaptive(e,state);
         e.State("evaluating",state.round,PeakBudgets(state.counts),ids.size(),lastCI,lastInterpolation,state.streak);
         if(!e.VerifyMirror(x)){e.SetMirror(false);e.Calibrate(WorkingGrid(e,ids),true);std::fill(state.valid.begin(),state.valid.end(),false);std::fill(state.coarse.begin(),state.coarse.end(),false);state.streak=0;SaveAdaptive(e,state);--state.round;continue;}
@@ -669,10 +731,14 @@ int RunAdaptive(Engine& e){
             e.lastAnalyticError=0;for(size_t r=0;r<ids.size();++r)e.lastAnalyticError=std::max(e.lastAnalyticError,stage.analytic[r]/stats.mean[r][0]);
             Require(!e.controls||e.lastAnalyticError<=e.eps/64,"analytic mean numerical budget exceeded; use complete sampled PO or refine the analytic provider");}
         catch(const std::exception& error){if(!e.DisableUnsupportedControls(error))throw;e.Calibrate(WorkingGrid(e,ids),true);std::fill(state.coarse.begin(),state.coarse.end(),false);std::fill(state.valid.begin(),state.valid.end(),false);state.streak=0;SaveAdaptive(e,state);--state.round;continue;}
+        e.SetExecutionPhase("interpolation_validation",state.round);
         auto interp=InterpolateBudget(e,state.knots,ids,data,&stage,&state.counts);
-        bool common=e.local&&VaryingBudgets(state.counts,ids);
+        bool common=!state.interpolationCounts.empty()||(e.local&&VaryingBudgets(state.counts,ids));
         e.Record(e.root+"/interpolation_production_mode.json","{\"common_prefix\":"+std::string(common?"true":"false")+"}");
-        if(common){auto checked=CommonPrefixInterpolation(e,state,depths,ids,e.seeds.data());CopyInterpolationCheck(interp,checked);}
+        if(common){AdaptiveState residualState=state;
+            if(!state.interpolationCounts.empty())residualState.counts=state.interpolationCounts;
+            auto checked=CommonPrefixInterpolation(e,residualState,depths,ids,e.seeds.data());CopyInterpolationCheck(interp,checked);}
+        e.SetExecutionPhase("cached_prefix_validation",state.round);
         if(CheckCachedLevelPrefixes(e,depths,state,stage,ids,true)){
             data=Combine(stage.levels);stats=Estimate(data);
             e.lastAnalyticError=0;for(size_t r=0;r<ids.size();++r)e.lastAnalyticError=std::max(e.lastAnalyticError,stage.analytic[r]/stats.mean[r][0]);
@@ -684,6 +750,7 @@ int RunAdaptive(Engine& e){
             CopyInterpolationCheck(promoted,interp);interp=std::move(promoted);common=true;
             e.Record(e.root+"/interpolation_production_mode.json","{\"common_prefix\":true,\"output_cache_policy\":\"complete-compatible-prefixes-v1\",\"geometry_counts_frozen_before_output_promotion\":true,\"output_statistics_recomputed\":true}");
         }
+        e.SetExecutionPhase("level_prefix_validation",state.round);
         const auto prefixCheck=CheckLevelPrefixes(e,depths,state,stage,ids);
         bool positive=true;for(const auto& m:Mean(interp.output))positive=positive&&m[0]>0;
 
@@ -692,6 +759,7 @@ int RunAdaptive(Engine& e){
         if(!previous)change=1e100;
         PointwiseDecision budget;if(positive)budget=CheckPointwiseBudget(e,stats,output,interp,ids,"production");
         const bool pass=positive&&budget.directPass&&budget.outputPass&&interp.maximum<=e.interpolation&&change<=NumericalBudget(e)&&coarse;
+        e.SetExecutionPhase("publishing_matrix",state.round);
         const std::string roundSnapshot=SaveRoundDiagnostics(e,state,stage,stats,ids,interp.errors,x);
         WriteInterpolationNoise(e,interp,ids,roundSnapshot);
         Atomic(roundSnapshot+"/level_prefix_stability.csv",prefixCheck.table);
@@ -744,7 +812,8 @@ int RunAdaptive(Engine& e){
         if(!interp.bad.empty()||!positive){
             const auto statistics=PlanPointwiseStatistics(e,state,stage,ids,stats,interp);
             auto pending=InterpolationSamplingProposal(state,interp);MergeGrowingBudgets(pending,statistics);
-            RequirePrefixGrowth(prefixCheck,ids,pending);
+            const bool residualPending=!state.interpolationCounts.empty()&&interp.maximum>e.interpolation;
+            if(!residualPending)RequirePrefixGrowth(prefixCheck,ids,pending);
             // Learn a cheap dominant correction before launching a large base
             // extension at unrelated angles. This path used to be skipped
             // entirely whenever any interpolation guard failed.
@@ -753,9 +822,25 @@ int RunAdaptive(Engine& e){
                     &&TryCorrectionProbe(e,state,depths,stage,ids,stats,pending,lastInterpolation)){
                 --state.round;continue;
             }
+            const auto before=state.counts;
             RefineInterpolationFailures(e,state,ids,interp,positive);
             MergeGrowingBudgets(state.counts,statistics);
-            RequirePrefixGrowth(prefixCheck,ids,state.counts);SaveAdaptive(e,state);continue;}
+            if(!residualPending)RequirePrefixGrowth(prefixCheck,ids,state.counts);
+            if(residualPending)e.Log("residual_before_prefix_growth","{\"round\":"+Number(state.round)+",\"acceptance_checks_preserved\":true,\"prefix_growth_deferred_not_accepted\":true}");
+            const auto nextIds=AdaptiveGuards(state.knots,e.theta.size());
+            auto baseline=before;Statistics priorities;priorities.interval.resize(nextIds.size());priorities.ratioInterval.resize(nextIds.size());
+            for(size_t r=0;r<nextIds.size();++r){const size_t id=nextIds[r];auto at=std::lower_bound(ids.begin(),ids.end(),id);
+                const size_t old=at==ids.end()?ids.size()-1:size_t(at-ids.begin());
+                priorities.interval[r]=stats.interval[old];priorities.ratioInterval[r]=stats.ratioInterval[old];
+                // Newly inserted guard rows are mandatory, not optional growth.
+                if(at==ids.end()||*at!=id)for(size_t l=0;l<baseline.size();++l)baseline[l][id]=state.counts[l][id];}
+            std::vector<std::vector<size_t>> cohorts;
+            for(size_t id:interp.bad)if(state.interpolationCounts.empty()){const size_t row=std::lower_bound(ids.begin(),ids.end(),id)-ids.begin();const auto& p=interp.growth[row];
+                if(positive&&!p.biasDominated&&p.level>=0&&!p.counts.empty()){
+                    std::vector<size_t> nodes;for(const auto& n:p.counts)nodes.push_back(n.first);cohorts.push_back(nodes);}}
+            AdditionalWork work(e,e.seeds.data());
+            BoundRoundWork(e,work,baseline,state.counts,depths,nextIds,priorities,state.knots,cohorts,state.interpolationCounts.empty()?nullptr:&state.interpolationCounts);
+            SaveAdaptive(e,state);continue;}
         Budgets proposed=state.counts;bool grew=false;
         for(size_t r=0;r<ids.size();++r){const size_t id=ids[r];double error=0;for(int j=0;j<16;++j){error=std::max(error,stats.interval[r][j]);if(e.ratios)error=std::max(error,stats.ratioInterval[r][j]);}
             const auto residual=ResidualAt(e,interp,ids,id);
@@ -805,7 +890,7 @@ int RunAdaptive(Engine& e){
         if(!(phiPlan.oldPhi&&phiPlan.phase==0)&&TryCorrectionProbe(e,state,depths,stage,ids,stats,proposed,lastInterpolation)){--state.round;continue;}
         if(TryWorkingPhi(e,state,depths,stage,ids,stats,lastInterpolation,&interp)){--state.round;continue;}
         GateLocalCost(e,work,proposed,depths,ids);
-        BoundRoundWork(e,work,state.counts,proposed,depths,ids,stats);
+        BoundRoundWork(e,work,state.counts,proposed,depths,ids,stats,state.knots,{},state.interpolationCounts.empty()?nullptr:&state.interpolationCounts);
         if(proposed==state.counts)break;
         state.counts=proposed;SaveAdaptive(e,state);
     }

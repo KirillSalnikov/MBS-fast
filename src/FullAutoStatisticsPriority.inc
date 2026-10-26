@@ -8,7 +8,10 @@ Budgets PlanPointwiseStatistics(Engine& e,const AdaptiveState& state,const Adapt
     std::ostringstream report;
     report<<"theta_deg,level,current_count,proposed_count,statistical95,scheduling_tolerance\n";
     for(size_t r=0;r<ids.size();++r){
-        const size_t id=ids[r];const double tolerance=RemainingStatistics(e,ResidualAt(e,interp,ids,id));
+        const size_t id=ids[r];// A noisy short residual must not force a costly production extension
+        // to the worst-case reserved budget before that residual is resolved.
+        const double tolerance=!state.interpolationCounts.empty()&&interp.maximum>e.interpolation
+            ?NumericalBudget(e):RemainingStatistics(e,ResidualAt(e,interp,ids,id));
         const double error=WorstMetric(stats,r,e.ratios).error;
         if(error<=tolerance)continue;
         const auto selected=AllocateRow(e,stage,state.counts,ids,r,stats.mean,tolerance);
@@ -36,6 +39,7 @@ void MergeGrowingBudgets(Budgets& target,const Budgets& proposal){
 }
 Budgets InterpolationSamplingProposal(const AdaptiveState& state,const InterpolationResult& interp){
     Budgets result=state.counts;
+    if(!state.interpolationCounts.empty())return result; // residual growth has its own checkpointed allocation
     for(const auto& plan:interp.growth)if(!plan.biasDominated&&plan.level>=0)
         for(const auto& next:plan.counts)result.at(size_t(plan.level)).at(next.first)=
             std::max(result.at(size_t(plan.level)).at(next.first),next.second);

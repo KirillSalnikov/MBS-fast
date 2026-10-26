@@ -27,6 +27,10 @@ void CompleteNative(Job& j) {
 }
 void ExecutePersistent(std::vector<Job>& result,std::vector<std::vector<std::string>>& commands,const std::vector<size_t>& todo,const std::function<void(size_t)>& onComplete={}){
     if(todo.empty())return;
+    // Native completion markers remain individually durable. Only the
+    // reconstructible discovery journal is flushed as a bounded batch.
+    IndexAppendBatch indexWrites(*this);
+    DispatchProgressScope progress(*this,todo.size());
     const auto& workerGpus=WorkerGpus();
     const size_t slots=std::min(workerGpus.size(),size_t(8));
     // Resource tuning may change the GPU list; never keep a second context on
@@ -60,17 +64,20 @@ void ExecutePersistent(std::vector<Job>& result,std::vector<std::vector<std::str
             +",\"depth\":"+Number(j.depth)+",\"paired_depth\":"+Number(j.pairedDepth)+",\"phi\":"+Number(j.phi)+",\"theta_rows\":"+Number(j.inputAngles.size())
             +",\"block\":"+Number(j.block)+",\"warp\":"+Quoted(j.warp)+",\"pipeline\":"+(j.pipeline?"true":"false")+",\"threads\":"+Number(workerThreads)
             +",\"chunk\":"+Number(j.dispatchChunk?j.dispatchChunk:workerChunk)+",\"analytic_mean_threads\":"+Number(dispatchThreads?dispatchThreads:analyticMeanThreads)+",\"prepare_threads\":"+Number(j.preparationThreads?j.preparationThreads:workerThreads)+",\"persistent\":true,\"request_serial\":"+Number(service.requests)+"}");
+        NativeStarted(j,workerGpus[slot]);
     };
     try {
         for(size_t slot=0;slot<slots&&next<todo.size();++slot)launch(slot,todo[next++]);
         const auto dispatch=WorkerProtocol::DispatchCompletions(todo.size(),slots,[&](bool block){
             std::vector<pollfd> events(slots);for(size_t slot=0;slot<slots;++slot){events[slot].fd=slotJob[slot]>=0?services[slot]->fd:-1;events[slot].events=POLLIN;}
-            int rc;do{rc=poll(events.data(),events.size(),block?-1:0);}while(rc<0&&errno==EINTR);Require(rc>=0,"cannot wait for persistent workers");
+            WriteExecutionProgress();
+            int rc;do{rc=poll(events.data(),events.size(),block?1000:0);}while(rc<0&&errno==EINTR);Require(rc>=0,"cannot wait for persistent workers");
             std::vector<size_t> ready;for(size_t slot=0;slot<slots;++slot)if(events[slot].revents)ready.push_back(slot);return ready;
         },[&](size_t slot,size_t& index){
                 index=size_t(slotJob[slot]);Job& j=result[index];int status=-1;
                 const bool received=WorkerProtocol::Result(services[slot]->fd,status);
                 if(received&&status==WorkerProtocol::MemoryPressure&&memoryRetries[index]++==0){
+                    NativeReturned(j,true);
                     const pid_t failedPid=services[slot]->pid;
                     services[slot].reset();slotJob[slot]=-1;j.pid=-1;
                     std::remove((j.folder+"/worker.pid").c_str());
@@ -81,14 +88,16 @@ void ExecutePersistent(std::vector<Job>& result,std::vector<std::vector<std::str
                     launch(slot,index);return false;
                 }
                 Require(received&&status==0,"persistent worker failed; see "+j.folder+"/stdout.log");
-                j.pid=-1;j.seconds=Seconds()-begun[index];slotJob[slot]=-1;std::remove((j.folder+"/worker.pid").c_str());
+                NativeReturned(j);j.pid=-1;j.seconds=Seconds()-begun[index];slotJob[slot]=-1;std::remove((j.folder+"/worker.pid").c_str());
                 // Feed the GPU before CPU validation and durable checkpoint I/O.
                 if(next<todo.size())launch(slot,todo[next++]);
                 return true;
         },[&](size_t index){
-            const double checkpointBegin=Seconds();CompleteNative(result[index]);checkpointSeconds+=Seconds()-checkpointBegin;
+            const double checkpointBegin=Seconds();CompleteNative(result[index]);const double committedSeconds=Seconds()-checkpointBegin;
+            checkpointSeconds+=committedSeconds;NativeCommitted(result[index],committedSeconds);
             if(onComplete){const double callbackBegin=Seconds();onComplete(index);callbackSeconds+=Seconds()-callbackBegin;}
         });
+        indexWrites.Commit();
         Log("worker_dispatch_summary","{\"requests\":"+Number(todo.size())+",\"slots\":"+Number(slots)
             +",\"ready_batches\":"+Number(dispatch.readyBatches)+",\"ready_batch_peak\":"+Number(dispatch.readyBatchPeak)
             +",\"completed_pending_checkpoint_peak\":"+Number(dispatch.pendingPeak)+",\"completed_pending_checkpoint_limit\":"+Number(2*slots-1)

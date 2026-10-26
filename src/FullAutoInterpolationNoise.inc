@@ -6,14 +6,14 @@ void InitInterpolationNoise(InterpolationResult& result,size_t rows){
     result.ratioMeans.resize(rows);result.ratioNoise.resize(rows);result.growth.resize(rows);
 }
 void ObserveInterpolationNoise(const Engine& e,InterpolationResult& result,size_t row,int element,
-        bool ratio,double upper,double mean,double noise){
+        bool ratio,double upper,double mean,double noise,bool resolvedBias=false){
     auto& means=ratio?result.ratioMeans:result.matrixMeans;
     auto& noises=ratio?result.ratioNoise:result.matrixNoise;
     // Retain a matched decomposition, never maxima from different stencils.
     if(mean+noise>=means[row][element]+noises[row][element]){
         means[row][element]=mean;noises[row][element]=noise;}
     auto& plan=result.growth[row];
-    if(upper>e.interpolation&&mean>e.interpolation&&mean>noise){
+    if(upper>e.interpolation&&(resolvedBias?mean>e.interpolation+noise:mean>e.interpolation&&mean>noise)){
         plan.biasDominated=true;plan.level=-1;plan.phi=0;plan.seconds=0;plan.reduction=0;
         plan.counts.clear();plan.observedCounts.clear();}
     if(upper>plan.upper){plan.upper=upper;plan.mean=mean;plan.noise=noise;
@@ -114,7 +114,8 @@ void WriteInterpolationNoise(Engine& e,const InterpolationResult& result,const s
 }
 void RefineInterpolationFailures(Engine& e,AdaptiveState& state,const std::vector<size_t>& ids,
         const InterpolationResult& result,bool positive){
-    const Budgets before=state.counts;Budgets proposed=before;
+    const bool separate=!state.interpolationCounts.empty();
+    const Budgets before=separate?state.interpolationCounts:state.counts;Budgets proposed=before;
     std::set<size_t> knots(state.knots.begin(),state.knots.end());size_t sampled=0,refined=0;
     std::ostringstream rows;rows<<"theta_deg,decision,metric,absolute_mean,noise95,upper95,level,selected_phi_0_means_joint,node_theta,observed_count,next_count\n";
     for(size_t id:result.bad){const size_t r=std::lower_bound(ids.begin(),ids.end(),id)-ids.begin();
@@ -134,10 +135,14 @@ void RefineInterpolationFailures(Engine& e,AdaptiveState& state,const std::vecto
     }
     if(!positive){knots.insert(ids.begin(),ids.end());}
     state.knots.assign(knots.begin(),knots.end());
-    ExtendPhiBudgets(e,proposed,ids,AdaptiveGuards(state.knots,e.theta.size()));
+    if(separate){ResidualPhiScope scope(e,true);ExtendPhiBudgets(e,proposed,ids,AdaptiveGuards(state.knots,e.theta.size()));}
+    else ExtendPhiBudgets(e,proposed,ids,AdaptiveGuards(state.knots,e.theta.size()));
     if(!e.local){const auto nextIds=AdaptiveGuards(state.knots,e.theta.size());
         for(auto& level:proposed){int maximum=0;for(size_t id:nextIds)maximum=std::max(maximum,level[id]);for(size_t id:nextIds)level[id]=maximum;}}
-    state.counts=proposed;state.streak=0;
+    if(separate){state.interpolationCounts=proposed;
+        ExtendProductionGuards(e,state.counts,ids,AdaptiveGuards(state.knots,e.theta.size()));}
+    else state.counts=proposed;
+    state.streak=0;
     const auto filename="interpolation_refinement_round"+Number(state.round)+"_"+Hash(rows.str())+".csv";
     Atomic(e.root+"/"+filename,rows.str());
     e.Log("interpolation_refinement","{\"policy\":\"noise before angular refinement\",\"sampled_guards\":"+Number(sampled)

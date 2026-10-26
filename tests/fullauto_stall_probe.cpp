@@ -77,9 +77,11 @@ void MixedPhi(const std::string& root,const std::string& binary,bool controls){
         <<old.payloads.misses-oldReads<<" -> "<<batch.payloads.misses-newReads<<'\n';
 }
 
+#ifndef FULLAUTO_STALL_HELPERS_ONLY
 int main(int argc,char** argv){try{
     Require(argc==3,"OUTPUT WORKER_BINARY");SparseRows();
     PartitionWork(std::string(argv[1])+"/diffraction",false);PartitionWork(std::string(argv[1])+"/trace",true);
     for(bool controls:{false,true})MixedPhi(std::string(argv[1])+"/mixed_phi_"+Number(controls),argv[2],controls);
     std::cout<<"PASS: sparse lookup, bounded native-work partition and mixed-phi exact prefix reuse\n";return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}
+#endif

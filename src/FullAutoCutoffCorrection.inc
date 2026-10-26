@@ -62,6 +62,7 @@ Job CutoffPrefixView(const Job& source,int count){
     const auto found=cache.find(job.identity);if(found!=cache.end())return Materialize(found->second);
     if(!Exists(job.folder+"/complete.txt")){
         std::set<std::string> verified;ValidateStoredJob(source.folder,verified);Directory(job.folder+"/result");
+        AtomicFileBatch outputFiles(job.folder);
         std::ostringstream integrity;
         for(int depth:{0,job.pairedDepth}){
             const std::string suffix=depth?"_depth"+Number(depth):"";
@@ -78,6 +79,7 @@ Job CutoffPrefixView(const Job& source,int count){
         Atomic(job.folder+"/stdout.log","First orientations saved during balanced native pass; no repeated trace or diffraction.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");
         const auto sources=source.folder+"\t"+FileHash(source.folder+"/complete.txt")+"\n";
         Atomic(job.folder+"/angular_sources.tsv",sources);Atomic(job.folder+"/integral_outputs.fnv",integrity.str());
+        outputFiles.Commit();
         PublishComplete(job,job.identity+" "+Number(job.seconds)+" "+FileHash(job.data)+" "+(job.hasControls?FileHash(job.summary):"none")+" "+Hash(sources)+" "+Hash(integrity.str())+"\n");
     }
     std::set<std::string> verified;ValidateStoredJob(job.folder,verified);job=Load(job);CacheJob(job);return job;
@@ -197,6 +199,7 @@ bool RestoreCutoffPrefixRecipe(const Job& parent,int prefix){
 }
 bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::string>>& commands,const std::vector<size_t>& todo,const std::function<void(size_t)>& onComplete){
     bool any=false;for(size_t i:todo)any=any||CorrectCutoffJob(result[i]);if(!any)return false;
+    IndexAppendBatch indexWrites(*this);
     struct Recipe {size_t parent;bool embeddedPrefix=false;std::vector<size_t> children;};std::vector<Recipe> recipes;
     std::vector<Job> native;std::vector<std::vector<std::string>> nativeCommands;std::vector<size_t> launch;
     std::map<size_t,size_t> direct;
@@ -260,12 +263,17 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
     auto assemble=[&](const Recipe& recipe){Job& j=result[recipe.parent];const auto& k=recipe.children;
         const double assemblyBegin=Seconds();
         std::vector<Job> upper{native[k[0]],native[k[1]],native[k[2]]};
-        Directory(j.folder+"/result");WriteCutoffMatrix(j,upper,commands[recipe.parent],j.depth,j.folder+"/result/result");
+        // Lower views can publish their own transactions. Finish those before
+        // opening the parent's private write batch; never nest transactions.
+        std::vector<Job> lower;
+        if(j.pairedDepth){Job low=LowerView(native[k[1]],j.pairedDepth);
+            lower=k.size()==3?std::vector<Job>{LowerView(native[k[0]],j.pairedDepth),low,LowerView(native[k[2]],j.pairedDepth)}
+                :std::vector<Job>{native[k[3]],low,native[k[4]]};}
+        Directory(j.folder+"/result");AtomicFileBatch outputFiles(j.folder);
+        WriteCutoffMatrix(j,upper,commands[recipe.parent],j.depth,j.folder+"/result/result");
         std::ostringstream sources,signedSources,integrity;
         for(size_t i=0;i<3;++i)signedSources<<j.depth<<' '<<(i==2?-1:1)<<' '<<upper[i].folder<<'\n';
-        if(j.pairedDepth){Job low=LowerView(native[k[1]],j.pairedDepth);
-            std::vector<Job> lower=k.size()==3?std::vector<Job>{LowerView(native[k[0]],j.pairedDepth),low,LowerView(native[k[2]],j.pairedDepth)}
-                :std::vector<Job>{native[k[3]],low,native[k[4]]};const auto stem=j.folder+"/result/result_depth"+Number(j.pairedDepth);
+        if(j.pairedDepth){const auto stem=j.folder+"/result/result_depth"+Number(j.pairedDepth);
             WriteCutoffMatrix(j,lower,commands[recipe.parent],j.pairedDepth,stem);
             for(size_t i=0;i<3;++i){signedSources<<j.pairedDepth<<' '<<(i==2?-1:1)<<' '<<lower[i].folder<<'\n';
                 // Views are durable inputs too; validate their provenance on resume.
@@ -277,7 +285,8 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
         Atomic(j.folder+"/integral_outputs.fnv",integrity.str());Atomic(j.folder+"/angular_sources.tsv",sources.str());
         std::ostringstream replay;replay<<exe<<'\n';for(const auto& c:commands[recipe.parent])replay<<c<<'\n';Atomic(j.folder+"/command.args",replay.str());
         Atomic(j.folder+"/stdout.log","Balanced control-variate assembly: B_N + O_m - B_m. command.args replays the physical unpruned target; cutoff_sources.tsv records the actual signed estimator.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");
-        j.assembled=true;PublishComplete(j,j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(j.hasControls?FileHash(j.summary):"none")+" "+Hash(sources.str())+" "+Hash(integrity.str())+"\n");
+        j.assembled=true;outputFiles.Commit();
+        PublishComplete(j,j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(j.hasControls?FileHash(j.summary):"none")+" "+Hash(sources.str())+" "+Hash(integrity.str())+"\n");
         std::set<std::string> verified;ValidateStoredJob(j.folder,verified);j=Load(j);CacheJob(j);
         Log("cutoff_correction_complete","{\"folder\":"+Quoted(j.folder)+",\"seconds\":"+Number(j.seconds)+",\"assembly_seconds\":"+Number(Seconds()-assemblyBegin)+",\"streaming_assembly\":true,\"combined_replica_enters_accuracy_estimate\":true,\"old_off_blocks_compatible\":true}");
     };
@@ -307,5 +316,6 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
     correctionExecuting=false;collecting=wasCollecting;
     for(const auto& item:direct)result[item.first]=native[item.second];
     for(size_t i=0;i<recipes.size();++i)Require(assembled[i],"cutoff parent missing committed sources");
+    indexWrites.Commit();
     return true;
 }
