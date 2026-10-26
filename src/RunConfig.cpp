@@ -901,8 +901,18 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
                 if(args.IsCatched(key))Fail(CliCanonicalFlag(key)+" is not used by GO fullauto.","remove this PO-specific/grid modifier.");
             for(const char* key:{"fullauto_controls","fullauto_depth_share","fullauto_polar_controls","fullauto_phi_recheck","fullauto_rotation","fullauto_cutoffs","fullauto_resources","fullauto_local"})
                 if(args.IsCatched(key)&&args.GetStringValue(key)!="off")Fail(CliCanonicalFlag(key)+" must be off for GO fullauto.","GO uses fixed finite bins, analytic alpha and explicit trace cutoffs.");
-            if(args.IsCatched("cutoff_profile")&&args.GetStringValue("cutoff_profile")!="off")
-                Fail("GO fullauto uses individual trace cutoffs or cutoff-profile off.","remove the PO cutoff preset and set trace-cutoff thresholds explicitly.");
+            if(args.IsCatched("cutoff_profile")){
+                const std::string profile=args.GetStringValue("cutoff_profile");
+                if(profile!="off"&&profile!="balanced")
+                    Fail("GO fullauto supports cutoff-profile off or balanced.","choose a supported profile or explicit thresholds.");
+                if(profile=="balanced"){
+                    for(const char* key:{"fullauto_final_checks","fullauto_physics_audit"})
+                        if(args.IsCatched(key)&&args.GetStringValue(key)=="off")
+                            Fail("GO balanced requires final physics checks against cutoffs off.","enable final-checks and physics-audit, or use cutoff-profile off.");
+                    if(config.maxReflections>28)
+                        Fail("GO balanced depth+2 audit exceeds depth 30.","use target depth <=28.");
+                }
+            }
             if(args.IsCatched("nphi")&&IntValue(args,"nphi")!=1)Fail("GO fullauto has analytic alpha; phi-points must be 1.","remove phi-points or set 1.");
             if(args.IsCatched("grid")){
                 if(args.GetArgNumber("grid")!=4||DoubleValue(args,"grid",0)!=0||DoubleValue(args,"grid",1)!=180||IntValue(args,"grid",2)!=1)

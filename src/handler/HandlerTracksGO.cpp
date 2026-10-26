@@ -16,6 +16,7 @@ void HandlerTracksGO::HandleBeams(std::vector<Beam> &beams, double /*sinZenith*/
 {
     m_sinZenith = sin(m_particle->rotAngle.beta);
 
+    FilterOutputBeams(beams);
     for (Beam &beam : beams)
     {
 #ifdef _DEBUG // DEB

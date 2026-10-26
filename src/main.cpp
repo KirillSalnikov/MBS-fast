@@ -139,6 +139,8 @@ void ApplyBeamCutoffOptions(const ArgPP &args, Handler *handler)
             ? "custom" : "legacy-default");
     if (po)
         po->m_cutoffProfileName = profile;
+    if (HandlerGO *go = dynamic_cast<HandlerGO *>(handler))
+        go->cutoffProfileName = profile;
     if (profile == "off")
     {
         handler->m_targetEps = 0.0;

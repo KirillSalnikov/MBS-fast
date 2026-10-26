@@ -1,6 +1,7 @@
 #include "HandlerGO.h"
 
 #include <iostream>
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <iomanip>
@@ -11,6 +12,7 @@ HandlerGO::HandlerGO(Particle *particle, Light *incidentLight, int nTheta,
                      double wavelength)
     : Handler(particle, incidentLight, nTheta, wavelength)
 {
+    beamCutoffStatistics=std::make_shared<BeamCutoffStatistics>();
 }
 
 void HandlerGO::SetTracks(Tracks *tracks)
@@ -39,6 +41,56 @@ void HandlerGO::ConfigureForThreadLocal(const HandlerGO &source,
     m_absMag = source.m_absMag;
     m_absorptionPointCount = source.m_absorptionPointCount;
     reconstructGammaMirror = source.reconstructGammaMirror;
+    m_targetEps = source.m_targetEps;
+    m_beamCutoffJRel = source.m_beamCutoffJRel;
+    m_beamCutoffAreaRel = source.m_beamCutoffAreaRel;
+    m_beamCutoffImportanceRel = source.m_beamCutoffImportanceRel;
+    cutoffProfileName = source.cutoffProfileName;
+    beamCutoffStatistics = source.beamCutoffStatistics;
+}
+
+// GO adds intensities, so importance is ||J||_F^2 times the projected
+// beam cross section (not an amplitude or squared area). The reference is
+// the strongest outgoing beam of this orientation, before absorption.
+// Positive absorption can only reduce a discarded beam's absolute energy.
+void HandlerGO::FilterOutputBeams(std::vector<Beam>& beams)
+{
+    const double jr=m_beamCutoffJRel>=0 ? m_beamCutoffJRel : m_targetEps;
+    const double ar=m_beamCutoffAreaRel>=0 ? m_beamCutoffAreaRel : m_targetEps;
+    const double ir=std::max(0.0,m_beamCutoffImportanceRel);
+    if(jr<=0 && ar<=0 && ir<=0) return; // exact legacy/off path
+    double maxJ=0,maxA=0,maxI=0;
+    for(const Beam& beam:beams){
+        if(beam.lastFacetId==__INT_MAX__) continue;
+        const double j=beam.J.Norm(),a=BeamCrossSection(beam);
+        maxJ=std::max(maxJ,j);maxA=std::max(maxA,a);maxI=std::max(maxI,j*a);
+    }
+    long long candidates=0,rejected=0,byJ=0,byA=0,byI=0;
+    beams.erase(std::remove_if(beams.begin(),beams.end(),[&](const Beam& beam){
+        if(beam.lastFacetId==__INT_MAX__) return false;
+        ++candidates;
+        const double j=beam.J.Norm(),a=BeamCrossSection(beam);
+        const bool smallJ=jr>0 && j<jr*maxJ;
+        const bool smallA=ar>0 && a<ar*maxA;
+        const bool smallI=ir>0 && j*a<ir*maxI;
+        byJ+=smallJ;byA+=smallA;byI+=smallI;
+        const bool drop=smallJ||smallA||smallI;rejected+=drop;return drop;
+    }),beams.end());
+    beamCutoffStatistics->prepareCalls.fetch_add(1,std::memory_order_relaxed);
+    beamCutoffStatistics->candidates.fetch_add(candidates,std::memory_order_relaxed);
+    beamCutoffStatistics->kept.fetch_add(candidates-rejected,std::memory_order_relaxed);
+    beamCutoffStatistics->rejected.fetch_add(rejected,std::memory_order_relaxed);
+    beamCutoffStatistics->rejectedJones.fetch_add(byJ,std::memory_order_relaxed);
+    beamCutoffStatistics->rejectedArea.fetch_add(byA,std::memory_order_relaxed);
+    beamCutoffStatistics->rejectedImportance.fetch_add(byI,std::memory_order_relaxed);
+}
+
+std::string HandlerGO::BeamCutoffReport() const
+{
+    return FormatBeamCutoffReport(*beamCutoffStatistics,cutoffProfileName,
+        m_beamCutoffJRel>=0 ? m_beamCutoffJRel : m_targetEps,
+        m_beamCutoffAreaRel>=0 ? m_beamCutoffAreaRel : m_targetEps,
+        std::max(0.0,m_beamCutoffImportanceRel));
 }
 
 void HandlerGO::MergeTotalContributionFrom(const HandlerGO &source)

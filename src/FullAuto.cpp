@@ -753,6 +753,7 @@ struct Engine {
         }
         localPolicy=args.IsCatched("fullauto_local")?args.GetStringValue("fullauto_local"):"auto";local=localPolicy!="off";ratios=On("fullauto_ratios");phiRecheck=On("fullauto_phi_recheck");
         polarControls=On("fullauto_polar_controls");finalChecks=On("fullauto_final_checks");finalAudit=finalChecks&&On("fullauto_final_audit");physicsAudit=On("fullauto_physics_audit",false);
+        if(go&&args.IsCatched("cutoff_profile")&&args.GetStringValue("cutoff_profile")=="balanced")physicsAudit=true;
         coherent=!go&&!args.IsCatched("incoh");depthSharing=!go&&coherent&&On("fullauto_depth_share");
         fixedPhi=args.IsCatched("nphi")?args.GetIntValue("nphi"):(args.IsCatched("grid")?args.GetIntValue("grid",args.GetArgNumber("grid")-2):0);
         fixedPipeline=args.IsCatched("orientation_pipeline");kernel.pipeline=fixedPipeline;
@@ -1809,6 +1810,13 @@ struct Engine {
             for(int j=1;j<16;++j)m[r][j]+=b[0][j]*(c[1]-c[3])+b[1][j]*(c[2]-c[4]);}s.push_back(m);}return s;}
     double Cost(const std::vector<Job>& j,int n){double s=0;for(const auto& v:j)s+=v.seconds;return s/j.size()/n;}
     void SetMirror(bool value){if(mirror!=value)mirrorError=0;mirror=value;statistical=eps-interpolation-depthBudget-(mirror?eps/256:0)-(controls?eps/64:0)-((rotationBeta>1||rotationGamma>1)?eps/256:0)-(selectedCutoff!="requested"&&selectedCutoff!="off"?eps/8:0)-((resourcePolicy=="auto"||config.useGpu)?eps/1024:0);}
+    void PrepareGOCutoffs(){
+        if(args.IsCatched("cutoff_profile")){
+            selectedCutoff=args.GetStringValue("cutoff_profile");
+            if(selectedCutoff=="balanced") physicsAudit=true;
+            SetMirror(mirror);
+        }
+    }
     void PrepareGOMirror(){
         const bool supported=SupportsGOMirror(args);
         Require(mirrorPolicy!="on"||supported,"unsupported GO mirror geometry/domain");
@@ -2069,7 +2077,7 @@ int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],do
     if(!controller->compatibleHash.empty())Atomic(controller->root+"/controller_resume_command.json",replay.str());
     signal(SIGTERM,StopWorkers);signal(SIGINT,StopWorkers);
     for(;;){Engine& e=*controller;
-        if(e.go)e.PrepareGOMirror();
+        if(e.go){e.PrepareGOCutoffs();e.PrepareGOMirror();}
         e.Record(e.root+"/explicit_options.json",e.requestedOptions);e.Record(e.root+"/fullauto_parameters.json",e.Parameters("{}"));
         WriteGrid(e.root+"/requested_theta.csv",e.theta);Directory(e.root+"/jobs");
         try {

@@ -126,8 +126,10 @@ int RunGO(Engine& e){
                     if(e.physicsAudit){e.SetCutoff("off");try{cutoffError=bound(GoSample(e,count,fresh));}
                     catch(...){e.base=savedBase;e.selectedCutoff=savedCutoff;e.SetMirror(savedMirror);throw;}
                     e.base=savedBase;e.selectedCutoff=savedCutoff;e.SetMirror(savedMirror);}
-                    physics=depthError<=(e.autoDepth?e.depthBudget:e.eps)&&cutoffError<=e.eps;
-                    e.Record(e.root+"/physics_validation.json","{\"enabled\":true,\"passed\":"+(physics?std::string("true"):"false")+",\"depth_plus2_residual95_scaled_M11\":"+Number(depthError)+",\"cutoffs_off_residual95_scaled_M11\":"+Number(cutoffError)+",\"depth_pass\":"+std::string(depthError<=(e.autoDepth?e.depthBudget:e.eps)?"true":"false")+",\"cutoff_pass\":"+std::string(cutoffError<=e.eps?"true":"false")+",\"cutoffs_checked\":"+std::string(e.physicsAudit?"true":"false")+",\"depth_budget\":"+Number(e.autoDepth?e.depthBudget:e.eps)+",\"count_per_seed\":"+Number(count)+",\"requested_physics_retained\":true}");
+                    e.cutoffError=cutoffError;
+                    const double cutoffBudget=e.selectedCutoff=="balanced" ? e.eps/8 : e.eps;
+                    physics=depthError<=(e.autoDepth?e.depthBudget:e.eps)&&cutoffError<=cutoffBudget;
+                    e.Record(e.root+"/physics_validation.json","{\"enabled\":true,\"passed\":"+(physics?std::string("true"):"false")+",\"depth_plus2_residual95_scaled_M11\":"+Number(depthError)+",\"cutoffs_off_residual95_scaled_M11\":"+Number(cutoffError)+",\"depth_pass\":"+std::string(depthError<=(e.autoDepth?e.depthBudget:e.eps)?"true":"false")+",\"cutoff_pass\":"+std::string(cutoffError<=cutoffBudget?"true":"false")+",\"cutoffs_checked\":"+std::string(e.physicsAudit?"true":"false")+",\"cutoff_budget\":"+Number(cutoffBudget)+",\"depth_budget\":"+Number(e.autoDepth?e.depthBudget:e.eps)+",\"count_per_seed\":"+Number(count)+",\"requested_physics_retained\":true}");
                 }else e.Record(e.root+"/physics_validation.json","{\"enabled\":false,\"passed\":false,\"requested_physics_retained\":true}");
                 if(!physics){e.State("physics_validation_failed",round,{count},bins,result.maximum,0,streak);return 4;}
                 GoOutputs(e,e.root,result,count);Atomic(e.root+"/mueller_fullauto.dat",Read(e.root+"/mueller_evaluated.dat"));

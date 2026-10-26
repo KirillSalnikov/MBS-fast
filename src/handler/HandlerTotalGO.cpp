@@ -19,6 +19,7 @@ void HandlerTotalGO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
 {
     m_sinZenith = sinZenith;
 
+    FilterOutputBeams(beams);
     for (Beam &beam : beams)
     {
 #ifdef _DEBUG // DEB
