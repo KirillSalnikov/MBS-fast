@@ -7,7 +7,7 @@ on:
 jobs:
   cpu:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Install build dependencies
@@ -24,3 +24,5 @@ jobs:
         run: make test_analytic_facets test_analytic_directions test_analytic_azimuth
       - name: Independent control coefficients and multilevel covariance
         run: make test_gpu_optimization
+      - name: Fullauto recovery, residuals, GO and extinction integration
+        run: make test_fullauto_release

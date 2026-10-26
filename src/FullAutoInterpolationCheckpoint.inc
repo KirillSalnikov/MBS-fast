@@ -6,8 +6,10 @@ std::string InterpolationGroupKey(const Engine& e,const std::vector<int>& depths
     std::ostringstream s;s<<std::setprecision(17)<<"interpolation-group-v1\n"<<e.signature<<'\n'<<(binary.empty()?e.binaryHash:binary)<<'\n'<<e.ExecutionHash()<<'\n'
         <<e.kernel.block<<' '<<e.kernel.pipeline<<' '<<e.kernel.warp<<' '<<e.phi<<' '<<e.controls<<' '<<e.sharedMeans<<' '
         <<e.mirror<<' '<<e.depthSharing<<' '<<e.balancedCorrection<<' '<<e.orientationBlock<<' '<<e.ratios<<'\n';
-    for(int seed=0;seed<8;++seed)s<<seeds[seed]<<' ';s<<'\n';
-    for(int depth:depths)s<<depth<<' ';s<<'\n';
+    for(int seed=0;seed<8;++seed)s<<seeds[seed]<<' ';
+    s<<'\n';
+    for(int depth:depths)s<<depth<<' ';
+    s<<'\n';
     for(size_t id:ids){
         s<<id<<' '<<e.theta.at(id)<<' '<<e.PhiForTheta(id);
         for(const auto& level:counts)s<<' '<<level.at(id);

@@ -1,5 +1,8 @@
 # MBS-fast Manual
 
+**Start with fullauto:** [minimal commands](../README.md), [controller, Sobol and analytic mathematics](FULLAUTO.md). The fullauto guide describes the current automatic policy; the sections below retain the detailed physics and manual-mode reference.
+
+
 MBS-fast computes light scattering by non-spherical particles with geometrical ray tracing plus Physical Optics (PO) diffraction. The code is optimized for CPU OpenMP/MPI runs and CUDA GPU diffraction runs. This manual describes the current command line interface, build targets, grids, multi-GPU scans, and the main diffraction/Jones/Mueller formulas used by the implementation.
 
 ## Contents
@@ -215,27 +218,54 @@ Prefer the split `cpu/` and `gpu/` builds for normal work.
 
 ## Quick runs
 
+### First calculation: one command
+
+A hexagonal column with axial length 5 µm and basal diameter 2 µm, wavelength
+0.532 µm, real refractive index 1.3116 and a 2% target:
+
 ```bash
-# GPU double, oldauto orientation grid, full 0..180 degree output
-gpu/bin/mbs_po_gpu_double_fast --po -p 1 125.9 78.09 \
-    --ri 1.3116 0 -w 0.532 -n 12 --oldauto 2 \
-    --grid 0 180 600 180 --threads 64 --close -o hex_gpu_double
-
-# Same run, force CPU backend from the GPU binary
-gpu/bin/mbs_po_gpu_double_fast --po --cpu -p 1 125.9 78.09 \
-    --ri 1.3116 0 -w 0.532 -n 12 --oldauto 2 \
-    --grid 0 180 600 180 --threads 64 --close -o hex_cpu_from_gpu_bin
-
-# File particle scaled by equivalent size parameter
-gpu/bin/mbs_po_gpu_float_fast --po --pf particle.dat --k_eq 58.81 \
-    --ri 1.6 0.002 -w 1.064 -n 14 --oldauto 2 --pole \
-    --grid 0 180 600 180 --threads 16 --close -o particle_keq
-
-# Two-point forward/backward check
-gpu/bin/mbs_po_gpu_double_fast --po -p 1 125.9 78.09 \
-    --ri 1.3116 0 -w 0.532 -n 1 --oldauto 2 --pole \
-    --grid 0 180 600 1 --threads 64 --close -o check_0_180
+cpu/bin/mbs_po_mpi --method po --backend cpu \
+  --particle 1 5 2 --ri 1.3116 0 --wavelength-um 0.532 \
+  --fullauto 0.02 --output results/column_5um
 ```
+
+`--particle 1 L D` describes a regular hexagonal column. These are its axial
+length and basal diameter, not an imposed maximum vertex-to-vertex size.
+Use `--particle-file` and `--resize-dmax-um` to scale an imported particle by Dmax:
+
+```bash
+cpu/bin/mbs_po_mpi --method po --backend cpu \
+  --particle-file examples/cube.particle --resize-dmax-um 5 \
+  --ri 1.3116 0 --wavelength-um 0.532 \
+  --fullauto 0.02 --output results/file_particle_5um
+```
+
+All geometric lengths must use the same units as the wavelength. Imported
+symmetry declarations are not trusted automatically: fullauto starts from the
+full orientation domain and verifies supported reductions.
+
+### GPU and forward/backward cones
+
+```bash
+# Forward cone, one visible GPU.
+CUDA_VISIBLE_DEVICES=0 gpu/bin/mbs_po_gpu_double \
+  --method po --backend cuda --particle 1 100 50 \
+  --ri 1.3116 0 --wavelength-um 0.532 \
+  --fullauto 0.02 --fullauto-theta-range 0 25 \
+  --output results/column_100um_forward
+
+# Backward cone, two GPUs sharing a controller and saved work.
+CUDA_VISIBLE_DEVICES=0,1 gpu/bin/mbs_po_gpu_double \
+  --method po --backend cuda --particle 1 100 50 \
+  --ri 1.3116 0 --wavelength-um 0.532 \
+  --fullauto 0.02 --fullauto-theta-range 170 180 \
+  --fullauto-gpus 0,1 --output results/column_100um_backward
+```
+
+GPU numbers are relative to `CUDA_VISIBLE_DEVICES`. Each output directory must
+have one controller. Do not start two controllers on the same checkpoint.
+A cone calculation does not supply full-sphere scattering integrals.
+
 
 ## Physical model
 
@@ -1275,11 +1305,11 @@ values, so it is faster but not identical to independent oldauto grids. Use a
 tighter ratio for validation, and use exact mode when every size must have its
 own oldauto reference grid.
 
-Experimental fused multi-`k_eq` GPU diffraction:
-
-```bash
-MBS_GPU_MULTI_K_FULL=1 gpu/bin/mbs_po_gpu_float_fast ...
-```
+Supported FP64 coherent direct scans of 2–32 sizes use fused multi-`k_eq`
+diffraction and a direction-independent phase cache automatically. Float keeps
+its opt-in policy. `MBS_GPU_MULTI_K_FULL=0` selects the per-size reference;
+`MBS_GPU_MULTI_K_PHASE_CACHE=0` disables only the cache. See
+[the cache scope and regression](DIFFRACTION_OPT_20260907.md).
 
 For large direct `theta x phi` grids, host RAM can dominate even when GPU memory
 is mostly free. The oldauto log prints a line like:
@@ -1505,7 +1535,7 @@ Production-use variables:
 | `MBS_GPU_MULTI=0` | Disable automatic multi-orientation GPU batching. |
 | `MBS_GPU_MULTI_MAX=N` | Cap automatic GPU multi batching. |
 | `MBS_GPU_GROUPS=1` | Distribute variable latitude-phi theta groups across visible GPUs. |
-| `MBS_GPU_MULTI_K_FULL=1` | Experimental fused multi-`k_eq` diffraction. |
+| `MBS_GPU_MULTI_K_FULL=0/1` | Fused direct multi-`k_eq` diffraction; automatic for supported FP64 coherent scans of 2–32 sizes. Float remains opt-in. |
 | `MBS_GPU_BEAM_STATS=1` | Print GPU beam packing/count diagnostics. |
 | `MBS_SHARED_BETA_GROUP=N` | Override shared-batch beta grouping. |
 | `MBS_SHARED_ORIENT_CHUNK=N` | Override shared-batch orientation chunk size. |

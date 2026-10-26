@@ -45,6 +45,8 @@ void ResidualBudgetFile(Engine& e,const AdaptiveState& state,const std::vector<s
     if(state.interpolationCounts.empty())return;
     std::ostringstream out;out<<"theta_deg";for(size_t l=0;l<state.interpolationCounts.size();++l)out<<",N_residual_level"<<l;
     out<<",phi_points\n";for(size_t id:ids){out<<Number(e.theta[id]);
-        for(const auto& level:state.interpolationCounts)out<<','<<level[id];out<<','<<ResidualPhi(e)<<'\n';}
+        for(const auto& level:state.interpolationCounts)out<<','<<level[id];
+        out<<','<<ResidualPhi(e)<<'\n';
+        }
     Atomic(folder+"/interpolation_orientation_budget.csv",out.str());
 }

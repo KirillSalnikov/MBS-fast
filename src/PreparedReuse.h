@@ -12,7 +12,9 @@ struct Value {
     static size_t PreparedBytes(const PreparedOrientation& p){
         size_t n=p.beams.capacity()*sizeof(PreparedBeam);
         for(const auto& b:p.beams){n+=b.absorptionPaths.capacity()*sizeof(double);
-            if(b.edgeData.HasOverflow())n+=sizeof(BeamEdgeData);if(b.fallback)n+=sizeof(PreparedBeamFallback);}
+            if(b.edgeData.HasOverflow())n+=sizeof(BeamEdgeData);
+            if(b.fallback)n+=sizeof(PreparedBeamFallback);
+            }
         return n;
     }
     size_t Bytes()const{return sizeof(Value)+PreparedBytes(upper)+PreparedBytes(lower);}

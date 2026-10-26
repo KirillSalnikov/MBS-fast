@@ -104,10 +104,15 @@ AdaptiveData EvaluateAngularAudit(Engine& e,const std::vector<int>& depths,const
     e.Record(e.root+"/independent_audit_progress.json","{\"phase\":\"native prefetch for frozen angular control\",\"allocation_fnv1a64\":"+Quoted(plan.identity)+"}");
     const auto residualGroups=FullAutoAuditPlan::Stencils(knots,plan.residuals,ids);
     std::ostringstream metadata;metadata<<"{\"schema\":1,\"groups\":[";size_t metadataGroup=0;
-    for(const auto& group:residualGroups){metadata<<(metadataGroup?",":"")<<"{\"id\":"<<metadataGroup++<<",\"counts\":[";
-        for(size_t l=0;l<group.first.size();++l)metadata<<(l?",":"")<<group.first[l];metadata<<"],\"theta_indices\":[";bool first=true;
+    for(const auto& group:residualGroups){metadata<<(metadataGroup?",":"")<<"{\"id\":"<<metadataGroup<<",\"counts\":[";
+        ++metadataGroup;
+        for(size_t l=0;l<group.first.size();++l)metadata<<(l?",":"")<<group.first[l];
+        metadata<<"],\"theta_indices\":[";
+        bool first=true;
         for(size_t id:group.second.rows){metadata<<(first?"":",")<<id;first=false;}metadata<<"],\"intervals\":[";
-        for(size_t i=0;i<group.second.intervals.size();++i)metadata<<(i?",":"")<<group.second.intervals[i];metadata<<"]}";}
+        for(size_t i=0;i<group.second.intervals.size();++i)metadata<<(i?",":"")<<group.second.intervals[i];
+        metadata<<"]}";
+        }
     metadata<<"]}";e.Record(e.root+"/angular_audit_groups.json",metadata.str());WriteGrid(e.root+"/angular_audit_support.csv",Angles(e.theta,knots));
     PrefetchBudget(e,AngularAuditRequests(e,depths,plan,ids,knots),seeds);
     e.Record(e.root+"/independent_audit_progress.json","{\"phase\":\"independent anchor means\",\"support_theta\":"+Number(knots.size())+"}");
@@ -122,7 +127,8 @@ AdaptiveData EvaluateAngularAudit(Engine& e,const std::vector<int>& depths,const
     for(const auto& group:FullAutoAuditPlan::Stencils(knots,plan.residuals,ids)){
         const size_t groupId=completedGroups++;e.Record(e.root+"/independent_audit_progress.json","{\"phase\":\"common-orientation angular residuals\",\"group\":"+Number(groupId)+"}");
         std::vector<size_t> rows(group.second.rows.begin(),group.second.rows.end());bool interior=false;
-        for(size_t id:rows)interior=interior||!std::binary_search(knots.begin(),knots.end(),id);if(!interior)continue;
+        for(size_t id:rows)interior=interior||!std::binary_search(knots.begin(),knots.end(),id);
+        if(!interior)continue;
         Budgets ns;for(int n:group.first)ns.push_back(std::vector<int>(e.theta.size(),n));
         const auto data=EvaluateBudget(e,depths,ns,rows,seeds);sources<<data.sources;
         {std::istringstream records(data.sources);std::string line;while(std::getline(records,line))roles<<"residual "<<groupId<<' '<<line<<'\n';}

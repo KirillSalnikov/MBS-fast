@@ -115,7 +115,11 @@ std::string ExecutableVersion(const std::string& executable){
     for(;;){pollfd p={fd[0],POLLIN,0};int ready;do{ready=poll(&p,1,10000);}while(ready<0&&errno==EINTR);
         if(ready<=0){valid=false;break;}
         ssize_t n;do{n=read(fd[0],buffer,sizeof(buffer));}while(n<0&&errno==EINTR);
-        if(n==0)break;if(n<0||text.size()+n>16384){valid=false;break;}text.append(buffer,n);}
+        if(n==0)break;
+        if(n<0||text.size()+n>16384){valid=false;
+            break;
+            }text.append(buffer,n);
+        }
     close(fd[0]);if(!valid)kill(child,SIGKILL);int status=0;while(waitpid(child,&status,0)<0&&errno==EINTR){}
     Require(valid&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"cannot verify compatible executable "+executable);return text;
 }
@@ -1046,7 +1050,9 @@ struct Engine {
         std::ostringstream supplied;supplied<<"{\"priority\":\"explicit CLI > config file > automatic selection\",\"options\":[";bool first=true;
         for(const auto& spec:GetCliOptionSpecs())if(args.IsCatched(spec.key)){
             supplied<<(first?"":",")<<"{\"flag\":"<<Quoted(CliCanonicalFlag(spec.key))<<",\"policy\":"<<Quoted(FullAutoOptionPolicy(spec.key))<<",\"values\":[";
-            for(unsigned i=0;i<args.GetArgNumber(spec.key);++i)supplied<<(i?",":"")<<Quoted(args.GetStringValue(spec.key,i));supplied<<"]}";first=false;
+            for(unsigned i=0;i<args.GetArgNumber(spec.key);++i)supplied<<(i?",":"")<<Quoted(args.GetStringValue(spec.key,i));
+            supplied<<"]}";
+            first=false;
         }supplied<<"]}";requestedOptions=supplied.str();
     }
     void State(const std::string& status,int round,const std::vector<int>& counts,size_t nodes,double ci,double ie,int streak) {
@@ -1742,7 +1748,8 @@ struct Engine {
             std::string recipe=exe+"\n";for(const auto& v:command)recipe+=v+"\n";Atomic(j.folder+"/command.args",recipe);
             Atomic(j.folder+"/stdout.log","Controller exact Sobol-prefix assembly; command.args is a full-prefix replay recipe.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");
             std::string provenance;
-            if(prepared){std::ostringstream text;for(const auto& source:prepared->references[s])
+            if(prepared){std::ostringstream text;
+                for(const auto& source:prepared->references[s])
                 text<<source.first->folder<<'\t'<<std::hex<<source.second<<std::dec<<'\n';
                 provenance=text.str();std::vector<PrefixSource>().swap(prepared->references[s]);
             }else provenance=sources[s].str();
@@ -1990,7 +1997,9 @@ struct Engine {
             Samples delta=Subtract(predicted,data);Matrix mean=Mean(delta),variance=Variance(delta);std::vector<double> errors(theta.size());maximum=0;
             for(size_t r=0;r<theta.size();++r)for(int j=0;j<16;++j){double v=(std::fabs(mean[r][j])+t95*std::sqrt(variance[r][j]/8))/reference[r][0];errors[r]=std::max(errors[r],v);maximum=std::max(maximum,v);}
             std::ostringstream step;step<<"{\"iteration\":"<<refinements<<",\"max_residual95_scaled_M11\":"<<Number(maximum)<<",\"budget\":"<<Number(interpolation*.5)<<",\"support_indices\":[";
-            for(size_t i=0;i<knots.size();++i)step<<(i?",":"")<<knots[i];step<<"]}";Log("theta_pilot_refinement",step.str());
+            for(size_t i=0;i<knots.size();++i)step<<(i?",":"")<<knots[i];
+            step<<"]}";
+            Log("theta_pilot_refinement",step.str());
             if(maximum<=interpolation*.5||knots.size()==theta.size())break;
             std::set<size_t> next(knots.begin(),knots.end());for(size_t i=1;i<knots.size();++i){size_t worst=knots[i-1];for(size_t r=knots[i-1]+1;r<knots[i];++r)if(errors[r]>errors[worst])worst=r;
                 if(errors[worst]>interpolation*.5)next.insert(worst);}
@@ -2005,7 +2014,9 @@ struct Engine {
         const int previousPhi=phi;weightTheta=x;weights.clear();polarWeights.clear();phi=fixedPhi?fixedPhi:std::max(minPhi,std::min(maxPhi,4));Matrix ref;double fastest=std::numeric_limits<double>::max();Kernel winner=kernel;
         if(config.useGpu&&!working&&!startupKernel){std::vector<Kernel> candidates(5);candidates[1].pipeline=candidates[2].pipeline=candidates[3].pipeline=candidates[4].pipeline=true;candidates[2].block=128;candidates[3].block=256;candidates[4].warp="thread";
             for(auto k:candidates){
-                if(fixedPipeline&&!k.pipeline)continue;if(fixedBlock)k.block=kernel.block;if(fixedWarp)k.warp=kernel.warp;
+                if(fixedPipeline&&!k.pipeline)continue;
+                if(fixedBlock)k.block=kernel.block;
+                if(fixedWarp)k.warp=kernel.warp;
                 kernel=k;unsigned seed=4001;auto jobs=Stage(kernelCount,&seed,1,target,x,false);if(ref.empty())ref=jobs[0].matrix;
                 Matrix scale=ref;if(controls)for(size_t r=0;r<scale.size();++r)scale[r][0]=jobs[0].controls[r][0];
                 double error=Difference(jobs[0].matrix,ref,scale);
@@ -2162,7 +2173,8 @@ int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],do
     }
     char originalDirectory[4096];Require(getcwd(originalDirectory,sizeof(originalDirectory))!=nullptr,"cannot capture original working directory");
     std::ostringstream replay;replay<<"{\"schema\":1,\"executable\":"<<Quoted(controller->exe)<<",\"cwd\":"<<Quoted(originalDirectory)<<",\"argv\":[";
-    for(int i=1;i<argc;++i)replay<<(i>1?",":"")<<Quoted(argv[i]);replay<<"],\"environment\":{";
+    for(int i=1;i<argc;++i)replay<<(i>1?",":"")<<Quoted(argv[i]);
+    replay<<"],\"environment\":{";
     bool firstVariable=true;
     for(char** variable=environ;*variable;++variable){std::string value=*variable;const auto equal=value.find('=');const auto name=value.substr(0,equal);
         if(name.compare(0,4,"MBS_")!=0&&name!="CUDA_VISIBLE_DEVICES"&&name!="LD_LIBRARY_PATH"&&name!="OMP_NUM_THREADS")continue;

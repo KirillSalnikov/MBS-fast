@@ -176,9 +176,11 @@ IntegralInterval IntegralConfidence(const std::array<double,8>& values,const std
     for(size_t i=0;i<8;++i){var+=std::pow(values[i]-mean,2)/7;
         if(denominator){denVar+=std::pow((*denominator)[i]-den,2)/7;cov+=(values[i]-mean)*((*denominator)[i]-den)/7;}}
     if(!denominator){const double half=t95*std::sqrt(var/8);result.mean=mean;result.lower=mean-half;result.upper=mean+half;return result;}
-    if(!(den>0))return result;result.mean=mean/den;
+    if(!(den>0))return result;
+    result.mean=mean/den;
     const double c=t95*t95/8,a=den*den-c*denVar,b=mean*den-c*cov,d=mean*mean-c*var;
-    if(!(a>0))return result;double discriminant=b*b-a*d;
+    if(!(a>0))return result;
+    double discriminant=b*b-a*d;
     if(discriminant<0&&discriminant>-1e-12*std::max(std::fabs(b*b),std::fabs(a*d)))discriminant=0;
     if(discriminant<0)return result;
     result.lower=(b-std::sqrt(discriminant))/a;result.upper=(b+std::sqrt(discriminant))/a;return result;
@@ -214,10 +216,10 @@ void WriteFullAutoIntegrals(Engine& e,const std::string& folder,const Samples& o
     const std::string label=final?"fullauto_final":"fullauto_intermediate";
     WriteIntegralCharacteristicsTsv(folder+"/mueller_fullauto",label,value);
     std::ostringstream confidence;confidence<<"quantity\tmean\tlower95\tupper95\tinterval_method\n"<<std::setprecision(17);
-    auto interval=[&](const std::string& name,const std::array<double,8>& values,const std::array<double,8>* den=nullptr){
+    auto interval=[&](const std::string& name,const std::array<double,8>& values,const std::array<double,8>* den){
         const auto ci=IntegralConfidence(values,den);confidence<<name<<'\t'<<ci.mean<<'\t'<<ci.lower<<'\t'<<ci.upper<<'\t'<<(den?"paired_Fieller":"Student_t_7df")<<'\n';};
-    interval("projected_area",areas);interval("Cext",ext);interval("Csca",sca);interval("Cabs",abs);
-    interval("Qext",ext,&areas);interval("Qsca",sca,&areas);interval("Qabs",abs,&areas);interval("angular_scattering_integral",angularSamples);
+    interval("projected_area",areas,nullptr);interval("Cext",ext,nullptr);interval("Csca",sca,nullptr);interval("Cabs",abs,nullptr);
+    interval("Qext",ext,&areas);interval("Qsca",sca,&areas);interval("Qabs",abs,&areas);interval("angular_scattering_integral",angularSamples,nullptr);
     std::string log=FormatIntegralCharacteristicsLog(value,label);
     log+="Integral estimator: eight production scrambles; exact orientation-window weights; "+std::string(production.directTargetFallback?"direct target-depth extinction (legacy paired scalar outputs excluded)":"multilevel extinction corrections")+"; angular integral from the final production Mueller estimator.\n";
     log+="Csca source: "+std::string(absorption?(full?"integrated M11":"unavailable on a partial angular range"):"nonabsorbing balance Csca=Cext")+".\n";
@@ -240,7 +242,9 @@ Matrix ReadIntegralMatrix(const std::string& path,const std::vector<double>& the
     std::istringstream input(Read(path));std::string line;std::getline(input,line);Matrix result;
     while(std::getline(input,line)){if(line.empty())continue;std::istringstream row(line);double angle,area;Mueller m;
         Require(bool(row>>angle>>area)&&result.size()<theta.size()&&std::fabs(angle-theta[result.size()])<1e-10,"invalid saved integral replica grid");
-        for(double& v:m)Require(bool(row>>v)&&std::isfinite(v),"invalid saved integral replica");result.push_back(m);}
+        for(double& v:m)Require(bool(row>>v)&&std::isfinite(v),"invalid saved integral replica");
+        result.push_back(m);
+        }
     Require(result.size()==theta.size(),"incomplete saved integral replica");return result;
 }
 void CompleteSavedPOIntegrals(Engine& e){

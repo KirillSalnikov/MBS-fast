@@ -15,7 +15,11 @@ const int MemoryPressure = 75;
 inline bool Transfer(int fd,void* buffer,size_t bytes,bool sendData) {
     char* p=static_cast<char*>(buffer);
     while(bytes){ssize_t n=sendData?send(fd,p,bytes,MSG_NOSIGNAL):recv(fd,p,bytes,0);
-        if(n<0&&errno==EINTR)continue;if(n<=0)return false;p+=n;bytes-=size_t(n);}
+        if(n<0&&errno==EINTR)continue;
+        if(n<=0)return false;
+        p+=n;
+        bytes-=size_t(n);
+        }
     return true;
 }
 inline bool Send(int fd,const std::vector<std::string>& words){
@@ -30,7 +34,9 @@ inline bool Receive(int fd,std::vector<std::string>& words){
     size_t total=0;for(uint32_t i=0;i<count;++i){uint32_t n=0;
         if(!Transfer(fd,&n,sizeof(n),false)||n>1048576||(total+=n)>16777216)return false;
         std::string s(n,'\0');if(n&&!Transfer(fd,&s[0],n,false))return false;
-        if(s.find('\0')!=std::string::npos)return false;words.push_back(std::move(s));}
+        if(s.find('\0')!=std::string::npos)return false;
+        words.push_back(std::move(s));
+        }
     return true;
 }
 inline bool Reply(int fd,int code){int32_t value=code;return Transfer(fd,&value,sizeof(value),true);}

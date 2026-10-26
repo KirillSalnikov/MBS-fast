@@ -1,5 +1,8 @@
 # Руководство MBS-fast
 
+**Начинайте с fullauto:** [краткие команды](MINI_FULLAUTO_RU.html), [полная методичка и математика](FULLAUTO_RU.md), [HTML](FULLAUTO_ADAPTIVE_RU.html). Новая методичка описывает актуальную автоматику; нижеследующие разделы служат справочником физики и ручных режимов.
+
+
 MBS-fast считает рассеяние света несферическими ледяными частицами: сначала трассируются геометрические лучи, затем для выходных пучков считается дифракция в приближении Physical Optics. Код поддерживает CPU-расчеты через OpenMP/MPI и CUDA-ускорение дифракции на GPU.
 
 ## Содержание
@@ -183,27 +186,33 @@ make -C gpu double_fast -j ARCH_FLAGS="-march=native -mtune=native"
 
 ## Быстрый старт
 
+### CPU: минимум параметров
+
 ```bash
-# GPU double, полный диапазон 0..180 градусов
-gpu/bin/mbs_po_gpu_double_fast --po -p 1 125.9 78.09 \
-    --ri 1.3116 0 -w 0.532 -n 12 --oldauto 2 \
-    --grid 0 180 600 180 --threads 64 --close -o hex_gpu_double
-
-# То же, но CPU backend из GPU бинарника
-gpu/bin/mbs_po_gpu_double_fast --po --cpu -p 1 125.9 78.09 \
-    --ri 1.3116 0 -w 0.532 -n 12 --oldauto 2 \
-    --grid 0 180 600 180 --threads 64 --close -o hex_cpu_from_gpu_bin
-
-# Частица из файла, масштабирование через k_eq
-gpu/bin/mbs_po_gpu_float_fast --po --pf particle.dat --k_eq 58.81 \
-    --ri 1.6 0.002 -w 1.064 -n 14 --oldauto 2 --pole \
-    --grid 0 180 600 180 --threads 16 --close -o particle_keq
-
-# Быстрая проверка двух точек: 0 и 180 градусов
-gpu/bin/mbs_po_gpu_double_fast --po -p 1 125.9 78.09 \
-    --ri 1.3116 0 -w 0.532 -n 1 --oldauto 2 --pole \
-    --grid 0 180 600 1 --threads 64 --close -o check_0_180
+make -C cpu -j2
+cpu/bin/mbs_po_mpi --method po --backend cpu \
+  --particle 1 5 2 --ri 1.3116 0 --wavelength-um 0.532 \
+  --fullauto 0.02 --output results/column_5um
 ```
+
+Тип 1 — шестигранный столбик, 5 — осевая длина, 2 — диаметр основания.
+Все длины в тех же единицах, что длина волны.
+Для файла: `--particle-file examples/cube.particle --resize-dmax-um 5`.
+
+### GPU: конус назад
+
+```bash
+make -C gpu fp64 GPU_ARCH=70 -j2
+CUDA_VISIBLE_DEVICES=0,1 gpu/bin/mbs_po_gpu_double \
+  --method po --backend cuda --particle 1 100 50 \
+  --ri 1.3116 0 --wavelength-um 0.532 \
+  --fullauto 0.02 --fullauto-theta-range 170 180 \
+  --fullauto-gpus 0,1 --output results/column_back
+```
+
+Вперёд замените диапазон на `--fullauto-theta-range 0 25` и выберите другую
+папку результата. GPU_ARCH=70 для V100, 86 для RTX 3080 Ti, 89 для RTX 4090.
+
 
 ## Физическая модель
 
@@ -737,7 +746,8 @@ bin/mbs_po --method po --backend cpu --particle 1 1 1 --ri 1.3116 0 \
 Эти методы пока не выбираются автоматически внутри `--fullauto`.
 Fullauto использует проверенную оценку по восьми Sobol-seeds.
 `--fullauto-incremental on` (по умолчанию) сохраняет большие производственные
-выборки блоками `--fullauto-orientation-block 65536`. При увеличении N
+выборки блоками: исходный предел 65536 может быть изменён настройкой ресурсов;
+явный `--fullauto-orientation-block N` фиксирует его. При увеличении N
 используются готовые блоки, считается только хвост. `--sobol-offset INDEX`
 позволяет отдельно воспроизвести хвост с `--sobol-seed` и `--haar-alpha`:
 набор точек совпадает с соответствующей частью исходной последовательности.
@@ -1331,11 +1341,11 @@ gpu/bin/mbs_po_gpu_float_fast --po --pf particle.dat \
 уменьшай ratio, а если каждому размеру нужна своя oldauto reference grid,
 используй exact mode без shared batches.
 
-Fused multi-`k_eq`:
-
-```bash
-MBS_GPU_MULTI_K_FULL=1 gpu/bin/mbs_po_gpu_float_fast ...
-```
+В поддержанных прямых когерентных FP64-сканах на 2–32 размера совмещённое
+ядро multi-`k_eq` и кэш фаз включаются автоматически. Для float сохранено явное
+включение. `MBS_GPU_MULTI_K_FULL=0` возвращает путь по отдельным размерам;
+`MBS_GPU_MULTI_K_PHASE_CACHE=0` отключает только кэш.
+[Область применения и проверка](DIFFRACTION_OPT_20260907.md).
 
 Для больших direct-сеток `theta x phi` главным ограничением может быть host RAM,
 даже если GPU memory свободна. В oldauto log появляется строка:
@@ -1564,7 +1574,7 @@ budget или делить задачу на меньшие независимы
 | `MBS_GPU_MULTI=0` | Отключить automatic multi-orientation GPU batching. |
 | `MBS_GPU_MULTI_MAX=N` | Ограничить GPU multi batching. |
 | `MBS_GPU_GROUPS=1` | Распределить группы theta переменной latitude-phi сетки по видимым GPU. |
-| `MBS_GPU_MULTI_K_FULL=1` | Experimental fused multi-`k_eq` diffraction. |
+| `MBS_GPU_MULTI_K_FULL=0/1` | Fused direct multi-`k_eq` diffraction; automatic for supported FP64 coherent scans of 2–32 sizes. Float remains opt-in. |
 | `MBS_GPU_BEAM_STATS=1` | Печатать GPU beam packing/count diagnostics. |
 | `MBS_SHARED_BETA_GROUP=N` | Override beta grouping для shared batch. |
 | `MBS_SHARED_ORIENT_CHUNK=N` | Override orientation chunk для shared batch. |
@@ -1606,10 +1616,18 @@ ScAngle 2pi*dcos M11 M12 M13 M14 M21 M22 M23 M24 M31 M32 M33 M34 M41 M42 M43 M44
 
 `--fullauto-rotation-symmetry auto` (по умолчанию) проверяет повороты полной ориентированной геометрии вокруг тела z и полуповорот вокруг x. Принимает сокращение только после парного сравнения всех элементов и отношений на эквивалентных ориентациях. Сокращение имеет резерв EPS/256. Заголовку произвольного файла не доверяет; если форма не подходит, считает всю SO(3). Явный `--symmetry` имеет приоритет.
 
-`--fullauto-cutoffs auto` (по умолчанию) при отсутствии явных порогов сравнивает профили с `off`; отсечения получают резерв EPS/8. Проверяет все 16 элементов и нормированные отношения на тех же ориентациях. Учитывает, что отсечение ветвей отключает совместную трассировку глубин. Выбор требует не менее 10% выигрыша в пилоте; затем обязателен отдельный аудит новых seed на представительных θ. При отказе автоматически возвращается к `off` и продолжает расчёт. Явные профили и пороги сохраняются. Глубина n остаётся заданной; это не автоматическое доказательство сходимости по n.
+По умолчанию когерентная PO без явных порогов использует balanced вместе с
+парной поправкой `off − balanced` на общих ориентациях. Итог оценивает решение
+без отсечения, а неопределённость поправки входит в восемь полных реплик.
+Перебор пресетов не является текущим стандартным режимом. Явный
+`--cutoff-profile balanced` фиксирует пресет и отличается от этой схемы;
+`--cutoff-profile off` задаёт расчёт без отсечения.
 
-Все три политики допускают `off`. Для сравнения с полным расчётом используйте также `--cutoff-profile off`. Решения сохраняются в `resource_calibration.json`, `rotation_verification.json`, `cutoff_calibration.json`, `automatic_cutoff_validation.json`; точное состояние для восстановления — `execution_tuning.tsv`. Резервы вычитаются из статистического допуска только когда соответствующее сокращение включено. Проверки точечные и статистические, не глобальная гарантия непрерывной матрицы.
+Если `--max-reflections` отсутствует, глубина подбирается от 6 до 18 по парным
+сравнениям n/n+2. Явное n выключает этот поиск. ГО, некогерентная PO и явные
+профили имеют отдельные правила; их нельзя переносить из когерентного режима.
 
-Настройка ресурсов/GPU получает резерв EPS/1024; численный порог пилота — min(10⁻⁷, EPS/1024). Автоматическое вращательное сокращение отключено для агрегатов и специальных флагов видимости граней.
-
-Перебор ресурсов и профилей проверяет окупаемость по нативным фазам. Для коротких задач дополнительные пилоты могут быть пропущены; это отражается в JSON. Пилот отсечений ограничен 2048 точками на seed. Финальный аудит малой парной разности начинает с меньшей независимой выборки, увеличивает её при необходимости и допускает до трёх попыток.
+Решения и фактические резервы записываются в `fullauto_status.json`,
+`fullauto_history.jsonl` и файлы калибровок. Восстановление требует полного каталога
+с блоками и индексами. Подробные текущие правила, формулы, имена файлов и
+минимальные команды приведены в [методичке fullauto](FULLAUTO_RU.md).

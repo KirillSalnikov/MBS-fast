@@ -46,7 +46,8 @@ PointwiseDecision CheckPointwiseBudget(Engine& e,const Statistics& stats,const S
     PointwiseDecision result;result.directPass=result.outputPass=true;std::ostringstream rows;
     rows<<"theta_deg,checked_interpolation,direct_total95,output_total95,remaining_statistical_min";
     for(int j=0;j<16;++j)rows<<",output_total95_M"<<j/4+1<<j%4+1;
-    for(int j=1;j<16;++j)rows<<",output_total95_M"<<j/4+1<<j%4+1<<"_over_M11";rows<<'\n';
+    for(int j=1;j<16;++j)rows<<",output_total95_M"<<j/4+1<<j%4+1<<"_over_M11";
+    rows<<'\n';
     for(size_t q=0;q<e.theta.size();++q){const auto residual=ResidualAt(e,interp,ids,q);
         const auto outMetric=BudgetMetric(e,output,q,residual);result.outputPass=result.outputPass&&MetricWithinBudget(e,outMetric,residual);
         const double out=MetricTotal(e,outMetric,residual);result.output=std::max(result.output,out);
@@ -56,7 +57,8 @@ PointwiseDecision CheckPointwiseBudget(Engine& e,const Statistics& stats,const S
             const double raw=MetricTotal(e,rawMetric,residual);result.direct=std::max(result.direct,raw);rows<<Number(raw);}
         rows<<','<<Number(out)<<','<<Number(RemainingStatistics(e,residual));
         for(int j=0;j<16;++j)rows<<','<<Number(BudgetSum(e,output.interval[q][j],residual.matrix[j]));
-        for(int j=1;j<16;++j)rows<<','<<(e.ratios?Number(BudgetSum(e,output.ratioInterval[q][j],residual.ratio[j])):"");rows<<'\n';
+        for(int j=1;j<16;++j)rows<<','<<(e.ratios?Number(BudgetSum(e,output.ratioInterval[q][j],residual.ratio[j])):"");
+        rows<<'\n';
     }
     if(label=="production")e.lastCombined=std::max(result.direct,result.output);
     else if(label.find("independent_serial")==0)e.lastIndependentCombined=std::max(result.direct,result.output);

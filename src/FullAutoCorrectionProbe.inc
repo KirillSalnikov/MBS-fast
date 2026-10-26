@@ -44,7 +44,8 @@ bool TryCorrectionProbe(Engine& e,AdaptiveState& state,const std::vector<int>& d
             const double ratio=metric.ratio?stats.mean[row][metric.element]/stats.mean[row][0]:0;
             std::vector<double> variance(depths.size());double sum=0;size_t best=1;
             for(size_t l=0;l<depths.size();++l){double mean=0;for(int s=0;s<8;++s)mean+=(data.levels[l][s][row][metric.element]-ratio*data.levels[l][s][row][0])/8;
-                for(int s=0;s<8;++s)variance[l]+=std::pow(data.levels[l][s][row][metric.element]-ratio*data.levels[l][s][row][0]-mean,2)/7;sum+=variance[l];
+                for(int s=0;s<8;++s)variance[l]+=std::pow(data.levels[l][s][row][metric.element]-ratio*data.levels[l][s][row][0]-mean,2)/7;
+                sum+=variance[l];
                 if(l&&variance[l]>variance[best])best=l;}
             if(variance[best]>.75*sum&&state.counts[0][id]>=8LL*state.counts[best][id]&&Doubled(e,state.counts[best][id])>state.counts[best][id])candidates.push_back({row,best,metric.error});
         }
@@ -59,7 +60,8 @@ bool TryCorrectionProbe(Engine& e,AdaptiveState& state,const std::vector<int>& d
         const bool accepted=base.profiled&&probe.profiled&&base.jobs&&base.seconds>0&&probe.seconds<=.1*base.seconds;
         e.Log("correction_subround_cost_gate","{\"round\":"+Number(state.round)+",\"probe_worker_seconds\":"+Number(probe.seconds)+",\"base_extension_worker_seconds\":"+Number(base.seconds)
             +",\"profiled\":"+(base.profiled&&probe.profiled?"true":"false")+",\"selected\":"+(accepted?"true":"false")+",\"scope\":\"scheduling forecast; no accuracy acceptance\"}");
-        if(!accepted)return false;SaveCorrectionProbe(e,state,receipt);
+        if(!accepted)return false;
+        SaveCorrectionProbe(e,state,receipt);
     }else Require(receipt.sources==Hash(data.sources),"pending correction subround production changed");
     const auto requests=CorrectionProbeRequests(e,depths,receipt);const auto groups=PhiRequests(e,requests);std::ostringstream sources;
     e.State("correction_subround",state.round,PeakBudgets(state.counts),ids.size(),StatisticalError(e,stats),interpolationError,0);
@@ -69,6 +71,8 @@ bool TryCorrectionProbe(Engine& e,AdaptiveState& state,const std::vector<int>& d
         }else{auto jobs=e.Stage(request.count,e.seeds.data(),8,request.depth,request.angles);for(size_t s=0;s<8;++s)sources<<request.depth<<" 1 "<<request.count<<' '<<e.seeds[s]<<' '<<jobs[s].folder<<'\n';}
     }}
     Atomic(CorrectionProbePath(e,state)+".sources",sources.str());receipt.complete=true;SaveCorrectionProbe(e,state,receipt);
-    for(const auto& r:receipt.rows)state.counts[r.level][r.id]=r.after;state.streak=0;SaveAdaptive(e,state);
+    for(const auto& r:receipt.rows)state.counts[r.level][r.id]=r.after;
+    state.streak=0;
+    SaveAdaptive(e,state);
     e.Log("correction_subround_complete","{\"round\":"+Number(state.round)+",\"attempt\":"+Number(receipt.attempt)+",\"theta_rows\":"+Number(receipt.rows.size())+",\"base_prefix_unchanged\":true,\"all_accuracy_gates_retained\":true}");return true;
 }

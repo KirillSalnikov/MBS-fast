@@ -20,7 +20,9 @@ class ValidatedGraphCache {
     }
     bool Lookup(const std::string& path,std::string& key)const{
         const auto split=Split(path);const auto found=directoryIds.find(path.substr(0,split));
-        if(found==directoryIds.end())return false;key=Key(found->second,path,split);return true;
+        if(found==directoryIds.end())return false;
+        key=Key(found->second,path,split);
+        return true;
     }
 public:
     explicit ValidatedGraphCache(size_t limit=256*1024*1024):values(limit),maximum(limit){}

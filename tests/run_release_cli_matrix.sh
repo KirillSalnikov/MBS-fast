@@ -68,9 +68,12 @@ if (($? != 0)) || ! grep -q '^MBS-fast ' <<<"$VERSION_OUTPUT" \
     printf '  Fix: report revision, backend, compiler, OpenMP, and MPI state.\n' >&2
     exit 2
 fi
+# Parser coverage is exercised here even when this script is run standalone.
+# Runtime cases below complement these schema/compatibility checks.
+"$ROOT_DIR/tests/run_cli_tests.sh" || exit 2
 missing_coverage=()
 while IFS= read -r option; do
-    if ! grep -Eq -- "(^|[[:space:]\"'\\(])${option}([[:space:]\"'\\)]|$)" "$0"; then
+    if ! grep -Eq -- "(^|[[:space:]\"'\\(])${option}([[:space:]\"'\\)]|$)" "$0" "$ROOT_DIR/tests/test_cli.cpp"; then
         missing_coverage+=("$option")
     fi
 done < <(printf '%s\n' "$HELP_DEBUG_OUTPUT" \
@@ -1000,7 +1003,7 @@ expect_error 'orientation range: gamma equal endpoints' \
     "${PO_CORE[@]}" --euler-grid 2 3 "${GRID[@]}" --gamma-range-deg 20 20
 expect_error 'orientation range: gamma spans over 360 degrees' \
     "${PO_CORE[@]}" --euler-grid 2 3 "${GRID[@]}" --gamma-range-deg -1 361
-expect_error 'orientation modifier: symmetry with GO Sobol' \
+expect_success 'orientation modifier: symmetry with GO Sobol' \
     "${GO_CORE[@]}" --sobol 4 "${GRID[@]}" --symmetry 2 6
 expect_error 'orientation modifier: symmetry with PO Euler grid' \
     "${PO_CORE[@]}" --euler-grid 2 3 "${GRID[@]}" --symmetry 2 6

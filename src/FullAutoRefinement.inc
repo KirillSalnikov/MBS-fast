@@ -4,7 +4,8 @@ ErrorMetric WorstMetric(const Statistics& stats,size_t row,bool ratios){
     ErrorMetric m;for(int j=0;j<16;++j){if(stats.interval[row][j]>m.error)m={j,false,stats.interval[row][j]};
         if(ratios&&stats.ratioInterval[row][j]>m.error)m={j,true,stats.ratioInterval[row][j]};}
     // An unbounded Fieller interval first needs a resolved denominator.
-    if(m.ratio&&stats.interval[row][0]>=1)m={0,false,stats.interval[row][0]};return m;
+    if(m.ratio&&stats.interval[row][0]>=1)m={0,false,stats.interval[row][0]};
+    return m;
 }
 std::vector<Samples> WeightedLevels(const AdaptiveData& data,const std::vector<size_t>& ids,const std::vector<std::pair<size_t,double>>& weights){
     std::vector<Samples> result(data.levels.size(),Samples(8,Matrix(1)));
@@ -45,7 +46,8 @@ bool RefineError(Engine& e,AdditionalWork& work,const std::vector<int>& depths,
     bool positive=false;
     for(size_t l=0;l<depths.size();++l){auto& choice=choices[l];double shrink=0;size_t growing=0;
         for(size_t id:nodes){const int n=current[l][id],next=Doubled(e,n);shrink=std::max(shrink,std::sqrt(double(n)/next));growing+=next>n;}
-        if(!growing)continue;choice.eligible=true;
+        if(!growing)continue;
+        choice.eligible=true;
         double covariance=0;for(int s=0;s<8;++s){choice.variance+=centered[l][s]*centered[l][s]/7;covariance+=centered[l][s]*total[s]/7;}
         choice.reduction=2*(1-shrink)*covariance-(1-shrink)*(1-shrink)*choice.variance;
         if(!discrepancy.empty())choice.reduction+=(1-shrink*shrink)*discrepancy[l]*discrepancy[l];

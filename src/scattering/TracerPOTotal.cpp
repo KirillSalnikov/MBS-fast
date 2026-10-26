@@ -4422,14 +4422,18 @@ void TracerPOTotal::TraceRandomMultiSize(const AngleRange &betaRange,
     if (m_mpiRank == 0 && sharedGpuExplicitScale)
         std::cout << "Shared multikeq GPU: explicit CPU scaling enabled "
                   << "(MBS_SHARED_GPU_EXPLICIT_SCALE=1)" << std::endl;
+    const char *multiKEnv = std::getenv("MBS_GPU_MULTI_K_FULL");
+#if defined(USE_CUDA) && defined(MBS_GPU_FP64)
+    const bool autoMultiK = handlerPO->isCoh && !handlerPO->IsFftEnabled()
+        && x_sizes.size() >= 2 && x_sizes.size() <= 32;
+#else
+    const bool autoMultiK = false;
+#endif
     const bool sharedGpuMultiKFull =
-        handlerPO->IsGpuEnabled()
-        && !computeNoShadow
-        && !sharedGpuExplicitScale
-        && std::getenv("MBS_GPU_MULTI_K_FULL")
-        && std::atoi(std::getenv("MBS_GPU_MULTI_K_FULL")) != 0;
+        handlerPO->IsGpuEnabled() && !computeNoShadow && !sharedGpuExplicitScale
+        && (multiKEnv ? std::atoi(multiKEnv) != 0 : autoMultiK);
     if (m_mpiRank == 0 && sharedGpuMultiKFull)
-        std::cout << "Shared multikeq GPU: experimental fused multi-k kernel "
+        std::cout << "Shared multikeq GPU: fused multi-k kernel "
                   << "enabled" << std::endl;
     HandlerPO prepareTemplate(m_particle, &m_incidentLight,
                               handlerPO->nTheta, m_scattering->m_wave);
@@ -6574,7 +6578,9 @@ void TracerPOTotal::TraceWeightedOrientations(
                     std::vector<Beam> lowerRaw;bool reusePrepared=true;
                     if(m_pairedDepth){double upperMax[3]={},lowerMax[3]={};
                         for(const auto& beam:localBeams){
-                            if(beam.lastFacetId==__INT_MAX__)continue;const double j=beam.J.Norm(),a=beam.Area();const double value[3]={j,a,j*a};
+                            if(beam.lastFacetId==__INT_MAX__)continue;
+                            const double j=beam.J.Norm(),a=beam.Area();
+                            const double value[3]={j,a,j*a};
                             for(int k=0;k<3;++k){upperMax[k]=std::max(upperMax[k],value[k]);if(beam.nActs<=m_pairedDepth)lowerMax[k]=std::max(lowerMax[k],value[k]);}}
                         for(int k=0;k<3;++k)reusePrepared=reusePrepared&&upperMax[k]==lowerMax[k];
                         // The common path reuses prepared upper beams. Avoid
@@ -6921,7 +6927,9 @@ void TracerPOTotal::TraceWeightedOrientations(
             Arr2D lower(nAz+1,nZen+1,4,4),dummy(nAz+1,nZen+1,4,4);lower.ClearArr();dummy.ClearArr();
             if(handlerPO->IsGpuEnabled()){
                 for(int start=0;start<thisChunk;){const int count=handlerPO->SelectGpuOrientationBatchSize(block.lower,start,thisChunk-start);
-                    if(!handlerPO->HandleOrientationsToLocalGpu(block.lower,start,count,lower,dummy))throw std::runtime_error("paired-depth GPU diffraction failed");start+=count;}
+                    if(!handlerPO->HandleOrientationsToLocalGpu(block.lower,start,count,lower,dummy))throw std::runtime_error("paired-depth GPU diffraction failed");
+                    start+=count;
+                    }
             }else{
                 #pragma omp parallel
                 {
@@ -7022,9 +7030,13 @@ void TracerPOTotal::TraceWeightedOrientations(
                         if(m_pairedDepth){
                             block.residentLower.reset(new Arr2D(nAz+1,nZen+1,4,4));block.residentLower->ClearArr();
                             Arr2D lowerNS(nAz+1,nZen+1,4,4);lowerNS.ClearArr();
-                            for(int first=0;first<size;){const int batch=handlerPO->SelectGpuOrientationBatchSize(block.lower,first,size-first);
-                                if(!handlerPO->HandleOrientationsToLocalGpu(block.lower,first,batch,*block.residentLower,lowerNS))
-                                    throw std::runtime_error("hybrid producer lower-depth diffraction failed");first+=batch;}
+                            for(int first=0;first<size;){
+                                const int batch=handlerPO->SelectGpuOrientationBatchSize(block.lower,first,size-first);
+                                if(!handlerPO->HandleOrientationsToLocalGpu(block.lower,first,batch,*block.residentLower,lowerNS)){
+                                    throw std::runtime_error("hybrid producer lower-depth diffraction failed");
+                                }
+                                first+=batch;
+                            }
                             for(auto& orientation:block.lower)std::vector<PreparedBeam>().swap(orientation.beams);
                         }
                         block.residentConsumer=std::chrono::duration<double>(std::chrono::steady_clock::now()-cudaStarted).count();

@@ -43,7 +43,8 @@ class AdditionalWork {
             found=coverage.emplace(key,std::move(value)).first;
         }
         if(found->second.indexed)return found->second.size&&std::binary_search(found->second.angles.get(),found->second.angles.get()+found->second.size,angle);
-        for(const Job* job:found->second.candidates)if(std::binary_search(job->inputAngles.begin(),job->inputAngles.end(),angle))return true;return false;
+        for(const Job* job:found->second.candidates)if(std::binary_search(job->inputAngles.begin(),job->inputAngles.end(),angle))return true;
+        return false;
     }
 
 public:

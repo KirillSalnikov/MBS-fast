@@ -19,7 +19,8 @@ bool PublishedRoundBudget(Engine& e,const AdaptiveState& state,Budgets& counts,
     std::ostringstream expected;expected<<"theta_deg,is_support,interpolation_residual95,previous_available,half_prefix_stable";
     for(size_t l=0;l<counts.size();++l)expected<<",N_level"<<l;
     for(int j=0;j<16;++j)expected<<",estimated95_M"<<j/4+1<<j%4+1<<"_scaled_M11";
-    for(int j=1;j<16;++j)expected<<",estimated95_M"<<j/4+1<<j%4+1<<"_over_M11";expected<<",phi_points";
+    for(int j=1;j<16;++j)expected<<",estimated95_M"<<j/4+1<<j%4+1<<"_over_M11";
+    expected<<",phi_points";
     if(line!=expected.str())return false;
     size_t row=0;while(std::getline(file,line)){if(row>=ids.size())return false;
         std::replace(line.begin(),line.end(),',',' ');std::istringstream values(line);
@@ -29,7 +30,8 @@ bool PublishedRoundBudget(Engine& e,const AdaptiveState& state,Budgets& counts,
         for(auto& level:counts){int n;if(!(values>>n)||n<=0||n>level[id]||(n&(n-1)))return false;level[id]=n;}
         for(double& error:priorities.interval[row])if(!(values>>error)||!std::isfinite(error)||error<0)return false;
         for(int j=1;j<16;++j){double& error=priorities.ratioInterval[row][j];if(!(values>>error)||!std::isfinite(error)||error<0)return false;}
-        if(!(values>>phi)||phi!=e.PhiForTheta(id)||(values>>extra))return false;++row;
+        if(!(values>>phi)||phi!=e.PhiForTheta(id)||(values>>extra))return false;
+        ++row;
     }
     passed=text.find("\"numerical_round_passed\":true")!=std::string::npos;
     return row==ids.size();
@@ -52,8 +54,10 @@ bool PublishedSchedulingBudget(Engine& e,const AdaptiveState& state,Budgets& cou
         Statistics& priorities,std::string& folder,bool& passed,bool& residualPending){
     const auto path=e.root+"/intermediate_current.json";if(!Exists(path))return false;
     const auto text=CompactJson(Read(path));const std::string key="\"snapshot_folder\":\"";const auto at=text.find(key);
-    if(at==std::string::npos)return false;const auto begin=at+key.size(),end=text.find('"',begin);
-    if(end==std::string::npos)return false;folder=text.substr(begin,end-begin);
+    if(at==std::string::npos)return false;
+    const auto begin=at+key.size(),end=text.find('"',begin);
+    if(end==std::string::npos)return false;
+    folder=text.substr(begin,end-begin);
     if(folder.find('\\')!=std::string::npos||folder.find("..")!=std::string::npos
             ||folder.compare(0,e.root.size()+17,e.root+"/round_snapshots/")!=0)return false;
     if(!Exists(folder+"/parameters_accuracy.csv"))return false;
@@ -63,7 +67,8 @@ bool PublishedSchedulingBudget(Engine& e,const AdaptiveState& state,Budgets& cou
     std::ostringstream expected;expected<<"theta_deg,is_support,interpolation_residual95,previous_available,half_prefix_stable";
     for(size_t l=0;l<state.counts.size();++l)expected<<",N_level"<<l;
     for(int j=0;j<16;++j)expected<<",estimated95_M"<<j/4+1<<j%4+1<<"_scaled_M11";
-    for(int j=1;j<16;++j)expected<<",estimated95_M"<<j/4+1<<j%4+1<<"_over_M11";expected<<",phi_points";
+    for(int j=1;j<16;++j)expected<<",estimated95_M"<<j/4+1<<j%4+1<<"_over_M11";
+    expected<<",phi_points";
     if(line!=expected.str())return false;
     while(std::getline(file,line)){
         std::replace(line.begin(),line.end(),',',' ');std::istringstream values(line);double theta,residual;int support,valid,coarse;std::string extra;
@@ -75,7 +80,9 @@ bool PublishedSchedulingBudget(Engine& e,const AdaptiveState& state,Budgets& cou
         for(int j=1;j<16;++j)if(!(values>>row.ratio[j])||!std::isfinite(row.ratio[j])||row.ratio[j]<0)return false;
         if(!(values>>row.phi)||row.phi<=0||row.phi>e.maxPhi||(values>>extra)||!rows.emplace(id,row).second)return false;
     }
-    if(rows.empty())return false;const auto ids=AdaptiveGuards(state.knots,e.theta.size());counts=state.counts;
+    if(rows.empty())return false;
+    const auto ids=AdaptiveGuards(state.knots,e.theta.size());
+    counts=state.counts;
     priorities.interval.resize(ids.size());priorities.ratioInterval.resize(ids.size());size_t newRows=0;
     for(size_t r=0;r<ids.size();++r){const size_t id=ids[r];auto q=rows.lower_bound(id);if(q==rows.end())--q;
         const bool same=q->first==id&&q->second.phi==e.PhiForTheta(id);newRows+=!same;

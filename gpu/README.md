@@ -5,8 +5,25 @@ this build, so `--backend cuda` is not required. Use `--backend cpu` only when
 you deliberately want the CPU backend from the GPU-capable binary. The legacy
 `--gpu` and `--cpu` switches remain accepted.
 
+For automatic orientation averaging, use fullauto:
+
 ```bash
-make -C gpu fp64 -j
+make -C gpu fp64 GPU_ARCH=70 -j2  # V100; use 86 for RTX 3080 Ti
+CUDA_VISIBLE_DEVICES=0 gpu/bin/mbs_po_gpu_double \
+    --method po --backend cuda --particle 1 5 2 \
+    --ri 1.3116 0 --wavelength-um 0.532 \
+    --fullauto 0.02 --output results/gpu_fullauto
+```
+
+`0.02` requests a 2% numerical tolerance. Fullauto selects Sobol sample counts,
+reflection depth, phi and theta work. Repeat the same command to resume.
+See [automatic operation and GPU assignment](../docs/FULLAUTO.md),
+[подробная методичка](../docs/FULLAUTO_RU.md).
+
+For a directly specified orientation/angular grid:
+
+```bash
+make -C gpu fp64 -j2
 gpu/bin/mbs_po_gpu_double --method po --backend cuda \
     --particle 1 10 10 --refractive-index 1.3116 0 \
     --wavelength-um 10 --max-reflections 2 --sobol 256 \

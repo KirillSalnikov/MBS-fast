@@ -118,6 +118,7 @@
 \setlength{\cftsecnumwidth}{2.8em}
 \setlength{\cftsubsecnumwidth}{4.2em}
 
+\providecommand{\tightlist}{\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
 \begin{document}
 \begin{titlepage}
   \thispagestyle{empty}
@@ -167,6 +168,9 @@ MBS-fast предназначен для расчёта дальнего рас�
 \pagenumbering{arabic}
 
 \part{Практическая работа}
+
+\input{FULLAUTO_RU.inc.tex}
+\clearpage
 
 \section{Быстрый старт}
 
@@ -2197,7 +2201,7 @@ $\theta$ остаются в полном времени.
 \code{MBS_GPU_MULTI=0} & Отключить автоматическое распределение блоков ориентаций. \\
 \code{MBS_GPU_MULTI_MAX=N} & Ограничить число исполнителей GPU. \\
 \code{MBS_GPU_GROUPS=1} & Распределить группы $\theta$ широтной сетки по видимым GPU. \\
-\code{MBS_GPU_MULTI_K_FULL=1} & Включить экспериментальное совмещённое вычисление нескольких $k_{\mathrm{eq}}$. \\
+\code{MBS_GPU_MULTI_K_FULL=0/1} & Совмещённый расчёт размеров: автоматически для поддержанных FP64-сканов, явно для float. \\
 \code{MBS_ORIENTATION_TIMING=1} & Печатать суммарное процессорное время поворота, трассировки и подготовки пучков. \\
 \code{MBS_FFT_PHI_FACTOR=N} & Старый способ задания коэффициента FFT, только если не задан
 \code{--fft-factor}; CLI имеет приоритет. \\

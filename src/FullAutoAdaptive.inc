@@ -154,9 +154,14 @@ std::string SaveRoundDiagnostics(Engine& e,const AdaptiveState& state,const Adap
     std::ostringstream table;table<<"theta_deg,is_support,interpolation_residual95,previous_available,half_prefix_stable";
     for(size_t l=0;l<state.counts.size();++l)table<<",N_level"<<l;
     for(int j=0;j<16;++j)table<<",estimated95_M"<<j/4+1<<j%4+1<<"_scaled_M11";
-    for(int j=1;j<16;++j)table<<",estimated95_M"<<j/4+1<<j%4+1<<"_over_M11";table<<",phi_points\n";
+    for(int j=1;j<16;++j)table<<",estimated95_M"<<j/4+1<<j%4+1<<"_over_M11";
+    table<<",phi_points\n";
     for(size_t r=0;r<ids.size();++r){const size_t id=ids[r];table<<Number(x[r])<<','<<std::binary_search(state.knots.begin(),state.knots.end(),id)<<','<<Number(errors[r])<<','<<state.valid[id]<<','<<state.coarse[id];
-        for(const auto& level:state.counts)table<<','<<level[id];for(double v:stats.interval[r])table<<','<<Number(v);for(int j=1;j<16;++j)table<<','<<Number(stats.ratioInterval[r][j]);table<<','<<e.PhiForTheta(id)<<'\n';}
+        for(const auto& level:state.counts)table<<','<<level[id];
+        for(double v:stats.interval[r])table<<','<<Number(v);
+        for(int j=1;j<16;++j)table<<','<<Number(stats.ratioInterval[r][j]);
+        table<<','<<e.PhiForTheta(id)<<'\n';
+        }
     Atomic(folder+"/parameters_accuracy.csv",table.str());
     e.Log("round_diagnostics","{\"round\":"+Number(state.round)+",\"folder\":"+Quoted(folder)+",\"sources_fnv1a64\":"+Quoted(Hash(stage.sources))+"}");
     return folder;
@@ -199,10 +204,15 @@ void SaveAdaptive(Engine& e,const AdaptiveState& state,const std::string& phase=
     }
     Atomic(e.root+"/adaptive_checkpoint.tsv",std::string(!state.interpolationCounts.empty()?(state.interpolationPhi?"6 ":"5 "):e.thetaPhi.empty()?"3 ":"4 ")+Hash(payload.str())+"\n"+payload.str());
     std::ostringstream history;history<<"{\"phase\":"<<Quoted(phase)<<",\"round\":"<<state.round<<",\"pass_streak\":"<<state.streak<<",\"phi\":"<<e.phi<<",\"theta_support_indices\":[";
-    for(size_t i=0;i<state.knots.size();++i)history<<(i?",":"")<<state.knots[i];history<<"],\"counts_by_level\":[";
+    for(size_t i=0;i<state.knots.size();++i)history<<(i?",":"")<<state.knots[i];
+    history<<"],\"counts_by_level\":[";
     for(size_t level=0;level<state.counts.size();++level){if(level)history<<',';std::map<int,std::vector<size_t>> groups;for(size_t id:saved)groups[state.counts[level][id]].push_back(id);
         history<<'[';bool first=true;for(const auto& group:groups){history<<(first?"":",")<<"{\"count_per_seed\":"<<group.first<<",\"theta_indices\":[";
-            for(size_t i=0;i<group.second.size();++i)history<<(i?",":"")<<group.second[i];history<<"]}";first=false;}history<<']';}
+            for(size_t i=0;i<group.second.size();++i)history<<(i?",":"")<<group.second[i];
+            history<<"]}";
+            first=false;
+            }history<<']';
+            }
     history<<"],\"phi_by_theta\":[";bool firstPhi=true;for(const auto& row:e.thetaPhi){history<<(firstPhi?"":",")<<"["<<row.first<<","<<row.second<<"]";firstPhi=false;}history<<"]}";e.Log("allocation_checkpoint",history.str());
 }
 bool RestoreAdaptive(Engine& e,AdaptiveState& state,bool warmCache=true){
@@ -347,7 +357,8 @@ InterpolationResult CommonPrefixInterpolationImpl(Engine& e,const AdaptiveState&
                     plan.upper=plan.noise=1e100;plan.mean=0;plan.biasDominated=false;plan.level=0;plan.phi=0;
                     plan.counts.clear();plan.observedCounts.clear();
                     for(size_t id:ids){const int n=ns[0][id];if(n<e.maxCount){plan.counts.push_back({id,std::min(e.maxCount,n*2)});plan.observedCounts.push_back(n);}}
-                    if(plan.counts.empty())plan.level=-1;continue;
+                    if(plan.counts.empty())plan.level=-1;
+                    continue;
                 }
                 Require(ref[0]>0,"nonpositive common-prefix interpolation reference");
                 const double previousWorst=result.growth[positions[r]].upper;
@@ -421,7 +432,8 @@ void RefineFailedAudit(Engine& e,AdaptiveState& state,const std::vector<int>& de
     for(size_t q=0;q<e.theta.size();++q){const auto residual=ResidualAt(e,interp,ids,q);const auto metric=BudgetMetric(e,output,q,residual);if(MetricWithinBudget(e,metric,residual))continue;
         RefineError(e,work,depths,before,proposed,ids,audit,QueryWeights(e,state.knots,e.theta[q]),metric,output.mean[q],e.theta[q],"audit_interpolated",log,{},observedCounts);}
     const auto production=Mean(Combine(productionData.levels));std::vector<Matrix> pm,am;
-    for(const auto& level:productionData.levels)pm.push_back(Mean(level));for(const auto& level:audit.levels)am.push_back(Mean(level));
+    for(const auto& level:productionData.levels)pm.push_back(Mean(level));
+    for(const auto& level:audit.levels)am.push_back(Mean(level));
     for(size_t r=0;r<productionIds.size();++r){const size_t id=productionIds[r],row=std::lower_bound(ids.begin(),ids.end(),id)-ids.begin();ErrorMetric metric;
         for(int j=0;j<16;++j){const double delta=std::fabs(production[r][j]-stats.mean[row][j])/production[r][0];if(delta>metric.error)metric=ErrorMetric(j,false,delta);}
         if(metric.error<=e.eps)continue;
@@ -453,7 +465,8 @@ std::array<unsigned,8> ReserveAuditSeeds(Engine& e,AdaptiveState& state){
 std::string AuditInputFingerprint(const Engine& e,const AdaptiveState& state,const AdaptiveData& production,const std::vector<size_t>& ids){
     std::ostringstream out;out<<e.signature<<'\n'<<e.ExecutionHash()<<'\n'<<state.round<<' '<<e.local<<' '<<e.initial<<' '<<e.minimum<<' '<<e.orientationBlock
         <<' '<<Number(e.statistical)<<' '<<Number(e.interpolation)<<' '<<BudgetPolicy()<<'\n'<<production.sources;
-    for(size_t k:state.knots)out<<k<<' ';out<<'\n';
+    for(size_t k:state.knots)out<<k<<' ';
+    out<<'\n';
     for(size_t id:ids){out<<id;for(const auto& level:state.counts)out<<' '<<level[id];out<<'\n';}
     if(!e.thetaPhi.empty()){out<<"theta_phi\n";for(const auto& row:e.thetaPhi)out<<row.first<<' '<<row.second<<'\n';}
     return Hash(out.str());
@@ -602,7 +615,8 @@ bool IndependentAudit(Engine& e,AdaptiveState& state,const std::vector<int>& dep
             else if(common&&e.QueueEnabled()){
                 PrefetchBudget(e,AuditRequests(e,depths,validationCounts,ids,state.knots),seeds.data());
             }
-            if(!angular)data=EvaluateBudget(e,depths,validationCounts,ids,seeds.data());combined=Combine(data.levels);
+            if(!angular)data=EvaluateBudget(e,depths,validationCounts,ids,seeds.data());
+            combined=Combine(data.levels);
             if(angular){bool positive=true;for(const auto& row:Mean(combined))positive=positive&&row[0]>0;
                 if(!positive){e.workQueuePolicy=savedQueue;const std::string report="{\"enabled\":true,\"passed\":false,\"estimator\":\"angular_residual_v1\",\"reason\":\"nonpositive independent M11; fresh direct fallback required\"}";
                     e.Record(e.root+"/independent_final_validation.json",report);e.Record(e.root+"/independent_final_validation_serial"+Number(state.auditSerial-1)+".json",report);
@@ -673,7 +687,9 @@ int RunAdaptive(Engine& e){
     std::vector<double> tuningAngles;const size_t tuningRows=std::min(e.theta.size(),size_t(std::min(33,e.maxTheta)));
     for(size_t i=0;i<tuningRows;++i)tuningAngles.push_back(e.theta[i*(e.theta.size()-1)/(tuningRows-1)]);
     std::ostringstream levels;levels<<"{\"depths\":[";for(size_t i=0;i<depths.size();++i)levels<<(i?",":"")<<depths[i];levels<<"],\"seeds\":[";
-    for(size_t i=0;i<e.seeds.size();++i)levels<<(i?",":"")<<e.seeds[i];levels<<"]}";e.Log("multilevel_definition",levels.str());
+    for(size_t i=0;i<e.seeds.size();++i)levels<<(i?",":"")<<e.seeds[i];
+    levels<<"]}";
+    e.Log("multilevel_definition",levels.str());
     e.PrepareTuning(tuningAngles);
     const bool resumed=RestoreAdaptive(e,state);
     if(e.completedCheckpoint){
@@ -862,7 +878,9 @@ int RunAdaptive(Engine& e){
                 if(next.back()>current.back()){
                     const auto x=std::vector<double>{std::min(e.theta[id],e.theta[id==ids.front()?ids.back():ids.front()]),std::max(e.theta[id],e.theta[id==ids.front()?ids.back():ids.front()])};
                     auto requests=[&](int n){std::vector<Engine::WorkRequest> result={{n,0,depths[l],l&&e.depthSharing?depths[l-1]:0,x}};
-                        if(l&&!e.depthSharing)result.push_back(Engine::WorkRequest{n,0,depths[l-1],0,x});return result;};
+                        if(l&&!e.depthSharing)result.push_back(Engine::WorkRequest{n,0,depths[l-1],0,x});
+                        return result;
+                        };
                     const auto before=work.Forecast(requests(current.back())),after=work.Forecast(requests(next.back()));
                     profiled[l]=before.profiled&&after.profiled;if(profiled[l])costs[l]=std::max(1e-18,(after.seconds-before.seconds)/(next.back()-current.back()));
                 }}

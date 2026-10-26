@@ -23,7 +23,9 @@ struct AllocationForecast {
     double Loss(const std::vector<int>& next,double eps)const{
         const auto stats=Predict(next);double loss=0;
         auto add=[&](double v){const double r=std::min(1e90,v/eps);loss+=std::max(0.,r*r-1);};
-        for(double v:stats.interval[0])add(v);if(ratios)for(int j=1;j<16;++j)add(stats.ratioInterval[0][j]);return loss;
+        for(double v:stats.interval[0])add(v);
+        if(ratios)for(int j=1;j<16;++j)add(stats.ratioInterval[0][j]);
+        return loss;
     }
 };
 }
@@ -38,7 +40,8 @@ std::vector<int> AllocateCovariant(const std::vector<Samples>& levels,const std:
         auto best=result;double score=0;
         for(unsigned mask=1;mask<(1u<<counts.size());++mask){auto next=result;double seconds=0;
             for(size_t l=0;l<counts.size();++l)if(mask&(1u<<l)){next[l]=std::min(cap[l],result[l]>maximum/2?maximum:2*result[l]);seconds+=costs[l]*(next[l]-result[l]);}
-            if(seconds<=0)continue;const double gain=before-model.Loss(next,eps),efficiency=gain/seconds;
+            if(seconds<=0)continue;
+            const double gain=before-model.Loss(next,eps),efficiency=gain/seconds;
             if(efficiency>score){score=efficiency;best=next;}}
         if(best==result){ // Preserve progress when the small pilot cannot rank it.
             if(result!=counts)break;

@@ -273,7 +273,7 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
         {"fullauto_rotation", "fullauto-rotation-symmetry", 1, "MODE", "Orientation",
          "Verify fixed-axis body rotations and paired all-Mueller equivalence: auto (default), off. Explicit --symmetry wins."},
         {"fullauto_cutoffs", "fullauto-cutoffs", 1, "MODE", "Orientation",
-         "Benchmark cutoff presets against off with EPS/8 bias reserve and a fresh final audit: auto (default), off. Explicit cutoffs win."},
+         "Coherent PO: balanced beams with matched off-minus-balanced correction, auto (default) or off; no preset search. Explicit cutoffs win. GO accepts explicit off/balanced with its own audit."},
         {"verified_rotation", "verified-rotation-symmetry", 0, "", "Orientation",
          "Worker: detect facet-preserving rotations about body z and half turn about x; never trust file symmetry metadata."},
         {"haar_rotation_audit", "haar-rotation-audit", 1, "AXIS", "Orientation",

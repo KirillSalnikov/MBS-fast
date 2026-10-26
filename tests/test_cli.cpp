@@ -426,12 +426,14 @@ int main()
         ExpectSuccess("GO native fullauto",go);
         auto rich=go;rich.insert(rich.end(),{"--scattering-grid","0","180","1","36","--symmetry","1","1","--fullauto-cpu-workers","4","--threads","2","--max-reflections","8","--fullauto-physics-audit","on"});
         ExpectSuccess("GO fullauto fixed bins and CPU workers",rich);
-        for(const auto& extra:std::vector<std::vector<std::string>>{{"--fullauto-pilot","32"},{"--fullauto-min-correction","32"},{"--fullauto-theta-start","9"},{"--analytic-facet-average"},{"--haar-alpha"},{"--mirror-gamma"},{"--orientation-pipeline"}}){
+        for(const auto& extra:std::vector<std::vector<std::string>>{{"--fullauto-pilot","32"},{"--fullauto-min-correction","32"},{"--fullauto-theta-start","9"},{"--analytic-facet-average"},{"--haar-alpha"},{"--orientation-pipeline"}}){
             auto bad=go;bad.insert(bad.end(),extra.begin(),extra.end());ExpectFailure("GO rejects unused "+extra[0],bad,"not used by GO fullauto");}
-        for(const auto& flag:std::vector<std::string>{"--fullauto-mirror","--fullauto-resources","--fullauto-cutoffs","--fullauto-analytic-controls","--fullauto-local-orientations","--fullauto-depth-sharing"}){
+        for(const auto& flag:std::vector<std::string>{"--fullauto-resources","--fullauto-cutoffs","--fullauto-analytic-controls","--fullauto-local-orientations","--fullauto-depth-sharing"}){
             auto bad=go;bad.insert(bad.end(),{flag,"on"});ExpectFailure("GO rejects active "+flag,bad,"must be off for GO fullauto");
             auto valid=go;valid.insert(valid.end(),{flag,"off"});ExpectSuccess("GO explicit off "+flag,valid);}
-        auto preset=go;preset.insert(preset.end(),{"--cutoff-profile","balanced"});ExpectFailure("GO fullauto rejects PO cutoff presets",preset,"individual trace cutoffs");
+        auto preset=go;preset.insert(preset.end(),{"--cutoff-profile","balanced"});ExpectSuccess("GO fullauto accepts audited balanced",preset);
+        auto unaudited=preset;unaudited.insert(unaudited.end(),{"--fullauto-final-checks","off"});ExpectFailure("GO balanced requires its audit",unaudited,"requires final physics checks");
+        auto mirrorGo=go;mirrorGo.insert(mirrorGo.end(),{"--fullauto-mirror","on"});ExpectSuccess("GO supported mirror reconstruction",mirrorGo);
         auto phi=go;phi.insert(phi.end(),{"--phi-points","4"});ExpectFailure("GO analytic alpha rejects phi sampling",phi,"phi-points must be 1");
         auto grid=go;grid.insert(grid.end(),{"--scattering-grid","170","180","1","10"});ExpectFailure("GO fullauto rejects partial bins",grid,"requires --scattering-grid");
         for(const std::string count:{"0","9"}){auto bad=go;bad.insert(bad.end(),{"--fullauto-cpu-workers",count});ExpectFailure("GO CPU worker count "+count,bad,"count in 1..8");}
@@ -1027,7 +1029,7 @@ int main()
     auto badPaired=mirrorHaar;badPaired.push_back("--haar-mirror-audit");
     ExpectFailure("Haar mirror audit rejects reconstruction",badPaired,"cannot be combined");
     auto noHaarAudit=CanonicalBase();noHaarAudit.push_back("--haar-mirror-audit");
-    ExpectFailure("Haar mirror audit requires Haar Sobol",noHaarAudit,"requires PO Sobol");
+    ExpectFailure("Haar mirror audit requires Haar Sobol",noHaarAudit,"requires seeded Sobol");
     auto newMirror=std::vector<std::string>{"--method","po","--backend","cpu","--particle","1","10","3.1","--ri","1.3116","0","--wavelength-um",".532","--max-reflections","12","--fullauto",".01","--mirror-gamma"};
     ExpectSuccess("native fullauto accepts mirror verification",newMirror);
     newMirror.insert(newMirror.end(),{"--fullauto-mirror","off"});
@@ -1065,6 +1067,26 @@ int main()
     auto conflict=gpuAuto;conflict.insert(conflict.end(),{"--fullauto-trace-backend","resident","--po-trace-backend","hybrid"});ExpectFailureForBuild("conflicting trace choices",conflict,false,true,"conflicting explicit");
     auto cacheNegative=localAuto;cacheNegative.insert(cacheNegative.end(),{"--trace-cache-mib","-1"});ExpectFailure("negative trace cache",cacheNegative,"must not be negative");
     auto wrongBackend=localAuto;wrongBackend.insert(wrongBackend.end(),{"--po-trace-backend","hybrid"});ExpectFailure("CPU cannot select GPU tracing",wrongBackend,"requires --method po --backend cuda");
+    // Release-interface coverage: fixed overrides, internal-worker guards and
+    // newly merged extinction mode are checked by the real argument validator.
+    for(const auto& extra:std::vector<std::vector<std::string>>{
+        {"--fullauto-kernel-count","32"},{"--fullauto-max-rounds","8"},
+        {"--fullauto-theta-range","170","180"},{"--fullauto-refine-window","170","176",".05"},
+        {"--fullauto-theta-audit-count","32"},{"--fullauto-short-packets","off"},
+        {"--fullauto-audit-angular","on"},{"--fullauto-final-checks","off"},
+        {"--analytic-mean-threads","2"}}){
+        auto a=localAuto;a.insert(a.end(),extra.begin(),extra.end());
+        ExpectSuccess("release fullauto override "+extra[0],a);
+    }
+    for(const auto& extra:std::vector<std::vector<std::string>>{
+        {"--analytic-mean-reference-grid","missing-grid.tsv"},
+        {"--analytic-control-weights","missing-weights.tsv"},
+        {"--so3-rule","missing-rule.tsv"},{"--verified-rotation-symmetry"},
+        {"--haar-rotation-audit","gamma"},{"--orientation-prefix-output","8"},
+        {"--profile-phases"},{"--extinction-only"}}){
+        auto a=CanonicalBase();a.insert(a.end(),extra.begin(),extra.end());
+        ExpectFailure("release rejects incompatible fixed mode "+extra[0],a,"");
+    }
     if (failures != 0)
     {
         std::cerr << failures << " CLI test(s) failed\n";

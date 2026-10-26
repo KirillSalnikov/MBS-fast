@@ -182,7 +182,12 @@ gpu_double_fast_mpi:
 
 split: cpu gpu_float_fast
 
-docs:
+.PHONY: docs_fullauto
+docs_fullauto:
+	@command -v pandoc >/dev/null 2>&1 || { echo "Pandoc is required to regenerate the fullauto manuals." >&2; exit 1; }
+	python3 scripts/build_fullauto_docs.py
+
+docs: docs_fullauto
 	@command -v $(XELATEX) >/dev/null 2>&1 || { \
 		echo "XeLaTeX not found: $(XELATEX)" >&2; \
 		echo "Install XeLaTeX and the packages/fonts imported by docs/MANUAL*.tex." >&2; \
@@ -304,7 +309,7 @@ test_sanitize:
 	$(MAKE) -C cpu TARGET=bin/mbs_po_mpi_sanitize \
 		OBJDIR=build/sanitize/obj \
 		OPT_FLAGS='-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined' \
-		LDFLAGS='-lm -lgomp -fsanitize=address,undefined' -j
+		LDFLAGS='-lm -lgomp -fsanitize=address,undefined' -j$(or $(MBS_BUILD_JOBS),2)
 	ASAN_OPTIONS=detect_leaks=0:halt_on_error=1:abort_on_error=1 \
 		UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
 		MBS=$(CURDIR)/cpu/bin/mbs_po_mpi_sanitize \
@@ -459,3 +464,9 @@ bin/fullauto_angular_audit_probe: tests/fullauto_angular_audit_probe.cpp src/Ful
 bin/fullauto_legacy_integrals_probe: tests/fullauto_legacy_integrals_probe.cpp src/FullAuto.cpp $(wildcard src/FullAuto*.inc) $(filter-out %/main.o %/FullAuto.o,$(OBJECTS))
 	@mkdir -p bin
 	$(CXX) $(CXXFLAGS) $(INCLUDES) tests/fullauto_legacy_integrals_probe.cpp $(filter-out %/main.o %/FullAuto.o,$(OBJECTS)) -o $@ $(LDFLAGS)
+
+.PHONY: test_fullauto_release
+test_fullauto_release:
+	tests/run_fullauto_release_tests.sh "$$(mktemp -d /tmp/mbs-fullauto-release.XXXXXX)"
+
+test: test_fullauto_release

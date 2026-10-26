@@ -8,7 +8,8 @@ struct WorkingPhiPlan {
 std::string WorkingPhiPath(const Engine& e){return e.root+"/working_phi_n"+Number(e.target)+".tsv";}
 void SaveWorkingPhi(Engine& e,const WorkingPhiPlan& plan){
     std::ostringstream file;file<<e.signature<<' '<<plan.phase<<' '<<plan.oldPhi<<' '<<plan.newPhi<<' '<<plan.count<<' '<<plan.sourceHash<<' '<<plan.rows.size()<<' '<<plan.counts.size()<<'\n';
-    for(size_t row:plan.rows)file<<row<<' ';file<<'\n';
+    for(size_t row:plan.rows)file<<row<<' ';
+    file<<'\n';
     for(const auto& level:plan.counts){file<<level.size();for(int n:level)file<<' '<<n;file<<'\n';}
     file<<"retry "<<plan.attempt<<' '<<plan.peak<<'\n';
     if(!plan.retained.empty()){file<<"retained "<<plan.retained.size();for(size_t row:plan.retained)file<<' '<<row;file<<'\n';}
@@ -68,7 +69,8 @@ WorkingPhiPilot EvaluateWorkingPhi(Engine& e,const std::vector<int>& depths,cons
             std::vector<double> x;for(size_t r:group.second)x.push_back(e.theta[ids[r]]);
             if(x.size()==1){x.push_back(e.theta.front()==x[0]?e.theta.back():e.theta.front());std::sort(x.begin(),x.end());}
             std::vector<Engine::WorkRequest> requests={{n,0,depths[l],l&&e.depthSharing?depths[l-1]:0,x}};
-            if(l&&!e.depthSharing)requests.push_back({n,0,depths[l-1],0,x});e.Prefetch(requests,seeds);
+            if(l&&!e.depthSharing)requests.push_back({n,0,depths[l-1],0,x});
+            e.Prefetch(requests,seeds);
             std::vector<Job> upper,lower;
             if(l&&e.depthSharing){auto pair=e.SharedStage(n,seeds,8,depths[l],depths[l-1],x);upper=pair.first;lower=pair.second;}
             else upper=e.Stage(n,seeds,8,depths[l],x);
@@ -93,7 +95,9 @@ double WorkingPhiBaselineError(double sampled,double observed){
     return FullAutoScheduling::Resolved(sampled)?std::max(sampled,observed):observed;
 }
 double WorkingPhiCost(const Engine& e,const WorkingPhiPilot& pilot,const Budgets& counts,const std::vector<size_t>& ids,bool saved){
-    if(!(pilot.error<1e50))return 1e200;const double factor=std::pow(pilot.error/e.statistical,2);double cost=0;
+    if(!(pilot.error<1e50))return 1e200;
+    const double factor=std::pow(pilot.error/e.statistical,2);
+    double cost=0;
     for(size_t l=0;l<counts.size();++l)for(size_t id:ids){const int floor=l?e.minimum:e.initial;
         // The work forecast must describe reaching the requested error, not
         // merely reaching the launch limit. Capping it makes two rules look
@@ -163,7 +167,9 @@ bool TryWorkingPhi(Engine& e,AdaptiveState& state,const std::vector<int>& depths
         // holdout is inspected or used to choose the test geometry.
         const double separation=(e.theta[ids.back()]-e.theta[ids.front()])/64;
         for(const auto& row:worst){bool near=false;for(size_t id:chosen)near=near||std::fabs(e.theta[id]-e.theta[row.second])<separation;
-            if(!near)chosen.insert(row.second);if(chosen.size()==8)break;}
+            if(!near)chosen.insert(row.second);
+            if(chosen.size()==8)break;
+            }
         chosen.insert(chosen.count(ids.front())?ids.back():ids.front());plan.rows.assign(chosen.begin(),chosen.end());
         int cap=e.maxCount;if(e.config.adaptive.loadedFromFile&&e.config.adaptive.maxPilotOrientations>0)cap=std::min(cap,e.config.adaptive.maxPilotOrientations);
         plan.count=retryCount?retryCount:std::min(4096,Power2(std::max(1024.,4.*e.pilot)));plan.count=std::min(plan.count,16384);while(plan.count>cap)plan.count/=2;
@@ -174,7 +180,9 @@ bool TryWorkingPhi(Engine& e,AdaptiveState& state,const std::vector<int>& depths
     std::array<unsigned,8> screen,confirm;unsigned offset=unsigned(e.target)*1000000u+unsigned(plan.attempt)*100000u+(e.balancedCorrection?50000000u:0u);
     for(;;){bool overlap=false;for(size_t s=0;s<8;++s){screen[s]=1690000000u+offset+17*s;confirm[s]=1790000000u+offset+17*s;
             overlap=overlap||std::find(e.seeds.begin(),e.seeds.end(),screen[s])!=e.seeds.end()||std::find(e.seeds.begin(),e.seeds.end(),confirm[s])!=e.seeds.end();}
-        if(!overlap)break;offset+=512;}
+        if(!overlap)break;
+        offset+=512;
+        }
     Matrix reference;for(size_t id:plan.rows){const auto at=std::lower_bound(ids.begin(),ids.end(),id);Require(at!=ids.end()&&*at==id,"working phi angle disappeared");reference.push_back(stats.mean[at-ids.begin()]);}
     double productionError=0;
     for(size_t id:plan.rows){const size_t row=std::lower_bound(ids.begin(),ids.end(),id)-ids.begin();productionError=std::max(productionError,WorstMetric(stats,row,e.ratios).error);}
@@ -197,7 +205,8 @@ bool TryWorkingPhi(Engine& e,AdaptiveState& state,const std::vector<int>& depths
                 +",\"projected95\":"+Number(value.error)+",\"projected_worker_cost\":"+Number(cost)+",\"forecast_only\":true}");
             if(c==0){baseline=value;oldCost=cost;}else if(cost<best){best=cost;winner=value;selected=e.phi;}
             report<<(c?",":"")<<"{\"phi\":"<<e.phi<<",\"pilot_projected95\":"<<Number(sampled)<<",\"projected95\":"<<Number(value.error)<<",\"projected_worker_cost\":"<<Number(cost)<<",\"level_cost\":[";
-            for(size_t l=0;l<value.cost.size();++l)report<<(l?",":"")<<Number(value.cost[l]);report<<"]}";
+            for(size_t l=0;l<value.cost.size();++l)report<<(l?",":"")<<Number(value.cost[l]);
+            report<<"]}";
             if(probeCost>.05*oldCost){budgetExhausted=true;break;} // Bound optional search overhead.
         }
         report<<"],\"screening_old_remaining_cost\":"<<Number(oldCost)<<",\"candidate\":"<<selected;
@@ -205,7 +214,8 @@ bool TryWorkingPhi(Engine& e,AdaptiveState& state,const std::vector<int>& depths
         if(accepted){confirmed=true;e.phi=plan.oldPhi;auto before=EvaluateWorkingPhi(e,depths,state.counts,plan.rows,reference,plan.count,confirm.data());
             const double sampledBefore=before.error;before.error=WorkingPhiBaselineError(before.error,productionError);
             e.phi=selected;const auto after=EvaluateWorkingPhi(e,depths,state.counts,plan.rows,reference,plan.count,confirm.data());
-            for(double cost:before.cost)probeCost+=cost*plan.count*plan.rows.size();for(double cost:after.cost)probeCost+=cost*plan.count*plan.rows.size();
+            for(double cost:before.cost)probeCost+=cost*plan.count*plan.rows.size();
+            for(double cost:after.cost)probeCost+=cost*plan.count*plan.rows.size();
             Atomic(e.root+"/working_phi_n"+Number(e.target)+"_confirmation_old_sources.tsv",before.sources);Atomic(e.root+"/working_phi_n"+Number(e.target)+"_confirmation_new_sources.tsv",after.sources);
             const double old=WorkingPhiCost(e,before,state.counts,ids,true),next=WorkingPhiCost(e,after,state.counts,ids,false);
             accepted=WorkingPhiImproves(before,after,old,next,probeCost);

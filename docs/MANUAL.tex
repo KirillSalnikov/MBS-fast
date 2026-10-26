@@ -131,6 +131,9 @@ manual describes the current command line interface, build targets,
 grids, multi-GPU scans, and the main diffraction/Jones/Mueller formulas
 used by the implementation.
 
+\input{FULLAUTO.inc.tex}
+\clearpage
+
 \section{Build}\label{build}
 
 \subsection{Requirements}\label{requirements}
@@ -1904,13 +1907,10 @@ Shared-batch scan:
 \end{Highlighting}
 \end{Shaded}
 
-Experimental fused multi-\texttt{k\_eq} GPU diffraction:
-
-\begin{Shaded}
-\begin{Highlighting}[]
-\VariableTok{MBS\_GPU\_MULTI\_K\_FULL}\OperatorTok{=}\NormalTok{1 }\ExtensionTok{gpu/bin/mbs\_po\_gpu\_float\_fast}\NormalTok{ ...}
-\end{Highlighting}
-\end{Shaded}
+Supported direct coherent FP64 scans of 2--32 sizes select fused multi-size
+GPU diffraction with a direction-independent phase cache. Float remains opt-in.
+\nolinkurl{MBS_GPU_MULTI_K_FULL=0} selects the per-size reference path;
+\nolinkurl{MBS_GPU_MULTI_K_PHASE_CACHE=0} disables only the phase cache.
 
 Use tighter \texttt{-\/-multikeq\_batch\_ratio} for accuracy; use exact
 mode when each size must have its own oldauto reference grid.
@@ -2215,8 +2215,7 @@ batching. \\
 \texttt{MBS\_GPU\_MULTI\_MAX=N} & Cap automatic GPU multi batching. \\
 \texttt{MBS\_GPU\_GROUPS=1} & Distribute variable latitude-phi theta
 groups across visible GPUs. \\
-\texttt{MBS\_GPU\_MULTI\_K\_FULL=1} & Experimental fused
-multi-\texttt{k\_eq} diffraction. \\
+\nolinkurl{MBS_GPU_MULTI_K_FULL=0/1} & Fused multi-size diffraction; automatic for supported FP64 scans, opt-in for float. \\
 \texttt{MBS\_BEAM\_LOG=PATH} & Write the first handled PO beam set to the
 explicit diagnostic path. No beam log is written by default. \\
 \texttt{MBS\_SHARED\_BETA\_GROUP=N} & Override shared-batch beta
