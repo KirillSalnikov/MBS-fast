@@ -47,6 +47,20 @@ int main(int argc,char** argv){try{
     Atomic(marker,saved+"\n");bool rejected=false;
     try{corrupt.Materialize(victim);}catch(const std::exception&){rejected=true;}
     Atomic(marker,saved);Require(rejected,"journal accepted changed authoritative marker");
+    // Unscoped legacy campaigns must migrate too. The first import leaves
+    // every authoritative result untouched; the next restore uses the journal.
+    const auto beforeMigration=FrozenParentFiles(parent.root);
+    auto standalone=[&](Engine& e){e.root=parent.root;e.signature=parent.signature;e.exe=parent.exe;
+        e.binaryHash=parent.binaryHash;e.controls=false;e.forbidNativeWork=true;e.ConfigureIndex(false);};
+    Engine migrated(args,config);standalone(migrated);Require(migrated.compactIndex,"unscoped legacy root was not upgraded");migrated.WarmCache(1);
+    Engine fast(args,config);standalone(fast);fast.WarmCache(1);
+    const auto fastProgress=Read(fast.root+"/cache_restore_status.json");
+    Require(fastProgress.find("\"journal_jobs\":8")!=std::string::npos&&fastProgress.find("\"fallback_folders\":0")!=std::string::npos,"unscoped resume reread old metadata");
+    for(const auto& item:parent.cache){const auto a=parent.Materialize(item.second),b=fast.Materialize(fast.cache.at(item.first));Require(a.matrix==b.matrix,"unscoped journal changed all16");}
+    const auto after=FrozenParentFiles(parent.root);for(const auto& item:beforeMigration){const auto found=after.find(item.first);Require(found!=after.end()&&found->second==item.second,"migration changed an existing result: "+item.first);}
+    Engine wrong(args,config);wrong.root=root+"/wrong";wrong.signature="different";Directory(wrong.root);Atomic(wrong.root+"/configuration.txt","original\n");
+    rejected=false;try{wrong.ConfigureIndex(false);}catch(const std::exception&){rejected=true;}
+    Require(rejected&&!Exists(wrong.root+"/job_index_format.txt"),"incompatible legacy root was modified");
     std::cout<<"PASS legacy scoped index: persistent metadata, zero fallback reads on resume, unchanged all16 and parent files, torn tail recovered, changed source rejected\n";
     return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}

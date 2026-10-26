@@ -283,6 +283,14 @@ equations, or proof that every unsampled angular feature has been found.
 
 \subsection{Results and recovery}\label{results-and-recovery}
 
+Old output directories acquire a compact discovery journal on their
+first resume with the current controller. The initial migration still
+reads the old metadata once; later resumes read
+\nolinkurl{completed_jobs.journal} and inspect only directories missing
+from it. Existing matrices and completion markers are not rewritten. The
+journal accelerates discovery; hashes and source dependencies are still
+checked before a saved result enters an estimator.
+
 A persistent worker that reports a recoverable RAM-budget failure is
 retried once in a fresh process with exactly the same sampling. The
 failed attempt's partial output is never committed, and its log is saved

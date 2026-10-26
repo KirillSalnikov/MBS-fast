@@ -49,9 +49,14 @@ bool ParseSampling(const std::string& text,const std::string& folder,Job& j,bool
 void ConfigureIndex(bool fresh){
     const auto path=root+"/job_index_format.txt";
     if(Exists(path)){Require(Read(path)=="compact_v1\n","unsupported job index format");compactIndex=true;}
-    else if(fresh||!refinementParent.empty()){
+    else{
+        // Existing unscoped campaigns also need the discovery journal. Without
+        // this migration every restart rereads millions of small metadata
+        // files, even when the controller supports compact indices.
+        const auto identity=root+"/configuration.txt";
+        if(!fresh&&Exists(identity))Require(Read(identity)==signature+"\n","cannot upgrade an incompatible legacy index");
         Atomic(path,"compact_v1\n");compactIndex=true;
-        if(!fresh)Record(root+"/legacy_index_upgrade.json","{\"format\":\"compact_v1\",\"scope\":\"child metadata only\",\"parent_unchanged\":true,\"sampling_unchanged\":true,\"payload_validation\":\"before use, including dependencies\"}");
+        if(!fresh)Record(root+"/legacy_index_upgrade.json","{\"format\":\"compact_v1\",\"scope\":\"current output metadata only\",\"parent_unchanged\":true,\"sampling_unchanged\":true,\"payload_validation\":\"before use, including dependencies\"}");
     }
 }
 std::string DiagnosticText(const Job& j)const{
