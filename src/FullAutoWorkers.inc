@@ -1,6 +1,34 @@
 // Included inside Engine. Processes outlive ExecutePrepared calls, but every
 // request has its own result directory, PID ownership record and commit marker.
 bool PersistentEnabled()const{return workerPolicy=="persistent"||(workerPolicy=="auto"&&config.useGpu);}
+// Older checkpoint-compatible workers report the system RAM guard as status 1
+// instead of the dedicated per-process budget status. Match only its exact
+// diagnostic; numerical, CUDA and malformed-input failures remain fatal.
+bool LegacyHostReserveFailure(const Job& job,int status)const{
+    if(status!=1)return false;
+    std::ifstream file(job.folder+"/stdout.log",std::ios::binary);if(!file)return false;
+    file.seekg(0,std::ios::end);const auto size=file.tellg();if(size<0)return false;
+    file.seekg(std::max(std::streamoff(0),std::streamoff(size)-8192));
+    const std::string tail((std::istreambuf_iterator<char>(file)),std::istreambuf_iterator<char>());
+    return tail.find("ERROR: calculation failed: host RAM reserve exhausted before preparing next orientation chunk;")!=std::string::npos;
+}
+void WaitAfterHostReserveFailure(const Job& job){
+    const double started=Seconds();bool waited=false;
+    auto memory=HostMemoryReserve::Read();payloads.Clear();
+    while(HostMemoryReserve::Low(memory)){
+        const std::string detail="{\"folder\":"+Quoted(job.folder)+",\"available_kib\":"+Number(memory.availableKb)
+            +",\"reserve_kib\":"+Number(HostMemoryReserve::ReserveKb(memory.totalKb))
+            +",\"wait_seconds\":"+Number(Seconds()-started)+",\"maximum_wait_seconds\":60,\"same_sampling\":true,\"completed_blocks_preserved\":true}";
+        if(!waited||Seconds()-memoryCheckAt>=5){Record(root+"/resource_wait.json",detail);Log("host_memory_wait",detail);memoryCheckAt=Seconds();}
+        waited=true;WriteExecutionProgress();
+        Require(Seconds()-started<60,"host RAM reserve remains exhausted after 60 seconds; completed checkpoints preserved; free RAM before resuming");
+        usleep(250000);memory=HostMemoryReserve::Read();
+    }
+    memoryCheckAt=-1;
+    Log("host_memory_retry_ready","{\"folder\":"+Quoted(job.folder)+",\"wait_seconds\":"+Number(Seconds()-started)
+        +",\"available_kib\":"+Number(memory.availableKb)+",\"reserve_unchanged\":true}");
+    if(waited)Record(root+"/resource_wait.json","{\"waiting\":false,\"folder\":"+Quoted(job.folder)+",\"same_sampling\":true}");
+}
 void CompleteNative(Job& j) {
     j=Load(j);Require(j.matrix.size()==j.inputAngles.size(),"worker returned wrong theta count");
     for(size_t r=0;r<j.inputAngles.size();++r)Require(std::fabs(j.angles[r]-j.inputAngles[r])<1e-10,"worker returned wrong theta coordinates");
@@ -76,7 +104,8 @@ void ExecutePersistent(std::vector<Job>& result,std::vector<std::vector<std::str
         },[&](size_t slot,size_t& index){
                 index=size_t(slotJob[slot]);Job& j=result[index];int status=-1;
                 const bool received=WorkerProtocol::Result(services[slot]->fd,status);
-                if(received&&status==WorkerProtocol::MemoryPressure&&memoryRetries[index]++==0){
+                const bool hostReserve=received&&LegacyHostReserveFailure(j,status);
+                if(received&&(status==WorkerProtocol::MemoryPressure||hostReserve)&&memoryRetries[index]++==0){
                     NativeReturned(j,true);
                     const pid_t failedPid=services[slot]->pid;
                     services[slot].reset();slotJob[slot]=-1;j.pid=-1;
@@ -84,7 +113,8 @@ void ExecutePersistent(std::vector<Job>& result,std::vector<std::vector<std::str
                     const std::string savedLog=j.folder+"/stdout.memory-retry.log";
                     Require(std::rename((j.folder+"/stdout.log").c_str(),savedLog.c_str())==0,"cannot preserve memory failure log");
                     Log("worker_memory_retry","{\"folder\":"+Quoted(j.folder)+",\"old_pid\":"+Number(failedPid)
-                        +",\"retry\":1,\"same_sampling\":true,\"completed_blocks_preserved\":true,\"log\":"+Quoted(savedLog)+"}");
+                        +",\"retry\":1,\"system_ram_guard\":"+(hostReserve?"true":"false")+",\"same_sampling\":true,\"completed_blocks_preserved\":true,\"log\":"+Quoted(savedLog)+"}");
+                    if(hostReserve)WaitAfterHostReserveFailure(j);
                     launch(slot,index);return false;
                 }
                 Require(received&&status==0,"persistent worker failed; see "+j.folder+"/stdout.log");

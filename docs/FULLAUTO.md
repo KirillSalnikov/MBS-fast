@@ -222,6 +222,15 @@ that every unsampled angular feature has been found.
 
 ## Results and recovery
 
+A persistent worker that reports a recoverable RAM-budget failure is retried
+once in a fresh process with exactly the same sampling. The failed attempt's
+partial output is never committed, and its log is saved as
+`stdout.memory-retry.log`. For the system RAM reserve guard, the controller
+waits at most 60 seconds for the reserve to recover after releasing that
+worker. It records `resource_wait.json` and memory-retry events. The reserve
+is not lowered. Continued pressure or an unrelated numerical/CUDA failure
+stops the task and preserves completed checkpoints for recovery.
+
 Read `fullauto_status.json` for convergence and selected settings.
 `intermediate_current.json` points to the last published matrix snapshot.
 `execution_progress.json` reports active work, not a newly measured accuracy.
