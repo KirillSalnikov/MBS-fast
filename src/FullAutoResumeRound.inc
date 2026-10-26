@@ -123,3 +123,59 @@ void BoundResumedRound(Engine& e,AdaptiveState& state,const std::vector<int>& de
         +",\"residual_first\":"+(residualFirst?"true":"false")+",\"native_blocks_deleted\":0,\"complete_prefixes_retained\":true,\"accuracy_accepted_from_diagnostics\":false,\"all_accuracy_gates_recomputed\":true}");
     e.Log("resume_round_bounded","{\"snapshot\":"+Quoted(folder)+",\"saved_blocks_retained\":true,\"convergence_decision_pending\":true}");
 }
+
+// The empirical N is a useful convergence forecast, but it can make the first
+// production estimate take days after the angular pilot expands the grid.
+// Freeze a cost-bounded first allocation before looking at any production
+// values. Preserve explicit starts and every reusable complete seed prefix.
+void BoundInitialProduction(Engine& e,AdaptiveState& state,const std::vector<int>& depths){
+    if(state.round!=0||!e.local||e.args.IsCatched("fullauto_initial")||e.config.adaptive.loadedFromFile
+            ||std::any_of(state.valid.begin(),state.valid.end(),[](bool value){return value;}))return;
+    const auto ids=AdaptiveGuards(state.knots,e.theta.size());
+    if(ids.empty()||state.counts.empty())return;
+    const Budgets wanted=state.counts;
+    AdditionalWork work(e,e.seeds.data());
+    auto estimate=[&](const Budgets& counts){return work.Forecast(BudgetRequests(e,depths,counts,ids));};
+    const double limit=1800.*RoundPhysicalGpus(e);const auto original=estimate(wanted);
+    if(original.profiled&&original.seconds<=limit)return;
+    Budgets selected=wanted;
+    for(size_t id=0;id<e.theta.size();++id)selected[0][id]=std::min(wanted[0][id],512);
+    // Materialized prefixes can vary by angle. No matrix values or confidence
+    // intervals enter this metadata-only selection.
+    const auto cached=CachedCompletedBudgets(e,depths,selected,ids);
+    for(size_t l=0;l<selected.size();++l)for(size_t id:ids)
+        selected[l][id]=std::max(selected[l][id],std::min(wanted[l][id],cached[l][id]));
+    // During the very first prefetch, long prefixes may exist only as native
+    // leaves. Recognize a complete eight-seed prefix before it is assembled.
+    // At and above the saved block size, the coverage test is monotone.
+    int commonMaximum=e.maxCount;for(size_t id:ids)commonMaximum=std::min(commonMaximum,wanted[0][id]);
+    int completeBase=0;
+    for(int n=Power2(std::max(512,e.orientationBlock));n<=commonMaximum;){
+        const Budgets candidate(1,std::vector<int>(e.theta.size(),n));
+        const auto remaining=work.Forecast(BudgetRequests(e,{depths[0]},candidate,ids));
+        if(remaining.jobs)break;
+        completeBase=n;
+        for(size_t id:ids)selected[0][id]=std::max(selected[0][id],n);
+        if(n>commonMaximum/2)break;
+        n*=2;
+    }
+    auto chosen=estimate(selected);
+    // Grow by full powers of two only when existing timings cover every leg.
+    // Missing timings retain the small pilot; they never mean zero cost.
+    while(chosen.profiled&&chosen.seconds<=limit){
+        Budgets candidate=selected;bool changed=false;
+        for(size_t id:ids){const int n=std::min(wanted[0][id],Doubled(e,selected[0][id]));
+            changed=changed||n!=selected[0][id];candidate[0][id]=n;}
+        if(!changed)break;
+        const auto next=estimate(candidate);if(!next.profiled||next.seconds>limit)break;
+        selected=std::move(candidate);chosen=next;
+    }
+    if(selected==wanted)return;
+    state.counts=selected;
+    e.Record(e.root+"/initial_production_work.json",std::string("{\"policy\":\"cost-bounded first production estimate v1\",\"round\":0")
+        +",\"requested_base_peak\":"+Number(PeakBudgets(wanted)[0])+",\"selected_base_peak\":"+Number(PeakBudgets(selected)[0])
+        +",\"complete_native_leaf_prefix\":"+Number(completeBase)+",\"forecast_profiled\":"+(chosen.profiled?"true":"false")
+        +",\"forecast_worker_seconds\":"+Number(chosen.seconds)+",\"advisory_worker_seconds\":"+Number(limit)
+        +",\"explicit_initial_unchanged\":true,\"correction_minima_preserved\":true,\"cached_blocks_retained\":true"
+        +",\"allocation_reads_matrix_values\":false,\"accuracy_gates_unchanged\":true}");
+}

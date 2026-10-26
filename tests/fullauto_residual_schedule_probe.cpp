@@ -83,7 +83,37 @@ void LongMixedRound(const std::string& root){
     Require(proposed!=full&&proposed!=current&&next.seconds<.7*original.seconds,"trace-sharing gate retained a multi-hour round");
     std::cout<<"PASS mixed tracing/diffraction: forecast "<<original.seconds<<" -> "<<next.seconds<<" worker seconds; complete power-of-two prefixes retained\n";
 }
-int main(int argc,char** argv){try{Require(argc==2,"OUTPUT");const std::string r=argv[1];SchedulingMigration(r+"/migration");SamplingOrder(r+"/order");CorrectionResume(r+"/correction");CommonPhiScopeTest(r+"/phi");LongMixedRound(r+"/mixed");
+void InitialProduction(const std::string& root){
+    ArgPP args;RegisterCliOptions(args);RunConfig config;Engine e(args,config);SetupMemory(e,root,"/bin/true",false);
+    e.theta={0,5,10,15,20,25};e.initial=524288;e.minimum=256;e.orientationBlock=4096;e.maxCount=1048576;e.local=true;e.depthSharing=false;
+    AdaptiveState state;state.knots={0,5};state.counts=Budgets(1,std::vector<int>(6,e.initial));state.valid.assign(6,false);
+    const auto ids=AdaptiveGuards(state.knots,e.theta.size());const auto angles=Angles(e.theta,ids);
+    // One expensive wide-grid calibration: the 524288-start must not be run
+    // before the first estimate, and unprofiled levels must not look free.
+    Job timing;e.SetSampling(timing,4096,9999,6,angles,false);timing.identity="timing";timing.folder=root+"/timing";
+    timing.seconds=100;timing.traceSeconds=10;timing.diffractionSeconds=90;e.CacheJob(timing);
+    e.forbidNativeWork=true;BoundInitialProduction(e,state,{6});
+    Require(PeakBudgets(state.counts)[0]<e.initial&&PeakBudgets(state.counts)[0]>=512,"first-round forecast did not bound expensive start");
+    state.counts[0].assign(6,e.initial);config.adaptive.loadedFromFile=true;
+    BoundInitialProduction(e,state,{6});Require(PeakBudgets(state.counts)[0]==e.initial,"adaptive-config start replaced");config.adaptive.loadedFromFile=false;
+    e.local=false;BoundInitialProduction(e,state,{6});Require(PeakBudgets(state.counts)[0]==e.initial,"explicit uniform start replaced");e.local=true;
+    const char* av[]={"probe","--fullauto-initial","524288"};args.Parse(3,av);
+    BoundInitialProduction(e,state,{6});Require(PeakBudgets(state.counts)[0]==e.initial,"explicit start replaced");
+    ArgPP automatic;RunConfig other;Engine resumed(automatic,other);SetupMemory(resumed,root+"/resume","/bin/true",false);
+    resumed.theta=e.theta;resumed.initial=e.initial;resumed.minimum=256;resumed.orientationBlock=4096;resumed.maxCount=e.maxCount;resumed.local=true;resumed.depthSharing=false;
+    // Already completed native leaves have not yet acquired a parent prefix.
+    for(int offset=0;offset<16384;offset+=4096)for(unsigned seed:resumed.seeds){Job j;
+        resumed.SetSampling(j,4096,seed,6,angles,false);j.offset=offset;j.identity=Number(offset)+"_"+Number(seed);j.folder=root+"/leaf_"+j.identity;
+        j.seconds=100;j.traceSeconds=10;j.diffractionSeconds=90;resumed.CacheJob(j);}
+    state.counts[0].assign(6,resumed.initial);BoundInitialProduction(resumed,state,{6});
+    for(size_t id:ids)Require(state.counts[0][id]>=16384,"complete eight-seed native leaves were discarded");
+    Require(PeakBudgets(state.counts)[0]<resumed.initial,"unfinished initial round remained unbounded");
+    state.round=1;state.counts[0].assign(6,resumed.initial);BoundInitialProduction(resumed,state,{6});
+    Require(PeakBudgets(state.counts)[0]==resumed.initial,"ordinary production allocation replaced by startup pilot");
+    Require(!Exists(root+"/final_outputs.fnv"),"startup scheduling accepted accuracy");
+    std::cout<<"PASS first production cost bound, explicit/config starts, native-leaf eight-seed resume floor and unchanged later rounds\n";
+}
+int main(int argc,char** argv){try{Require(argc==2,"OUTPUT");const std::string r=argv[1];SchedulingMigration(r+"/migration");SamplingOrder(r+"/order");CorrectionResume(r+"/correction");CommonPhiScopeTest(r+"/phi");LongMixedRound(r+"/mixed");InitialProduction(r+"/initial");
     PartitionWork(r+"/pure_trace",true);PartitionWork(r+"/diffraction",false);
     std::cout<<"PASS residual-first scheduling, changed-support resume, eight-seed complete-prefix floor, explicit uniform mode and confirmed-bias refinement\n";return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}

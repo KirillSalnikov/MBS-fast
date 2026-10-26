@@ -198,6 +198,17 @@ startup budgets. Complete cached eight-seed prefixes remain reusable. The
 round scheduler uses measured cost to limit new work; its 1800 worker-second
 per-GPU target is advisory, not a wall-clock promise.
 
+The first production round also uses that cost target. The empirical initial
+count is an upper proposal: before reading production matrix values, the
+controller chooses a power-of-two base count from measured timings, starting
+at 512 when timings are missing. Complete cached eight-seed prefixes and the
+correction minima are retained. `initial_production_work.json` records the
+proposal, selected count and forecast. Explicit `--fullauto-initial`, a loaded
+adaptive configuration and `--fullauto-local off` keep their requested start.
+Later rounds use the ordinary error-driven refinement and unchanged acceptance
+tests. A first-round estimate can therefore appear before the empirical count
+has been reached; it is not a convergence declaration.
+
 All 16 errors are scaled by local M11, not by a potentially zero Mij. Ratio
 checks use absolute errors in Mij/M11. At each component/angle, statistical
 and interpolation terms plus fixed reserves must fit EPS; take the maximum

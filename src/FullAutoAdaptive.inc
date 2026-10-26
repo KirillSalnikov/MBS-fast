@@ -733,6 +733,7 @@ int RunAdaptive(Engine& e){
     }
     double lastCI=0,lastInterpolation=0;size_t lastNodes=0;
     for(;state.round<e.roundLimit;++state.round){
+        BoundInitialProduction(e,state,depths);
         PrepareResidualBudget(e,state);
         const auto ids=AdaptiveGuards(state.knots,e.theta.size());Require(ids.size()<=size_t(e.maxTheta),"theta budget exhausted");const auto x=Angles(e.theta,ids);lastNodes=ids.size();SaveAdaptive(e,state);
         e.State("evaluating",state.round,PeakBudgets(state.counts),ids.size(),lastCI,lastInterpolation,state.streak);
