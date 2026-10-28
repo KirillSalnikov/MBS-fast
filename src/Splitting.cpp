@@ -328,6 +328,11 @@ complex Splitting::GetRi() const
 
 double Splitting::ComputeEffectiveReRi() const
 {
+    // With zero loss the effective real index is independent of incidence.
+    // Avoid abs/division/sqrt/hypot for every internal facet hit. Retain the
+    // general, grazing-safe expression for any nonzero loss term.
+    if (m_cRiIm == 0.0)
+        return std::max(0.0, m_cRiRe);
     const double absCos = std::max(std::fabs(cosA), DBL_MIN);
     const double lossTerm = std::sqrt(std::max(0.0, m_cRiIm))/absCos;
     const double root = std::hypot(m_cRiRe, lossTerm);

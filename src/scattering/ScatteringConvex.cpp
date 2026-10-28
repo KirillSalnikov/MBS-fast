@@ -128,6 +128,10 @@ bool ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
             continue;
         }
 
+        // A rejected facet does not produce a child. Reuse the scratch child
+        // instead of constructing its Jones matrix and track id for every
+        // candidate facet. SplitSecondaryBeams overwrites it on every hit.
+        Beam inBeam;
         for (int id = 0; id < m_particle->nFacets; ++id)
         {
             if (id == beam.lastFacetId)
@@ -135,7 +139,6 @@ bool ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
                 continue;
             }
 
-            Beam inBeam;
             bool isIncident = SplitSecondaryBeams(beam, id, inBeam, outBeams);
 
             if (!isIncident)
@@ -157,7 +160,6 @@ bool ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
 bool ScatteringConvex::SplitSecondaryBeams(Beam &incidentBeam, int facetID,
                                            Beam &inBeam, std::vector<Beam> &outBeams)
 {
-    Beam outBeam;
     const Point3f &incidentDir = incidentBeam.direction;
 
     // ext. normal uses in this calculating
@@ -169,12 +171,18 @@ bool ScatteringConvex::SplitSecondaryBeams(Beam &incidentBeam, int facetID,
         return false;
     }
 
-    Intersect(facetID, incidentBeam, outBeam);
+    // Most candidate facets miss the aperture. Clipping only needs a polygon;
+    // defer the optical state (Jones matrix, track id, etc.) until a hit.
+    Polygon aperture;
+    Intersect(facetID, incidentBeam, aperture);
 
-    if (outBeam.nVertices < MIN_VERTEX_NUM)
+    if (aperture.nVertices < MIN_VERTEX_NUM)
     {
         return false;
     }
+
+    Beam outBeam;
+    outBeam = aperture;
 
 #ifdef _DEBUG // DEB
     auto id = RecomputeTrackId(incidentBeam.id, facetID);

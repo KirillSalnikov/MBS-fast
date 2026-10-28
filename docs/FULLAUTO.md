@@ -324,7 +324,8 @@ native. It is an optional launcher, not a required Python audit.
 on identical orientations. A candidate must be at least 5% faster and satisfy
 both the all-16/M11 and normalized-ratio gates: `min(1e-7, EPS/1024)` in FP64,
 `min(1e-5, EPS/1024)` in FP32. See `trace_backend_calibration.json` for actual
-times and errors. Initial workloads below 1024 skip this extra search. An
+times and errors. The benchmark uses 512–2048 orientations per seed, bounded
+by `--max-orientations`, including jobs whose startup count is 512. An
 explicit `cpu`, `resident` or `hybrid` choice fixes the backend.
 
 Resident tracing supports nonabsorbing convex coherent and incoherent PO, up to 32 faces,
@@ -335,6 +336,13 @@ count is unchanged. Queue capacity depends on face count and depth, with
 live free-VRAM checks and a complete CPU retry on overflow. Incoherent mode
 converts each beam to a Mueller matrix before accumulation, without inter-beam
 interference. Absorbing and unsupported cases retain CPU preparation.
+
+CPU convex tracing reuses its scratch child beam and constructs an outgoing
+beam only after a facet intersection succeeds. Lossless Fresnel splitting
+also reuses the incidence-independent effective squared index. These native
+optimizations require no extra flags; they preserve clipping, ray order,
+cutoffs, orientation samples and checkpoint estimators. They reduce CPU work
+feeding CUDA, but do not guarantee a speedup for a GPU-diffraction-bound job.
 
 Persistent workers retain a conservative RAM estimate per physics recipe.
 After 128 measured orientations, a later request may reuse a proven batch
