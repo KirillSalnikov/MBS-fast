@@ -7,6 +7,21 @@
 #include <string>
 
 namespace FullAutoScheduling {
+// A startup work estimate, never an accuracy certificate. Incoherent PO
+// retains aperture diffraction and therefore is not scale-invariant like GO.
+// Bound the pilot so a large size does not spend the final sample budget
+// before the measured eight-replica allocator has any evidence.
+inline double IncoherentInitial(double diameter,double wavelength,double imaginaryIndex) {
+    const double pi=3.14159265358979323846;
+    const double size=pi*diameter/wavelength;
+    const double optical=4*pi*std::fabs(imaginaryIndex)*diameter/wavelength;
+    return std::min(8192.,std::max(512.,std::max(size,512*(1+std::sqrt(std::max(0.,optical))))));
+}
+inline int CorrectionProbeCount(int current,int proposed,int maximum) {
+    const int doubled=current>maximum/2?maximum:2*current;
+    const int cap=current>maximum/4?maximum:4*current;
+    return std::max(doubled,std::min(cap,proposed));
+}
 // Schedule a preparation recipe's angular packets consecutively. Large
 // groups still start first, but eight seeds no longer evict one another's
 // angle-independent beams between subdivisions of the same request.

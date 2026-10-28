@@ -49,7 +49,8 @@ def main():
  incoherent=calculate('incoherent',['--phi-points','3','--incoherent','--fullauto-final-audit','on'],3)
  state=records[-1]['state'];assert not state['coherent'] and not state['analytic_controls']
  sharing=out/'incoherent/depth_sharing_verification.json'
- if sharing.exists():assert not json.loads(sharing.read_text()).get('enabled',False)
+ report=json.loads(sharing.read_text());assert report['enabled']
+ assert max(report['max_all16_difference_scaled_M11'],report['max_ratio_difference'])<=report['numerical_tolerance']
  # Incoherent per-beam Mueller summation must change a real scattering
  # matrix; equivalence here would expose a silently ignored mode flag.
  delta=float(np.max(abs(incoherent[:,2:]-coherent[:,2:])/coherent[:,2,None]));assert delta>.01,delta

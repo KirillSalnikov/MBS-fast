@@ -841,7 +841,7 @@ struct Engine {
         localPolicy=args.IsCatched("fullauto_local")?args.GetStringValue("fullauto_local"):"auto";local=localPolicy!="off";ratios=On("fullauto_ratios");phiRecheck=On("fullauto_phi_recheck");
         polarControls=On("fullauto_polar_controls");finalChecks=On("fullauto_final_checks");finalAudit=finalChecks&&On("fullauto_final_audit");physicsAudit=On("fullauto_physics_audit",false);
         if(go&&args.IsCatched("cutoff_profile")&&args.GetStringValue("cutoff_profile")=="balanced")physicsAudit=true;
-        coherent=!go&&!args.IsCatched("incoh");depthSharing=!go&&coherent&&On("fullauto_depth_share");
+        coherent=!go&&!args.IsCatched("incoh");depthSharing=!go&&On("fullauto_depth_share");
         fixedPhi=args.IsCatched("nphi")?args.GetIntValue("nphi"):(args.IsCatched("grid")?args.GetIntValue("grid",args.GetArgNumber("grid")-2):0);
         fixedPipeline=args.IsCatched("orientation_pipeline");kernel.pipeline=fixedPipeline;
         if(const char* v=getenv("MBS_GPU_BLOCK")){int n=std::atoi(v);Require(std::string(v)==std::to_string(n)&&(n==64||n==128||n==256),"MBS_GPU_BLOCK must be 64, 128 or 256");kernel.block=n;fixedBlock=true;}
@@ -961,11 +961,16 @@ struct Engine {
             Require(maxCount>=512,"automatic initial count needs max-orientations >=512 or an explicit fullauto-initial");
             double proposed=512;
             if(initialModel=="xi"){proposed=std::max(512.,estimatedOrientations);initialSource="legacy max(512, beta*gamma at xi/16)";}
-            else if(go||!coherent){
+            else if(go){
                 // With real index GO is invariant to uniform body scaling.
                 // Absorption introduces an optical path / wavelength scale.
                 const double tau=4*3.14159265358979323846*std::fabs(config.refractiveImag)*maximumDiameter/config.wavelengthUm;
-                proposed=512*(1+std::sqrt(std::max(0.,tau)));empiricalFinal=proposed*16;initialSource=go?"GO scale invariance; optical-depth pilot":"incoherent fallback: bounded optical-depth pilot";
+                proposed=512*(1+std::sqrt(std::max(0.,tau)));empiricalFinal=proposed*16;initialSource="GO scale invariance; optical-depth pilot";
+            }else if(!coherent){
+                proposed=FullAutoScheduling::IncoherentInitial(maximumDiameter,config.wavelengthUm,config.refractiveImag);
+                // No completed-data convergence fit exists for this mode.
+                // Do not present a multiple of the pilot as a final forecast.
+                empiricalFinal=0;initialSource="incoherent diffraction pilot: clamp(max(pi*Dmax/lambda, optical-depth pilot),512,8192)";
             }else{
                 const bool prism=args.IsCatched("p")&&args.GetIntValue("p")==1;
                 const double relative=maximumEdge/config.wavelengthUm;
@@ -1643,11 +1648,28 @@ struct Engine {
     }
     void VerifyDepthSharing(const std::vector<double>& x){
         if(!depthSharing||depthVerified||target<=1)return;
-        const unsigned seed=7001;const int lower=std::max(1,target-2),n=std::min(pilot,64);double maximum=0;
-        try{auto paired=DirectStage(n,&seed,1,target,x,true,false,0,lower);const Job view=LowerView(paired[0],lower);auto standalone=DirectStage(n,&seed,1,lower,x);
-            Matrix reference=standalone[0].matrix;if(controls)for(size_t r=0;r<reference.size();++r)reference[r][0]=standalone[0].controls[r][0];maximum=Difference(view.matrix,standalone[0].matrix,reference);depthSharing=maximum<1e-7;
+        const unsigned seeds[2]={7001,7013};const int lower=std::max(1,target-2),n=std::min(pilot,64);double maximum=0,ratioError=0;
+#ifdef MBS_GPU_FP32
+        // Shared lower-depth reductions may reorder FP32 sums. Match the
+        // short-packet allowance, still below a quarter of execution reserve.
+        const double tolerance=std::min(1e-6,eps/4096);
+#else
+        const double tolerance=std::min(1e-7,eps/1024);
+#endif
+        try{auto paired=DirectStage(n,seeds,2,target,x,true,false,0,lower);
+            for(int depth:{target,lower}){auto standalone=DirectStage(n,seeds,2,depth,x);
+                for(size_t s=0;s<2;++s){const Job view=depth==target?paired[s]:LowerView(paired[s],lower);
+                    const Matrix a=Data({view})[0],b=Data({standalone[s]})[0];Matrix reference=b;
+                    if(controls)for(size_t r=0;r<reference.size();++r)reference[r][0]=standalone[s].controls[r][0];
+                    maximum=std::max(maximum,Difference(a,b,reference));
+                    for(size_t r=0;r<a.size();++r){if(!(a[r][0]>0&&b[r][0]>0)){ratioError=1e100;continue;}
+                        for(int k=1;k<16;++k){const double ar=a[r][k]/a[r][0],br=b[r][k]/b[r][0];
+                            ratioError=std::max(ratioError,std::fabs(ar-br)/std::max(1.,std::max(std::fabs(ar),std::fabs(br))));}}
+                }}depthSharing=std::max(maximum,ratioError)<=tolerance;
         }catch(const std::exception& error){const std::string message=error.what();const size_t pos=message.find("see ");const std::string log=pos==std::string::npos?message:Read(message.substr(pos+4));if(log.find("paired-depth cache unsupported")==std::string::npos)throw;depthSharing=false;}
-        depthVerified=true;Record(root+"/depth_sharing_verification.json","{\"enabled\":"+std::string(depthSharing?"true":"false")+",\"max_all16_difference_scaled_M11\":"+Number(maximum)+",\"probe_count\":"+Number(n)+",\"scope\":\"convex trace prefix with separate coherent diffraction; unsupported shapes use independent traces\"}");
+        depthVerified=true;Record(root+"/depth_sharing_verification.json","{\"enabled\":"+std::string(depthSharing?"true":"false")+",\"max_all16_difference_scaled_M11\":"+Number(maximum)
+            +",\"max_ratio_difference\":"+Number(ratioError)+",\"numerical_tolerance\":"+Number(tolerance)+",\"probe_count\":"+Number(n)+",\"probe_seeds\":2,\"coherent\":"+(coherent?"true":"false")
+            +",\"scope\":\"both depth matrices versus independent traces on identical orientations; unsupported shapes use independent traces\"}");
     }
     #include "FullAutoPrefixCache.inc"
     #include "FullAutoPrefixBatch.inc"

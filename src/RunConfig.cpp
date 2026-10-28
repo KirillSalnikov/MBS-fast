@@ -940,8 +940,6 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
         if(args.IsCatched("incoh")){
             if(args.IsCatched("analytic_facet_average")||args.IsCatched("analytic_shadow_control")||args.IsCatched("analytic_mean_cache")||args.IsCatched("analytic_mean_threads")||(args.IsCatched("fullauto_controls")&&args.GetStringValue("fullauto_controls")=="on"))
                 Fail("incoherent fullauto cannot use coherent analytic facet controls.","remove analytic modifiers or use --fullauto-analytic-controls off/auto.");
-            if(args.IsCatched("fullauto_depth_share")&&args.GetStringValue("fullauto_depth_share")=="on")
-                Fail("incoherent fullauto cannot use coherent paired-depth sharing.","use --fullauto-depth-sharing off or remove the modifier.");
         }
         if(args.IsCatched("fullauto_controls")&&args.GetStringValue("fullauto_controls")=="off"&&(args.IsCatched("analytic_shadow_control")||args.IsCatched("analytic_mean_cache")||args.IsCatched("analytic_mean_threads")))
             Fail("analytic modifiers conflict with --fullauto-analytic-controls off.","remove the analytic modifiers or enable controls.");

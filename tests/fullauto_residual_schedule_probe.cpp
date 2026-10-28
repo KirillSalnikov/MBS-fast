@@ -49,6 +49,16 @@ void CorrectionResume(const std::string& root){
     const auto pending=s.counts;e.forbidNativeWork=true;BoundResumedRound(e,s,{4,6});Require(s.counts==pending,"pending correction receipt production changed");
     probe.complete=true;SaveCorrectionProbe(e,s,probe);RestoreCorrectionProbe(e,s);BoundResumedRound(e,s,{4,6});
     Require(s.counts[1][1]>=256&&!RestoreCorrectionProbe(e,s),"completed correction lost during resume bound");
+    // The widened subround can contain two correction depths and 4x growth.
+    // Recovery commits each allocation once, without extending the base.
+    e.theta.clear();for(size_t i=0;i<128;++i)e.theta.push_back(170+i/16.);
+    s.round=17;s.counts=Budgets(3,std::vector<int>(128,512));s.previous=Matrix(128);s.valid.assign(128,false);s.coarse.assign(128,false);
+    s.knots={0,127};s.interpolationCounts.clear();probe.rows.clear();probe.complete=true;
+    for(size_t i=0;i<128;++i)probe.rows.push_back({i,1+i%2,512,2048});
+    SaveCorrectionProbe(e,s,probe);const auto restored=ReadCorrectionProbe(e,s);
+    Require(restored.rows.size()==128&&CorrectionProbeRequests(e,{8,10,12},restored).size()==2,"wide correction lost depth grouping");
+    Require(RestoreCorrectionProbe(e,s)&&!RestoreCorrectionProbe(e,s),"wide correction replayed or failed recovery");
+    for(size_t i=0;i<128;++i)Require(s.counts[0][i]==512&&s.counts[1+i%2][i]==2048&&s.counts[2-i%2][i]==512,"wide correction modified another level");
 }
 void CommonPhiScopeTest(const std::string& root){
     ArgPP args;RunConfig config;Engine e(args,config);SetupMemory(e,root,"/bin/true",false);

@@ -58,9 +58,23 @@ void SharedGpuResources(const std::string& root){
     for(size_t i=0;i<2;++i){if(saved[i].first)setenv(names[i],saved[i].second.c_str(),1);else unsetenv(names[i]);}
 
 }
+void IncoherentRecovery(const std::string& root){
+    ArgPP args;RunConfig config;Engine e(args,config);Setup(e,root);e.coherent=false;e.go=false;
+    e.workerThreads=1;e.workerChunk=64;e.orientationBlock=64;e.gpuCandidates=e.gpus;e.selectedCutoff="off";e.cutoffPolicy="auto";
+    e.depthSharing=false;e.SaveTuning();e.depthSharing=true;e.balancedCorrection=true;
+    e.PrepareTuning(e.theta);
+    Require(!e.depthSharing&&!e.balancedCorrection,"old incoherent checkpoint silently enabled a new estimator");
+    e.TuneCutoffs(e.theta);Require(e.balancedCorrection,"fresh incoherent cutoff correction disabled");
+    e.depthSharing=true;e.SaveTuning();e.depthSharing=false;e.balancedCorrection=false;e.PrepareTuning(e.theta);
+    Require(e.depthSharing&&e.balancedCorrection,"new incoherent checkpoint lost corrected/shared estimator");
+}
 int main(int argc,char** argv){try{
     Require(argc==2,"output directory required");
     using namespace FullAutoScheduling;
+    Require(IncoherentInitial(5,.532,0)==512&&IncoherentInitial(500,.532,0)>2900&&IncoherentInitial(1e6,.532,0)==8192,"incoherent startup lost size dependence or bounded pilot");
+    Require(IncoherentInitial(500,.532,.1)>=IncoherentInitial(500,.532,0),"absorption shrank startup pilot");
+    Require(CorrectionProbeCount(512,2048,65536)==2048&&CorrectionProbeCount(512,8192,65536)==2048
+        &&CorrectionProbeCount(512,512,65536)==1024&&CorrectionProbeCount(32768,65536,65536)==65536,"correction pilot did not retain bounded power-of-two growth");
     const std::vector<NativePacket> packets={{"seed0",8},{"seed1",8},{"seed0",3},{"seed1",3},{"other_depth",20}};
     Require(NativePacketOrder(packets)==std::vector<size_t>({4,0,2,1,3}),"angular packets lost preparation locality or largest-group priority");
     Require(NativePacketOrder({}).empty(),"empty queue gained work");
@@ -92,6 +106,7 @@ int main(int argc,char** argv){try{
 #endif
      gpu.go=true;Require(gpu.MergeInterpolationWork(),"GO grouping optimization disabled");}
     SharedGpuResources(std::string(argv[1])+"/dispatch_resources");
+    IncoherentRecovery(std::string(argv[1])+"/incoherent_recovery");
     BoundedWork(std::string(argv[1])+"/round_work");
     Calibration(std::string(argv[1])+"/resolved",false);Calibration(std::string(argv[1])+"/unresolved",true);
     std::cout<<"fullauto scheduling regression checks passed\n";return 0;

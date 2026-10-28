@@ -405,7 +405,7 @@ int main()
         auto core=std::vector<std::string>{"--method","po","--backend","cpu","--particle","1",".2",".1","--ri","1.31","0","-w","1","--fullauto",".01"};
         auto inc=core;inc.push_back("--incoherent");ExpectSuccess("fullauto incoherent sampling",inc);
         auto impossible=inc;impossible.insert(impossible.end(),{"--fullauto-analytic-controls","on"});ExpectFailure("incoherent fullauto rejects coherent analytic controls",impossible,"incoherent fullauto");
-        auto pairedInc=inc;pairedInc.insert(pairedInc.end(),{"--fullauto-depth-sharing","on"});ExpectFailure("incoherent fullauto rejects coherent depth sharing",pairedInc,"incoherent fullauto");
+        auto pairedInc=inc;pairedInc.insert(pairedInc.end(),{"--fullauto-depth-sharing","on"});ExpectSuccess("incoherent fullauto permits verified depth sharing",pairedInc);
         auto cache=core;cache.insert(cache.end(),{"--analytic-mean-cache","provided.cache","--analytic-shadow-control","facets","--checkpoint"});ExpectSuccess("fullauto owns analytic controls and checkpoint",cache);
         auto phi=core;phi.insert(phi.end(),{"--scattering-grid","0","180","7","32","--phi-points","3","--max-phi-points","4"});ExpectSuccess("explicit phi overrides embedded grid phi",phi);
         auto conflict=core;conflict.insert(conflict.end(),{"--scattering-grid","0","180","7","32","--max-phi-points","4"});ExpectFailure("fixed grid phi contradicts explicit phi limit",conflict,"fixed phi count exceeds");

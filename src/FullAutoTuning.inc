@@ -190,7 +190,7 @@ void TuneCutoffs(const std::vector<double>& input){
     // Fixed production estimator. Its off-balanced correction removes cutoff
     // bias; uncertainty is measured from the complete eight combined replicas.
     tuneCutoffs=false;SetCutoff("off");cutoffError=0;
-    balancedCorrection=coherent&&!go;
+    balancedCorrection=!go;
     Record(root+"/cutoff_calibration.json","{\"enabled\":true,\"selected\":\"balanced_with_paired_off_correction\",\"physical_target\":\"off\",\"profile_search\":false,\"correction_fraction\":0.125,\"minimum_block\":512,\"supported\":"+std::string(balancedCorrection?"true":"false")+"}");
 }
 void TuneTracing(const std::vector<double>& x){
@@ -202,8 +202,10 @@ void TuneTracing(const std::vector<double>& x){
     const bool explicitEnvironment=getenv("MBS_GPU_TRACE_CONVEX_QUEUE")||getenv("MBS_GPU_TRACE_CONVEX_DIRECT")||getenv("MBS_GPU_TRACE_HYBRID");
     if(tracePolicy!="auto"||explicitEnvironment||!config.useGpu||go||controls||config.refractiveImag!=0||config.geometry==GeometryClassification::Nonconvex)return;
     if(std::find(base.begin(),base.end(),"--po-trace-backend")!=base.end())return;
-    if(initial<1024){Record(root+"/trace_backend_calibration.json","{\"selected\":\"cpu\",\"reason\":\"small initial workload; no extra tracing search\"}");return;}
-    const int n=std::min(maxCount,std::min(2048,initial));const bool previousPipeline=kernel.pipeline;kernel.pipeline=true;
+    // A short startup orientation pilot says nothing about the cost of the
+    // later adaptive prefixes, especially for incoherent PO. Compare actual
+    // native packets after phi/theta calibration even when initial is 512.
+    const int n=std::min(maxCount,std::max(512,std::min(2048,initial)));const bool previousPipeline=kernel.pipeline;kernel.pipeline=true;
     const auto originalBase=base;
     if(!args.IsCatched("trace_cache_mb")){RemoveOption("--trace-cache-mib");base.push_back("--trace-cache-mib");base.push_back("0");}
     const unsigned seeds[8]={28001,28019,28027,28031,28051,28057,28069,28081};
@@ -237,7 +239,11 @@ void TuneTracing(const std::vector<double>& x){
 void PrepareTuning(const std::vector<double>& angles){
     if(RestoreTuning()){
         bool explicitCutoff=args.IsCatched("r");for(const char* key:{"cutoff_profile","beam_cutoff","beam_cutoff_j","beam_cutoff_area","beam_cutoff_importance","trace_cutoff","trace_cutoff_j","trace_cutoff_area","trace_cutoff_importance"})explicitCutoff=explicitCutoff||args.IsCatched(key);
-        balancedCorrection=coherent&&!go&&cutoffPolicy!="off"&&!explicitCutoff&&selectedCutoff=="off";
+        // Old incoherent checkpoints used direct-off. Retain that estimator;
+        // only a saved successful opt-in may restore the new corrected path.
+        const bool savedIncoherentCorrection=!coherent&&Exists(root+"/cutoff_calibration.json")
+            &&CompactJson(Read(root+"/cutoff_calibration.json")).find("\"supported\":true")!=std::string::npos;
+        balancedCorrection=(coherent||savedIncoherentCorrection)&&!go&&cutoffPolicy!="off"&&!explicitCutoff&&selectedCutoff=="off";
         Log("cutoff_estimator_restore","{\"balanced_with_paired_off_correction\":"+std::string(balancedCorrection?"true":"false")+",\"saved_physical_target\":"+Quoted(selectedCutoff)+",\"old_completed_blocks_preserved\":true,\"profile_search\":false}");
         return;
     }
@@ -272,6 +278,6 @@ bool AuditAutomaticCutoffs(const std::vector<double>& angles,int n,int round){
         error=PairedBias(Data(requested),Data(reference));if(error<=eps/8||n>=maxCount||attempt==2)break;n=std::min(maxCount,n>maxCount/2?maxCount:2*n);}
     controls=oldControls;SetMirror(mirror);cutoffError=error;const bool pass=error<=eps/8;
     Record(root+"/automatic_cutoff_validation.json","{\"passed\":"+std::string(pass?"true":"false")+",\"profile\":"+Quoted(profile)+",\"bias95\":"+Number(error)+",\"budget\":"+Number(eps/8)+",\"count_per_seed\":"+Number(n)+",\"theta_count\":"+Number(x.size())+",\"fresh_seeds\":true,\"fallback_to_off\":"+(pass?"false":"true")+"}");
-    if(!pass){SetCutoff("off");balancedCorrection=coherent&&!go;cutoffError=0;depthSharing=coherent&&On("fullauto_depth_share");depthVerified=false;weights.clear();polarWeights.clear();weightTheta.clear();SetMirror(mirror);SaveTuning();}
+    if(!pass){SetCutoff("off");balancedCorrection=!go;cutoffError=0;depthSharing=!go&&On("fullauto_depth_share");depthVerified=false;weights.clear();polarWeights.clear();weightTheta.clear();SetMirror(mirror);SaveTuning();}
     SaveTuning();return pass;
 }

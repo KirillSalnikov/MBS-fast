@@ -43,7 +43,7 @@ workflow. Give independent sizes different output directories and GPU resources.
 | Azimuth phi | Cost/variance calibration with sampled Haar alpha | `--phi-points N` fixes it |
 | Output angles | Size-dependent reference grid | `--theta-grid-file FILE` fixes output angles |
 | Interpolation | Local cubic support, matched residual checks | Allowance is EPS/4 |
-| Pruning in coherent PO | Balanced estimate plus coupled uncut correction | Explicit cutoff settings replace this automatic policy |
+| Pruning in PO | Balanced estimate plus coupled uncut correction, including incoherent PO | Explicit cutoff settings replace this automatic policy |
 | Analytic controls | Independent fitting and validation | `--fullauto-analytic-controls off` disables them |
 | Symmetry | Verify supported body rotations and mirror reduction | Explicit symmetry overrides are the user's physical assertion |
 | Execution | Worker threads, chunks and cache/work limits | Explicit execution settings take precedence |
@@ -197,12 +197,44 @@ produces both depths. Each term is a complete coherent Mueller estimate at its
 own depth, so interference terms are retained. A low-variance correction needs
 fewer samples than the expensive full solution.
 
-Default coherent PO pruning uses
+For incoherent PO, each term instead sums individual beam Mueller matrices at
+its own depth. Convex shapes can also share the trace. Before enabling sharing,
+two paired pilot seeds compare both depths against independent traces, including
+all 16 entries and normalized ratios. The numerical allowance is
+`min(1e-7, EPS/1024)` in double, `min(1e-6, EPS/4096)` in float.
+`depth_sharing_verification.json` records the result; failed or unsupported
+sharing uses separate traces. This does not enable coherent analytic controls.
+
+Default PO pruning uses
 $\widehat M=\overline B_N+\overline{(O-B)}_m$, where $B$ is balanced and $O$ is
 uncut. The physical target remains uncut, with cutoff correction uncertainty
 included in the complete replicas. Explicit `--cutoff-profile balanced` fixes a
 preset and bypasses this automatic policy; it is not an alias for the corrected
 estimator. `--cutoff-profile off` fixes no pruning.
+
+### Incoherent startup and scheduling
+
+Incoherent PO retains aperture diffraction, so its startup estimate is distinct
+from the scale-invariant nonabsorbing GO estimate. Before the existing count
+cap and power-of-two rounding it proposes
+`clamp(max(pi*Dmax/lambda, 512*(1+sqrt(4*pi*abs(Im(m))*Dmax/lambda))), 512, 8192)`.
+This is a bounded work heuristic, not an accuracy prediction. The measured
+first-round work cap can reduce it; explicit `--fullauto-initial` takes priority.
+
+Automatic GPU tracer comparison no longer skips an initial count of 512. It
+benchmarks 512–2048 orientations per seed (bounded by `--max-orientations`) at
+the selected phi/depth and compares CPU, resident GPU and hybrid tracing.
+A different tracer requires numerical agreement and at least 5% measured time
+saving. Unsupported geometry or absorption retains its existing path.
+
+A correction-dominated error can trigger up to two short subrounds before a
+costly base extension. Each selects up to 128 affected angles, including
+different correction levels, and grows selected counts by 2–4 times. Its
+forecast cost must remain at most 10% of the pending base extension. Eight
+replicas, coupled orientations and acceptance tests remain unchanged; the
+forecast cannot certify convergence. Old incoherent checkpoints retain their
+saved direct-off and independent-depth recipe. New checkpoints record and
+restore the corrected estimator.
 
 ## Angular interpolation and acceptance
 

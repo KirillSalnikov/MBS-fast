@@ -2,12 +2,13 @@
 #define MBS_NATIVE_ORIENTATION_PREFIX_OUTPUT 1
 #include "../src/FullAuto.cpp"
 using namespace FullAuto;
-void Setup(Engine& e,const std::string& root,const std::string& binary,bool controls,bool absorbing){
+void Setup(Engine& e,const std::string& root,const std::string& binary,bool controls,bool absorbing,bool incoherent=false){
     e.compactIndex=true;
     e.root=root;e.signature="cutoff-correction-regression-v1";Directory(root);Directory(root+"/jobs");e.exe=binary;e.binaryHash=FileHash(binary);
     e.controls=controls;e.depthSharing=true;e.gpus={""};e.seeds.assign(production,production+8);e.workerThreads=1;e.hostBudgetMb=512;
     e.phi=4;e.target=8;e.theta={170,175,180};e.initial=1024;e.orientationBlock=512;e.workerPolicy="process";e.resourcePolicy="off";
     e.base={"--method","po","--backend","cpu","--particle","1","2","1","--ri","1.3116",absorbing?".001":"0","--wavelength-um",".532","--symmetry","1","1","--cutoff-profile","off"};e.selectedCutoff="off";
+    e.coherent=!incoherent;if(incoherent){e.base.push_back("--incoherent");e.base[6]="501.2";e.base[7]="155.8";e.phi=8;e.theta={163.75909223159732,167.13352685050799,170};}
     WriteGrid(root+"/requested_theta.csv",e.theta);
 }
 // A normal interruption cannot leave a durable journal record without its
@@ -26,8 +27,19 @@ void DropUncommittedJournalJobs(const std::string& root,const std::set<std::stri
 void Close(double a,double b,const char* message){Require(std::fabs(a-b)<=2e-12*std::max(1.,std::max(std::fabs(a),std::fabs(b))),message);}
 int main(int argc,char** argv){try{
     Require(argc==3,"OUTPUT BINARY");ArgPP args;RunConfig config;
-    for(bool controls:{false,true}){
-        const std::string root=std::string(argv[1])+"/controls"+Number(controls);Engine e(args,config);Setup(e,root,argv[2],controls,controls);e.WarmCache();
+    for(int mode:{0,1,2}){const bool controls=mode==1,incoherent=mode==2;
+        const std::string root=std::string(argv[1])+"/mode"+Number(mode);Engine e(args,config);Setup(e,root,argv[2],controls,controls,incoherent);e.WarmCache();
+        if(incoherent){
+            // Equal counts must telescope sample-by-sample to the direct
+            // highest depth, including correlations across all eight seeds.
+            e.target=12;e.VerifyDepthSharing(e.theta);Require(e.depthSharing,"incoherent sharing pilot rejected");
+            const auto levels=EvaluateBudget(e,{8,10,12},Budgets(3,std::vector<int>(3,128)),{0,1,2},e.seeds.data());
+            const auto combined=Combine(levels.levels),direct=e.Data(e.DirectStage(128,e.seeds.data(),8,12,e.theta));
+            double error=0;for(size_t s=0;s<8;++s){error=std::max(error,Difference(combined[s],direct[s],direct[s]));
+                for(size_t r=0;r<3;++r)for(int k=1;k<16;++k)error=std::max(error,std::fabs(combined[s][r][k]/combined[s][r][0]-direct[s][r][k]/direct[s][r][0]));}
+            Require(error<1e-7,"incoherent multilevel estimate differs from direct highest depth");
+            std::cout<<"incoherent actual column501 equal-count levels versus direct n12: "<<Number(error)<<'\n';e.target=8;
+        }
         {AdaptiveState state;state.round=2;state.counts={{1048576}};Statistics noisy;noisy.maxInterval=1;
             const int initial=e.initial;e.initial=524288;e.statistical=.01;
             Require(WorkingPhiPilotDue(e,state,noisy),"severely noisy rule waits eight initial blocks");
@@ -92,16 +104,16 @@ int main(int argc,char** argv){try{
         auto prefix=e.PrefixStage(1024,e.seeds.data(),8,8,e.theta);IntegralReader reader;
         for(size_t i=0;i<8;++i){for(size_t r=0;r<3;++r)for(int k=0;k<16;++k)Close(prefix[i].matrix[r][k],.5*(old[i].matrix[r][k]+corrected[i].matrix[r][k]),"mixed checkpoint prefix wrong");
             const auto a=reader.Resolve(old[i].folder,8),b=reader.Resolve(corrected[i].folder,8),v=reader.Resolve(prefix[i].folder,8);Close(v.ext,.5*(a.ext+b.ext),"mixed extinction prefix wrong");}
-        const auto before=FileHash(corrected[0].folder+"/complete.txt");Engine restored(args,config);Setup(restored,root,argv[2],controls,controls);restored.balancedCorrection=true;restored.WarmCache();restored.forbidNativeWork=true;
+        const auto before=FileHash(corrected[0].folder+"/complete.txt");Engine restored(args,config);Setup(restored,root,argv[2],controls,controls,incoherent);restored.balancedCorrection=true;restored.WarmCache();restored.forbidNativeWork=true;
         auto replay=restored.DirectStage(512,e.seeds.data(),8,8,e.theta,true,false,512,6);Require(FileHash(replay[0].folder+"/complete.txt")==before,"completed correction rerun");
         auto mixed=restored.PrefixStage(1024,e.seeds.data(),8,8,e.theta);Require(mixed[0].matrix==prefix[0].matrix,"resume changed mixed estimator");
         auto isolated=e.DirectStage(512,e.seeds.data(),1,8,e.theta,true,false,2048);
         const auto folder=isolated[0].folder;std::remove((folder+"/complete.txt").c_str());
-        if(e.compactIndex){Engine missing(args,config);Setup(missing,root,argv[2],controls,controls);missing.balancedCorrection=true;missing.WarmCache();missing.forbidNativeWork=true;
+        if(e.compactIndex){Engine missing(args,config);Setup(missing,root,argv[2],controls,controls,incoherent);missing.balancedCorrection=true;missing.WarmCache();missing.forbidNativeWork=true;
             bool rejected=false;try{missing.DirectStage(512,e.seeds.data(),1,8,e.theta,true,false,2048);}catch(const std::exception&){rejected=true;}
             Require(rejected,"missing durably indexed marker was accepted");}
         DropUncommittedJournalJobs(root,{folder});
-        Engine interrupted(args,config);Setup(interrupted,root,argv[2],controls,controls);interrupted.balancedCorrection=true;interrupted.WarmCache();interrupted.forbidNativeWork=true;
+        Engine interrupted(args,config);Setup(interrupted,root,argv[2],controls,controls,incoherent);interrupted.balancedCorrection=true;interrupted.WarmCache();interrupted.forbidNativeWork=true;
         auto recovered=interrupted.DirectStage(512,e.seeds.data(),1,8,e.theta,true,false,2048);
         Require(recovered[0].matrix==isolated[0].matrix,"interrupted assembly changed or reran children");
         // Rebuild a lost prefix view and parent using only its durable native
@@ -116,7 +128,7 @@ int main(int argc,char** argv){try{
         std::remove((folder+"/complete.txt").c_str());std::remove((prefixFolder+"/complete.txt").c_str());
         DropUncommittedJournalJobs(root,{folder,prefixFolder});
         Require(std::rename((folder+"/result").c_str(),(folder+"/saved_before_prefix_recovery").c_str())==0,"cannot preserve test assembly");
-        Engine prefixRecovered(args,config);Setup(prefixRecovered,root,argv[2],controls,controls);prefixRecovered.balancedCorrection=true;prefixRecovered.WarmCache();prefixRecovered.forbidNativeWork=true;
+        Engine prefixRecovered(args,config);Setup(prefixRecovered,root,argv[2],controls,controls,incoherent);prefixRecovered.balancedCorrection=true;prefixRecovered.WarmCache();prefixRecovered.forbidNativeWork=true;
         auto rebuilt=prefixRecovered.DirectStage(512,e.seeds.data(),1,8,e.theta,true,false,2048);
         Require(rebuilt[0].matrix==isolated[0].matrix,"lost prefix view caused native replay or changed matrix");
         const auto provenance=Read(folder+"/cutoff_sources.tsv");Atomic(folder+"/cutoff_sources.tsv",provenance+"corruption\n");bool rejected=false;
@@ -135,5 +147,5 @@ int main(int argc,char** argv){try{
 
 
     }
-    std::cout<<"PASS corrected paired matrices, controls, absorption, integrals, mixed prefixes, resume\n";return 0;
+    std::cout<<"PASS coherent/incoherent corrected paired matrices, controls, absorption, integrals, mixed prefixes, resume\n";return 0;
 }catch(const std::exception& ex){std::cerr<<ex.what()<<'\n';return 1;}}

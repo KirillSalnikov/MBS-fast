@@ -6092,8 +6092,7 @@ void TracerPOTotal::TraceWeightedOrientations(
             if(std::fabs(orientation.weight-1./nOrient)>1e-14/nOrient)
                 throw std::runtime_error("orientation prefix output requires equally weighted orientations");
     }
-    if(m_pairedDepth&&(m_particle->IsConcave()||m_particle->isAggregated||m_mpiSize!=1||computeNoShadow||m_analyticFacetSamples||m_analyticBackscatter||m_analyticAzimuthGaussian
-       ||!handlerPO->isCoh))
+    if(m_pairedDepth&&(m_particle->IsConcave()||m_particle->isAggregated||m_mpiSize!=1||computeNoShadow||m_analyticFacetSamples||m_analyticBackscatter||m_analyticAzimuthGaussian))
         throw std::runtime_error("paired-depth cache unsupported for this geometry/pruning/diagnostic mode; use independent traces");
 
 
@@ -7268,7 +7267,7 @@ void TracerPOTotal::TraceWeightedOrientations(
         handlerPO->m_extinctionCrossSectionOt=upperExtinction;
         std::ofstream revision((lowerName+"_integrals_revision.txt").c_str());revision<<"paired_extinction_v1\n";revision.close();
         if(!revision)throw std::runtime_error("cannot write paired-depth integral revision");
-        std::cout<<"Paired depth "<<m_pairedDepth<<": coherent field recomputed from shared convex trace; "<<lowerName<<".dat"<<std::endl;
+        std::cout<<"Paired depth "<<m_pairedDepth<<": "<<(handlerPO->isCoh?"coherent field":"incoherent per-beam Mueller sum")<<" recomputed from shared convex trace; "<<lowerName<<".dat"<<std::endl;
     }
     std::vector<double> facetRawMeans,facetHybridMeans;
     if(facetControl)
