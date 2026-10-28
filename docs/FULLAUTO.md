@@ -174,6 +174,18 @@ Fullauto can choose these automatically; forcing a control is not a guarantee
 that it reduces variance or setup time. Polarization controls undergo separate
 validation; analytic M11 control does not analytically solve all 16 elements.
 
+An analytic-control fallback does not reject the particle's mirror symmetry.
+Fullauto rechecks `mirror-gamma` using ordinary PO at the selected phi and
+reflection depth. A passing paired all-16 test retains the mirror shortcut
+under the unchanged `epsilon/256` budget; automatic rejection uses full gamma.
+Explicit `--fullauto-mirror off` remains off, while explicit `--mirror-gamma`
+fails rather than silently changing modes if verification fails.
+`analytic_fallback_mirror.json` records the recovery decision and
+`mirror_verification.json` records the numerical comparison. Cached proofs
+include the angular grid, phi, depth, executable, execution recipe and analytic
+control coefficients. Checkpoints retain the selected mode; upgrading alone
+does not switch an existing full-gamma calculation to mirror reconstruction.
+
 ## Depth and cutoff differences
 
 For depth levels $n_0<\cdots<n_L$,

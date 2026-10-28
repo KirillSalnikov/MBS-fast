@@ -108,6 +108,16 @@ reflection depth unless fixed. CUDA uses a bounded kernel/phi pilot
 before the depth comparison; complete production tuning follows at the
 selected depth.
 
+Each new depth candidate restarts at the configured depth pilot; only
+resuming the same unresolved candidate retains its expanded count. After
+two pilots, the controller may try the next depth if the mean residual
+exceeds the budget, or if its interval exceeds twice the remaining gap.
+The latter is a cost heuristic based on an N\^{}-1/2 forecast, not a
+Sobol convergence guarantee. It may select a larger depth. The maximum
+depth retains the full sampling search. Acceptance still requires the
+original upper confidence bound. Decisions are logged as
+\nolinkurl{depth_pilot_decision}.
+
 Next it verifies supported symmetries, fits control coefficients on
 training scrambles and validates them on different scrambles. It chooses
 phi and execution settings from measured cost and variance. Unsupported
@@ -217,6 +227,20 @@ persistent mean cache. Fullauto can choose these automatically; forcing
 a control is not a guarantee that it reduces variance or setup time.
 Polarization controls undergo separate validation; analytic M11 control
 does not analytically solve all 16 elements.
+
+An analytic-control fallback does not reject the particle's mirror
+symmetry. Fullauto rechecks \texttt{mirror-gamma} using ordinary PO at
+the selected phi and reflection depth. A passing paired all-16 test
+retains the mirror shortcut under the unchanged \nolinkurl{epsilon/256}
+budget; automatic rejection uses full gamma. Explicit
+\texttt{-\/-fullauto-mirror\ off} remains off, while explicit
+\nolinkurl{-\/-mirror-gamma} fails rather than silently changing modes if
+verification fails. \nolinkurl{analytic_fallback_mirror.json} records the
+recovery decision and \nolinkurl{mirror_verification.json} records the
+numerical comparison. Cached proofs include the angular grid, phi,
+depth, executable, execution recipe and analytic control coefficients.
+Checkpoints retain the selected mode; upgrading alone does not switch an
+existing full-gamma calculation to mirror reconstruction.
 
 \subsection{Depth and cutoff
 differences}\label{depth-and-cutoff-differences}
@@ -334,6 +358,46 @@ recipe rather than silently changing its physics.
 installs and starts a user systemd service for process recovery.
 Numerical decisions remain native. It is an optional launcher, not a
 required Python audit.
+
+\subsection{Tracing and preparation
+memory}\label{tracing-and-preparation-memory}
+
+\texttt{-\/-fullauto-trace-backend\ auto} compares CPU, resident GPU and
+hybrid tracing on identical orientations. A candidate must be at least
+5\% faster and satisfy both the all-16/M11 and normalized-ratio gates:
+\texttt{min(1e-7,\ EPS/1024)} in FP64, \texttt{min(1e-5,\ EPS/1024)} in
+FP32. See \nolinkurl{trace_backend_calibration.json} for actual times and
+errors. Initial workloads below 1024 skip this extra search. An explicit
+\texttt{cpu}, \texttt{resident} or \texttt{hybrid} choice fixes the
+backend.
+
+Resident tracing supports nonabsorbing convex coherent and incoherent
+PO, up to 32 faces, 24 vertices per beam and depth 18. This includes
+20-face droxtals. Geometry and preparation phase use double even with
+FP32 diffraction. Shapes with more than 16 faces use batches of at most
+64 orientations; the total sample count is unchanged. Queue capacity
+depends on face count and depth, with live free-VRAM checks and a
+complete CPU retry on overflow. Incoherent mode converts each beam to a
+Mueller matrix before accumulation, without inter-beam interference.
+Absorbing and unsupported cases retain CPU preparation.
+
+Persistent workers retain a conservative RAM estimate per physics
+recipe. After 128 measured orientations, a later request may reuse a
+proven batch size instead of restarting at 16. The warm start is bounded
+by 256, the largest measured batch, explicit
+\nolinkurl{-\/-orientation-chunk}, and current RAM with an additional 2x
+margin. \texttt{Prepared\ memory\ reuse} logs the estimate. This stores
+no optical results and works independently of the beam cache.
+
+Compatible angular packets with the same seed, prefix, depth and phi are
+scheduled consecutively to reduce preparation-cache eviction. Sampling
+and memory limits are unchanged; this helps only when a request's beams
+fit in the cache. Short packets can remain after subtracting cached
+angles. \nolinkurl{execution_progress.json} also records phase-local
+committed block/work counters and the last 16 durable blocks, with their
+angular bounds and sampling parameters. Bounds may contain gaps. These
+are work counters, not a new error estimate or a whole-round completion
+percentage.
 
 \subsection{GO and other modes}\label{go-and-other-modes}
 

@@ -717,12 +717,12 @@ int RunAdaptive(Engine& e){
     e.Record(e.root+"/allocation_policy.json","{\"model\":\"centered joint eight-scramble covariance and Fieller forecast\",\"max_growth_per_round\":4,\"correction_subrounds_per_round\":2,\"correction_subround_max_theta\":33,\"correction_subround_max_base_cost_fraction\":0.1,\"working_phi_recheck\":"+std::string(e.phiRecheck&&!e.fixedPhi&&!e.args.IsCatched("fullauto_pilot")?"true":"false")+",\"forecast_accepts_accuracy\":false,\"pointwise_error_budget_and_independent_audit\":"+std::string(e.finalAudit?"true":"false")+",\"production_error_budget_active\":true}");
     if(!resumed){const size_t initial=std::min(e.theta.size(),size_t(e.startTheta));for(size_t i=0;i<initial;++i)state.knots.push_back(i*(e.theta.size()-1)/(initial-1));
         auto ids=AdaptiveGuards(state.knots,e.theta.size());auto x=Angles(e.theta,ids);e.State("calibrating",0,PeakBudgets(state.counts),ids.size(),0,0,0);
-        auto calibrate=[&](){e.PrepareMirror(x);e.Calibrate(x);if(!e.VerifyMirror(x)){e.SetMirror(false);e.Calibrate(x);}};
-        try{calibrate();if(e.thetaAuditCount)state.knots=e.AuditThetaSupport(state.knots);}catch(const std::exception& error){if(!e.DisableUnsupportedControls(error))throw;calibrate();if(e.thetaAuditCount)state.knots=e.AuditThetaSupport(state.knots);}
+        try{e.CalibrateWithMirror(x);if(e.thetaAuditCount)state.knots=e.AuditThetaSupport(state.knots);}
+        catch(const std::exception& error){if(!e.RecoverUnsupportedControls(error,x))throw;if(e.thetaAuditCount)state.knots=e.AuditThetaSupport(state.knots);}
         ids=AdaptiveGuards(state.knots,e.theta.size());if(e.phiRecheck&&!e.fixedPhi&&ids.size()>2*x.size()){
             Atomic(e.root+"/initial_calibration.json",Read(e.root+"/calibration.json"));
             try{e.Calibrate(WorkingGrid(e,ids),true);if(!e.VerifyMirror(WorkingGrid(e,ids))){e.SetMirror(false);e.Calibrate(WorkingGrid(e,ids),true);}}
-            catch(const std::exception& error){if(!e.DisableUnsupportedControls(error))throw;e.Calibrate(WorkingGrid(e,ids),true);}}
+            catch(const std::exception& error){if(!e.RecoverUnsupportedControls(error,WorkingGrid(e,ids),true))throw;}}
         // On small grids startup, matrix assembly and tracing dominate. The
         // measured regressions do not justify grouping there; retain a
         // common budget. Explicit 'on' remains available for experiments.
@@ -737,17 +737,19 @@ int RunAdaptive(Engine& e){
         PrepareResidualBudget(e,state);
         const auto ids=AdaptiveGuards(state.knots,e.theta.size());Require(ids.size()<=size_t(e.maxTheta),"theta budget exhausted");const auto x=Angles(e.theta,ids);lastNodes=ids.size();SaveAdaptive(e,state);
         e.State("evaluating",state.round,PeakBudgets(state.counts),ids.size(),lastCI,lastInterpolation,state.streak);
-        if(!e.VerifyMirror(x)){e.SetMirror(false);e.Calibrate(WorkingGrid(e,ids),true);std::fill(state.valid.begin(),state.valid.end(),false);std::fill(state.coarse.begin(),state.coarse.end(),false);state.streak=0;SaveAdaptive(e,state);--state.round;continue;}
-        e.VerifyDepthSharing(WorkingGrid(e,ids));
+        bool mirrorRecalibrated=false;
+        try{if(!e.VerifyMirror(x)){e.SetMirror(false);e.Calibrate(WorkingGrid(e,ids),true);mirrorRecalibrated=true;}}
+        catch(const std::exception& error){if(!e.RecoverUnsupportedControls(error,WorkingGrid(e,ids),true))throw;mirrorRecalibrated=true;}
+        if(mirrorRecalibrated){std::fill(state.valid.begin(),state.valid.end(),false);std::fill(state.coarse.begin(),state.coarse.end(),false);state.streak=0;SaveAdaptive(e,state);--state.round;continue;}
         // Native checkpoints are immutable under the controller lock. Keep
         // their verified graph across production, interpolation and prefix
         // stability within this round; a new round/resume gets a fresh scope.
         ValidationBatch roundValidation("one adaptive round");
         AdaptiveData stage;Samples data;Statistics stats;
-        try{stage=EvaluateBudget(e,depths,state.counts,ids,e.seeds.data());data=Combine(stage.levels);stats=Estimate(data);
+        try{e.VerifyDepthSharing(WorkingGrid(e,ids));stage=EvaluateBudget(e,depths,state.counts,ids,e.seeds.data());data=Combine(stage.levels);stats=Estimate(data);
             e.lastAnalyticError=0;for(size_t r=0;r<ids.size();++r)e.lastAnalyticError=std::max(e.lastAnalyticError,stage.analytic[r]/stats.mean[r][0]);
             Require(!e.controls||e.lastAnalyticError<=e.eps/64,"analytic mean numerical budget exceeded; use complete sampled PO or refine the analytic provider");}
-        catch(const std::exception& error){if(!e.DisableUnsupportedControls(error))throw;e.Calibrate(WorkingGrid(e,ids),true);std::fill(state.coarse.begin(),state.coarse.end(),false);std::fill(state.valid.begin(),state.valid.end(),false);state.streak=0;SaveAdaptive(e,state);--state.round;continue;}
+        catch(const std::exception& error){if(!e.RecoverUnsupportedControls(error,WorkingGrid(e,ids),true))throw;std::fill(state.coarse.begin(),state.coarse.end(),false);std::fill(state.valid.begin(),state.valid.end(),false);state.streak=0;SaveAdaptive(e,state);--state.round;continue;}
         e.SetExecutionPhase("interpolation_validation",state.round);
         auto interp=InterpolateBudget(e,state.knots,ids,data,&stage,&state.counts);
         bool common=!state.interpolationCounts.empty()||(e.local&&VaryingBudgets(state.counts,ids));

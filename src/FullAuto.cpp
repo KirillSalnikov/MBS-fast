@@ -1903,9 +1903,29 @@ struct Engine {
            &&log.find("mean M11 must be positive")==std::string::npos
            &&log.find("analytic mean numerical budget")==std::string::npos
            &&log.find("analytic combined radial kernel exceeds memory budget")==std::string::npos)return false;
+        const bool previousMirror=mirror;
         controls=false;sharedMeans=false;weights.clear();polarWeights.clear();SetMirror(false);verifiedMirrorGrids.clear();
-        Record(root+"/analytic_control_fallback.json","{\"enabled\":false,\"reason\":\"analytic mean budget/convergence limit; full sampled PO retained\",\"exception\":"+Quoted(message)+",\"diagnostic\":"+Quoted(log)+"}\n");
+        Record(root+"/analytic_control_fallback.json","{\"enabled\":false,\"reason\":\"analytic mean budget/convergence limit; full sampled PO retained\",\"exception\":"+Quoted(message)+",\"diagnostic\":"+Quoted(log)
+            +",\"mirror_previously_enabled\":"+(previousMirror?"true":"false")+",\"mirror_policy\":"+Quoted(mirrorPolicy)
+            +",\"mirror_recheck_required\":"+(mirrorPolicy=="off"?"false":"true")+"}\n");
         std::cout<<"fullauto: analytic mean unavailable; retaining complete sampled PO without facet controls"<<std::endl;return true;
+    }
+    void CalibrateWithMirror(const std::vector<double>& x,bool retune=false){
+        PrepareMirror(x);Calibrate(x,retune);
+        if(!VerifyMirror(x)){SetMirror(false);Calibrate(x,retune);}
+    }
+    bool RecoverUnsupportedControls(const std::exception& error,const std::vector<double>& x,bool retune=false){
+        if(!DisableUnsupportedControls(error))return false;
+        // A failed analytic mean does not reject the particle's reflection.
+        // Recheck the ordinary PO estimator, including the newly selected phi.
+        // Explicit off stays off; explicit on still fails if verification fails.
+        CalibrateWithMirror(x,retune);
+        Record(root+"/analytic_fallback_mirror.json","{\"controls\":false,\"policy\":"+Quoted(mirrorPolicy)
+            +",\"enabled\":"+(mirror?"true":"false")+",\"phi\":"+Number(phi)+",\"target_depth\":"+Number(target)
+            +",\"theta_count\":"+Number(x.size())+",\"verification_key\":"+Quoted(MirrorVerificationKey(x))
+            +",\"residual_bound_plus95_scaled_M11\":"+(mirror?Number(mirrorError):"null")+",\"budget\":"+Number(eps/256)
+            +",\"decision\":"+Quoted(mirror?"plain PO mirror verified":mirrorPolicy=="off"?"explicit mirror off":"full gamma after mirror rejection")+"}\n");
+        return true;
     }
     std::array<Mueller,2> Polar(double angle)const{
         std::array<Mueller,2> result{};if(polarWeights.empty())return result;
@@ -1949,9 +1969,23 @@ struct Engine {
             std::cout<<"fullauto mirror: geometry rejected, using full gamma"<<std::endl;
         }
     }
+    std::string MirrorVerificationKey(const std::vector<double>& x)const{
+        // A proof for an analytic estimator or another phi/depth must not
+        // authorize a new native recipe merely because the angles match.
+        std::ostringstream context;context<<std::setprecision(17)<<"mirror-verification-v2\n"
+            <<binaryHash<<'\n'<<ExecutionHash()<<'\n'<<phi<<' '<<target<<' '<<controls<<' '<<sharedMeans
+            <<' '<<kernel.block<<' '<<kernel.pipeline<<' '<<kernel.warp<<' '<<eps<<'\n';
+        for(double q:x)context<<q<<'\n';
+        if(controls){
+            context<<"weights\n";for(double q:weightTheta)context<<q<<'\n';
+            for(const auto& row:weights)for(double v:row)context<<v<<'\n';
+            context<<"polar\n";for(const auto& row:polarWeights)for(const auto& component:row)for(double v:component)context<<v<<'\n';
+        }
+        return Hash(context.str());
+    }
     bool VerifyMirror(const std::vector<double>& x){
         if(!mirror)return true;
-        std::ostringstream coordinates;for(double q:x)coordinates<<Number(q)<<'\n';const std::string key=Hash(coordinates.str());
+        const std::string key=MirrorVerificationKey(x);
         if(verifiedMirrorGrids.count(key))return true;
         const int n=std::min(pilot,256);double worst=0,mirrorSeconds=0,pairedSeconds=0;std::ostringstream records;bool first=true;
         std::vector<int> depths;for(int d:{std::max(1,target-4),std::max(1,target-2),target})if(depths.empty()||depths.back()!=d)depths.push_back(d);
@@ -1969,6 +2003,7 @@ struct Engine {
         const double bound=(2*depths.size()-1)*worst;mirrorError=std::max(mirrorError,bound);
         bool pass=bound<=eps/256;std::ostringstream report;
         report<<"{\"enabled\":"<<(pass?"true":"false")<<",\"geometry_verified\":true,\"paired_verified\":"<<(pass?"true":"false")
+              <<",\"verification_key\":"<<Quoted(key)<<",\"analytic_controls\":"<<(controls?"true":"false")<<",\"target_depth\":"<<target
               <<",\"base_count_per_seed\":"<<n<<",\"phi\":"<<phi<<",\"theta_count\":"<<x.size()
               <<",\"seeds\":[4003,4007,4013,4019,4021,4027,4049,4051],\"levels\":["<<records.str()<<"]"
               <<",\"mlmc_residual_bound_plus95_scaled_M11\":"<<Number(bound)<<",\"budget\":"<<Number(eps/256)
