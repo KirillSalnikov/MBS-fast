@@ -61,6 +61,12 @@ void SharedGpuResources(const std::string& root){
 int main(int argc,char** argv){try{
     Require(argc==2,"output directory required");
     using namespace FullAutoScheduling;
+    const std::vector<NativePacket> packets={{"seed0",8},{"seed1",8},{"seed0",3},{"seed1",3},{"other_depth",20}};
+    Require(NativePacketOrder(packets)==std::vector<size_t>({4,0,2,1,3}),"angular packets lost preparation locality or largest-group priority");
+    Require(NativePacketOrder({}).empty(),"empty queue gained work");
+    Require(!PreferNextDepth(.02,.04,.01,0,false)&&!PreferNextDepth(.02,.04,.01,4,true),"initial/terminal pilot curtailed");
+    Require(PreferNextDepth(.02,.04,.01,1,false)&&PreferNextDepth(.005,.02,.01,1,false),"costly uncertain candidate not advanced");
+    Require(!PreferNextDepth(.005,.002,.01,1,false),"inexpensive refinement skipped");
     for(size_t n:{size_t(0),size_t(2),size_t(63),size_t(64),size_t(65),size_t(129),size_t(9000)}){
         std::vector<double> angles;for(size_t i=0;i<n;++i)angles.push_back(double(i));
         const auto parts=AngleBatches(angles,64);std::vector<double> restored;

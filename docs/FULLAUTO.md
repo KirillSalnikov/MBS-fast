@@ -71,6 +71,15 @@ initial budgets and the requested output grid, and selects reflection depth
 unless fixed. CUDA uses a bounded kernel/phi pilot before the depth comparison;
 complete production tuning follows at the selected depth.
 
+Each new depth candidate restarts at the configured depth pilot; only resuming
+the same unresolved candidate retains its expanded count. After two pilots,
+the controller may try the next depth if the mean residual exceeds the budget,
+or if its interval exceeds twice the remaining gap. The latter is a cost
+heuristic based on an N^-1/2 forecast, not a Sobol convergence guarantee. It
+may select a larger depth. The maximum depth retains the full sampling search.
+Acceptance still requires the original upper confidence bound. Decisions are
+logged as `depth_pilot_decision`.
+
 Next it verifies supported symmetries, fits control coefficients on training
 scrambles and validates them on different scrambles. It chooses phi and
 execution settings from measured cost and variance. Unsupported controls are
@@ -264,6 +273,40 @@ from a retained parent recipe rather than silently changing its physics.
 `scripts/run_fullauto_service.sh UNIT BINARY LOG [arguments...]` installs and
 starts a user systemd service for process recovery. Numerical decisions remain
 native. It is an optional launcher, not a required Python audit.
+
+## Tracing and preparation memory
+
+`--fullauto-trace-backend auto` compares CPU, resident GPU and hybrid tracing
+on identical orientations. A candidate must be at least 5% faster and satisfy
+both the all-16/M11 and normalized-ratio gates: `min(1e-7, EPS/1024)` in FP64,
+`min(1e-5, EPS/1024)` in FP32. See `trace_backend_calibration.json` for actual
+times and errors. Initial workloads below 1024 skip this extra search. An
+explicit `cpu`, `resident` or `hybrid` choice fixes the backend.
+
+Resident tracing supports nonabsorbing convex coherent and incoherent PO, up to 32 faces,
+24 vertices per beam and depth 18. This includes 20-face droxtals. Geometry
+and preparation phase use double even with FP32 diffraction. Shapes with
+more than 16 faces use batches of at most 64 orientations; the total sample
+count is unchanged. Queue capacity depends on face count and depth, with
+live free-VRAM checks and a complete CPU retry on overflow. Incoherent mode
+converts each beam to a Mueller matrix before accumulation, without inter-beam
+interference. Absorbing and unsupported cases retain CPU preparation.
+
+Persistent workers retain a conservative RAM estimate per physics recipe.
+After 128 measured orientations, a later request may reuse a proven batch
+size instead of restarting at 16. The warm start is bounded by 256, the
+largest measured batch, explicit `--orientation-chunk`, and current RAM
+with an additional 2x margin. `Prepared memory reuse` logs the estimate.
+This stores no optical results and works independently of the beam cache.
+
+Compatible angular packets with the same seed, prefix, depth and phi are
+scheduled consecutively to reduce preparation-cache eviction. Sampling and
+memory limits are unchanged; this helps only when a request's beams fit in
+the cache. Short packets can remain after subtracting cached angles.
+`execution_progress.json` also records phase-local committed block/work
+counters and the last 16 durable blocks, with their angular bounds and sampling
+parameters. Bounds may contain gaps. These are work counters, not a new error
+estimate or a whole-round completion percentage.
 
 ## GO and other modes
 

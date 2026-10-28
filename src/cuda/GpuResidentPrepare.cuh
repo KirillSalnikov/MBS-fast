@@ -114,9 +114,10 @@ __global__ void residentPrepare(const GpuConvexQueue::Input* inputs,
 }
 __global__ void residentExtinction(const GpuBeam* beams,const int* offsets,const int* kept,
     int count,ResidentParameters par,const GpuReal* weights,ResidentSummary* summary) {
-    int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=count)return;
+    const int thread=blockIdx.x*blockDim.x+threadIdx.x;
+    const int i=thread/32,lane=threadIdx.x&31;if(i>=count)return;
     double forward=0;
-    for(int j=offsets[i];j<offsets[i]+kept[i];++j){
+    for(int j=offsets[i]+lane;j<offsets[i]+kept[i];j+=32){
         GpuBeam b=beams[j];
         if(b.isExternal){b.jp00r=-b.raw00r;b.jp00i=-b.raw00i;b.jp01r=-b.raw01r;b.jp01i=-b.raw01i;
             b.jp10r=-b.raw10r;b.jp10i=-b.raw10i;b.jp11r=-b.raw11r;b.jp11i=-b.raw11i;}
@@ -125,8 +126,9 @@ __global__ void residentExtinction(const GpuBeam* beams,const int* offsets,const
             1,1,par.eps1,par.eps2,par.cwr,par.cwi,par.icwr,par.icwi,par.legacy,1,a,b0,c,d,e,f,g,h))
             forward+=b0+h;
     }
+    for(int offset=16;offset;offset>>=1)forward+=__shfl_down_sync(0xffffffffu,forward,offset);
     // GPU Jones amplitudes omit the CPU factor 1/2 (Mueller applies 1/4).
-    summary[i].extinction=.5*par.wavelength*forward*weights[i];
+    if(!lane)summary[i].extinction=.5*par.wavelength*forward*weights[i];
 }
 struct ResidentPool {
     struct Slot {void* pointer=nullptr;size_t bytes=0;};
@@ -171,16 +173,47 @@ struct ResidentAllocations {
     }
     size_t cachedBytes() const {size_t n=0;if(pool)for(const auto& slot:pool->slots)n+=slot.bytes;return n;}
 };
+// The resident geometry has sparse per-orientation slots after pruning. Use
+// kept[] rather than the next raw offset, and sum Mueller matrices beam by
+// beam: summing Jones amplitudes here would reintroduce interference.
+template<bool WarpBeams>
+__global__ void residentIncoherent(const GpuBeam* beams,const int* offsets,const int* kept,
+    const GpuReal* st,const GpuReal* ct,const GpuReal* sp,const GpuReal* cp,
+    const GpuReal* vf,const GpuReal* weights,int nAz,int nZen,int count,
+    ResidentParameters par,GpuReal* matrix,GpuReal* matrixNS) {
+    const long long thread=(long long)blockIdx.x*blockDim.x+threadIdx.x;
+    const long long idx=WarpBeams?thread/32:thread;
+    const int lane=WarpBeams?(threadIdx.x&31):0,gridCount=nAz*(nZen+1);
+    if(idx>=(long long)count*gridCount)return;
+    const int orient=idx/gridCount,grid=idx%gridCount,p=grid/(nZen+1),t=grid%(nZen+1);
+    const GpuReal dx=st[t]*cp[p],dy=st[t]*sp[p],dz=-ct[t];
+    const GpuReal vfx=vf[3*grid],vfy=vf[3*grid+1],vfz=vf[3*grid+2];
+    GpuReal vtx,vty,vtz;transverse_basis_gpu(vfx,vfy,vfz,dx,dy,dz,vtx,vty,vtz);
+    GpuReal full[16]={},noShadow[16]={};
+    for(int i=offsets[orient]+lane;i<offsets[orient]+kept[orient];i+=WarpBeams?32:1){
+        GpuReal one[16]={};
+        accumulate_beam_mueller_incoherent_gpu<GpuBeam,32>(beams[i],cp[p],sp[p],st[t],ct[t],
+            vfx,vfy,vfz,vtx,vty,vtz,1,1,par.eps1,par.eps2,
+            par.cwr,par.cwi,par.icwr,par.icwi,par.legacy,weights[orient]*GpuReal(.25),one);
+        for(int k=0;k<16;++k){full[k]+=one[k];if(matrixNS&&!beams[i].isExternal)noShadow[k]+=one[k];}
+    }
+    for(int k=0;k<16;++k){
+        if(WarpBeams)for(int shift=16;shift;shift>>=1){
+            full[k]+=__shfl_down_sync(0xffffffffu,full[k],shift);
+            if(matrixNS)noShadow[k]+=__shfl_down_sync(0xffffffffu,noShadow[k],shift);
+        }
+        if(!lane){gpu_atomic_add(matrix+16*grid+k,full[k]);if(matrixNS)gpu_atomic_add(matrixNS+16*grid+k,noShadow[k]);}
+    }
+}
 } // namespace
 
 bool HandlerPO::CanHandleResidentConvexGpu() const {
-#ifdef MBS_GPU_FLOAT
-    // This prototype is validated in FP64 only. FP32 keeps its existing path.
-    return false;
-#endif
+    // Geometry, clipping and Fresnel coefficients stay in FP64 in both builds.
+    // Only the prepared diffraction storage follows the selected precision;
+    // fullauto must validate it against CPU preparation before selecting it.
     // Explicitly decline modes whose CPU preparation has additional semantics.
     // Absorbing/nonconvex particles are also rejected by PrepareGpuInput.
-    return m_gpuEnabled && isCoh && !useKarczewski && !IsFftEnabled()
+    return m_gpuEnabled && !useKarczewski && !IsFftEnabled()
         && !HasAbsorptionAccounting() && !isBackScatteringConusEnabled
         && !outputJones && m_otFarReferencePath==0 && m_otPingDistance==0 && !m_otPhaseAverage;
 }
@@ -226,11 +259,25 @@ bool HandlerPO::HandleResidentConvexGpu(const GpuConvexQueue::Input* inputs,
         ||!gpu_report_cuda_error(cudaStreamSynchronize(0),"resident prepare sync"))return false;
     const double prepareSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
     int bad=0;if(cudaMemcpy(&bad,invalid,sizeof(int),cudaMemcpyDeviceToHost)!=cudaSuccess||bad)return false;
-    residentExtinction<<<(count+63)/64,64>>>(prepared,offsets,kept,count,par,w,summary);
+    residentExtinction<<<(count*32+63)/64,64>>>(prepared,offsets,kept,count,par,w,summary);
     const int block=gpu_block_size();
-    diffraction_grid_mueller_kernel<<<(count*gridCount+block-1)/block,block>>>(
-        prepared,offsets,st,ct,sp,cp,vf,w,nAz,nZen,count,1,1,par.eps1,par.eps2,
-        par.cwr,par.cwi,par.icwr,par.icwi,par.legacy,matrix,matrixNS,kept);
+    const bool warpBeams=gpu_warp_beams_enabled();
+    if(!isCoh) {
+        if(warpBeams)
+            residentIncoherent<true><<<(count*gridCount*32+block-1)/block,block>>>(
+                prepared,offsets,kept,st,ct,sp,cp,vf,w,nAz,nZen,count,par,matrix,matrixNS);
+        else
+            residentIncoherent<false><<<(count*gridCount+block-1)/block,block>>>(
+                prepared,offsets,kept,st,ct,sp,cp,vf,w,nAz,nZen,count,par,matrix,matrixNS);
+    }
+    else if(warpBeams)
+        diffraction_grid_mueller_kernel<true><<<(count*gridCount*32+block-1)/block,block>>>(
+            prepared,offsets,st,ct,sp,cp,vf,w,nAz,nZen,count,1,1,par.eps1,par.eps2,
+            par.cwr,par.cwi,par.icwr,par.icwi,par.legacy,matrix,matrixNS,kept);
+    else
+        diffraction_grid_mueller_kernel<false><<<(count*gridCount+block-1)/block,block>>>(
+            prepared,offsets,st,ct,sp,cp,vf,w,nAz,nZen,count,1,1,par.eps1,par.eps2,
+            par.cwr,par.cwi,par.icwr,par.icwi,par.legacy,matrix,matrixNS,kept);
     if(!gpu_report_cuda_error(cudaGetLastError(),"resident diffraction launch"))return false;
     std::vector<GpuReal> hm(mCount),hns(ComputeNoShadow()?mCount:0);
     std::vector<ResidentSummary> hs(count);

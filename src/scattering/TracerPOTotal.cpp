@@ -1,4 +1,5 @@
 #include "PreparedReuse.h"
+#include "PreparedMemoryProfile.h"
 #include "HostMemoryReserve.h"
 #include "TracerPOTotal.h"
 #include "HandlerPOTotal.h"
@@ -793,16 +794,27 @@ static long long PreparedStorageBudgetBytes()
 class PreparedChunkController
 {
 public:
-    explicit PreparedChunkController(int maximumChunk, int residentChunks = 1)
+    explicit PreparedChunkController(int maximumChunk, int residentChunks = 1,const std::string& profileKey="")
         : m_maximum(std::max(1, maximumChunk)), m_residentChunks(std::max(1,residentChunks)),
           m_next(std::min(16, m_maximum)),
-          m_safeBytesPerOrientation(0)
+          m_safeBytesPerOrientation(0),m_profileKey(profileKey)
     {
+        const auto saved=PreparedMemoryProfile::Get(m_profileKey);
+        if(saved.observations>=128&&saved.safeBytes>0){
+            m_safeBytesPerOrientation=saved.safeBytes;
+            m_next=saved.Start(m_maximum,PreparedStorageBudgetBytes()/m_residentChunks);
+            std::cerr << "Prepared memory reuse: observations=" << saved.observations
+                << " safe_KiB_per_orientation=" << saved.safeBytes/1024.
+                << " initial_chunk=" << m_next << " live_RAM_guard=on" << std::endl;
+        }
     }
 
     int Next(int remaining) const
     {
-        return std::max(1, std::min(remaining, m_next));
+        int next=std::min(remaining,m_next);
+        if(m_safeBytesPerOrientation>0)next=int(std::min((long long)next,
+            PreparedStorageBudgetBytes()/m_residentChunks/m_safeBytesPerOrientation));
+        return std::max(1,next);
     }
 
     void Update(const std::vector<PreparedOrientation> &prepared,
@@ -821,6 +833,10 @@ public:
             (averageBytes * 3LL + 1LL) / 2LL);
         m_safeBytesPerOrientation = std::max(
             m_safeBytesPerOrientation, observedSafe);
+        // Resident-device output has no host beam allocation. Do not learn a
+        // misleading zero-cost estimate from those successful GPU chunks.
+        if(maximumBytes>static_cast<long long>(sizeof(PreparedOrientation)))
+            PreparedMemoryProfile::Observe(m_profileKey,observedSafe,prepared.size());
 
         const long long budgetBytes = PreparedStorageBudgetBytes() / m_residentChunks;
         const long long byMemory = budgetBytes
@@ -851,6 +867,7 @@ private:
     int m_residentChunks;
     int m_next;
     long long m_safeBytesPerOrientation;
+    std::string m_profileKey;
     bool m_reported = false;
 };
 
@@ -6243,8 +6260,14 @@ void TracerPOTotal::TraceWeightedOrientations(
     int maximumChunk = std::max(1, std::min(4096, myCount));
     if (m_sobolChunkSize > 0)
         maximumChunk = std::max(1, std::min(maximumChunk, m_sobolChunkSize));
+    // A 20-face depth-14 trace needs a much wider device work queue than a
+    // prism. Bound resident batches before allocating GPU scratch; otherwise
+    // successful early batches would grow until every later batch retraced on
+    // the CPU. The device allocator still rechecks current free memory.
+    if(handlerPO->IsGpuEnabled()&&m_particle->nFacets>16
+       &&EnvEnabled("MBS_GPU_TRACE_CONVEX_DIRECT"))maximumChunk=std::min(maximumChunk,64);
     const bool pipeline=m_orientationPipeline && handlerPO->IsGpuEnabled();
-    PreparedChunkController memoryChunks(maximumChunk,(pipeline ? 2:1)*(m_pairedDepth?2:1));
+    PreparedChunkController memoryChunks(maximumChunk,(pipeline ? 2:1)*(m_pairedDepth?2:1),m_preparedMemoryKey);
     int nThreads = 1;
 #ifdef _OPENMP
     #pragma omp parallel
@@ -6408,7 +6431,7 @@ void TracerPOTotal::TraceWeightedOrientations(
             bool traced=!directRequested&&any&&GpuConvexQueue::Trace(inputs,residentOutput,residentOrder,status,metrics,prepareThreads);
             int accepted=0;int failures[5]={};
             for(int i=0;i<thisChunk;++i){
-                if(traced&&status[i].failure>=1&&status[i].failure<=4)++failures[status[i].failure];
+                if(size_t(i)<status.size()&&status[i].failure>=1&&status[i].failure<=4)++failures[status[i].failure];
                 residentReady[i]=residentReady[i]&&traced&&!status[i].failure;
                 if(residentReady[i]){++accepted;static_cast<ScatteringConvex*>(m_scattering)->AddGpuStatistics(status[i]);}
                 else residentBeams[i].clear();
@@ -6422,7 +6445,7 @@ void TracerPOTotal::TraceWeightedOrientations(
                 << " CPU_fallback=" << thisChunk-accepted << " output_beams=" << residentOutput.size()
                 << " vertex_limit=" << failures[1] << " output_limit=" << failures[2]
                 << " queue_limit=" << failures[3] << " nonfinite=" << failures[4]
-                << " kernel_s=" << metrics.kernelSeconds << " transfer_sort_s=" << metrics.wallSeconds-metrics.kernelSeconds
+                << " kernel_s=" << metrics.kernelSeconds << " transfer_sort_s=" << std::max(0.,metrics.wallSeconds-metrics.kernelSeconds)
                 << " download_s=" << metrics.downloadSeconds << " sort_s=" << metrics.sortSeconds
                 << " total_s=" << std::chrono::duration<double>(std::chrono::steady_clock::now()-traceStarted).count()
                 << " device_MiB=" << metrics.bytes/1048576.0;
@@ -6976,7 +6999,7 @@ void TracerPOTotal::TraceWeightedOrientations(
         if(cpuThreads+gpuThreads>preparationThreads)
             throw std::runtime_error("hybrid CPU and GPU-seed thread counts exceed --threads; lower the overrides or raise --threads");
         const int cpuChunk=std::max(1,std::min(maximumChunk,EnvInt("MBS_GPU_HYBRID_CPU_CHUNK",256)));
-        PreparedChunkController cpuMemory(cpuChunk,reserve+2);
+        PreparedChunkController cpuMemory(cpuChunk,reserve+2,m_preparedMemoryKey);
         std::mutex mutex;std::condition_variable condition;
         std::deque<std::unique_ptr<PreparedBlock>> ready;
         bool stop=false,producerDone=false;int nextStart=myStart,peakReady=0;

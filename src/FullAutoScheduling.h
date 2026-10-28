@@ -3,10 +3,41 @@
 #include <cmath>
 #include <cstddef>
 #include <vector>
+#include <map>
+#include <string>
 
 namespace FullAutoScheduling {
+// Schedule a preparation recipe's angular packets consecutively. Large
+// groups still start first, but eight seeds no longer evict one another's
+// angle-independent beams between subdivisions of the same request.
+struct NativePacket {std::string preparation;double cost;};
+inline std::vector<size_t> NativePacketOrder(const std::vector<NativePacket>& packets) {
+    struct Group {std::vector<size_t> ids;double cost=0;};
+    std::vector<Group> groups;std::map<std::string,size_t> index;
+    for(size_t i=0;i<packets.size();++i){
+        const auto inserted=index.emplace(packets[i].preparation,groups.size());
+        if(inserted.second)groups.emplace_back();
+        auto& group=groups[inserted.first->second];group.ids.push_back(i);group.cost+=packets[i].cost;
+    }
+    std::stable_sort(groups.begin(),groups.end(),[](const Group& a,const Group& b){return a.cost>b.cost;});
+    std::vector<size_t> order;
+    for(auto& group:groups){
+        std::stable_sort(group.ids.begin(),group.ids.end(),[&](size_t a,size_t b){return packets[a].cost>packets[b].cost;});
+        order.insert(order.end(),group.ids.begin(),group.ids.end());
+    }
+    return order;
+}
 // An unbounded ratio interval is a sampling failure, never a work estimate.
 inline bool Resolved(double error) { return std::isfinite(error)&&error>=0&&error<1e50; }
+inline bool PreferNextDepth(double mean,double interval,double budget,int attempt,bool terminal) {
+    // Scheduling heuristic only. After two paired pilots, a mean above the
+    // budget cannot be rescued by shrinking its interval. If the interval is
+    // over twice the remaining gap, the usual N^-1/2 forecast needs over 4x
+    // more samples. Try a deeper candidate first. NEVER use this to accept a
+    // depth; the terminal candidate retains its complete sampling search.
+    if(terminal||attempt<1||!(budget>0))return false;
+    return !Resolved(mean)||!Resolved(interval)||mean>=budget||interval>2*(budget-mean);
+}
 inline int PilotLimit(int count,int maximum,bool fixed) {
     if(fixed)return count;
     return std::max(count,std::min(maximum,count>4096/8?4096:count*8));

@@ -9,8 +9,12 @@
 // CPU retrace of the affected orientation, never a truncated beam set.
 namespace GpuConvexQueue {
 constexpr int MaxVertices = 24;
-constexpr int MaxFacets = 16;
-constexpr int StackCapacity = 256;
+// Droxtals have 20 faces. Keep a bounded input while covering them and other
+// small convex polyhedra; larger shapes still take the complete CPU path.
+constexpr int MaxFacets = 32;
+// Depth-first traversal adds at most faceCount-1 pending children per level.
+// Cover the supported depth <=18 plus the initial face seeds.
+constexpr int StackCapacity = MaxFacets * 20;
 struct Vec { double x, y, z; };
 struct Cx { double re, im; };
 struct Beam {

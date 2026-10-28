@@ -1678,12 +1678,15 @@ AngleRange GetRange(const ArgPP &parser, const std::string &key,
     return AngleRange(min, max, number);
 }
 
-static std::string PreparedRecipe(const ArgPP& args){
+static std::string PreparedRecipe(const ArgPP& args,bool memoryProfile=false){
     // Observation coordinates and output destinations cannot affect a beam.
     const std::set<std::string> omit={"o","close","log","profile_phases","grid","tgrid","nphi","trace_cache_mb","po_prepare_threads","threads","chunk","orientation_pipeline","orientation_prefix_output"};
     std::ostringstream key;
     for(const auto& spec:GetCliOptionSpecs())if(args.IsCatched(spec.key)&&!omit.count(spec.key)){
+        if(memoryProfile&&(spec.key=="sobol_offset"||spec.key=="orientation_prefix_output"))continue;
         key<<spec.key.size()<<':'<<spec.key;
+        // The memory model may cross Sobol blocks; cached beams must not.
+        if(memoryProfile&&spec.key=="sobol_seed")continue;
         for(unsigned i=0;i<args.GetArgNumber(spec.key);++i){const auto value=args.GetStringValue(spec.key,i);key<<value.size()<<':'<<value;}
         if(spec.key=="pf"){
             std::ifstream f(args.GetStringValue(spec.key),std::ios::binary);const std::string text((std::istreambuf_iterator<char>(f)),std::istreambuf_iterator<char>());
@@ -2965,6 +2968,7 @@ int RunCalculation(int argc, const char* argv[])
             tracer->m_profilePhases=args.IsCatched("profile_phases");
             tracer->m_prepareThreads=args.IsCatched("po_prepare_threads")?args.GetIntValue("po_prepare_threads"):0;
             if(cacheMb>0)tracer->SetPreparedReuseKey(PreparedRecipe(args));
+            if(persistentWorker)tracer->SetPreparedMemoryKey(PreparedRecipe(args,true));
             tracer->m_scattering->m_wave = wave;
             ApplyTraceCutoffOptions(args, tracer->m_scattering, useGpu);
             tracer->shadowOff = args.IsCatched("shadow_off");

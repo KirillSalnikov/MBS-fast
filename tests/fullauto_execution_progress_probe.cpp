@@ -9,7 +9,11 @@ int main(int argc,char** argv){try{
     Require(result.size()==8&&e.nativeCommitted==8&&e.nativeReturned==8,"durable work counter changed");
     Require(e.nativeSubmitted==8+e.nativeRetries&&e.nativeOrientations==512,"retry counted as new samples");
     Require(e.liveNative.empty()&&e.dispatchProgress.empty(),"stale active workers after completion");
+    Require(e.phaseNativeCommitted==8&&e.phaseAngleOrientationSamples==8*64*4*4,"phase work lost or double counted");
+    Require(e.recentNativeBlocks.size()==8,"missing durable angular progress");
+    for(const auto& block:e.recentNativeBlocks)Require(Exists(block.folder+"/complete.txt")&&block.rows==4&&block.lo==170&&block.hi==180,"reported block was not committed");
     e.SetExecutionPhase("test_complete",4);
+    Require(e.phaseNativeCommitted==0&&e.phaseAngleOrientationSamples==0&&e.recentNativeBlocks.empty(),"new phase retained old completion counters");
     std::ostringstream proof;proof<<std::setprecision(17);
     for(const auto& job:result){std::set<std::string> verified;ValidateStoredJob(job.folder,verified);
         for(const auto& row:job.matrix)for(double v:row)proof<<v<<' ';}

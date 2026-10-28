@@ -112,6 +112,11 @@ bool SelectAutomaticDepth(Engine& e){
     try{
         if(!e.go&&e.depthSharing){e.target=e.depthStart;e.VerifyDepthSharing(x);}
         for(int depth=resumeDepth;;depth=std::min(e.depthMaximum,depth+2)){
+            // A noisy residual at n says nothing about the sampling needed at
+            // n+2. Carrying its enlarged pilot forward compounded the cost
+            // across candidates. Retain the saved count only when resuming
+            // that same unresolved candidate; cached prefixes remain reusable.
+            count=depth==resumeDepth?resumeCount:e.depthPilot;
             unsigned seeds[8];for(int i=0;i<8;++i){seeds[i]=1700000000u+unsigned(e.depthStart)*1024u+unsigned(i)*17u;
                 Require(std::find(e.seeds.begin(),e.seeds.end(),seeds[i])==e.seeds.end(),"depth pilot/production seed overlap");}
             for(int attempt=0;;++attempt){
@@ -135,7 +140,13 @@ bool SelectAutomaticDepth(Engine& e){
                     <<",\"interval95_scaled_M11\":"<<Number(residual.interval)<<",\"residual_upper95\":"<<Number(residual.upper)<<",\"residual_lower95\":"<<Number(residual.lower)
                     <<",\"budget\":"<<Number(e.depthBudget)<<",\"passed\":"<<(passed?"true":"false")<<",\"theta_file\":"<<Quoted(e.root+"/depth_pilot_theta.csv")<<",\"scope\":\"paired initial orientation pilot; representative requested angles; fresh final depth audit required\"}";
                 e.Record(e.root+"/depth_selection_candidate"+Number(depth)+"_N"+Number(count)+".json",report.str());e.Log("depth_candidate",report.str());
-                if(passed||residual.lower>e.depthBudget||count>=e.maxCount||attempt==(depth==e.depthMaximum?8:4))break;
+                const bool preferNext=FullAutoScheduling::PreferNextDepth(residual.mean,residual.interval,e.depthBudget,attempt,depth==e.depthMaximum);
+                const bool stop=passed||preferNext||residual.lower>e.depthBudget||count>=e.maxCount||attempt==(depth==e.depthMaximum?8:4);
+                const std::string action=passed?"accept":(!stop?"extend_same_candidate":(depth==e.depthMaximum?"unresolved":(preferNext?"advance_depth_cost_heuristic":"advance_depth_restart_pilot")));
+                e.Log("depth_pilot_decision","{\"candidate\":"+Number(depth)+",\"count_per_seed\":"+Number(count)
+                    +",\"action\":"+Quoted(action)+",\"next_candidate_initial_count\":"+Number(e.depthPilot)
+                    +",\"acceptance_budget_unchanged\":true}");
+                if(stop)break;
                 count=std::min(e.maxCount,count>e.maxCount/2?e.maxCount:2*count);
             }
             selected=depth;if(passed||depth==e.depthMaximum)break;

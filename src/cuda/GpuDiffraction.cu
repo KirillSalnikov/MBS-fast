@@ -1476,7 +1476,7 @@ __device__ inline bool compute_beam_jones_context_gpu(const GpuBeam &b,
 }
 
 __device__ inline void phase_raw_jones_scaled(const GpuBeam &b,
-                                              GpuReal waveIndex,
+                                              double waveIndex,
                                               GpuReal scale,
                                               const double *__restrict__ absPaths,
                                               GpuReal cAbs,
@@ -1486,7 +1486,9 @@ __device__ inline void phase_raw_jones_scaled(const GpuBeam &b,
                                               GpuReal &jp11r, GpuReal &jp11i)
 {
     double sn, cs;
-    sincos((double)waveIndex * b.phasePath * (double)scale, &sn, &cs);
+    // Resident preparation supplies the original double wave number. Rounding
+    // it to float before multiplication adds a phase error that grows with D.
+    sincos(waveIndex * b.phasePath * (double)scale, &sn, &cs);
     const double sign = b.phaseSign;
     double absorption = 1.0;
     if (absPaths && b.absCount > 0)
@@ -2566,6 +2568,7 @@ __global__ void mueller_batch_kernel(const GpuReal *__restrict__ jFull,
     gpu_atomic_add(&out[15], ( c1r - c2r) * weight);
 }
 
+template <bool WarpBeams = false>
 __global__ void diffraction_grid_mueller_kernel(const GpuBeam *__restrict__ beams,
                                                 const int *__restrict__ beamOffsets,
                                                 const GpuReal *__restrict__ sinTheta,
@@ -2591,7 +2594,9 @@ __global__ void diffraction_grid_mueller_kernel(const GpuBeam *__restrict__ beam
 {
     const int gridCount = nAz * (nZen + 1);
     const long long total = (long long)nOrient * gridCount;
-    const long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    const long long thread = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    const long long idx = WarpBeams ? thread / 32 : thread;
+    const int lane = WarpBeams ? (threadIdx.x & 31) : 0;
     if (idx >= total) return;
 
     const int orient = (int)(idx / gridCount);
@@ -2620,7 +2625,7 @@ __global__ void diffraction_grid_mueller_kernel(const GpuBeam *__restrict__ beam
     GpuReal n10r = 0.0, n10i = 0.0;
     GpuReal n11r = 0.0, n11i = 0.0;
 
-    for (int bi = begin; bi < end; ++bi)
+    for (int bi = begin + lane; bi < end; bi += WarpBeams ? 32 : 1)
     {
         GpuReal d00r, d00i, d01r, d01i, d10r, d10i, d11r, d11i;
         const GpuBeam &b = beams[bi];
@@ -2645,6 +2650,29 @@ __global__ void diffraction_grid_mueller_kernel(const GpuBeam *__restrict__ beam
         }
     }
 
+    if (WarpBeams)
+    {
+        for (int offset = 16; offset > 0; offset >>= 1)
+        {
+            j00r += __shfl_down_sync(0xffffffffu, j00r, offset);
+            j00i += __shfl_down_sync(0xffffffffu, j00i, offset);
+            j01r += __shfl_down_sync(0xffffffffu, j01r, offset);
+            j01i += __shfl_down_sync(0xffffffffu, j01i, offset);
+            j10r += __shfl_down_sync(0xffffffffu, j10r, offset);
+            j10i += __shfl_down_sync(0xffffffffu, j10i, offset);
+            j11r += __shfl_down_sync(0xffffffffu, j11r, offset);
+            j11i += __shfl_down_sync(0xffffffffu, j11i, offset);
+            n00r += __shfl_down_sync(0xffffffffu, n00r, offset);
+            n00i += __shfl_down_sync(0xffffffffu, n00i, offset);
+            n01r += __shfl_down_sync(0xffffffffu, n01r, offset);
+            n01i += __shfl_down_sync(0xffffffffu, n01i, offset);
+            n10r += __shfl_down_sync(0xffffffffu, n10r, offset);
+            n10i += __shfl_down_sync(0xffffffffu, n10i, offset);
+            n11r += __shfl_down_sync(0xffffffffu, n11r, offset);
+            n11i += __shfl_down_sync(0xffffffffu, n11i, offset);
+        }
+        if (lane) return;
+    }
     const GpuReal weight = weights[orient] * (GpuReal)0.25;
     mueller_accum_from_jones(j00r, j00i, j01r, j01i, j10r, j10i, j11r, j11i,
                              weight, &mFull[grid * 16]);

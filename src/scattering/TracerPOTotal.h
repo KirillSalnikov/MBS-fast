@@ -12,6 +12,7 @@ class TracerPOTotal : public TracerPO
 {
 public:
     void SetPreparedReuseKey(const std::string& key){m_preparedReuseKey=key;}
+    void SetPreparedMemoryKey(const std::string& key){m_preparedMemoryKey=key;}
 	bool m_analyticBackscatter = false;
 	int m_analyticReturnOrder = 1;
 	bool m_haarAlpha = false;
@@ -145,6 +146,7 @@ public:
 
 private:
     std::string m_preparedReuseKey;
+    std::string m_preparedMemoryKey;
     struct WeightedOrientation
     {
         double beta;

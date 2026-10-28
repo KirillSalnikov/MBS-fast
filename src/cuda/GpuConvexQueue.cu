@@ -133,14 +133,26 @@ bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vec
     const int count=static_cast<int>(inputs.size());
     const char* levelsEnv=std::getenv("MBS_GPU_TRACE_CONVEX_LEVELS");
     bool levels=levelsEnv&&levelsEnv[0]=='1';
-    unsigned queueCapacity=static_cast<unsigned>(count)*512;
+    size_t queuePerOrientation=512;
+    for(const auto& in:inputs)if(in.faceCount>16)queuePerOrientation=std::max(queuePerOrientation,
+        std::min(size_t(8192),size_t(in.faceCount)*std::max(1,in.maxDepth)*16));
+    if(size_t(count)*queuePerOrientation>UINT_MAX)return false;
+    unsigned queueCapacity=static_cast<unsigned>(size_t(count)*queuePerOrientation);
     size_t stackBytes=levels?2*size_t(queueCapacity)*sizeof(QueueItem):size_t(count)*StackCapacity*sizeof(Beam);
     size_t inputBytes=inputs.size()*sizeof(Input);
     if(cudaMemGetInfo(&freeBytes,&totalBytes)!=cudaSuccess)return false;
     // At most one quarter of currently free memory; leave diffraction room.
     size_t budget=freeBytes/4;
-    if(budget<stackBytes+inputBytes+sizeof(Output)*size_t(count)*64)return false;
-    size_t cap=std::min(size_t(count)*2048,(budget-stackBytes-inputBytes)/sizeof(Output));
+    if(budget<stackBytes+inputBytes+sizeof(Output)*size_t(count)*64){
+        std::fprintf(stderr,"GPU convex queue fallback: scratch exceeds free-memory budget orientations=%d budget_MiB=%.3f\n",count,budget/1048576.);
+        return false;
+    }
+    // Reserve more output space for many-face/deep traces. This is a capacity
+    // estimate, never a beam cutoff. Keep the free-memory bound and CPU retry.
+    size_t beamsPerOrientation=2048;
+    for(const auto& in:inputs)if(in.faceCount>16)beamsPerOrientation=std::max(beamsPerOrientation,
+        std::min(size_t(32768),size_t(in.faceCount)*std::max(1,in.maxDepth)*32));
+    size_t cap=std::min(size_t(count)*beamsPerOrientation,(budget-stackBytes-inputBytes)/sizeof(Output));
     if(cap>UINT_MAX)return false;
     const unsigned initial=external?static_cast<unsigned>(external->size()):0;
     if(initial>cap)return false;
@@ -179,8 +191,12 @@ bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vec
     float ms=0;if(!check(cudaEventElapsedTime(&ms,b.start,b.stop)))return false;metrics.kernelSeconds=ms/1000.0;
     if(consumeDevice){
         // Transactional whole-chunk fallback: never consume a partial trace.
-        if(used>cap)return false;
-        for(const auto& state:status)if(state.failure)return false;
+        int failures[5]={};bool failed=false;
+        for(const auto& state:status)if(state.failure){failed=true;if(state.failure>0&&state.failure<=4)++failures[state.failure];}
+        if(used>cap||failed){
+            std::fprintf(stderr,"GPU convex queue fallback: raw_beams=%u capacity=%zu vertex_limit=%d output_limit=%d work_queue_limit=%d nonfinite=%d; complete CPU retrace\n",
+                used,cap,failures[1],failures[2],failures[3],failures[4]);return false;
+        }
         // Tracing scratch is no longer needed. Keep only inputs and raw output
         // until the consumer completes; no raw beam crosses PCIe.
         cudaFree(b.stacks);b.stacks=nullptr;

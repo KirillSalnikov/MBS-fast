@@ -12,6 +12,9 @@ uint64_t nativeSubmitted=0,nativeReturned=0,nativeCommitted=0,nativeRetries=0,na
 double nativeWorkerSeconds=0,nativeCheckpointSeconds=0;
 struct DispatchProgress {size_t requested=0,committed=0;};
 std::vector<DispatchProgress> dispatchProgress;
+struct CompletedNativeBlock {std::string folder;unsigned seed;int offset,count,depth,phi;size_t rows;double lo,hi,completed;};
+std::vector<CompletedNativeBlock> recentNativeBlocks;
+uint64_t phaseNativeCommitted=0,phaseAngleOrientationSamples=0;
 
 void WriteExecutionProgress(bool force=false){
     const double now=Seconds();
@@ -21,6 +24,8 @@ void WriteExecutionProgress(bool force=false){
         <<"{\"schema\":1,\"controller_pid\":"<<getpid()<<",\"unix_seconds\":"<<utc
         <<",\"round\":"<<executionRound<<",\"phase\":"<<Quoted(executionPhase)
         <<",\"phase_elapsed_seconds\":"<<now-executionPhaseStarted
+        <<",\"phase_native_blocks_committed\":"<<phaseNativeCommitted
+        <<",\"phase_angle_orientation_samples_committed\":"<<phaseAngleOrientationSamples
         <<",\"native_requests_submitted\":"<<nativeSubmitted<<",\"native_requests_returned\":"<<nativeReturned
         <<",\"native_requests_committed\":"<<nativeCommitted<<",\"native_requests_retried\":"<<nativeRetries
         <<",\"committed_orientation_samples_all_seeds\":"<<nativeOrientations
@@ -38,10 +43,18 @@ void WriteExecutionProgress(bool force=false){
             <<",\"seed\":"<<w.seed<<",\"depth\":"<<w.depth<<",\"phi\":"<<w.phi
             <<",\"theta_rows\":"<<w.rows<<",\"theta_min\":"<<w.thetaMin<<",\"theta_max\":"<<w.thetaMax
             <<",\"elapsed_seconds\":"<<now-w.started<<"}";first=false;}
-    out<<"]}";Record(root+"/execution_progress.json",out.str());executionProgressWritten=now;
+    out<<"],\"recent_completed_blocks\":[";first=true;
+    for(const auto& b:recentNativeBlocks){
+        out<<(first?"":",")<<"{\"folder\":"<<Quoted(b.folder)<<",\"seed\":"<<b.seed<<",\"offset\":"<<b.offset
+            <<",\"count\":"<<b.count<<",\"depth\":"<<b.depth<<",\"phi\":"<<b.phi<<",\"theta_rows\":"<<b.rows
+            <<",\"theta_min\":"<<b.lo<<",\"theta_max\":"<<b.hi<<",\"committed_age_seconds\":"<<now-b.completed<<"}";first=false;
+    }
+    out<<"],\"completed_block_scope\":\"durably saved native blocks; angular bounds may contain gaps; not a new accuracy estimate\"}";
+    Record(root+"/execution_progress.json",out.str());executionProgressWritten=now;
 }
 void SetExecutionPhase(const std::string& phase,int round=-1){
     executionPhase=phase;if(round>=0)executionRound=round;executionPhaseStarted=Seconds();
+    phaseNativeCommitted=0;phaseAngleOrientationSamples=0;recentNativeBlocks.clear();
     WriteExecutionProgress(true);
 }
 void NativeStarted(const Job& job,const std::string& gpu){
@@ -60,7 +73,12 @@ void NativeCommitted(const Job& job,double checkpointSeconds){
     ++nativeCommitted;nativeOrientations+=uint64_t(job.count);nativeWorkerSeconds+=job.seconds;
     nativeCheckpointSeconds+=checkpointSeconds;lastNativeCommit=Seconds();
     Require(!dispatchProgress.empty(),"native commit outside dispatch progress");
-    ++dispatchProgress.back().committed;WriteExecutionProgress();
+    ++dispatchProgress.back().committed;++phaseNativeCommitted;
+    phaseAngleOrientationSamples+=uint64_t(job.count)*job.inputAngles.size()*job.phi;
+    if(recentNativeBlocks.size()==16)recentNativeBlocks.erase(recentNativeBlocks.begin());
+    recentNativeBlocks.push_back({job.folder,job.seed,job.offset,job.count,job.depth,job.phi,
+        job.inputAngles.size(),job.inputAngles.front(),job.inputAngles.back(),lastNativeCommit});
+    WriteExecutionProgress();
 }
 struct DispatchProgressScope {
     Engine& engine;

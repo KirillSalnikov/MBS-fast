@@ -139,6 +139,8 @@ cuda_check:
 $(OBJECTS): | cuda_check
 $(TARGET): | cuda_check
 $(ROOT_CUDA_OBJDIR)/src/cuda/GpuDiffraction.o: src/cuda/GpuPhaseReduction.cuh
+$(ROOT_CUDA_OBJDIR)/src/cuda/GpuDiffraction.o: src/cuda/GpuResidentPrepare.cuh src/cuda/GpuConvexQueueMath.cuh src/cuda/GpuConvexQueue.h
+$(ROOT_CUDA_OBJDIR)/src/cuda/GpuConvexQueue.o: src/cuda/GpuConvexQueueMath.cuh src/cuda/GpuConvexQueue.h
 endif
 
 cpu:

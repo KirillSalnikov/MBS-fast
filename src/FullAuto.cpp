@@ -2,6 +2,7 @@
 #include <functional>
 #include <exception>
 #include "FullAuto.h"
+#include "FullAutoTraceEvidence.h"
 #include "ArgPP.h"
 #include "CliOptions.h"
 #include "RunConfig.h"
@@ -1513,9 +1514,14 @@ struct Engine {
             if(pendingJobs.empty())break;
             std::vector<Job> jobs;std::vector<std::vector<std::string>> commands;
             jobs.swap(pendingJobs);commands.swap(pendingCommands);
-            std::vector<size_t> todo(jobs.size());for(size_t i=0;i<todo.size();++i)todo[i]=i;
-            std::stable_sort(todo.begin(),todo.end(),[&](size_t a,size_t b){const auto& x=jobs[a];const auto& y=jobs[b];
-                return double(x.count)*x.depth*x.inputAngles.size()>double(y.count)*y.depth*y.inputAngles.size();});
+            std::vector<FullAutoScheduling::NativePacket> packets;
+            for(const auto& job:jobs){
+                // All jobs in this Prefetch share the physics recipe. A
+                // seed/prefix/depth/phi change cannot reuse prepared beams.
+                const std::string key=Number(job.seed)+" "+Number(job.offset)+" "+Number(job.count)+" "+Number(job.depth)+" "+Number(job.pairedDepth)+" "+Number(job.phi);
+                packets.push_back({key,double(job.count)*job.depth*job.inputAngles.size()});
+            }
+            const auto todo=FullAutoScheduling::NativePacketOrder(packets);
             const double begin=Seconds();double aheadSeconds=0;size_t pumps=0;
             ExecutePrepared(jobs,commands,todo,[&](size_t){
                 if(more&&pendingJobs.size()<=120){const double start=Seconds();more=prepareOne();aheadSeconds+=Seconds()-start;++pumps;}
