@@ -10,6 +10,7 @@
 #include <mutex>
 #include <memory>
 #include <string>
+#include <stdexcept>
 
 namespace GpuConvexQueue {
 #include "GpuTraceReuse.cuh"
@@ -57,59 +58,98 @@ __global__ void seedQueue(const Input* inputs,int count,QueueItem* queue,unsigne
     unsigned start=atomicAdd(size,static_cast<unsigned>(inputs[i].seedCount));
     for(int s=0;s<inputs[i].seedCount;++s){queue[start+s].beam=inputs[i].seeds[s];queue[start+s].orientation=i;}
 }
-__global__ void traceLevel(const Input* inputs,const QueueItem* current,const unsigned* currentSize,
-                          QueueItem* next,unsigned* nextSize,unsigned queueCapacity,
-                          Output* output,unsigned* total,unsigned capacity,Status* states) {
-    unsigned index=blockIdx.x*blockDim.x+threadIdx.x;
-    if(index>=*currentSize||index>=queueCapacity)return;
-    const QueueItem& item=current[index];int orientation=item.orientation;
-    if(atomicAdd(&states[orientation].failure,0))return;
-    const Input& in=inputs[orientation];const Beam& beam=item.beam;Status status={};
-    if(beam.depth>=in.maxDepth||pruned(in,beam,status))return;
-    for(int f=0;f<in.faceCount&&!status.failure;++f){
-        if(f==beam.facet)continue;
+__device__ __forceinline__ void traceFacet(const Input& in,const Beam& beam,int orientation,int f,
+        QueueItem* next,unsigned* nextSize,unsigned queueCapacity,
+        Output* output,unsigned* total,unsigned capacity,Status& status) {
+        if(f==beam.facet)return;
         Vec normal=in.faces[f].outward;
         double cosine=maximum(-1.0,minimum(1.0,dot(normal,beam.direction)));
-        if(cosine<=Epsilon)continue;
+        if(cosine<=Epsilon)return;
         Beam reflected,transmitted;intersect(in,beam,f,reflected,status);
-        if(status.failure||reflected.count<3)continue;
+        if(status.failure||reflected.count<3)return;
         bool outgoing=split(in,beam,normal,cosine,reflected,transmitted);
         reflected.facet=transmitted.facet=f;reflected.depth=transmitted.depth=beam.depth+1;
         for(int p=0;p<=beam.depth;++p)reflected.track[p]=transmitted.track[p]=beam.track[p];
         reflected.track[beam.depth+1]=transmitted.track[beam.depth+1]=f;
-        if(!finiteBeam(reflected)||(outgoing&&!finiteBeam(transmitted))){status.failure=4;break;}
+        if(!finiteBeam(reflected)||(outgoing&&!finiteBeam(transmitted))){status.failure=4;return;}
         if(outgoing){
             unsigned slot=atomicAdd(total,1u);
-            if(slot>=capacity){status.failure=2;break;}
+            if(slot>=capacity){status.failure=2;return;}
             output[slot].beam=transmitted;output[slot].orientation=orientation;output[slot].order=0;++status.count;
         }
         if(!pruned(in,reflected,status)&&reflected.depth<in.maxDepth){
             unsigned slot=atomicAdd(nextSize,1u);
-            if(slot>=queueCapacity){status.failure=3;break;}
+            if(slot>=queueCapacity){status.failure=3;return;}
             next[slot].beam=reflected;next[slot].orientation=orientation;
         }
-    }
+}
+__device__ __forceinline__ void addStatus(Status* states,int orientation,const Status& status) {
     if(status.failure)atomicExch(&states[orientation].failure,status.failure);
     atomicAdd(&states[orientation].count,status.count);
     atomicAdd(&states[orientation].evaluated,status.evaluated);atomicAdd(&states[orientation].rejected,status.rejected);
     atomicAdd(&states[orientation].rejectedJones,status.rejectedJones);atomicAdd(&states[orientation].rejectedArea,status.rejectedArea);
     atomicAdd(&states[orientation].rejectedImportance,status.rejectedImportance);
 }
+__device__ __forceinline__ void traceQueuedBeam(unsigned index,const Input* inputs,const QueueItem* current,
+        QueueItem* next,unsigned* nextSize,unsigned queueCapacity,
+        Output* output,unsigned* total,unsigned capacity,Status* states) {
+    const QueueItem& item=current[index];int orientation=item.orientation;
+    if(atomicAdd(&states[orientation].failure,0))return;
+    const Input& in=inputs[orientation];const Beam& beam=item.beam;Status status={};
+    if(beam.depth>=in.maxDepth||pruned(in,beam,status))return;
+    for(int f=0;f<in.faceCount&&!status.failure;++f)
+        traceFacet(in,beam,orientation,f,next,nextSize,queueCapacity,output,total,capacity,status);
+    addStatus(states,orientation,status);
+}
+template<bool compact> __global__ void traceLevel(const Input* inputs,const QueueItem* current,const unsigned* currentSize,
+        QueueItem* next,unsigned* nextSize,unsigned queueCapacity,
+        Output* output,unsigned* total,unsigned capacity,Status* states) {
+    const unsigned size=min(*currentSize,queueCapacity);
+    for(unsigned index=blockIdx.x*blockDim.x+threadIdx.x;index<size;index+=blockDim.x*gridDim.x){
+        traceQueuedBeam(index,inputs,current,next,nextSize,queueCapacity,output,total,capacity,states);
+        if(!compact)break;
+    }
+}
+#include "GpuFacetWavefront.cuh"
 struct Buffers {
     Input* inputs=nullptr;Beam* stacks=nullptr;Output* output=nullptr;Status* status=nullptr;unsigned* total=nullptr;
     cudaStream_t stream=nullptr;cudaEvent_t start=nullptr,stop=nullptr;
     QueueItem* queues[2]={nullptr,nullptr};unsigned* queueSizes=nullptr;
-    ~Buffers(){if(stream)cudaStreamSynchronize(stream);cudaFree(inputs);cudaFree(stacks);cudaFree(output);cudaFree(status);cudaFree(total);
+    enum Slot {Inputs,OutputData,States,Total,Stack,Queue0,Queue1,QueueSizes,Slots};
+    size_t sizes[Slots]={};int device=0,reused=0,allocated=0;
+    explicit Buffers(int id):device(id){}
+    template<class T> cudaError_t Allocate(T** address,size_t bytes,Slot slot){
+        if(*address&&sizes[slot]==bytes){++reused;return cudaSuccess;}
+        if(*address){const auto error=cudaFree(*address);if(error!=cudaSuccess)return error;*address=nullptr;sizes[slot]=0;}
+        const auto error=cudaMalloc(address,bytes);if(error==cudaSuccess){sizes[slot]=bytes;++allocated;}return error;
+    }
+    template<class T> void Release(T*& address,Slot slot){if(address)cudaFree(address);address=nullptr;sizes[slot]=0;}
+    size_t Bytes()const{size_t total=0;for(size_t n:sizes)total+=n;return total;}
+    void ReleaseScratch(){Release(stacks,Stack);Release(queues[0],Queue0);Release(queues[1],Queue1);}
+    void Trim(size_t limit){
+        // Scratch is released before diffraction as on the existing path.
+        ReleaseScratch();
+        if(Bytes()>limit)Release(output,OutputData);
+        if(Bytes()>limit)Release(inputs,Inputs);
+        if(Bytes()>limit){Release(status,States);Release(total,Total);Release(queueSizes,QueueSizes);}
+    }
+    ~Buffers(){int before=0;cudaGetDevice(&before);cudaSetDevice(device);
+        if(stream)cudaStreamSynchronize(stream);cudaFree(inputs);cudaFree(stacks);cudaFree(output);cudaFree(status);cudaFree(total);
         cudaFree(queues[0]);cudaFree(queues[1]);cudaFree(queueSizes);
-        if(start)cudaEventDestroy(start);if(stop)cudaEventDestroy(stop);if(stream)cudaStreamDestroy(stream);}
+        if(start)cudaEventDestroy(start);if(stop)cudaEventDestroy(stop);if(stream)cudaStreamDestroy(stream);cudaSetDevice(before);}
 };
+#include "GpuTraceWorkspace.cuh"
 }
 bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vector<size_t>& order,std::vector<Status>& status,Metrics& metrics,int threads,
            const std::vector<Output>* external,
            const std::function<bool(const Input*,const Output*,size_t)>& consumeDevice) {
     output.clear();order.clear();status.clear();metrics=Metrics();if(inputs.empty())return true;
     const auto started=std::chrono::steady_clock::now();
-    GpuProcessLock lock;Buffers b;
+    const char* scheduleEnv=std::getenv("MBS_GPU_TRACE_CONVEX_SCHEDULE");
+    const std::string schedule=scheduleEnv?scheduleEnv:"legacy";
+    if(schedule!="legacy"&&schedule!="compact"&&schedule!="facets"&&schedule!="facets4"&&schedule!="facets8"&&schedule!="facets16")
+        throw std::runtime_error("MBS_GPU_TRACE_CONVEX_SCHEDULE must be legacy, compact, facets4, facets8, facets16 or facets");
+    GpuProcessLock lock;
     auto& cache=RawCache();std::unique_lock<std::mutex> cacheLock(cache.mutex);
     std::string cacheKey;int device=0;cudaGetDevice(&device);
     if(consumeDevice&&cache.limit){
@@ -118,7 +158,7 @@ bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vec
         cacheKey.append(reinterpret_cast<const char*>(inputs.data()),inputs.size()*sizeof(Input));
         cacheKey.append(reinterpret_cast<const char*>(&externalCount),sizeof(externalCount));
         if(externalCount)cacheKey.append(reinterpret_cast<const char*>(external->data()),externalCount*sizeof(Output));
-        const char* levels=std::getenv("MBS_GPU_TRACE_CONVEX_LEVELS");cacheKey+=levels?levels:"0";
+        const char* levels=std::getenv("MBS_GPU_TRACE_CONVEX_LEVELS");cacheKey+=levels?levels:"0";cacheKey+=" schedule="+schedule;
         for(auto i=cache.entries.begin();i!=cache.entries.end();++i)if((*i)->device==device&&(*i)->key==cacheKey){
             auto& saved=**i;status=saved.status;metrics.bytes=saved.bytes;
             const bool ok=consumeDevice(saved.inputs,saved.output,saved.count);
@@ -129,6 +169,7 @@ bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vec
             return ok;
         }
     }
+    WorkspaceLease workspace(device);Buffers& b=*workspace.buffer;
     size_t freeBytes=0,totalBytes=0;
     const int count=static_cast<int>(inputs.size());
     const char* levelsEnv=std::getenv("MBS_GPU_TRACE_CONVEX_LEVELS");
@@ -142,7 +183,9 @@ bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vec
     size_t inputBytes=inputs.size()*sizeof(Input);
     if(cudaMemGetInfo(&freeBytes,&totalBytes)!=cudaSuccess)return false;
     // At most one quarter of currently free memory; leave diffraction room.
-    size_t budget=freeBytes/4;
+    // Reused allocations are already absent from cudaMemGetInfo's free count.
+    // Include our own bounded reservation once, never other processes' memory.
+    size_t budget=(freeBytes+b.Bytes())/4;
     if(budget<stackBytes+inputBytes+sizeof(Output)*size_t(count)*64){
         std::fprintf(stderr,"GPU convex queue fallback: scratch exceeds free-memory budget orientations=%d budget_MiB=%.3f\n",count,budget/1048576.);
         return false;
@@ -158,26 +201,39 @@ bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vec
     if(initial>cap)return false;
     metrics.bytes=stackBytes+inputBytes+cap*sizeof(Output)+inputs.size()*sizeof(Status)+sizeof(unsigned);
     const auto check=[](cudaError_t e){if(e!=cudaSuccess){std::fprintf(stderr,"GPU convex queue: %s; complete CPU fallback\n",cudaGetErrorString(e));return false;}return true;};
-    if(!check(cudaStreamCreateWithFlags(&b.stream,cudaStreamNonBlocking))
-       ||!check(cudaEventCreate(&b.start))||!check(cudaEventCreate(&b.stop))
-       ||!check(cudaMalloc(&b.inputs,inputBytes))
-       ||!check(cudaMalloc(&b.output,cap*sizeof(Output)))||!check(cudaMalloc(&b.status,inputs.size()*sizeof(Status)))
-       ||!check(cudaMalloc(&b.total,sizeof(unsigned))))return false;
+    if((!b.stream&&!check(cudaStreamCreateWithFlags(&b.stream,cudaStreamNonBlocking)))
+       ||(!b.start&&!check(cudaEventCreate(&b.start)))||(!b.stop&&!check(cudaEventCreate(&b.stop)))
+       ||!check(b.Allocate(&b.inputs,inputBytes,Buffers::Inputs))
+       ||!check(b.Allocate(&b.output,cap*sizeof(Output),Buffers::OutputData))||!check(b.Allocate(&b.status,inputs.size()*sizeof(Status),Buffers::States))
+       ||!check(b.Allocate(&b.total,sizeof(unsigned),Buffers::Total)))return false;
     if(levels){
-        if(!check(cudaMalloc(&b.queues[0],queueCapacity*sizeof(QueueItem)))
-           ||!check(cudaMalloc(&b.queues[1],queueCapacity*sizeof(QueueItem)))||!check(cudaMalloc(&b.queueSizes,2*sizeof(unsigned)))
+        if(!check(b.Allocate(&b.queues[0],queueCapacity*sizeof(QueueItem),Buffers::Queue0))
+           ||!check(b.Allocate(&b.queues[1],queueCapacity*sizeof(QueueItem),Buffers::Queue1))||!check(b.Allocate(&b.queueSizes,2*sizeof(unsigned),Buffers::QueueSizes))
            ||!check(cudaMemsetAsync(b.queueSizes,0,2*sizeof(unsigned),b.stream))
            ||!check(cudaMemsetAsync(b.status,0,inputs.size()*sizeof(Status),b.stream)))return false;
-    }else if(!check(cudaMalloc(&b.stacks,stackBytes)))return false;
+    }else if(!check(b.Allocate(&b.stacks,stackBytes,Buffers::Stack)))return false;
     if(initial&&!check(cudaMemcpyAsync(b.output,external->data(),initial*sizeof(Output),cudaMemcpyHostToDevice,b.stream)))return false;
     if(!check(cudaMemcpyAsync(b.inputs,inputs.data(),inputBytes,cudaMemcpyHostToDevice,b.stream))
        ||!check(cudaMemcpyAsync(b.total,&initial,sizeof(unsigned),cudaMemcpyHostToDevice,b.stream))||!check(cudaEventRecord(b.start,b.stream)))return false;
     if(levels){
         seedQueue<<<(count+63)/64,64,0,b.stream>>>(b.inputs,count,b.queues[0],b.queueSizes);
+        int processors=0;if(!check(cudaDeviceGetAttribute(&processors,cudaDevAttrMultiProcessorCount,device)))return false;
+        const unsigned compactBlocks=std::max(1,std::min(int((queueCapacity+63)/64),processors*4));
+        const unsigned facetBlocks=std::max(1,std::min(int((queueCapacity+1)/2),processors*4));
         int depth=0;for(const auto& in:inputs)depth=std::max(depth,in.maxDepth);
         for(int d=0;d<depth;++d){int current=d%2,next=1-current;
             if(!check(cudaMemsetAsync(b.queueSizes+next,0,sizeof(unsigned),b.stream)))return false;
-            traceLevel<<<(queueCapacity+63)/64,64,0,b.stream>>>(b.inputs,b.queues[current],b.queueSizes+current,
+            if(schedule=="facets4")traceFacets<4><<<facetBlocks,64,0,b.stream>>>(b.inputs,b.queues[current],b.queueSizes+current,
+                b.queues[next],b.queueSizes+next,queueCapacity,b.output,b.total,static_cast<unsigned>(cap),b.status);
+            else if(schedule=="facets8")traceFacets<8><<<facetBlocks,64,0,b.stream>>>(b.inputs,b.queues[current],b.queueSizes+current,
+                b.queues[next],b.queueSizes+next,queueCapacity,b.output,b.total,static_cast<unsigned>(cap),b.status);
+            else if(schedule=="facets16")traceFacets<16><<<facetBlocks,64,0,b.stream>>>(b.inputs,b.queues[current],b.queueSizes+current,
+                b.queues[next],b.queueSizes+next,queueCapacity,b.output,b.total,static_cast<unsigned>(cap),b.status);
+            else if(schedule=="facets")traceFacets<32><<<facetBlocks,64,0,b.stream>>>(b.inputs,b.queues[current],b.queueSizes+current,
+                b.queues[next],b.queueSizes+next,queueCapacity,b.output,b.total,static_cast<unsigned>(cap),b.status);
+            else if(schedule=="compact")traceLevel<true><<<compactBlocks,64,0,b.stream>>>(b.inputs,b.queues[current],b.queueSizes+current,
+                b.queues[next],b.queueSizes+next,queueCapacity,b.output,b.total,static_cast<unsigned>(cap),b.status);
+            else traceLevel<false><<<(queueCapacity+63)/64,64,0,b.stream>>>(b.inputs,b.queues[current],b.queueSizes+current,
                 b.queues[next],b.queueSizes+next,queueCapacity,b.output,b.total,static_cast<unsigned>(cap),b.status);
             if(!check(cudaGetLastError()))return false;
         }
@@ -199,8 +255,7 @@ bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vec
         }
         // Tracing scratch is no longer needed. Keep only inputs and raw output
         // until the consumer completes; no raw beam crosses PCIe.
-        cudaFree(b.stacks);b.stacks=nullptr;
-        for(int i=0;i<2;++i){cudaFree(b.queues[i]);b.queues[i]=nullptr;}
+        b.ReleaseScratch();
         const bool ok=consumeDevice(b.inputs,b.output,used);
         const size_t cacheBytes=inputBytes+size_t(used)*sizeof(Output)+cacheKey.size()+status.size()*sizeof(Status)+sizeof(TraceCacheEntry);
         if(ok&&!cacheKey.empty()&&cacheBytes<=cache.limit){
@@ -211,13 +266,13 @@ bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vec
                 if(cudaMemcpy(compact,b.output,size_t(used)*sizeof(Output),cudaMemcpyDeviceToDevice)==cudaSuccess){
                     std::unique_ptr<TraceCacheEntry> saved(new TraceCacheEntry);
                     saved->key=std::move(cacheKey);saved->device=device;saved->bytes=cacheBytes;saved->count=used;saved->status=status;
-                    saved->inputs=b.inputs;b.inputs=nullptr;saved->output=compact;cache.bytes+=cacheBytes;
+                    saved->inputs=b.inputs;b.inputs=nullptr;b.sizes[Buffers::Inputs]=0;saved->output=compact;cache.bytes+=cacheBytes;
                     cache.entries.push_front(std::move(saved));
                 }else{cudaFree(compact);cudaGetLastError();}
             }else cudaGetLastError();
         }
         metrics.wallSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
-        return ok;
+        workspace.success=ok;return ok;
     }
     // An overflow invalidates only orientations flagged by the device. Entries
     // written earlier by other orientations remain complete and independently valid.
@@ -247,6 +302,6 @@ bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vec
     });
     metrics.sortSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-sortStarted).count();
     metrics.wallSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
-    return true;
+    workspace.success=std::all_of(status.begin(),status.end(),[](const Status& s){return s.failure==0;});return true;
 }
 }
