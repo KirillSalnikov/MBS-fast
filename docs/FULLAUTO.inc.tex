@@ -428,6 +428,23 @@ clipping, ray order, cutoffs, orientation samples and checkpoint
 estimators. They reduce CPU work feeding CUDA, but do not guarantee a
 speedup for a GPU-diffraction-bound job.
 
+Facet-edge geometry is prepared once per rotated convex particle.
+Clipping classifies each vertex once per edge and avoids copying an
+aperture that is wholly retained. The same geometric tolerances and
+intersection formulas apply; the edge cache is rebuilt for every
+orientation, including size changes.
+
+The controller reuses an execution-recipe digest only while every input
+is unchanged; saved job identities retain their original format.
+Scheduling uses numeric in-memory request keys and skips a leading
+native prefix only after proving that every requested angle is saved for
+all eight seeds. This affects cost forecasts, not matrix assembly or
+convergence checks. Coverage accelerators share an 8 MiB bound across
+phi-specific planners and fall back to the exact scan when full. These
+optimizations need no additional flags or new checkpoint format. They
+shorten parts of the CPU work; they do not promise continuous 100\% GPU
+utilization or eliminate checkpoint and validation time.
+
 Persistent workers retain a conservative RAM estimate per physics
 recipe. After 128 measured orientations, a later request may reuse a
 proven batch size instead of restarting at 16. The warm start is bounded

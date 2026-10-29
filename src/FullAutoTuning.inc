@@ -1,13 +1,26 @@
 // Included inside Engine. All choices are frozen before production and restored
 // before the adaptive checkpoint. Pilot caches include the complete execution
 // recipe, so different cutoffs, symmetries and resources never share rows.
-std::string ExecutionHash()const{
+// Controller-owned, bounded to one recipe. Check the actual inputs instead of
+// relying on setters: pilots and checkpoint restore also replace base/gpus
+// directly. Preserve the serialized recipe so old jobs remain compatible.
+mutable bool executionRecipeValid=false;
+mutable int executionRecipeThreads=0,executionRecipeChunk=0;
+mutable bool executionRecipePhiPilot=false;
+mutable std::vector<std::string> executionRecipeGpus,executionRecipeBase;
+mutable std::string executionRecipeAnglePilot,executionRecipeHash;
+const std::string& ExecutionHash()const{
+    if(executionRecipeValid&&executionRecipeThreads==workerThreads&&executionRecipeChunk==workerChunk
+            &&executionRecipePhiPilot==phiCutoffPilot&&executionRecipeAnglePilot==angleBatchPilotRecipe
+            &&executionRecipeGpus==gpus&&executionRecipeBase==base)return executionRecipeHash;
     std::ostringstream s;s<<workerThreads<<' '<<workerChunk<<'\n';for(const auto& gpu:gpus)s<<gpu<<'\n';for(const auto& v:base)s<<v<<'\n';
     // A variance pilot of B_N+(O_m-B_m) is a different estimator from a
     // full-off pilot with the same seed. Never reuse the latter's cache.
     if(phiCutoffPilot)s<<"matched-cutoff-phi-pilot-v1\n";
     if(!angleBatchPilotRecipe.empty())s<<"angle-batch-pilot "<<angleBatchPilotRecipe<<'\n';
-    return Hash(s.str());
+    executionRecipeThreads=workerThreads;executionRecipeChunk=workerChunk;executionRecipePhiPilot=phiCutoffPilot;
+    executionRecipeGpus=gpus;executionRecipeBase=base;executionRecipeAnglePilot=angleBatchPilotRecipe;
+    executionRecipeHash=Hash(s.str());executionRecipeValid=true;return executionRecipeHash;
 }
 void RemoveOption(const std::string& option,int count=1){
     for(size_t i=0;i<base.size();)if(base[i]==option){Require(i+size_t(count)<base.size(),"incomplete worker option");base.erase(base.begin()+i,base.begin()+i+count+1);}else ++i;

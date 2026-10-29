@@ -15,6 +15,7 @@ bool ScatteringConvex::ScatterLight(double /*beta*/, double /*gamma*/,
 bool ScatteringConvex::PrepareExternalBeams(std::vector<Beam>& outBeams)
 {
     // m_particle->Rotate(beta, gamma, 0);
+    PrepareClippingEdges();
 
     m_incidentEnergy = 0;
     m_treeSize = 0;

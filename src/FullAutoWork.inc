@@ -11,7 +11,21 @@ class AdditionalWork {
     struct CoverageBudget {size_t bytes=0,limit;explicit CoverageBudget(size_t maximum):limit(maximum){}};
     std::shared_ptr<CoverageBudget> coverageBudget;
     std::map<Slot,Coverage> coverage;
-    std::map<std::string,WorkForecast> forecasts;
+    struct RequestLess {
+        bool operator()(const std::vector<Engine::WorkRequest>& a,const std::vector<Engine::WorkRequest>& b)const{
+            for(size_t i=0;i<std::min(a.size(),b.size());++i){
+                const auto x=std::tie(a[i].count,a[i].offset,a[i].depth,a[i].pairedDepth);
+                const auto y=std::tie(b[i].count,b[i].offset,b[i].depth,b[i].pairedDepth);
+                if(x!=y)return x<y;
+                if(a[i].angles!=b[i].angles)return a[i].angles<b[i].angles;
+            }return a.size()<b.size();
+        }
+    };
+    // These keys are process-local. Avoid formatting every theta as text for
+    // each candidate allocation; keep the original request/angle order.
+    std::map<std::vector<Engine::WorkRequest>,WorkForecast,RequestLess> forecasts;
+    struct LeadingCoverage {int count=0;bool stopped=false;};
+    std::map<std::tuple<int,int,int,double>,LeadingCoverage> leadingCoverage;
     std::map<int,std::unique_ptr<AdditionalWork>> phiWork;
     Slot Key(int n,int offset,int depth,int paired,unsigned seed)const{return {{uint64_t(n),uint64_t(offset),uint64_t(depth),uint64_t(paired),seed}};}
     bool Covered(int n,int offset,int depth,int paired,unsigned seed,double angle){
@@ -46,6 +60,32 @@ class AdditionalWork {
         for(const Job* job:found->second.candidates)if(std::binary_search(job->inputAngles.begin(),job->inputAngles.end(),angle))return true;
         return false;
     }
+    int LeadingCovered(const Engine::WorkRequest& r,int block){
+        if(ignoreCoverage)return 0;
+        int common=r.count-r.count%block;
+        if(!common)return 0;
+        for(double angle:r.angles){
+            const auto key=std::make_tuple(block,r.depth,r.pairedDepth,angle);
+            auto found=leadingCoverage.find(key);
+            // Bounded accelerator only; falling back scans the same leaves.
+            if(found==leadingCoverage.end()){
+                // Charge a conservative map-node bound to the same pool as
+                // angular coverage (also shared by phi-specific planners).
+                if(leadingCoverage.size()>=32768||coverageBudget->limit-coverageBudget->bytes<128)return 0;
+                bool complete=true;for(unsigned seed:seeds)complete=complete&&Covered(block,0,r.depth,r.pairedDepth,seed,angle);
+                if(!complete||coverageBudget->limit-coverageBudget->bytes<128)return 0;
+                LeadingCoverage initial;initial.count=block;
+                found=leadingCoverage.emplace(key,initial).first;
+                coverageBudget->bytes+=128;
+            }
+            auto& saved=found->second;
+            while(!saved.stopped&&saved.count<common){
+                bool complete=true;for(unsigned seed:seeds)complete=complete&&Covered(block,saved.count,r.depth,r.pairedDepth,seed,angle);
+                if(complete)saved.count+=block;else saved.stopped=true;
+            }
+            common=std::min(common,saved.count);if(!common)break;
+        }return common;
+    }
 
 public:
     AdditionalWork(Engine& engine,const unsigned* seedSet,bool ignoreSaved=false,bool productionProfilesOnly=false,bool uniform=false,size_t coverageLimit=8*1024*1024):e(engine),ignoreCoverage(ignoreSaved),productionOnly(productionProfilesOnly),uniformPhi(uniform),coverageBudget(new CoverageBudget(coverageLimit)){
@@ -74,8 +114,7 @@ public:
             for(const auto& group:groups){PhiScope scope(e,group.first);auto& work=phiWork[group.first];if(!work){work.reset(new AdditionalWork(e,seeds.data(),ignoreCoverage,productionOnly,true));work->coverageBudget=coverageBudget;}const auto part=work->Forecast(group.second);
                 total.seconds+=part.seconds;total.jobs+=part.jobs;total.profiled=total.profiled&&part.profiled;}return total;
         }
-        std::ostringstream name;for(const auto& r:requests){name<<r.count<<':'<<r.depth<<':'<<r.pairedDepth<<':';for(double q:r.angles)name<<Number(q)<<',';name<<';';}
-        auto saved=forecasts.find(name.str());if(saved!=forecasts.end())return saved->second;
+        auto saved=forecasts.find(requests);if(saved!=forecasts.end())return saved->second;
         WorkForecast result;std::map<Slot,std::vector<double>> planned;
         auto covered=[&](const Engine::WorkRequest& r,unsigned seed,double angle){
             if(Covered(r.count,r.offset,r.depth,r.pairedDepth,seed,angle))return true;
@@ -113,8 +152,17 @@ public:
         int maximum=0;for(const auto& r:requests)maximum=std::max(maximum,r.count);
         if(e.QueueEnabled()){
             const int block=e.incremental?e.orientationBlock:maximum;
-            for(int offset=0;offset<maximum;offset+=block){std::map<std::string,Engine::WorkRequest> leaves;
-                for(const auto& r:requests)if(offset<r.count){const int n=std::min(block,r.count-offset);const auto key=Number(n)+" "+Number(r.depth)+" "+Number(r.pairedDepth);
+            // A complete leading prefix contributes no new jobs or seconds.
+            // Prove coverage for ALL eight seeds at the native block size;
+            // then omit only those zero-cost leaves. Keep the remaining leaf
+            // groups, padding rules and summation order exactly as before.
+            int first=maximum;
+            if(e.incremental){for(const auto& r:requests){const int covered=LeadingCovered(r,block);if(covered<r.count)first=std::min(first,covered);}}
+            else first=0;
+            for(int offset=first;offset<maximum;offset+=block){std::map<std::string,Engine::WorkRequest> leaves;
+                // Retain lexical leaf ordering: it fixes floating-point cost
+                // accumulation order. All three fields are exact integers.
+                for(const auto& r:requests)if(offset<r.count){const int n=std::min(block,r.count-offset);const auto key=std::to_string(n)+" "+std::to_string(r.depth)+" "+std::to_string(r.pairedDepth);
                     auto it=leaves.find(key);if(it==leaves.end())it=leaves.emplace(key,Engine::WorkRequest{n,offset,r.depth,r.pairedDepth,{}}).first;
                     it->second.angles.insert(it->second.angles.end(),r.angles.begin(),r.angles.end());}
                 for(auto& item:leaves){auto& r=item.second;std::sort(r.angles.begin(),r.angles.end());r.angles.erase(std::unique(r.angles.begin(),r.angles.end()),r.angles.end());leaf(r);}}
@@ -128,7 +176,7 @@ public:
                 for(int offset=0;offset<r.count;offset+=block)leaf(Engine::WorkRequest{std::min(block,r.count-offset),offset,r.depth,r.pairedDepth,r.angles});
             }
         }
-        forecasts[name.str()]=result;return result;
+        forecasts.emplace(requests,result);return result;
     }
 };
 std::vector<Engine::WorkRequest> BudgetRequests(const Engine& e,const std::vector<int>& depths,const Budgets& counts,const std::vector<size_t>& ids,bool uniform=false){

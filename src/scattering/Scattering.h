@@ -35,6 +35,7 @@ protected:
     double m_geometryAreaTolerance;
     double m_geometryDepthTolerance;
     bool m_unitFacetNormals;
+    std::vector<std::vector<PreparedClippingEdge>> m_clippingEdges;
     Splitting splitting;
     Light *m_incidentLight;
 
@@ -118,6 +119,7 @@ protected:
                     Polygon *overlap = nullptr) const;
 
     void Intersect(int facetId, const Beam& beam, Polygon &intersection) const;
+    void PrepareClippingEdges();
 
     void SetPolygonByFacet(int facetId, Polygon &polygon) const;
 

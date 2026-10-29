@@ -246,6 +246,48 @@ inline Point3f intersect_i(const Point3f &a1, const Point3f &a2,
     return intersect_geometry_lines(a1, b1, a2 - a1, b2 - b1, normal, ok);
 }
 
+// A rotated facet is fixed while its many incident apertures are clipped.
+// Store only edge invariants, retaining the operation order and tolerances of
+// is_inside_i / intersect_geometry_lines. Rebuild after every particle rotation.
+struct PreparedClippingEdge
+{
+    Point3f origin, edge, normal, transverse;
+    double edgeLengthSquared, normalLengthSquared, transverseLengthSquared;
+    PreparedClippingEdge(const Point3f& p1,const Point3f& p2,const Point3f& n)
+        : origin(p1),edge(p2-p1),normal(n),transverse(CrossProduct(edge,normal)),
+          edgeLengthSquared(edge.cx*edge.cx+edge.cy*edge.cy+edge.cz*edge.cz),
+          normalLengthSquared(DotProduct(normal,normal)),
+          transverseLengthSquared(DotProduct(transverse,transverse)) {}
+    bool Contains(const Point3f& x)const
+    {
+        const double qx=x.cx-origin.cx,qy=x.cy-origin.cy,qz=x.cz-origin.cz;
+        const double crossX=edge.cy*qz-edge.cz*qy;
+        const double crossY=edge.cz*qx-edge.cx*qz;
+        const double crossZ=edge.cx*qy-edge.cy*qx;
+        const double side=crossX*normal.cx+crossY*normal.cy+crossZ*normal.cz;
+        if(side>=0.0)return true;
+        const double offsetLengthSquared=qx*qx+qy*qy+qz*qz;
+        const double scaleSquared=edgeLengthSquared*std::max(edgeLengthSquared,offsetLengthSquared)*normalLengthSquared;
+        const double epsilonSquared=GEOMETRY_RELATIVE_EPSILON*GEOMETRY_RELATIVE_EPSILON;
+        return side*side<=epsilonSquared*scaleSquared;
+    }
+    Point3f Intersect(const Point3f& a1,const Point3f& a2,bool& ok)const
+    {
+        const Point3f va=a2-a1;
+        const double denominator=DotProduct(va,transverse);
+        const double denominatorScale=std::sqrt(DotProduct(va,va)*transverseLengthSquared);
+        if(denominatorScale<=DBL_MIN||std::fabs(denominator)<=geometry_parallel_tolerance(denominatorScale)){
+            ok=false;return Point3f();
+        }
+        const double t=DotProduct(a1-origin,transverse)/denominator;
+        const Point3f result=a1-va*t;
+        if(!std::isfinite(result.cx)||!std::isfinite(result.cy)||!std::isfinite(result.cz)){
+            ok=false;return Point3f();
+        }
+        ok=true;return result;
+    }
+};
+
 inline Point3f intersect_iv(const Point3f &a1, const Point3f &b1,
                             const Point3f &va, const Point3f &vb,
                             const Point3f &normal, bool &ok)

@@ -46,6 +46,25 @@ int main(){try{
     AdditionalWork ignored(e,e.seeds.data(),true),ignoredOriginal(e,e.seeds.data(),true,false,false,0);
     for(const auto& r:requests)Same(ignoredOriginal.Forecast(r),ignored.Forecast(r));
     Require(ignored.CoverageIndexBytes()==0,"ignored coverage allocated angles");
+    // Long completed prefixes, a hole, a partial tail and overlapping groups.
+    // The zero-budget path cannot skip prefixes and remains an independent
+    // exact leaf-by-leaf reference for the scheduling accelerator.
+    Engine longRun(args,config);Init(longRun);
+    for(unsigned seed:longRun.seeds)for(int offset=0;offset<1024;offset+=64){
+        const auto angles=offset==384&&seed==longRun.seeds.back()?std::vector<double>{170,180}:std::vector<double>{170,172,174,180};
+        Add(longRun,seed,6,offset,angles,Number(seed)+"_"+Number(offset));
+        Add(longRun,seed,8,offset,angles,"paired_"+Number(seed)+"_"+Number(offset),6);
+    }
+    std::vector<std::vector<Engine::WorkRequest>> longRequests;
+    for(int n:{64,1024,256,512,96,2048,384}){
+        longRequests.push_back({{n,0,6,0,{170,180}}});
+        longRequests.push_back({{n,0,6,0,{172,174}}});
+        longRequests.push_back({{n,0,8,6,{170,174}},{256,0,6,0,{170,180}}});
+    }
+    for(size_t limit:{size_t(0),size_t(127),size_t(128),size_t(256),size_t(8192),size_t(8*1024*1024)}){
+        AdditionalWork reference(longRun,longRun.seeds.data(),false,false,false,0),fast(longRun,longRun.seeds.data(),false,false,false,limit);
+        for(const auto& request:longRequests){Same(reference.Forecast(request),fast.Forecast(request));Require(fast.CoverageIndexBytes()<=limit,"leading coverage exceeded shared budget");}
+    }
     // Each phi child must spend from the same bound, not receive a new budget.
     e.thetaPhi={{0,2},{1,4},{2,2},{3,4},{4,2},{5,4}};
     for(size_t limit:{size_t(1),size_t(56),size_t(80),size_t(1024)}){

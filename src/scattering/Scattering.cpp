@@ -762,6 +762,19 @@ bool Scattering::ProjectToFacetPlane(const Polygon &polygon, const Vector3f &dir
     return true;
 }
 
+void Scattering::PrepareClippingEdges()
+{
+    m_clippingEdges.resize(m_particle->nFacets);
+    for(int f=0;f<m_particle->nFacets;++f){
+        const Facet& facet=m_facets[f];auto& edges=m_clippingEdges[f];edges.clear();
+        if(facet.nVertices<=0)continue;
+        if(facet.nVertices>MAX_VERTEX_NUM)throw std::runtime_error("facet has an invalid vertex count");
+        edges.reserve(facet.nVertices);const Point3f normal=-facet.in_normal;
+        for(int i=0;i<facet.nVertices;++i)
+            edges.emplace_back(facet.arr[i?i-1:facet.nVertices-1],facet.arr[i],normal);
+    }
+}
+
 /// NOTE: вершины пучка и грани должны быть ориентированы в одном направлении
 void Scattering::Intersect(int facetID, const Beam &beam, Polygon &intersection) const
 {
@@ -809,11 +822,23 @@ void Scattering::Intersect(int facetID, const Beam &beam, Polygon &intersection)
     bool isInsideE, isInsideS;
 
     p2 = facet.arr[facetSize-1];
+    const bool prepared=facetID<int(m_clippingEdges.size())&&m_clippingEdges[facetID].size()==size_t(facetSize);
 
     for (int i = 0; i < facetSize; ++i)
     {
         p1 = p2;
         p2 = facet.arr[i];
+        const PreparedClippingEdge* edge=prepared?&m_clippingEdges[facetID][i]:nullptr;
+
+        // Most edges retain the whole aperture or reject it completely. Classify
+        // once before copying vertices; a wholly retained pass is an identity.
+        bool inside[MAX_VERTEX_NUM];int insideCount=0;
+        for(int j=0;j<outputSize;++j){
+            inside[j]=edge?edge->Contains(outputPtr[j]):is_inside_i(outputPtr[j],p1,p2,normalToFacet);
+            insideCount+=inside[j];
+        }
+        if(insideCount==outputSize)continue;
+        if(insideCount==0)return;
 
         bufferSize = outputSize;
         outputSize = 0;
@@ -823,20 +848,20 @@ void Scattering::Intersect(int facetID, const Beam &beam, Polygon &intersection)
         bufferPtr = temp;
 
         startPoint = bufferPtr[bufferSize-1];
-        isInsideS = is_inside_i(startPoint, p1, p2, normalToFacet);
+        isInsideS = inside[bufferSize-1];
 
         bool isIntersected;
 
         for (int j = 0; j < bufferSize; ++j)
         {
             endPoint = bufferPtr[j];
-            isInsideE = is_inside_i(endPoint, p1, p2, normalToFacet);
+            isInsideE = inside[j];
 
             if (isInsideE)
             {
                 if (!isInsideS)
                 {
-                    const Point3f x = intersect_i(startPoint, endPoint,
+                    const Point3f x = edge?edge->Intersect(startPoint,endPoint,isIntersected):intersect_i(startPoint, endPoint,
                                                   p1, p2, normalToFacet,
                                                   isIntersected);
                     if (isIntersected)
@@ -855,7 +880,7 @@ void Scattering::Intersect(int facetID, const Beam &beam, Polygon &intersection)
             }
             else if (isInsideS)
             {
-                const Point3f x = intersect_i(startPoint, endPoint,
+                const Point3f x = edge?edge->Intersect(startPoint,endPoint,isIntersected):intersect_i(startPoint, endPoint,
                                               p1, p2, normalToFacet,
                                               isIntersected);
                 if (isIntersected)
