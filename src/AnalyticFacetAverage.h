@@ -27,8 +27,10 @@ Vec Observer(const std::array<Vec,3> &frame,double theta,double azimuth);
 // Normalized SO(3) means of physical reflected-facet self intensities and
 // projected shadow apertures. Fresnel moments need one smooth 1D quadrature;
 // angular spin and all oscillatory orientation phases are integrated by the
-// Legendre addition theorem and Rayleigh expansion. Full MBS-C keeps all cross
-// terms and clipping/refraction corrections.
+// Legendre addition theorem and Rayleigh expansion. The control is an
+// intensity, independent of the target's inter-beam coherence. Subtract its
+// sampled value and add this SAME mean to either target. Coherent PO retains
+// all cross terms; incoherent PO retains its per-beam intensity sum.
 class Control
 {
 public:

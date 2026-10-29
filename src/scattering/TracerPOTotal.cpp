@@ -6857,6 +6857,9 @@ void TracerPOTotal::TraceWeightedOrientations(
                 std::vector<Arr2DC> localJ, localJ_ns;
                 std::vector<double> localFacetRef(facetControl ? facetReflectionCells.size() : 0,0);
                 std::vector<double> localFacetShadow(localFacetRef.size(),0);
+                std::unique_ptr<Arr2D> sampledIncoherent;
+                if(m_analyticFacetSamples&&!handlerPO->isCoh)
+                    sampledIncoherent.reset(new Arr2D(nAz+1,nZen+1,4,4));
                 if (handlerPO->isCoh) {
                     Arr2DC tmp(nAz + 1, nZen + 1, 2, 2);
                     tmp.ClearArr();
@@ -6869,41 +6872,49 @@ void TracerPOTotal::TraceWeightedOrientations(
                 #pragma omp for schedule(dynamic, 1)
                 for (int i = 0; i < thisChunk; ++i)
                 {
+                    if(sampledIncoherent)sampledIncoherent->ClearArr();
                     if (!chunkPrepared[i].beams.empty())
-                        handlerPO->HandleBeamsToLocal(chunkPrepared[i], localM, localJ,
+                        handlerPO->HandleBeamsToLocal(chunkPrepared[i], sampledIncoherent?*sampledIncoherent:localM, localJ,
                                                        handlerPO->isCoh ? &localJ_ns : nullptr);
-                    if (handlerPO->isCoh && !localJ.empty()) {
-                        if(facetControl)
+                    // C is an intensity-valued orientation function. Sample it
+                    // for both targets, before adding its known Haar mean.
+                    if(facetControl)
+                    {
+                        const int index=iStart+i;const auto &frame=bodyFrames[i];
+                        const double weight=chunkPrepared[i].sinZenith;
+                        for(int p=0;p<nAz;++p)
                         {
-                            const int index=iStart+i;const auto &frame=bodyFrames[i];
-                            const double weight=chunkPrepared[i].sinZenith;
-                            for(int p=0;p<nAz;++p)
+                            const double az=p*handlerPO->m_sphere.azinuthStep,cp=std::cos(az),sp=std::sin(az);
+                            for(int t=0;t<=nZen;++t)
                             {
-                                const double az=p*handlerPO->m_sphere.azinuthStep,cp=std::cos(az),sp=std::sin(az);
-                                for(int t=0;t<=nZen;++t)
+                                const double st=std::sin(facetTheta[t]),ct=std::cos(facetTheta[t]);
+                                const AnalyticBackscatter::Vec observer(
+                                    st*(cp*frame[0].x+sp*frame[1].x)-ct*frame[2].x,
+                                    st*(cp*frame[0].y+sp*frame[1].y)-ct*frame[2].y,
+                                    st*(cp*frame[0].z+sp*frame[1].z)-ct*frame[2].z);
+                                const auto control=facetControl->Evaluate(frame[2],observer);
+                                const size_t cell=static_cast<size_t>(p)*facetRows+t;
+                                localFacetRef[cell]+=weight*control.reflection;
+                                localFacetShadow[cell]+=weight*control.shadow;
+                                if(m_analyticFacetSamples)
                                 {
-                                    const double st=std::sin(facetTheta[t]),ct=std::cos(facetTheta[t]);
-                                    const AnalyticBackscatter::Vec observer(
-                                        st*(cp*frame[0].x+sp*frame[1].x)-ct*frame[2].x,
-                                        st*(cp*frame[0].y+sp*frame[1].y)-ct*frame[2].y,
-                                        st*(cp*frame[0].z+sp*frame[1].z)-ct*frame[2].z);
-                                    const auto control=facetControl->Evaluate(frame[2],observer);
-                                    const size_t cell=static_cast<size_t>(p)*facetRows+t;
-                                    localFacetRef[cell]+=weight*control.reflection;
-                                    localFacetShadow[cell]+=weight*control.shadow;
-                                    if(m_analyticFacetSamples)
-                                    {
-                                        const size_t sample=static_cast<size_t>(index)*facetRows+t;
-                                        facetSampleControls[sample].reflection+=control.reflection/nAz;
-                                        facetSampleControls[sample].shadow+=control.shadow/nAz;
-                                        const auto intensity=[p,t](const Arr2DC&j)
-                                        {return .5*(norm(j(p,t,0,0))+norm(j(p,t,0,1))+norm(j(p,t,1,0))+norm(j(p,t,1,1)));};
+                                    const size_t sample=static_cast<size_t>(index)*facetRows+t;
+                                    facetSampleControls[sample].reflection+=control.reflection/nAz;
+                                    facetSampleControls[sample].shadow+=control.shadow/nAz;
+                                    const auto intensity=[p,t](const Arr2DC&j)
+                                    {return .5*(norm(j(p,t,0,0))+norm(j(p,t,0,1))+norm(j(p,t,1,0))+norm(j(p,t,1,1)));};
+                                    if(handlerPO->isCoh){
                                         facetRawSamples[sample]+=intensity(localJ[0])/nAz;
                                         if(computeNoShadow)facetRawNS[sample]+=intensity(localJ_ns[0])/nAz;
-                                    }
+                                    }else if(weight>0)
+                                        facetRawSamples[sample]+=(*sampledIncoherent)(p,t,0,0)/(weight*nAz);
                                 }
                             }
                         }
+                    }
+                    if(sampledIncoherent)for(int p=0;p<nAz;++p)for(int t=0;t<=nZen;++t)
+                        localM.insert(p,t,(*sampledIncoherent)(p,t));
+                    if (handlerPO->isCoh && !localJ.empty()) {
                         if (analyticControl)
                         {
                             const auto intensity = [backwardIndex](const Arr2DC &j)

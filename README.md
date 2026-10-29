@@ -101,8 +101,8 @@ A cone calculation does not supply full-sphere scattering integrals.
 | Azimuth samples | Selects the cost/variance tradeoff; Haar alpha is sampled | `--phi-points N` fixes phi |
 | Scattering angles | Builds support and check angles, interpolates the requested output grid | `--fullauto-theta-range A B` or `--theta-grid-file FILE` |
 | Interpolation | Target `EPS/4`; separate matched-sample residual | A 2% run therefore has a 0.5% interpolation allowance |
-| Beam pruning, coherent PO | Balanced estimator with a coupled uncut correction | `--cutoff-profile off` disables pruning; an explicit preset changes this automatic policy |
-| Analytic controls | Trains and validates variance-reduction components; rejects unsuitable controls | `--fullauto-analytic-controls off` |
+| Beam pruning, coherent/incoherent PO | Balanced estimator with a coupled uncut correction; completed uncut blocks remain reusable on resume | `--cutoff-profile off` disables pruning; an explicit preset changes this automatic policy |
+| Analytic controls, coherent/incoherent PO | Trains and validates facet intensity controls; rejects unsuitable controls | `--fullauto-analytic-controls off` |
 | Symmetry and resources | Verifies supported shape symmetries; tunes execution | Explicit flags take precedence; see the guide |
 
 An explicit starting count is **not** a fixed final orientation count. An

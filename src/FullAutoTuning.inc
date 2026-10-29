@@ -252,12 +252,13 @@ void TuneTracing(const std::vector<double>& x){
 void PrepareTuning(const std::vector<double>& angles){
     if(RestoreTuning()){
         bool explicitCutoff=args.IsCatched("r");for(const char* key:{"cutoff_profile","beam_cutoff","beam_cutoff_j","beam_cutoff_area","beam_cutoff_importance","trace_cutoff","trace_cutoff_j","trace_cutoff_area","trace_cutoff_importance"})explicitCutoff=explicitCutoff||args.IsCatched(key);
-        // Old incoherent checkpoints used direct-off. Retain that estimator;
-        // only a saved successful opt-in may restore the new corrected path.
-        const bool savedIncoherentCorrection=!coherent&&Exists(root+"/cutoff_calibration.json")
-            &&CompactJson(Read(root+"/cutoff_calibration.json")).find("\"supported\":true")!=std::string::npos;
-        balancedCorrection=(coherent||savedIncoherentCorrection)&&!go&&cutoffPolicy!="off"&&!explicitCutoff&&selectedCutoff=="off";
-        Log("cutoff_estimator_restore","{\"balanced_with_paired_off_correction\":"+std::string(balancedCorrection?"true":"false")+",\"saved_physical_target\":"+Quoted(selectedCutoff)+",\"old_completed_blocks_preserved\":true,\"profile_search\":false}");
+        // Completed direct-off blocks already estimate the unpruned target.
+        // Keep their exact cache keys and values; only missing native blocks
+        // use B_N+(O_m-B_m). PrefixStage combines these unbiased blocks with
+        // their orientation counts, and all eight replicas include the
+        // correction variance. This also applies to old incoherent runs.
+        balancedCorrection=!go&&cutoffPolicy!="off"&&!explicitCutoff&&selectedCutoff=="off";
+        Log("cutoff_estimator_restore","{\"balanced_with_paired_off_correction\":"+std::string(balancedCorrection?"true":"false")+",\"saved_physical_target\":"+Quoted(selectedCutoff)+",\"old_completed_blocks_preserved\":true,\"correction_applies_to_new_blocks_only\":true,\"profile_search\":false}");
         return;
     }
     Record(root+"/automatic_cutoff_validation.json","{\"enabled\":false}");

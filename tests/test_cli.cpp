@@ -404,7 +404,7 @@ int main()
     {
         auto core=std::vector<std::string>{"--method","po","--backend","cpu","--particle","1",".2",".1","--ri","1.31","0","-w","1","--fullauto",".01"};
         auto inc=core;inc.push_back("--incoherent");ExpectSuccess("fullauto incoherent sampling",inc);
-        auto impossible=inc;impossible.insert(impossible.end(),{"--fullauto-analytic-controls","on"});ExpectFailure("incoherent fullauto rejects coherent analytic controls",impossible,"incoherent fullauto");
+        auto controlled=inc;controlled.insert(controlled.end(),{"--fullauto-analytic-controls","on","--fullauto-polarization-controls","on"});ExpectSuccess("incoherent fullauto permits intensity controls",controlled);
         auto pairedInc=inc;pairedInc.insert(pairedInc.end(),{"--fullauto-depth-sharing","on"});ExpectSuccess("incoherent fullauto permits verified depth sharing",pairedInc);
         auto cache=core;cache.insert(cache.end(),{"--analytic-mean-cache","provided.cache","--analytic-shadow-control","facets","--checkpoint"});ExpectSuccess("fullauto owns analytic controls and checkpoint",cache);
         auto phi=core;phi.insert(phi.end(),{"--scattering-grid","0","180","7","32","--phi-points","3","--max-phi-points","4"});ExpectSuccess("explicit phi overrides embedded grid phi",phi);
@@ -1020,7 +1020,7 @@ int main()
     auto orphanShadow=CanonicalBase();orphanShadow.insert(orphanShadow.end(),{"--analytic-shadow-control","off"});
     ExpectFailure("shadow model requires general control",orphanShadow,"require --analytic-facet-average");
     auto incoherentFacet=general;incoherentFacet.push_back("--incoherent");
-    ExpectFailure("general kernel requires full coherent field",incoherentFacet,"requires coherent beams");
+    ExpectSuccess("facet self-intensity controls support incoherent PO",incoherentFacet);
 
     auto mirrorHaar=general;mirrorHaar.push_back("--mirror-gamma");
     ExpectSuccess("full Haar facet controls accept verified mirror reduction",mirrorHaar);

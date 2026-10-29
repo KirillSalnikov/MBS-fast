@@ -8,7 +8,7 @@ void Setup(Engine& e,const std::string& root,const std::string& binary,bool cont
     e.controls=controls;e.depthSharing=true;e.gpus={""};e.seeds.assign(production,production+8);e.workerThreads=1;e.hostBudgetMb=512;
     e.phi=4;e.target=8;e.theta={170,175,180};e.initial=1024;e.orientationBlock=512;e.workerPolicy="process";e.resourcePolicy="off";
     e.base={"--method","po","--backend","cpu","--particle","1","2","1","--ri","1.3116",absorbing?".001":"0","--wavelength-um",".532","--symmetry","1","1","--cutoff-profile","off"};e.selectedCutoff="off";
-    e.coherent=!incoherent;if(incoherent){e.base.push_back("--incoherent");e.base[6]="501.2";e.base[7]="155.8";e.phi=8;e.theta={163.75909223159732,167.13352685050799,170};}
+    e.coherent=!incoherent;if(incoherent){e.base.push_back("--incoherent");if(!controls){e.base[6]="501.2";e.base[7]="155.8";e.phi=8;e.theta={163.75909223159732,167.13352685050799,170};}}
     WriteGrid(root+"/requested_theta.csv",e.theta);
 }
 // A normal interruption cannot leave a durable journal record without its
@@ -27,7 +27,7 @@ void DropUncommittedJournalJobs(const std::string& root,const std::set<std::stri
 void Close(double a,double b,const char* message){Require(std::fabs(a-b)<=2e-12*std::max(1.,std::max(std::fabs(a),std::fabs(b))),message);}
 int main(int argc,char** argv){try{
     Require(argc==3,"OUTPUT BINARY");ArgPP args;RunConfig config;
-    for(int mode:{0,1,2}){const bool controls=mode==1,incoherent=mode==2;
+    for(int mode:{0,1,2,3}){const bool controls=mode==1||mode==3,incoherent=mode>=2;
         const std::string root=std::string(argv[1])+"/mode"+Number(mode);Engine e(args,config);Setup(e,root,argv[2],controls,controls,incoherent);e.WarmCache();
         if(incoherent){
             // Equal counts must telescope sample-by-sample to the direct

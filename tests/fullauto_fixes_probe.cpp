@@ -29,6 +29,13 @@ void BoundedWork(const std::string& root){
     Require(proposed!=original&&proposed!=current,"long round was not split with progress");
     for(size_t i=0;i<32;++i)Require(proposed[0][i]>=current[0][i]&&proposed[0][i]<=original[0][i]&&(proposed[0][i]&(proposed[0][i]-1))==0,"split damaged prefix counts");
     Require(Read(root+"/round_work_limit.json").find("\"applied\":true")!=std::string::npos,"round split receipt missing");
+    // A cubic output can have a larger CI than any of its support rows.
+    // Regression: eight real rounds kept refining other direct rows while
+    // this stencil's counts and the worst output error did not change.
+    proposed=original;const std::vector<size_t> support={0,1,2,3,4};
+    BoundRoundWork(e,work,current,proposed,{2},ids,stats,{}, {},nullptr,{{.8,support}});
+    for(size_t id:support)Require(proposed[0][id]>current[0][id],"worst output stencil starved or split by round limiter");
+    Require(proposed[0][31]==current[0][31],"direct row displaced the larger output error");
 }
 void SharedGpuResources(const std::string& root){
     ArgPP args;RunConfig config;config.useGpu=true;Engine e(args,config);
@@ -63,7 +70,8 @@ void IncoherentRecovery(const std::string& root){
     e.workerThreads=1;e.workerChunk=64;e.orientationBlock=64;e.gpuCandidates=e.gpus;e.selectedCutoff="off";e.cutoffPolicy="auto";
     e.depthSharing=false;e.SaveTuning();e.depthSharing=true;e.balancedCorrection=true;
     e.PrepareTuning(e.theta);
-    Require(!e.depthSharing&&!e.balancedCorrection,"old incoherent checkpoint silently enabled a new estimator");
+    Require(!e.depthSharing&&e.balancedCorrection,"old incoherent checkpoint did not enable corrected cutoff for future blocks");
+    e.cutoffPolicy="off";e.PrepareTuning(e.theta);Require(!e.balancedCorrection,"explicit cutoff policy off changed on resume");e.cutoffPolicy="auto";
     e.TuneCutoffs(e.theta);Require(e.balancedCorrection,"fresh incoherent cutoff correction disabled");
     e.depthSharing=true;e.SaveTuning();e.depthSharing=false;e.balancedCorrection=false;e.PrepareTuning(e.theta);
     Require(e.depthSharing&&e.balancedCorrection,"new incoherent checkpoint lost corrected/shared estimator");

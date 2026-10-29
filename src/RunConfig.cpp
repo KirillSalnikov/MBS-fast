@@ -932,15 +932,11 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
             Fail("--fullauto-orientation-block requires incremental sampling on.","remove the block option or enable incremental sampling.");
         if(args.IsCatched("fullauto_physics_audit")&&args.GetStringValue("fullauto_physics_audit")=="on"&&config.maxReflections>28)
             Fail("depth+2 physics audit exceeds the supported depth 30.","use target depth <=28 or disable the physics audit.");
-        if(args.IsCatched("fullauto_polar_controls")&&args.GetStringValue("fullauto_polar_controls")=="on"&&(args.IsCatched("incoh")||(args.IsCatched("fullauto_controls")&&args.GetStringValue("fullauto_controls")=="off")))
-            Fail("polarization controls require coherent analytic controls.","remove the polarization modifier or enable coherent controls.");
+        if(args.IsCatched("fullauto_polar_controls")&&args.GetStringValue("fullauto_polar_controls")=="on"&&args.IsCatched("fullauto_controls")&&args.GetStringValue("fullauto_controls")=="off")
+            Fail("polarization controls require analytic facet controls.","remove the polarization modifier or enable facet controls.");
         const int fixedPhi=args.IsCatched("nphi")?IntValue(args,"nphi"):(args.IsCatched("grid")?IntValue(args,"grid",args.GetArgNumber("grid")-2):0);
         if(fixedPhi&&args.IsCatched("max_phi_points")&&fixedPhi>IntValue(args,"max_phi_points"))
             Fail("fixed phi count exceeds --max-phi-points.","remove the conflicting explicit limit or increase it.");
-        if(args.IsCatched("incoh")){
-            if(args.IsCatched("analytic_facet_average")||args.IsCatched("analytic_shadow_control")||args.IsCatched("analytic_mean_cache")||args.IsCatched("analytic_mean_threads")||(args.IsCatched("fullauto_controls")&&args.GetStringValue("fullauto_controls")=="on"))
-                Fail("incoherent fullauto cannot use coherent analytic facet controls.","remove analytic modifiers or use --fullauto-analytic-controls off/auto.");
-        }
         if(args.IsCatched("fullauto_controls")&&args.GetStringValue("fullauto_controls")=="off"&&(args.IsCatched("analytic_shadow_control")||args.IsCatched("analytic_mean_cache")||args.IsCatched("analytic_mean_threads")))
             Fail("analytic modifiers conflict with --fullauto-analytic-controls off.","remove the analytic modifiers or enable controls.");
     }
@@ -973,12 +969,12 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
         if (config.refractiveReal<1.0)
             Fail("--analytic-facet-average requires refractive REAL>=1.",
                  "use --refractive-index REAL IMAG with REAL>=1, or remove the flag.");
-        if (args.IsCatched("incoh") || args.IsCatched("multigrid") || args.IsCatched("multikeq")
+        if (args.IsCatched("multigrid") || args.IsCatched("multikeq")
             || args.IsCatched("multikeq_list") || args.IsCatched("auto_phi") || args.IsCatched("adaptive_phi")
             || args.IsCatched("auto_tgrid") || args.IsCatched("adaptive_reflections")
             || (args.IsCatched("mirror_gamma") && !haarSobol && !args.IsCatched("fullauto")))
-            Fail("--analytic-facet-average requires coherent beams, one size and fixed grids.",
-                 "remove incoherent/multi-size/adaptive/mirror-gamma modifiers.");
+            Fail("--analytic-facet-average requires one size and fixed grids.",
+                 "remove multi-size/adaptive/mirror-gamma modifiers.");
         if (args.IsCatched("analytic_shadow_control"))
         {
             const std::string value=args.GetStringValue("analytic_shadow_control",0);

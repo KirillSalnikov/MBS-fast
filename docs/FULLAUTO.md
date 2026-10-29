@@ -155,7 +155,11 @@ The coefficient $b$ is fitted independently. Internal paths, occlusion and
 interference missing from $C$ remain in the full numerical residual. Averaging
 Fresnel coefficients and substituting them at every reflection would not be
 this estimator. In coherent PO, amplitudes are summed before forming Mueller
-matrices. Incoherent PO sums beam intensities and uses a different path.
+matrices. Incoherent PO sums beam intensities. Both support the same
+intensity-valued facet control: its sampled value and known mean cancel in
+expectation independently of the target's coherence. This does not add
+interference between beams to the incoherent target. The separate experimental
+`--analytic-backscatter` coherent-return control retains its coherent-only limit.
 
 Facet/self-reflection and shadow components provide physical control means.
 For incidence cosine $\mu$, the Fresnel coefficients $r_s,r_p$ give
@@ -203,7 +207,8 @@ two paired pilot seeds compare both depths against independent traces, including
 all 16 entries and normalized ratios. The numerical allowance is
 `min(1e-7, EPS/1024)` in double, `min(1e-6, EPS/4096)` in float.
 `depth_sharing_verification.json` records the result; failed or unsupported
-sharing uses separate traces. This does not enable coherent analytic controls.
+sharing uses separate traces. Facet intensity controls are available independently
+of depth sharing, including incoherent PO.
 
 Default PO pruning uses
 $\widehat M=\overline B_N+\overline{(O-B)}_m$, where $B$ is balanced and $O$ is
@@ -232,9 +237,19 @@ costly base extension. Each selects up to 128 affected angles, including
 different correction levels, and grows selected counts by 2–4 times. Its
 forecast cost must remain at most 10% of the pending base extension. Eight
 replicas, coupled orientations and acceptance tests remain unchanged; the
-forecast cannot certify convergence. Old incoherent checkpoints retain their
-saved direct-off and independent-depth recipe. New checkpoints record and
-restore the corrected estimator.
+forecast cannot certify convergence. With automatic cutoffs, resumed incoherent
+checkpoints retain completed direct-off blocks and use the corrected balanced
+estimator for new eligible blocks. Their physical target is the same uncut
+matrix; prefix assembly weights each block by its orientation count.
+`cutoff_estimator_restore` logs the transition. Explicit cutoff settings remain
+fixed. Saved analytic-control coefficients and depth-sharing decisions remain
+unchanged on resume: this update enables facet controls for new calibrations,
+not retroactively for an existing control-free sample.
+
+The round limiter also ranks the worst interpolated output error and keeps its
+support stencil together. Previously it ranked only direct-angle intervals;
+an interpolated maximum could remain unchanged for many rounds while other
+angles grew. This changes work ordering, not the accuracy criterion.
 
 ## Angular interpolation and acceptance
 

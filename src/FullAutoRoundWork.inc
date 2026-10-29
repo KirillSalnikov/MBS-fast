@@ -5,9 +5,11 @@ std::vector<Engine::WorkRequest> AuditRequests(const Engine&,const std::vector<i
 size_t RoundPhysicalGpus(const Engine& e){
     const auto slots=e.WorkerGpus();return std::max(size_t(1),std::set<std::string>(slots.begin(),slots.end()).size());
 }
+struct RoundOutputPriority {double error;std::vector<size_t> nodes;};
 void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budgets& proposed,
         const std::vector<int>& depths,const std::vector<size_t>& ids,const Statistics& stats,
-        const std::vector<size_t>& knots={},const std::vector<std::vector<size_t>>& cohorts={},const Budgets* residualCounts=nullptr){
+        const std::vector<size_t>& knots={},const std::vector<std::vector<size_t>>& cohorts={},const Budgets* residualCounts=nullptr,
+        const std::vector<RoundOutputPriority>& outputPriorities={}){
     const bool separatePhi=residualCounts&&!knots.empty()&&MixedResidualPhi(e);
     WorkForecast residualForecast;
     if(separatePhi){ResidualPhiScope scope(e,true);AdditionalWork residualWork(e,e.seeds.data());
@@ -25,8 +27,9 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
     if(!original.profiled||original.seconds<=budget)return;
     const Budgets wanted=proposed;Budgets step=current;
     std::set<size_t> coupled;for(const auto& group:cohorts)coupled.insert(group.begin(),group.end());
+    for(const auto& group:outputPriorities)coupled.insert(group.nodes.begin(),group.nodes.end());
     std::vector<std::pair<double,std::vector<size_t>>> rank;
-    auto score=[&](const std::vector<size_t>& group){double error=0;bool grows=false;
+    auto score=[&](const std::vector<size_t>& group,double outputError){double error=outputError;bool grows=false;
         for(size_t id:group){const auto at=std::lower_bound(ids.begin(),ids.end(),id);Require(at!=ids.end()&&*at==id,"round cohort outside evaluated grid");
             error=std::max(error,WorstMetric(stats,at-ids.begin(),e.ratios).error);
             for(size_t l=0;l<current.size();++l)grows=grows||step[l][id]>current[l][id];}
@@ -35,8 +38,12 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
         Require(wanted[l][id]>=current[l][id],"round work limiter cannot shrink completed prefixes");
         // Preserve the full signed-phi/stencil growth prescription.
         step[l][id]=coupled.count(id)?wanted[l][id]:std::min(wanted[l][id],Doubled(e,current[l][id]));}
-    for(const auto& group:cohorts)score(group);
-    for(size_t id:ids)if(!coupled.count(id))score({id});
+    for(const auto& group:cohorts)score(group,0);
+    // Rank the error of the actual interpolated output, not just the smaller
+    // errors at its individual support nodes. Keep its whole stencil together
+    // so latency limiting cannot undo RefineError's coupled growth proposal.
+    for(const auto& group:outputPriorities)score(group.nodes,group.error);
+    for(size_t id:ids)if(!coupled.count(id))score({id},0);
     std::sort(rank.rbegin(),rank.rend());if(rank.empty())return;
     auto selected=step;auto forecast=estimate(selected);size_t active=rank.size();
     const double fullSeconds=forecast.seconds;bool preservedSharing=false;double partitionOverhead=0;
@@ -65,7 +72,8 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
     const bool accepted=forecast.profiled&&forecast.seconds<original.seconds&&selected!=current;
     if(accepted)proposed=selected;
     size_t growing=0;for(size_t id:ids){bool grows=false;for(size_t l=0;l<current.size();++l)grows=grows||proposed[l][id]>current[l][id];growing+=grows;}
-    e.Record(e.root+"/round_work_limit.json","{\"policy\":\"complete eight-seed prefix and residual cohort scheduling v3\",\"applied\":"+std::string(accepted?"true":"false")
+    e.Record(e.root+"/round_work_limit.json","{\"policy\":\"complete eight-seed prefix and output/residual cohort scheduling v4\",\"applied\":"+std::string(accepted?"true":"false")
+        +",\"output_priority_cohorts\":"+Number(outputPriorities.size())
         +",\"forecast_includes_common_prefix_interpolation\":"+(knots.empty()?"false":"true")+",\"physical_gpus\":"+Number(RoundPhysicalGpus(e))
         +",\"original_worker_seconds\":"+Number(original.seconds)+",\"selected_worker_seconds\":"+Number(accepted?forecast.seconds:original.seconds)
         +",\"advisory_worker_seconds\":"+Number(budget)+",\"selected_growing_rows\":"+Number(growing)+",\"selected_cohorts\":"+Number(active)

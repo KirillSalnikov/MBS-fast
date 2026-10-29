@@ -905,7 +905,11 @@ struct Engine {
 
         controlPolicy=args.IsCatched("fullauto_controls")?args.GetStringValue("fullauto_controls"):((args.IsCatched("analytic_facet_average")||args.IsCatched("analytic_shadow_control"))?"on":"auto");
         if(controlPolicy=="auto"&&(args.IsCatched("analytic_facet_average")||args.IsCatched("analytic_shadow_control")))controlPolicy="on";
-        controls=!go&&coherent&&controlPolicy!="off"&&config.refractiveReal>=1.;
+        // These controls are facet SELF intensities, with a Haar mean of the
+        // same scalar function. F + b*(E[C]-C) is valid for both a coherent
+        // field intensity and an incoherent per-beam Mueller sum. No coherent
+        // cross term is inserted into the target; fit b on separate seeds.
+        controls=!go&&controlPolicy!="off"&&config.refractiveReal>=1.;
         Require(controlPolicy!="on"||controls,"analytic facet controls require refractive REAL>=1");
         if(go){angularCache=false;pilot=0;kernelCount=0;thetaAuditCount=0;minimum=0;startTheta=0;controlPolicy="off";resourcePolicy="off";rotationPolicy="off";cutoffPolicy="off";
             if(!args.IsCatched("fullauto_mirror")&&!args.IsCatched("mirror_gamma"))mirrorPolicy="off";

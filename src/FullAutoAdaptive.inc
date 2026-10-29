@@ -900,8 +900,13 @@ int RunAdaptive(Engine& e){
             +",\"joint_row_cost_proxy\":"+Number(jointWork)+",\"staged_row_cost_proxy\":"+Number(stagedWork)
             +",\"proxy_scope\":\"before shared tracing and local cost gate; not wall time\",\"minimum_efficiency_ratio\":8,\"accuracy_gates_unchanged\":true}");
         std::ostringstream refinement;refinement<<RefinementHeader();
+        std::vector<RoundOutputPriority> outputPriorities;double worstOutputTotal=-1;
         if(positive&&!budget.outputPass)for(size_t q=0;q<e.theta.size();++q){const auto residual=ResidualAt(e,interp,ids,q);const auto metric=BudgetMetric(e,output,q,residual);if(MetricWithinBudget(e,metric,residual))continue;
-            RefineError(e,work,depths,state.counts,proposed,ids,stage,QueryWeights(e,state.knots,e.theta[q]),metric,output.mean[q],e.theta[q],"interpolated_output",refinement);}
+            const auto support=QueryWeights(e,state.knots,e.theta[q]);
+            RefineError(e,work,depths,state.counts,proposed,ids,stage,support,metric,output.mean[q],e.theta[q],"interpolated_output",refinement);
+            const double total=MetricTotal(e,metric,residual);
+            if(total>worstOutputTotal){worstOutputTotal=total;std::vector<size_t> nodes;for(const auto& w:support)nodes.push_back(w.first);
+                outputPriorities={{metric.error,nodes}};}}
         grew=false;for(size_t l=0;l<proposed.size();++l)for(size_t id:ids)grew=grew||proposed[l][id]>state.counts[l][id];
         if(!grew){ // A fresh prefix is still required for a stability pass.
             size_t worst=0;for(size_t r=1;r<ids.size();++r)if(WorstMetric(stats,r,e.ratios).error>WorstMetric(stats,worst,e.ratios).error)worst=r;
@@ -911,7 +916,7 @@ int RunAdaptive(Engine& e){
         if(!(phiPlan.oldPhi&&phiPlan.phase==0)&&TryCorrectionProbe(e,state,depths,stage,ids,stats,proposed,lastInterpolation)){--state.round;continue;}
         if(TryWorkingPhi(e,state,depths,stage,ids,stats,lastInterpolation,&interp)){--state.round;continue;}
         GateLocalCost(e,work,proposed,depths,ids);
-        BoundRoundWork(e,work,state.counts,proposed,depths,ids,stats,state.knots,{},state.interpolationCounts.empty()?nullptr:&state.interpolationCounts);
+        BoundRoundWork(e,work,state.counts,proposed,depths,ids,stats,state.knots,{},state.interpolationCounts.empty()?nullptr:&state.interpolationCounts,outputPriorities);
         if(proposed==state.counts)break;
         state.counts=proposed;SaveAdaptive(e,state);
     }

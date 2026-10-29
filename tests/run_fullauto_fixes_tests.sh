@@ -13,3 +13,4 @@ mapfile -t task_objects < <(rg --files --no-ignore "$task_root/cpu/build/obj" -g
 python3 "$task_root/tests/test_sahara340_statistics.py"
 python3 "$task_root/tests/test_fullauto_depth_unresolved.py" --binary "$task_output/bin/mbs_po" --output "$task_output/depth"
 python3 "$task_root/tests/test_fullauto_staging_acceptance.py" --binary "$task_output/bin/mbs_po" --output "$task_output/native"
+python3 "$task_root/tests/test_incoherent_controls.py" --binary "$task_output/bin/mbs_po" --output "$task_output/incoherent_controls"
