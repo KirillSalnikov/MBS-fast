@@ -86,6 +86,7 @@ def main():
     summary={}
     for name in ['column','droxtal','column631']:
         selected=[r for r in records if r['case'].startswith('timing_'+name+'_')]
+        if not selected:continue
         summary[name]={phase:{mode:statistics.median(r['runs'][mode]['phase'][phase]for r in selected)
             for mode in a.modes}for phase in ['processing','trace_prepare','gpu_resident_trace_kernel']}
     (root/'summary.json').write_text(json.dumps(summary,indent=2));print(json.dumps(summary),flush=True)

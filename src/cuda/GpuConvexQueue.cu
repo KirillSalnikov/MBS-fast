@@ -111,6 +111,7 @@ template<bool compact> __global__ void traceLevel(const Input* inputs,const Queu
     }
 }
 #include "GpuFacetWavefront.cuh"
+#include "GpuSplitWavefront.cuh"
 struct Buffers {
     Input* inputs=nullptr;Beam* stacks=nullptr;Output* output=nullptr;Status* status=nullptr;unsigned* total=nullptr;
     cudaStream_t stream=nullptr;cudaEvent_t start=nullptr,stop=nullptr;
@@ -147,8 +148,9 @@ bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vec
     const auto started=std::chrono::steady_clock::now();
     const char* scheduleEnv=std::getenv("MBS_GPU_TRACE_CONVEX_SCHEDULE");
     const std::string schedule=scheduleEnv?scheduleEnv:"legacy";
-    if(schedule!="legacy"&&schedule!="compact"&&schedule!="facets"&&schedule!="facets4"&&schedule!="facets8"&&schedule!="facets16")
-        throw std::runtime_error("MBS_GPU_TRACE_CONVEX_SCHEDULE must be legacy, compact, facets4, facets8, facets16 or facets");
+    const bool splitSchedule=schedule=="split"||schedule=="split8";
+    if(schedule!="legacy"&&schedule!="compact"&&schedule!="facets"&&schedule!="facets4"&&schedule!="facets8"&&schedule!="facets16"&&!splitSchedule)
+        throw std::runtime_error("MBS_GPU_TRACE_CONVEX_SCHEDULE must be legacy, compact, facets4, facets8, facets16, facets, split or split8");
     GpuProcessLock lock;
     auto& cache=RawCache();std::unique_lock<std::mutex> cacheLock(cache.mutex);
     std::string cacheKey;int device=0;cudaGetDevice(&device);
@@ -174,6 +176,7 @@ bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vec
     const int count=static_cast<int>(inputs.size());
     const char* levelsEnv=std::getenv("MBS_GPU_TRACE_CONVEX_LEVELS");
     bool levels=levelsEnv&&levelsEnv[0]=='1';
+    if(splitSchedule&&!levels)throw std::runtime_error("split scheduling requires MBS_GPU_TRACE_CONVEX_LEVELS=1");
     size_t queuePerOrientation=512;
     for(const auto& in:inputs)if(in.faceCount>16)queuePerOrientation=std::max(queuePerOrientation,
         std::min(size_t(8192),size_t(in.faceCount)*std::max(1,in.maxDepth)*16));
@@ -220,10 +223,20 @@ bool Trace(const std::vector<Input>& inputs,std::vector<Output>& output,std::vec
         int processors=0;if(!check(cudaDeviceGetAttribute(&processors,cudaDevAttrMultiProcessorCount,device)))return false;
         const unsigned compactBlocks=std::max(1,std::min(int((queueCapacity+63)/64),processors*4));
         const unsigned facetBlocks=std::max(1,std::min(int((queueCapacity+1)/2),processors*4));
+        const unsigned splitBlocks=std::max(1,std::min(int((queueCapacity+63)/64),processors*16));
         int depth=0;for(const auto& in:inputs)depth=std::max(depth,in.maxDepth);
         for(int d=0;d<depth;++d){int current=d%2,next=1-current;
             if(!check(cudaMemsetAsync(b.queueSizes+next,0,sizeof(unsigned),b.stream)))return false;
-            if(schedule=="facets4")traceFacets<4><<<facetBlocks,64,0,b.stream>>>(b.inputs,b.queues[current],b.queueSizes+current,
+            if(splitSchedule){
+                if(schedule=="split8")clipLevel<8><<<splitBlocks,64,0,b.stream>>>(b.inputs,b.queues[current],b.queueSizes+current,
+                    b.queues[next],b.queueSizes+next,queueCapacity,b.status);
+                else clipLevel<1><<<splitBlocks,64,0,b.stream>>>(b.inputs,b.queues[current],b.queueSizes+current,
+                    b.queues[next],b.queueSizes+next,queueCapacity,b.status);
+                if(!check(cudaGetLastError()))return false;
+                splitLevel<<<splitBlocks,64,0,b.stream>>>(b.inputs,b.queues[next],b.queueSizes+next,queueCapacity,
+                    b.output,b.total,static_cast<unsigned>(cap),b.status);
+            }
+            else if(schedule=="facets4")traceFacets<4><<<facetBlocks,64,0,b.stream>>>(b.inputs,b.queues[current],b.queueSizes+current,
                 b.queues[next],b.queueSizes+next,queueCapacity,b.output,b.total,static_cast<unsigned>(cap),b.status);
             else if(schedule=="facets8")traceFacets<8><<<facetBlocks,64,0,b.stream>>>(b.inputs,b.queues[current],b.queueSizes+current,
                 b.queues[next],b.queueSizes+next,queueCapacity,b.output,b.total,static_cast<unsigned>(cap),b.status);

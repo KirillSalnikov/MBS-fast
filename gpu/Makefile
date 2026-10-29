@@ -166,7 +166,7 @@ $(OBJDIR)/%.o: $(ROOT)/%.cu
 
 # Convex clipping must retain the CPU predicate operation order. Do not
 # inherit approximate division/trigonometry from an optional fast PO build.
-$(OBJDIR)/src/cuda/GpuConvexQueue.o: $(ROOT)/src/cuda/GpuConvexQueueMath.cuh $(ROOT)/src/cuda/GpuConvexQueue.h
+$(OBJDIR)/src/cuda/GpuConvexQueue.o: $(ROOT)/src/cuda/GpuConvexQueueMath.cuh $(ROOT)/src/cuda/GpuConvexQueue.h $(ROOT)/src/cuda/GpuFacetWavefront.cuh $(ROOT)/src/cuda/GpuSplitWavefront.cuh $(ROOT)/src/cuda/GpuTraceWorkspace.cuh $(ROOT)/src/cuda/GpuTraceReuse.cuh
 $(OBJDIR)/src/cuda/GpuConvexQueue.o: NVCCFLAGS += --fmad=false --prec-div=true --prec-sqrt=true
 $(OBJDIR)/src/cuda/GpuDiffraction.o: $(ROOT)/src/cuda/GpuPhaseReduction.cuh
 

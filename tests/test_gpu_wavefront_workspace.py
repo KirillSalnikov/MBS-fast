@@ -7,9 +7,10 @@ from test_droxtal_resident import load, difference, integral_difference
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--binary',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
-    p.add_argument('--tolerance',type=float,default=1e-7);a=p.parse_args()
+    p.add_argument('--tolerance',type=float,default=1e-7)
+    p.add_argument('--schedule',default='facets8');a=p.parse_args()
     root=a.output.resolve();root.mkdir(parents=True);grid=root/'theta.txt';grid.write_text('0\n0.1\n170\n176\n180\n')
-    env=os.environ.copy();env.update(MBS_GPU_TRACE_CONVEX_SCHEDULE='facets8',MBS_GPU_TRACE_CONVEX_WORKSPACE_MIB='64',
+    env=os.environ.copy();env.update(MBS_GPU_TRACE_CONVEX_SCHEDULE=a.schedule,MBS_GPU_TRACE_CONVEX_WORKSPACE_MIB='64',
         MBS_HOST_MEM_BUDGET_MB='2048',OMP_WAIT_POLICY='PASSIVE')
     common=['--method','po','--backend','cuda','--particle','4','5','--symmetry','2','6',
         '--ri','1.3116','0','--wavelength-um','.532','--haar-alpha','--threads','2','--orientation-pipeline',

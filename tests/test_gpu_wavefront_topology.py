@@ -16,6 +16,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--schedules', nargs='+', default=['compact', 'facets4', 'facets8', 'facets16', 'facets'])
+    parser.add_argument('--orientations', type=int, default=32)
+    parser.add_argument('--depth', type=int, default=None)
+    parser.add_argument('--cutoffs', nargs='+', default=['off', 'balanced'])
     args = parser.parse_args()
     root = args.output.resolve()
     root.mkdir(parents=True)
@@ -30,13 +34,14 @@ def main():
     ]
     common = ['--method', 'po', '--backend', 'cuda', '--wavelength-um', '.532',
               '--ri', '1.3116', '0', '--threads', '2', '--haar-alpha',
-              '--theta-grid-file', str(grid), '--phi-points', '4', '--sobol-seed', '32', '23',
+              '--theta-grid-file', str(grid), '--phi-points', '4', '--sobol-seed', str(args.orientations), '23',
               '--orientation-pipeline', '--orientation-chunk', '16', '--trace-cache-mib', '0',
               '--close', '--allow-experimental-environment']
     records = []
     for name, shape, depth in shapes:
-        for schedule in ['compact', 'facets4', 'facets8', 'facets16', 'facets']:
-            for cutoff in ['off', 'balanced']:
+        if args.depth is not None:depth = args.depth
+        for schedule in args.schedules:
+            for cutoff in args.cutoffs:
                 dest = root / (name + '_' + schedule + '_' + cutoff)
                 dest.mkdir()
                 env = os.environ.copy()
@@ -59,7 +64,7 @@ def main():
                 assert result.returncode == 0, (dest, result.returncode)
                 accepted = sum(map(int, re.findall(r'GPU convex resident queue: orientations=\d+ accepted=(\d+)', text)))
                 checks = re.findall(r'GPU convex verification: beams=(\d+) equivalent_vertex_changes=\d+ max_error=([\deE.+-]+)', text)
-                assert accepted == 32 and not re.search(r'CPU_fallback=[1-9]', text), (dest, accepted)
+                assert accepted == args.orientations and not re.search(r'CPU_fallback=[1-9]', text), (dest, accepted)
                 assert checks and sum(int(n) for n, _ in checks) > 0, dest
                 error = max(float(e) for _, e in checks)
                 assert error <= 1e-8, (dest, error)

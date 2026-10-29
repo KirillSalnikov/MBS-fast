@@ -31,21 +31,21 @@ CQ_INLINE Cx divide(Cx a,Cx b) {
     double r=b.re/b.im,d=b.im+r*b.re;
     return {(r*a.re+a.im)/d,(r*a.im-a.re)/d};
 }
-CQ_INLINE Vec center(const Beam& b) {
+template<class Ray> CQ_INLINE Vec center(const Ray& b) {
     Vec result={0,0,0};for(int i=0;i<b.count;++i)result=add(result,b.vertices[i]);
     return mul(result,1.0/b.count);
 }
-CQ_INLINE double area(const Beam& b) {
+template<class Ray> CQ_INLINE double area(const Ray& b) {
     if(b.count<3)return 0;
     Vec p1=sub(b.vertices[1],b.vertices[0]),sum={0,0,0};
     for(int i=2;i<b.count;++i){Vec p2=sub(b.vertices[i],b.vertices[0]);sum=add(sum,cross(p1,p2));p1=p2;}
     return .5*sqrt(norm(sum));
 }
-CQ_INLINE double jnorm(const Beam& b) {
+template<class Ray> CQ_INLINE double jnorm(const Ray& b) {
     double sum=0;for(int i=0;i<4;++i)sum+=b.j[i].re*b.j[i].re+b.j[i].im*b.j[i].im;
     return sum;
 }
-CQ_INLINE bool pruned(const Input& in,const Beam& b,Status& st) {
+template<class Ray> CQ_INLINE bool pruned(const Input& in,const Ray& b,Status& st) {
     if(!b.depth)return false;
     bool active[3];for(int k=0;k<3;++k)active[k]=in.cutoff[k]>0&&in.reference[k]>0;
     if(!active[0]&&!active[1]&&!active[2])return false;
@@ -72,7 +72,7 @@ CQ_INLINE bool append(Vec* p,int& count,Vec v,Status& st) {
     if(count>=MaxVertices){st.failure=1;return false;}
     p[count++]=v;return true;
 }
-CQ_INLINE void clean(const Vec* p,int n,Beam& b,const Input& in) {
+template<class Polygon> CQ_INLINE void clean(const Vec* p,int n,Polygon& b,const Input& in) {
     b.count=0;if(n<=0)return;
     double tolerance2=in.lengthTolerance*in.lengthTolerance;
     if(n==3) {
@@ -91,7 +91,7 @@ CQ_INLINE void clean(const Vec* p,int n,Beam& b,const Input& in) {
     }
     if(b.count<3||norm(areaVector)<=4*in.areaTolerance*in.areaTolerance)b.count=0;
 }
-CQ_INLINE void intersect(const Input& in,const Beam& b,int face,Beam& result,Status& st) {
+template<class Polygon> CQ_INLINE void intersect(const Input& in,const Beam& b,int face,Polygon& result,Status& st) {
     result.count=0;const Face& f=in.faces[face];
     double dp=dot(b.direction,f.inward),scale=sqrt(norm(b.direction)*norm(f.inward));
     if(scale<=DBL_MIN||fabs(dp)<=Epsilon*maximum(fabs(scale),DBL_MIN))return;
@@ -130,10 +130,10 @@ CQ_INLINE void intersect(const Input& in,const Beam& b,int face,Beam& result,Sta
         clean(out,n,result,in);
     }
 }
-CQ_INLINE void rows(Beam& b,Cx v,Cx h) {
+template<class Ray> CQ_INLINE void rows(Ray& b,Cx v,Cx h) {
     b.j[0]=mul(b.j[0],v);b.j[1]=mul(b.j[1],v);b.j[2]=mul(b.j[2],h);b.j[3]=mul(b.j[3],h);
 }
-CQ_INLINE bool finiteBeam(const Beam& b) {
+template<class Ray> CQ_INLINE bool finiteBeam(const Ray& b) {
     if(!isfinite(b.path)||!isfinite(b.front)||!isfinite(norm(b.direction))||!isfinite(norm(b.basis)))return false;
     for(int i=0;i<4;++i)if(!isfinite(b.j[i].re)||!isfinite(b.j[i].im))return false;
     for(int i=0;i<b.count;++i)if(!isfinite(norm(b.vertices[i])))return false;
@@ -156,7 +156,7 @@ CQ_INLINE void rotate(Beam& b,Vec normal) {
     rotateBasis(b,unit(cross(normal,b.direction)));
 }
 // Returns whether a transmitted beam exists. The reflected beam always exists.
-CQ_INLINE bool split(const Input& input,const Beam& original,Vec normal,double cosA,Beam& reflected,Beam& transmitted) {
+template<class Ray> CQ_INLINE bool split(const Input& input,const Beam& original,Vec normal,double cosA,Ray& reflected,Ray& transmitted) {
     const double ri=input.ri,eff=ri*ri;
     Vec r=sub(original.direction,mul(normal,cosA));double s=1.0/eff-norm(r);
     bool normalIncidence=cosA>=0.99999999998254670756866631966593;
