@@ -1,5 +1,18 @@
 // Published diagnostics only propose an allocation. They never certify a
 // matrix: the ordinary source validation and all accuracy gates run again.
+void RetainScheduledPrefixes(Engine& e,AdditionalWork& work,const std::vector<int>& depths,
+        const Budgets& wanted,const std::vector<size_t>& ids,Budgets& floor){
+    const auto cached=CachedCompletedBudgets(e,depths,floor,ids);
+    for(size_t l=0;l<floor.size();++l)for(size_t id:ids){
+        int complete=cached[l][id];
+        if(complete<wanted[l][id]){
+            int leaves=work.CompletePrefix(wanted[l][id],depths[l],l&&e.depthSharing?depths[l-1]:0,e.theta[id]);
+            if(l&&!e.depthSharing)leaves=std::min(leaves,work.CompletePrefix(wanted[l][id],depths[l-1],0,e.theta[id]));
+            complete=std::max(complete,leaves);
+        }
+        floor[l][id]=std::max(floor[l][id],std::min(wanted[l][id],complete));
+    }
+}
 bool PublishedRoundBudget(Engine& e,const AdaptiveState& state,Budgets& counts,
         Statistics& priorities,std::string& folder,bool& passed){
     const std::string path=e.root+"/intermediate_current.json";if(!Exists(path))return false;
@@ -87,7 +100,8 @@ bool PublishedSchedulingBudget(Engine& e,const AdaptiveState& state,Budgets& cou
     for(size_t r=0;r<ids.size();++r){const size_t id=ids[r];auto q=rows.lower_bound(id);if(q==rows.end())--q;
         const bool same=q->first==id&&q->second.phi==e.PhiForTheta(id);newRows+=!same;
         priorities.interval[r]=q->second.interval;priorities.ratioInterval[r]=q->second.ratio;
-        for(size_t l=0;l<counts.size();++l)counts[l][id]=std::min(state.counts[l][id],same?q->second.counts[l]:(l?e.minimum:e.initial));
+        const int coldBase=e.args.IsCatched("fullauto_initial")||e.config.adaptive.loadedFromFile?e.initial:std::min(512,e.initial);
+        for(size_t l=0;l<counts.size();++l)counts[l][id]=std::min(state.counts[l][id],same?q->second.counts[l]:(l?e.minimum:coldBase));
     }
     passed=text.find("\"numerical_round_passed\":true")!=std::string::npos;residualPending=false;
     const std::string residualKey="\"interpolation_residual95\":";const auto rp=text.find(residualKey);
@@ -108,20 +122,58 @@ void BoundResumedRound(Engine& e,AdaptiveState& state,const std::vector<int>& de
     const auto ids=AdaptiveGuards(state.knots,e.theta.size());
     // Keep every complete eight-seed prefix already produced in the interrupted
     // round. Incomplete blocks also remain in the cache for subsequent rounds.
-    const auto completed=CachedCompletedBudgets(e,depths,baseline,ids);
-    for(size_t l=0;l<baseline.size();++l)for(size_t id:ids)
-        baseline[l][id]=std::max(baseline[l][id],std::min(state.counts[l][id],completed[l][id]));
+    AdditionalWork work(e,e.seeds.data());
+    RetainScheduledPrefixes(e,work,depths,state.counts,ids,baseline);
     for(const auto& row:correction.rows)baseline[row.level][row.id]=std::max(baseline[row.level][row.id],row.after);
     auto selected=state.counts;
     const bool residualFirst=residualPending&&!state.interpolationCounts.empty();
     if(residualFirst)selected=baseline; // Pending residual growth remains in its own saved allocation.
-    else {AdditionalWork work(e,e.seeds.data());
-        BoundRoundWork(e,work,baseline,selected,depths,ids,priorities,state.knots,{},state.interpolationCounts.empty()?nullptr:&state.interpolationCounts);}
+    else BoundRoundWork(e,work,baseline,selected,depths,ids,priorities,state.knots,{},state.interpolationCounts.empty()?nullptr:&state.interpolationCounts);
     if(selected==state.counts)return;
     state.counts=selected;
     e.Record(e.root+"/resume_round_work.json","{\"policy\":\"bound unfinished round using last published allocation and complete cached prefixes\",\"snapshot\":"+Quoted(folder)
         +",\"residual_first\":"+(residualFirst?"true":"false")+",\"native_blocks_deleted\":0,\"complete_prefixes_retained\":true,\"accuracy_accepted_from_diagnostics\":false,\"all_accuracy_gates_recomputed\":true}");
     e.Log("resume_round_bounded","{\"snapshot\":"+Quoted(folder)+",\"saved_blocks_retained\":true,\"convergence_decision_pending\":true}");
+}
+
+// A phi change creates a new estimator even in round 27. The size-dependent
+// initial N is not a mandatory floor for this cold restart. Bound all changed
+// levels using timing metadata; keep retained old-phi rows and completed work.
+void BoundPhiProduction(Engine& e,AdaptiveState& state){
+    if(!e.local||e.args.IsCatched("fullauto_initial")||e.config.adaptive.loadedFromFile)return;
+    const auto ids=AdaptiveGuards(state.knots,e.theta.size());const auto depths=AdaptiveDepths(e);
+    if(ids.empty()||state.counts.empty())return;
+    Require(depths.size()==state.counts.size(),"phi production depth dimensions changed");
+    const Budgets wanted=state.counts;AdditionalWork work(e,e.seeds.data());
+    auto estimate=[&](const Budgets& counts){return work.Forecast(BudgetRequests(e,depths,counts,ids));};
+    const auto original=estimate(wanted);const double limit=1800.*RoundPhysicalGpus(e);
+    Budgets selected=wanted;
+    if(!original.profiled||original.seconds>limit){
+        for(size_t id=0;id<e.theta.size();++id)if(!e.thetaPhi.count(id))
+            for(size_t l=0;l<selected.size();++l)selected[l][id]=std::min(wanted[l][id],l?e.minimum:512);
+        RetainScheduledPrefixes(e,work,depths,wanted,ids,selected);
+        auto chosen=estimate(selected);
+        while(chosen.profiled&&chosen.seconds<=limit){
+            Budgets candidate=selected;bool changed=false;
+            for(size_t id:ids)if(!e.thetaPhi.count(id))for(size_t l=0;l<candidate.size();++l){
+                candidate[l][id]=std::min(wanted[l][id],Doubled(e,selected[l][id]));changed=changed||candidate[l][id]!=selected[l][id];}
+            if(!changed)break;
+            const auto next=estimate(candidate);if(!next.profiled||next.seconds>limit)break;
+            selected=std::move(candidate);chosen=next;
+        }
+    }
+    const auto chosen=estimate(selected);state.counts=selected;
+    const auto report="{\"policy\":\"cost-bounded first estimate after phi promotion v1\",\"round\":"+Number(state.round)
+        +",\"phi\":"+Number(e.phi)+",\"applied\":"+(selected!=wanted?"true":"false")
+        +",\"requested_base_peak\":"+Number(PeakBudgets(wanted)[0])+",\"selected_base_peak\":"+Number(PeakBudgets(selected)[0])
+        +",\"original_forecast_profiled\":"+(original.profiled?"true":"false")
+        +",\"original_worker_seconds\":"+(original.profiled?Number(original.seconds):"null")
+        +",\"forecast_profiled\":"+(chosen.profiled?"true":"false")
+        +",\"selected_worker_seconds\":"+(chosen.profiled?Number(chosen.seconds):"null")
+        +",\"advisory_worker_seconds\":"+Number(limit)+",\"within_forecast_budget\":"+(chosen.profiled&&chosen.seconds<=limit?"true":"false")
+        +",\"retained_phi_rows_unchanged\":true,\"complete_eight_seed_prefixes_retained\":true,\"native_blocks_deleted\":0"
+        +",\"allocation_reads_matrix_values\":false,\"accuracy_gates_unchanged\":true,\"forecast_is_elapsed_time_guarantee\":false}";
+    e.Record(e.root+"/phi_production_work.json",report);e.Log("phi_production_work_bounded",report);
 }
 
 // The empirical N is a useful convergence forecast, but it can make the first

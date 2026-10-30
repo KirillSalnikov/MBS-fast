@@ -202,8 +202,18 @@ def run(root,reference,dense=False,dense_workers=1):
     assert np.max(abs(output_ratio-saved_ratio))<1e-10
     residual=spline(evaluated)-samples
     raw_guard,ratio_guard=interpolation_components(spline(evaluated),samples,state['ratio_accuracy'])
-    if json.loads((root/'interpolation_production_mode.json').read_text())['common_prefix']:
-        (raw_guard,ratio_guard),checked=common_bounds(root,state,'production',evaluated,support,state['seeds'],budget[:,1:].astype(int),True);seen.update(checked)
+    geometry_mode=json.loads((root/'interpolation_production_mode.json').read_text())
+    geometry_budget=budget[:,1:].astype(int)
+    if geometry_mode.get('geometry_sources_saved'):
+        frozen=np.loadtxt(root/'interpolation_geometry_budget.csv',delimiter=',',skiprows=1,ndmin=2)
+        assert np.allclose(frozen[:,0],evaluated,rtol=0,atol=1e-10)
+        geometry_budget=frozen[:,1:].astype(int)
+        if not geometry_mode['common_prefix']:
+            frozen_levels,checked,_=reconstruct(root,state,evaluated,geometry_budget,root/'interpolation_geometry_sources.tsv',state['seeds'])
+            seen.update(checked);frozen_samples=frozen_levels.sum(0)
+            raw_guard,ratio_guard=interpolation_components(local_spline(support,frozen_samples[:,indices])(evaluated),frozen_samples,state['ratio_accuracy'])
+    if geometry_mode['common_prefix']:
+        (raw_guard,ratio_guard),checked=common_bounds(root,state,'production',evaluated,support,state['seeds'],geometry_budget,True);seen.update(checked)
     guard=np.maximum(raw_guard,ratio_guard)
     assert np.max(abs(guard.max(1)-np.loadtxt(root/'theta_validation.csv',delimiter=',',skiprows=1)[:,3]))<1e-11
     pointwise=check_error_budget(state,contract,requested,evaluated,confidence,ratio_ci,output_ci,output_ratio,raw_guard,ratio_guard)
@@ -278,7 +288,7 @@ def run(root,reference,dense=False,dense_workers=1):
                             for j in range(1,16):values[:,j]+=np.interp(raw[:,0],coefficients[:,0],coefficients[:,1+2*j])*(c[:,2]-c[:,4])+np.interp(raw[:,0],coefficients[:,0],coefficients[:,2+2*j])*(c[:,3]-c[:,5])
                         rows=nearest_rows(raw[:,0],requested[target]);full[state['seeds'].index(seed),target]+=sign*values[rows]
         dm=full.mean(0);delta=output-full;bound=interpolation_bounds(output,full,state['ratio_accuracy'])
-        if json.loads((root/'interpolation_production_mode.json').read_text())['common_prefix']:
+        if geometry_mode['common_prefix'] or geometry_mode.get('geometry_sources_saved'):
             # The actual heterogeneous estimator's sampling difference is
             # already covered by its statistical budget. The interpolation
             # bias is audited on common prefixes over each local stencil.

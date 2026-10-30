@@ -30,6 +30,7 @@ WorkingPhiPlan ReadWorkingPhi(Engine& e){
             for(size_t i=0;i<size;++i){size_t row;Require(bool(file>>row)&&row<e.theta.size()&&(p.retained.empty()||row>p.retained.back()),"invalid retained phi index");p.retained.push_back(row);}
             Require(!(file>>extra),"extra working phi fields");}}return p;
 }
+void BoundPhiProduction(Engine& e,AdaptiveState& state);
 void ApplyWorkingPhi(Engine& e,AdaptiveState& state,WorkingPhiPlan& plan){
     Require(plan.phase==2&&plan.newPhi>plan.oldPhi&&plan.newPhi>=e.minPhi&&plan.newPhi<=e.maxPhi&&plan.counts.size()==state.counts.size(),"invalid working phi promotion");
     Require(e.phi==plan.oldPhi||e.phi==plan.newPhi,"working phi checkpoint disagrees");
@@ -42,11 +43,21 @@ void ApplyWorkingPhi(Engine& e,AdaptiveState& state,WorkingPhiPlan& plan){
     for(size_t row:plan.retained)e.thetaPhi[row]=plan.oldPhi;
     state.counts=plan.counts;state.streak=0;
     for(size_t row=0;row<e.theta.size();++row)if(!e.thetaPhi.count(row)){state.previous[row]=Mueller{};state.valid[row]=false;state.coarse[row]=false;}
+    // The next loop skips the ordinary allocation limiter. Bound this cold
+    // estimator BEFORE publishing the new allocation/committing the promotion.
+    BoundPhiProduction(e,state);
     e.independentPassed=false;SaveAdaptive(e,state);plan.phase=3;SaveWorkingPhi(e,plan);
     e.Log("working_phi_promoted","{\"previous_phi\":"+Number(plan.oldPhi)+",\"phi\":"+Number(plan.newPhi)+",\"retained_theta_rows\":"+Number(plan.retained.size())+",\"old_blocks_retained\":true,\"changed_rows_restarted_as_separate_estimators\":true,\"frozen_control_coefficients_retained\":true,\"fresh_final_audit_required\":true}");
 }
 void RestoreWorkingPhi(Engine& e,AdaptiveState& state){
     auto plan=ReadWorkingPhi(e);if(plan.oldPhi&&plan.phase==2)ApplyWorkingPhi(e,state,plan);
+    else if(plan.phase==3&&e.phi==plan.newPhi){
+        // Older controllers committed the promotion without a work limit.
+        // Only its as-yet-unpublished first estimator may be rescheduled here.
+        const auto ids=AdaptiveGuards(state.knots,e.theta.size());bool published=false;
+        for(size_t id:ids)if(!e.thetaPhi.count(id)&&state.valid[id])published=true;
+        if(!published){BoundPhiProduction(e,state);SaveAdaptive(e,state);}
+    }
 }
 struct WorkingPhiPilot {double error=1e100;std::vector<double> cost;std::string sources;};
 struct PhiCutoffPilotScope {
@@ -256,7 +267,9 @@ bool TryWorkingPhi(Engine& e,AdaptiveState& state,const std::vector<int>& depths
 void HashSchedulingReceipts(const Engine& e,std::ostringstream& hashes){
     std::vector<std::string> names;DIR* directory=opendir(e.root.c_str());Require(directory,"cannot list scheduling receipts");
     while(auto* entry=readdir(directory)){const std::string name=entry->d_name;
-        if(name=="allocation_policy.json"||name.compare(0,20,"correction_subround_")==0||name.compare(0,13,"working_phi_n")==0){
+        if(name=="allocation_policy.json"||name=="interpolation_production_mode.json"||name=="interpolation_geometry_budget.csv"
+                ||name=="interpolation_geometry_sources.tsv"||name=="round_work_limit.json"||name=="phi_production_work.json"
+                ||name.compare(0,20,"correction_subround_")==0||name.compare(0,13,"working_phi_n")==0){
             if(name.size()<4||name.compare(name.size()-4,4,".tmp")!=0)names.push_back(name);}}
     closedir(directory);std::sort(names.begin(),names.end());for(const auto& name:names)hashes<<name<<' '<<FileHash(e.root+"/"+name)<<'\n';
 }

@@ -113,7 +113,9 @@ int main(int argc,char** argv){try{
     RunConfig gpu=config;gpu.useGpu=true;Engine preparation(args,gpu);AdaptiveState unused;InitTest(preparation,std::string(argv[1])+"/preparation",3,1,unused);
     // Match the production count/row buckets required by rolling profiles.
     preparation.prepareThreadCap=8;preparation.workerThreads=1;Job trace;preparation.SetSampling(trace,16384,1,6,std::vector<double>(20,0.),false);trace.pairedDepth=4;trace.identity="trace_profile";trace.folder=trace.identity;trace.traceSeconds=10;trace.diffractionSeconds=1;preparation.CacheJob(trace);
-    Require(preparation.AutoPrepareThreads(16384,6,4,20)==8,"CPU-dominant job left serial");
+    Require(preparation.AutoPrepareThreads(16384,6,4,20)==0,"CPU trial started without measured baseline wall times");
+    trace.processingSeconds=11;for(int i=0;i<4;++i){trace.identity="trace_baseline_"+Number(i);trace.folder=trace.identity;preparation.CacheJob(trace);preparation.ObservePreparation(trace);}
+    Require(preparation.AutoPrepareThreads(16384,6,4,20)==8,"CPU-dominant job left serial after four measured baseline jobs");
     Require(preparation.AutoPrepareThreads(16384,6,4,1000)==0&&preparation.AutoPrepareThreads(16,6,4,20)==0,"GPU-bound or tiny job over-threaded");
     preparation.resourcePolicy="off";Require(preparation.AutoPrepareThreads(16384,6,4,20)==0,"resources off overridden");
     ArgPP fixed;RegisterCliOptions(fixed);const char* cli[]={"test","--threads","1"};fixed.Parse(3,cli);Engine pinned(fixed,gpu);pinned.prepareThreadCap=8;Require(pinned.AutoPrepareThreads(16384,6,4,20)==0,"explicit threads overridden");

@@ -4,7 +4,10 @@ struct WorkForecast {double seconds=0;size_t jobs=0;bool profiled=true;};
 class AdditionalWork {
     Engine& e;std::array<unsigned,8> seeds;bool ignoreCoverage,productionOnly,uniformPhi;
     struct Profile {double trace=0,diffraction=0,setup=0,overlap=0;size_t observations=0;};
-    using Depth=std::pair<int,int>;
+    // Keep native timing recipes separate from physical cache identities.
+    // Corrected parents are assembled; their actual workers have child hashes.
+    // role: 0 physical/off command, 1 balanced child, 2 off correction child.
+    using Depth=std::tuple<int,int,int>;
     using Slot=std::array<uint64_t,5>; // N, offset, depth, paired depth, seed
     std::map<Depth,Profile> profiles;
     struct Coverage {std::vector<const Job*> candidates;std::unique_ptr<double[]> angles;size_t size=0;bool indexed=false;};
@@ -27,6 +30,30 @@ class AdditionalWork {
     struct LeadingCoverage {int count=0;bool stopped=false;};
     std::map<std::tuple<int,int,int,double>,LeadingCoverage> leadingCoverage;
     std::map<int,std::unique_ptr<AdditionalWork>> phiWork;
+    void NativeCost(WorkForecast& result,int count,int depth,int paired,size_t rows,int role)const{
+        auto profile=profiles.find(Depth{depth,paired,role});
+        // The off child runs the same physical command. Reuse its timings,
+        // never its samples, for a small uncorrected production block.
+        if(profile==profiles.end()&&role==0)profile=profiles.find(Depth{depth,paired,2});
+        ++result.jobs;
+        if(profile==profiles.end()){result.profiled=false;return;}
+        const auto& p=profile->second;const double trace=count*p.trace,diffraction=count*p.diffraction*rows;
+        result.seconds+=p.setup+trace+diffraction-p.overlap*std::min(trace,diffraction);
+    }
+    void CorrectedCost(WorkForecast& result,int count,int depth,int paired,size_t rows)const{
+        const int m=std::max(64,count/8);
+        // Conservatively charge all three legs, including B_m when a verified
+        // embedded prefix could save it. No native pilot or filesystem scan
+        // is allowed inside a metadata-only forecast. Legacy paired parents
+        // used five legs; retain that estimate if paired balanced timings are
+        // absent instead of silently treating their base work as free.
+        for(int n:{count,m}){
+            if(paired&&!profiles.count(Depth{depth,paired,1})){
+                NativeCost(result,n,depth,0,rows,1);NativeCost(result,n,paired,0,rows,1);
+            }else NativeCost(result,n,depth,paired,rows,1);
+        }
+        NativeCost(result,m,depth,paired,rows,2);
+    }
     Slot Key(int n,int offset,int depth,int paired,unsigned seed)const{return {{uint64_t(n),uint64_t(offset),uint64_t(depth),uint64_t(paired),seed}};}
     bool Covered(int n,int offset,int depth,int paired,unsigned seed,double angle){
         if(ignoreCoverage)return false;
@@ -90,12 +117,14 @@ class AdditionalWork {
 public:
     AdditionalWork(Engine& engine,const unsigned* seedSet,bool ignoreSaved=false,bool productionProfilesOnly=false,bool uniform=false,size_t coverageLimit=8*1024*1024):e(engine),ignoreCoverage(ignoreSaved),productionOnly(productionProfilesOnly),uniformPhi(uniform),coverageBudget(new CoverageBudget(coverageLimit)){
         std::copy(seedSet,seedSet+8,seeds.begin());const auto recipe=e.ExecutionHash();
+        const auto balancedRecipe=Hash(recipe+" balanced-child-v1"),offRecipe=Hash(recipe+" off-child-v1");
         for(const auto& item:e.cache){const Job& j=item.second;
             if(productionProfilesOnly&&std::find(e.seeds.begin(),e.seeds.end(),j.seed)==e.seeds.end())continue;
-            if(j.assembled||j.paired||j.count<=0||j.inputAngles.empty()||j.executionHash!=recipe||j.phi!=e.phi
+            const int role=j.executionHash==recipe?0:j.executionHash==balancedRecipe?1:j.executionHash==offRecipe?2:-1;
+            if(j.assembled||j.paired||j.count<=0||j.inputAngles.empty()||role<0||j.phi!=e.phi
                 ||j.block!=e.kernel.block||j.pipeline!=e.kernel.pipeline||j.warp!=e.kernel.warp||j.mirrored!=e.mirror||j.hasControls!=e.controls)continue;
             if(j.seconds<=0||!std::isfinite(j.seconds))continue;
-            auto& p=profiles[{j.depth,j.pairedDepth}];
+            auto& p=profiles[{j.depth,j.pairedDepth,role}];
             // CPU/older logs can lack a split. Their measured total remains a
             // useful conservative trace profile, with no invented theta gain.
             if(j.traceSeconds+j.diffractionSeconds>0){p.trace+=j.traceSeconds/j.count;p.diffraction+=j.diffractionSeconds/j.count/j.inputAngles.size();
@@ -108,6 +137,27 @@ public:
     }
     size_t CoverageIndexBytes()const{return coverageBudget->bytes;}
     size_t CoverageIndexLimit()const{return coverageBudget->limit;}
+    int CompletePrefix(int maximum,int depth,int paired,double angle){
+        if(!uniformPhi&&!e.thetaPhi.empty()){
+            const auto at=std::lower_bound(e.theta.begin(),e.theta.end(),angle);
+            Require(at!=e.theta.end()&&*at==angle,"prefix coverage requires a requested theta");
+            const int phi=e.PhiForTheta(at-e.theta.begin());PhiScope scope(e,phi);auto& work=phiWork[phi];
+            if(!work){work.reset(new AdditionalWork(e,seeds.data(),ignoreCoverage,productionOnly,true));work->coverageBudget=coverageBudget;}
+            return work->CompletePrefix(maximum,depth,paired,angle);
+        }
+        if(ignoreCoverage||!e.incremental||!e.angularCache||(e.controls&&!e.sharedMeans))return 0;
+        const int block=e.orientationBlock;if(maximum<block)return 0;
+        // Same exact coverage predicate as Forecast, including all eight seeds.
+        // Unlike the optional accelerator, restoration must also work with a
+        // full metadata budget. No payload reads, no completion from children.
+        int complete=LeadingCovered({maximum,0,depth,paired,{angle}},block);
+        for(int offset=complete;offset<=maximum-block;offset+=block){
+            bool covered=true;for(unsigned seed:seeds)covered=covered&&Covered(block,offset,depth,paired,seed,angle);
+            if(!covered)break;
+            complete=offset+block;
+        }
+        int power=0;for(int n=1;n<=complete;){power=n;if(n>complete/2)break;n*=2;}return power;
+    }
     WorkForecast Forecast(const std::vector<Engine::WorkRequest>& requests){
         if(!uniformPhi&&!e.thetaPhi.empty()){
             WorkForecast total;const auto groups=PhiRequests(e,requests);
@@ -133,14 +183,17 @@ public:
         };
         auto leaf=[&](const Engine::WorkRequest& r){
             auto missing=missingFor(r,!e.QueueEnabled()&&!r.pairedDepth);if(missing.empty())return;
-            auto profile=profiles.find({r.depth,r.pairedDepth});if(profile==profiles.end())result.profiled=false;
             for(unsigned seed:seeds){
                 // DirectStage can reuse a completed native command for a seed
                 // even when another seed of the batch was interrupted.
                 bool exact=false;if(!ignoreCoverage&&!e.controls)for(const auto& item:e.SamplingCandidates(r.count,seed,r.depth,r.offset)){
                     const Job& j=*item.second;exact=exact||(!j.assembled&&j.pairedDepth==r.pairedDepth&&j.inputAngles==missing&&e.SameSampling(j,r.count,seed,r.depth,r.offset));}
-                if(!exact){++result.jobs;if(profile!=profiles.end()){const auto& p=profile->second;const double trace=r.count*p.trace,diffraction=r.count*p.diffraction*missing.size();
-                    result.seconds+=p.setup+trace+diffraction-p.overlap*std::min(trace,diffraction);}}
+                if(!exact){
+                    const bool corrected=e.balancedCorrection&&r.count>=512&&r.depth>=6
+                        &&(e.phiCutoffPilot||std::find(e.seeds.begin(),e.seeds.end(),seed)!=e.seeds.end());
+                    if(corrected)CorrectedCost(result,r.count,r.depth,r.pairedDepth,missing.size());
+                    else NativeCost(result,r.count,r.depth,r.pairedDepth,missing.size(),0);
+                }
                 // Prefetch prepares paired and standalone jobs separately;
                 // LowerView becomes available only during the later Stage.
                 if(!e.QueueEnabled()){

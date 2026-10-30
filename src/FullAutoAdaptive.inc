@@ -2,6 +2,9 @@
 namespace {
 using Budgets=std::vector<std::vector<int>>;
 struct AdaptiveData {std::vector<Samples> levels;std::vector<std::vector<double>> costs;std::vector<double> analytic;std::string sources;};
+std::vector<int> AdaptiveDepths(const Engine& e){
+    std::vector<int> depths;for(int d:{std::max(1,e.target-4),std::max(1,e.target-2),e.target})if(depths.empty()||depths.back()!=d)depths.push_back(d);return depths;
+}
 #include "FullAutoInterpolationCheckpoint.inc"
 std::vector<int> PeakBudgets(const Budgets& n){std::vector<int> result;for(const auto& level:n)result.push_back(*std::max_element(level.begin(),level.end()));return result;}
 double StatisticalError(const Engine& e,const Statistics& stats){return e.ratios?std::max(stats.maxInterval,stats.maxRatioInterval):stats.maxInterval;}
@@ -681,7 +684,7 @@ bool PhysicsAudit(Engine& e,const AdaptiveState& state,const std::vector<size_t>
 #include "FullAutoLevelStability.inc"
 #include "FullAutoResumeRound.inc"
 int RunAdaptive(Engine& e){
-    std::vector<int> depths;for(int d:{std::max(1,e.target-4),std::max(1,e.target-2),e.target})if(depths.empty()||depths.back()!=d)depths.push_back(d);
+    const auto depths=AdaptiveDepths(e);
     AdaptiveState state;state.counts=Budgets(depths.size(),std::vector<int>(e.theta.size(),e.minimum));state.counts[0].assign(e.theta.size(),e.initial);
     state.previous=Matrix(e.theta.size());state.valid.assign(e.theta.size(),false);state.coarse.assign(e.theta.size(),false);
     std::vector<double> tuningAngles;const size_t tuningRows=std::min(e.theta.size(),size_t(std::min(33,e.maxTheta)));
@@ -758,6 +761,7 @@ int RunAdaptive(Engine& e){
             if(!state.interpolationCounts.empty())residualState.counts=state.interpolationCounts;
             auto checked=CommonPrefixInterpolation(e,residualState,depths,ids,e.seeds.data());CopyInterpolationCheck(interp,checked);}
         e.SetExecutionPhase("cached_prefix_validation",state.round);
+        const auto geometryCounts=state.counts;const auto geometrySources=stage.sources;
         if(CheckCachedLevelPrefixes(e,depths,state,stage,ids,true)){
             data=Combine(stage.levels);stats=Estimate(data);
             e.lastAnalyticError=0;for(size_t r=0;r<ids.size();++r)e.lastAnalyticError=std::max(e.lastAnalyticError,stage.analytic[r]/stats.mean[r][0]);
@@ -766,8 +770,15 @@ int RunAdaptive(Engine& e){
             // The fixed-support interpolation bias was checked on matched
             // prefixes above. Output sampling intervals belong to the newly
             // assembled estimator, not the discarded shorter prefixes.
-            CopyInterpolationCheck(promoted,interp);interp=std::move(promoted);common=true;
-            e.Record(e.root+"/interpolation_production_mode.json","{\"common_prefix\":true,\"output_cache_policy\":\"complete-compatible-prefixes-v1\",\"geometry_counts_frozen_before_output_promotion\":true,\"output_statistics_recomputed\":true}");
+            CopyInterpolationCheck(promoted,interp);interp=std::move(promoted);
+            // Publish the actual pre-promotion geometry sources. A uniform
+            // paired residual has no common-prefix group files; claiming it
+            // did made independent reconstruction impossible after promotion.
+            std::ostringstream geometry;geometry<<"theta_deg";for(size_t l=0;l<depths.size();++l)geometry<<",N_level"<<l;geometry<<'\n';
+            for(size_t id:ids){geometry<<Number(e.theta[id]);for(const auto& level:geometryCounts)geometry<<','<<level[id];geometry<<'\n';}
+            Atomic(e.root+"/interpolation_geometry_budget.csv",geometry.str());Atomic(e.root+"/interpolation_geometry_sources.tsv",geometrySources);
+            e.Record(e.root+"/interpolation_production_mode.json","{\"common_prefix\":"+std::string(common?"true":"false")+",\"output_cache_policy\":\"complete-compatible-prefixes-v1\",\"geometry_counts_frozen_before_output_promotion\":true,\"geometry_sources_saved\":true,\"output_statistics_recomputed\":true}");
+            common=true;
         }
         e.SetExecutionPhase("level_prefix_validation",state.round);
         const auto prefixCheck=CheckLevelPrefixes(e,depths,state,stage,ids);

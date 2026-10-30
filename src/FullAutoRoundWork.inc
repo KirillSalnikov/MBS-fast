@@ -24,7 +24,7 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
             requests.insert(requests.end(),residual.begin(),residual.end());return work.Forecast(requests);}
         return work.Forecast(knots.empty()?BudgetRequests(e,depths,counts,ids):AuditRequests(e,depths,counts,ids,knots));};
     const auto original=estimate(proposed);const double budget=1800.*RoundPhysicalGpus(e);
-    if(!original.profiled||original.seconds<=budget)return;
+    if(original.profiled&&original.seconds<=budget)return;
     const Budgets wanted=proposed;Budgets step=current;
     std::set<size_t> coupled;for(const auto& group:cohorts)coupled.insert(group.begin(),group.end());
     for(const auto& group:outputPriorities)coupled.insert(group.nodes.begin(),group.nodes.end());
@@ -44,8 +44,16 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
     // so latency limiting cannot undo RefineError's coupled growth proposal.
     for(const auto& group:outputPriorities)score(group.nodes,group.error);
     for(size_t id:ids)if(!coupled.count(id))score({id},0);
-    std::sort(rank.rbegin(),rank.rend());if(rank.empty())return;
-    auto selected=step;auto forecast=estimate(selected);size_t active=rank.size();
+    std::sort(rank.rbegin(),rank.rend());
+    auto selected=step;size_t active=rank.size();
+    if(!original.profiled&&e.local&&!rank.empty()){
+        // Missing measurements are not zero work. Advance only the highest
+        // priority complete cohort until the real worker timings are known.
+        // Keep its prescribed signed stencil and all eight seed prefixes.
+        selected=current;active=1;
+        for(size_t id:rank.front().second)for(size_t l=0;l<current.size();++l)selected[l][id]=step[l][id];
+    }
+    auto forecast=estimate(selected);
     const double fullSeconds=forecast.seconds;bool preservedSharing=false;double partitionOverhead=0;
     // Several hours without feedback do not justify a small tracing saving.
     // Still reject partitions which duplicate most of the tracing work.
@@ -69,17 +77,23 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
         if(!next.profiled||!rest.profiled||(splitSeconds>(1+overheadLimit)*fullSeconds&&!latencyPriority)){preservedSharing=true;break;}
         selected=candidate;active=nextActive;forecast=next;
     }
-    const bool accepted=forecast.profiled&&forecast.seconds<original.seconds&&selected!=current;
+    const bool accepted=selected!=current&&(original.profiled
+        ?forecast.profiled&&forecast.seconds<original.seconds:selected!=wanted);
     if(accepted)proposed=selected;
     size_t growing=0;for(size_t id:ids){bool grows=false;for(size_t l=0;l<current.size();++l)grows=grows||proposed[l][id]>current[l][id];growing+=grows;}
-    e.Record(e.root+"/round_work_limit.json","{\"policy\":\"complete eight-seed prefix and output/residual cohort scheduling v4\",\"applied\":"+std::string(accepted?"true":"false")
+    e.Record(e.root+"/round_work_limit.json","{\"policy\":\"complete eight-seed prefix and output/residual cohort scheduling v5\",\"applied\":"+std::string(accepted?"true":"false")
+        +",\"unknown_cost_fallback\":"+(original.profiled?"false":"true")
+        +",\"original_forecast_profiled\":"+(original.profiled?"true":"false")
+        +",\"selected_forecast_profiled\":"+((accepted?forecast.profiled:original.profiled)?"true":"false")
+        +",\"no_growing_cohorts\":"+(rank.empty()?"true":"false")
+        +",\"cost_model\":\"native physical or balanced children; conservative three-leg correction (five legacy paired legs); no assembly views\""
         +",\"output_priority_cohorts\":"+Number(outputPriorities.size())
         +",\"forecast_includes_common_prefix_interpolation\":"+(knots.empty()?"false":"true")+",\"physical_gpus\":"+Number(RoundPhysicalGpus(e))
-        +",\"original_worker_seconds\":"+Number(original.seconds)+",\"selected_worker_seconds\":"+Number(accepted?forecast.seconds:original.seconds)
+        +",\"original_worker_seconds\":"+(original.profiled?Number(original.seconds):"null")+",\"selected_worker_seconds\":"+((accepted?forecast.profiled:original.profiled)?Number(accepted?forecast.seconds:original.seconds):"null")
         +",\"advisory_worker_seconds\":"+Number(budget)+",\"selected_growing_rows\":"+Number(growing)+",\"selected_cohorts\":"+Number(active)
         +",\"shared_trace_efficiency_preserved\":"+(preservedSharing?"true":"false")
         +",\"partition_cost_model\":\"selected plus complementary cached-work forecast\",\"partition_overhead_fraction\":"+Number(partitionOverhead)
         +",\"allowed_partition_overhead_fraction\":"+Number(overheadLimit)
-        +",\"within_forecast_budget\":"+((accepted?forecast.seconds:original.seconds)<=budget?"true":"false")
+        +",\"within_forecast_budget\":"+((accepted?forecast.profiled:original.profiled)&&(accepted?forecast.seconds:original.seconds)<=budget?"true":"false")
         +",\"forecast_is_elapsed_time_guarantee\":false,\"accuracy_gates_unchanged\":true}");
 }
