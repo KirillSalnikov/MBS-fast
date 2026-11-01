@@ -532,6 +532,15 @@ else
 fi
 echo ""
 
+echo "=== Test 12: shared PO size scaling ==="
+if python3 "$PROJECT_DIR/tests/test_po_size_sweep.py" "$MBS" > "$WORK_DIR/size_sweep.log" 2>&1; then
+    pass_test "Test 12: shared sizes match independent PO traces"
+else
+    cat "$WORK_DIR/size_sweep.log"
+    fail_test "Test 12" "Shared size scaling check failed"
+fi
+echo ""
+
 # =============================================================================
 # Summary
 # =============================================================================
