@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <float.h>
 
 Splitting::Splitting(bool isOpticalPath)
@@ -247,20 +248,49 @@ void Splitting::ComputeRegularBeamParamsExternal(const Point3f &facetNormal,
 
     outBeam.SetLight(refrDir, incidentBeam.polarizationBasis);
 
-    double cosB = DotProduct(facetNormal, inBeam.direction);
-
-    complex tmp0 = m_ri * cosA;
-    complex tmp1 = m_ri * cosB;
-
-    complex Tv0 = tmp0 + cosB;
-    complex Th0 = tmp1 + cosA;
-
-    complex Tv = tmp0 - cosB;
-    complex Th = cosA - tmp1;
-    outBeam.MultiplyJonesMatrix(Tv/Tv0, Th/Th0);
-
-    double cos2A = 2.0*cosA;
-    inBeam.MultiplyJonesMatrix(cos2A/Tv0, cos2A/Th0);
+    if (imag(m_ri) != 0.0)
+    {
+        // The real ray direction describes the phase normal inside the
+        // particle. Its cosine is not the complex refraction cosine needed
+        // for Fresnel reflection AND transmission. For unit exterior index,
+        // q = k_transmitted,normal / k_vac = sqrt(ri^2 - sin(A)^2).
+        // With Re(ri)>0 the principal root is forward-going and, for
+        // Im(ri)>0, decays into the particle. It also preserves conjugation
+        // for the legacy negative-imaginary-index convention.
+        const std::complex<double> index(real(m_ri), imag(m_ri));
+        const std::complex<double> epsilon = index * index;
+        // (m-1)*(m+1)+cos(A)^2 avoids losing cos(A)^2 near grazing
+        // incidence when m is almost one.
+        const std::complex<double> q = std::sqrt(
+            (index-1.0)*(index+1.0) + cosA*cosA);
+        const std::complex<double> denominatorP = epsilon*cosA + q;
+        const std::complex<double> denominatorS = cosA + q;
+        const std::complex<double> rp = (epsilon*cosA-q)/denominatorP;
+        const std::complex<double> rs = (cosA-q)/denominatorS;
+        const std::complex<double> tp = (2.0*cosA*index)/denominatorP;
+        const std::complex<double> ts = (2.0*cosA)/denominatorS;
+        outBeam.MultiplyJonesMatrix(complex(rp.real(), rp.imag()),
+                                    complex(rs.real(), rs.imag()));
+        inBeam.MultiplyJonesMatrix(complex(tp.real(), tp.imag()),
+                                   complex(ts.real(), ts.imag()));
+        // These amplitudes satisfy the entry-interface boundary conditions
+        // in the complex Snell basis. Subsequent transport and internal
+        // splitting still use the existing real-ray approximation; this is
+        // not a model of vector inhomogeneous-wave propagation inside.
+    }
+    else
+    {
+        double cosB = DotProduct(facetNormal, inBeam.direction);
+        complex tmp0 = m_ri * cosA;
+        complex tmp1 = m_ri * cosB;
+        complex Tv0 = tmp0 + cosB;
+        complex Th0 = tmp1 + cosA;
+        complex Tv = tmp0 - cosB;
+        complex Th = cosA - tmp1;
+        outBeam.MultiplyJonesMatrix(Tv/Tv0, Th/Th0);
+        double cos2A = 2.0*cosA;
+        inBeam.MultiplyJonesMatrix(cos2A/Tv0, cos2A/Th0);
+    }
 }
 
 double Splitting::ComputeIncidentOpticalPath(const Point3f &direction,

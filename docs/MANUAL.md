@@ -773,9 +773,11 @@ At0° the reflected component vanishes. The coherent projected-area square
 has a closed spherical mean using all pairs of facet normals; it matches
 forward shadow self intensity for convex particles. Nonconvex shadow/clipping
 differences remain in the full residual. Vacuum n=1+0i receives no correction.
-Absorbing indices with Re(n)>=1 are supported; ideal complex Fresnel in the
-control can slightly differ from native MBS real refracted-direction
-coefficients. That difference remains in the residual, preserving native physics.
+Absorbing indices with Re(n)>=1 are supported. The control and native external
+reflection use complex Fresnel coefficients. Entry transmission uses the same
+complex normal wavevector, so reflection and transmission satisfy the interface
+boundary conditions in the complex Snell basis. Subsequent internal propagation
+and splitting retain the real-ray approximation.
 
 `--analytic-shadow-control facets|circular|off` selects the shadow model.
 Default `facets` uses projected-facet self terms and coherent area at0°.

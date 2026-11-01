@@ -104,6 +104,17 @@ echo "MBS-fast Regression Test Suite"
 echo "=============================================="
 echo ""
 
+# --- Fresnel reflection and transmission at an absorbing entry interface ---
+echo "=== Unit test: absorbing entry interface ==="
+if bash "$SCRIPT_DIR/run_absorbing_external_reflection_test.sh" \
+    > "$WORK_DIR/absorbing_external_reflection.log" 2>&1; then
+    pass_test "Complex Fresnel amplitudes, boundary conditions and power balance"
+else
+    cat "$WORK_DIR/absorbing_external_reflection.log"
+    fail_test "Absorbing entry interface" "Complex-interface test failed"
+fi
+echo ""
+
 # --- Exact trajectory-ID arithmetic ---
 echo "=== Unit test: trajectory-ID multiply-add ==="
 if bash "$SCRIPT_DIR/run_big_integer_multiply_add_test.sh" \
