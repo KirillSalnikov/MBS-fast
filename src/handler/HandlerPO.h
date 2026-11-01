@@ -217,6 +217,8 @@ struct PreparedBeam
     // the large fixed edge arrays before they are immediately filled.
     PreparedBeam() {}
 
+    double phaseSign = 1.; // Physical surface orientation, independent of depth.
+
     PreparedEdgeData edgeData;
 
     // Beam direction (double precision copy)

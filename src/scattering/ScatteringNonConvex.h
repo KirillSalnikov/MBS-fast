@@ -19,6 +19,7 @@ public:
         return copy;
     }
     void PrepareForParallelTrace() override;
+    void FormShadowBeam(std::vector<Beam>& beams) override;
 
     bool ScatterLight(double beta, double gamma, std::vector<Beam> &scaterredBeams) override;
     bool ScatterLight(double beta, double gamma, const std::vector<std::vector<int>> &tracks,

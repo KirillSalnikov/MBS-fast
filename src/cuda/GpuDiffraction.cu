@@ -447,14 +447,8 @@ static inline void pack_prepared_gpu_beam(const PreparedBeam &pb,
     b.pNPx = pb.pNPx; b.pNPy = pb.pNPy; b.pNPz = pb.pNPz;
     b.pnxDTx = pb.pnxDTx; b.pnxDTy = pb.pnxDTy; b.pnxDTz = pb.pnxDTz;
     b.pnxDPx = pb.pnxDPx; b.pnxDPy = pb.pnxDPy; b.pnxDPz = pb.pnxDPz;
-    const double phasePath = pb.isExternal
-        ? pb.opticalPath
-        : pb.projLength;
-    double phaseSign = 1.0;
-    if (pb.isExternal)
-        phaseSign = -phaseSign;
-    if (!pb.isExternal && (pb.nActs & 1))
-        phaseSign = -phaseSign;
+    const double phasePath = pb.projLength;
+    const double phaseSign = pb.phaseSign;
     b.raw00r = real(pb.rawJ.m11);
     b.raw00i = imag(pb.rawJ.m11);
     b.raw01r = real(pb.rawJ.m12);
@@ -538,17 +532,11 @@ static inline void pack_prepared_gpu_compact_beam(const PreparedBeam &pb,
     b.pnxDPx = pb.pnxDPx; b.pnxDPy = pb.pnxDPy; b.pnxDPz = pb.pnxDPz;
     if (scaleOnPack)
     {
-        const double path = pb.isExternal
-            ? pb.opticalPath * scale
-            : pb.projLength * scale;
+        const double path = pb.projLength * scale;
         const double arg = waveIndex * path;
         double sn = std::sin(arg);
         double cs = std::cos(arg);
-        double sign = 1.0;
-        if (pb.isExternal)
-            sign = -sign;
-        if (!pb.isExternal && (pb.nActs & 1))
-            sign = -sign;
+        const double sign = pb.phaseSign;
         const double absorption = prepared_absorption_factor(pb, scale, cAbs);
         auto set_j = [&](const ::complex &jc, GpuReal &reOut, GpuReal &imOut)
         {
@@ -1352,7 +1340,6 @@ __device__ inline bool compute_beam_jones_context_limited_gpu(const BeamT &b,
     // internal beam in the normal branch.  The small-phase moment branch has
     // no vertex phasors, so it applies the common phase below as before.
     double commonPhase = 0.0;
-    if (!b.isExternal)
     {
         const double dpSin = (double)cp * (double)b.cenx
                            + (double)sp * (double)b.ceny;
@@ -1374,7 +1361,7 @@ __device__ inline bool compute_beam_jones_context_limited_gpu(const BeamT &b,
     if (isnan(fr)) return false;
 
     GpuReal cpr = fr, cpi = fi;
-    if (!b.isExternal && usedSmallPhase)
+    if (usedSmallPhase)
     {
         GpuReal dpr, dpi;
         gpu_sincos_phase(commonPhase, &dpi, &dpr);
@@ -1544,7 +1531,6 @@ __device__ inline bool compute_beam_jones_context_gpu_multik(
     const GpuReal wi2Eff = wi2 * scale2;
 
     double commonPhase = 0.0;
-    if (!b.isExternal)
     {
         const double dpSin = (double)cp * (double)b.cenx
                            + (double)sp * (double)b.ceny;
@@ -1570,7 +1556,7 @@ __device__ inline bool compute_beam_jones_context_gpu_multik(
     if (isnan(fr)) return false;
 
     GpuReal cpr = fr, cpi = fi;
-    if (!b.isExternal && usedSmallPhase)
+    if (usedSmallPhase)
     {
         GpuReal dpr, dpi;
         gpu_sincos_phase(commonPhase, &dpi, &dpr);
@@ -1867,7 +1853,6 @@ __device__ inline bool compute_beam_jones_nocache_gpu(const GpuBeam &b,
     if (isnan(fr)) return false;
 
     GpuReal dpr = 1.0, dpi = 0.0;
-    if (!b.isExternal)
     {
         GpuReal dp_sin = cp * b.cenx + sp * b.ceny;
         GpuReal dp_cos = -b.cenz;
@@ -2220,7 +2205,6 @@ __global__ void diffraction_kernel(const GpuBeam *__restrict__ beams, int nBeams
     if (isnan(fr)) return;
 
     GpuReal dpr = 1.0, dpi = 0.0;
-    if (!b.isExternal)
     {
         GpuReal dp_sin = cp * b.cenx + sp * b.ceny;
         GpuReal dp_cos = -b.cenz;

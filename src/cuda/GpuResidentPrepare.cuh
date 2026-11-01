@@ -107,8 +107,8 @@ __global__ void residentPrepare(const GpuConvexQueue::Input* inputs,
     out.pnxDTx=ndt.x;out.pnxDTy=ndt.y;out.pnxDTz=ndt.z;out.pnxDPx=ndp.x;out.pnxDPy=ndp.y;out.pnxDPz=ndp.z;
     out.raw00r=beam.j[0].re;out.raw00i=beam.j[0].im;out.raw01r=beam.j[1].re;out.raw01i=beam.j[1].im;
     out.raw10r=beam.j[2].re;out.raw10i=beam.j[2].im;out.raw11r=beam.j[3].re;out.raw11i=beam.j[3].im;
-    out.phasePath=shadow?beam.path:beam.path+dot(cen,beam.direction);
-    out.phaseSign=(shadow||(beam.depth&1))?-1:1;out.absOffset=out.absCount=0;
+    out.phasePath=beam.path+dot(cen,beam.direction);
+    out.phaseSign=shadow?-1:(dot(normal,inputs[orientation].faces[beam.facet].inward)>=0?1:-1);out.absOffset=out.absCount=0;
     phase_raw_jones_scaled(out,par.k,1,nullptr,0,out.jp00r,out.jp00i,out.jp01r,out.jp01i,
         out.jp10r,out.jp10i,out.jp11r,out.jp11i);
 }
@@ -118,8 +118,6 @@ __global__ void residentExtinction(const GpuBeam* beams,const int* offsets,const
     double forward=0;
     for(int j=offsets[i];j<offsets[i]+kept[i];++j){
         GpuBeam b=beams[j];
-        if(b.isExternal){b.jp00r=-b.raw00r;b.jp00i=-b.raw00i;b.jp01r=-b.raw01r;b.jp01i=-b.raw01i;
-            b.jp10r=-b.raw10r;b.jp10i=-b.raw10i;b.jp11r=-b.raw11r;b.jp11i=-b.raw11i;}
         GpuReal a,b0,c,d,e,f,g,h;
         if(compute_beam_jones_context_gpu<true>(b,1,0,0,1,0,0,-1,0,1,0,-1,0,0,
             1,1,par.eps1,par.eps2,par.cwr,par.cwi,par.icwr,par.icwi,par.legacy,1,a,b0,c,d,e,f,g,h))

@@ -505,6 +505,44 @@ ScatteringNonConvex::ScatteringNonConvex(Particle *particle, Light *incidentLigh
 {
 }
 
+void ScatteringNonConvex::FormShadowBeam(std::vector<Beam>& beams)
+{
+    if (!m_coherentShadow) { Scattering::FormShadowBeam(beams); return; }
+    // Use the same illuminated, uncloaked patches as the initial ray trace.
+    // The reference incident field has no Fresnel or propagation attenuation.
+    IntArray facets;
+    SelectVisibleFacetsForLight(facets);
+    for (size_t i=0; i<facets.size; ++i)
+    {
+        m_polygonResultBuffer.Clear();
+        PolygonArray& parts = m_polygonResultBuffer;
+        IntersectWithFacet(facets, static_cast<int>(i), parts);
+        for (unsigned j=0; j<parts.size; ++j)
+        {
+            Beam shadow(parts.arr[j]);
+            if (DotProduct(shadow.Normal(), m_facets[facets.arr[i]].in_normal)<0)
+                Polygon::InverseVertexOrder(shadow);
+            shadow.SetLight(*m_incidentLight);
+            shadow.J.Fill(::complex(0.,0.));
+            shadow.J.m11=shadow.J.m22=::complex(-1.,0.);
+            shadow.opticalPath=shadow.front=0.; shadow.nActs=0;
+            shadow.location=Location::Out;shadow.lastFacetId=__INT_MAX__;
+            beams.push_back(shadow);
+        }
+    }
+    // A tangent facet has zero incident ray flux but still has tangential
+    // fields in the closed electromagnetic surface integral.
+    for (int f=0; f<m_particle->nFacets; ++f)
+    {
+        if (std::fabs(DotProduct(m_incidentDir,m_facets[f].in_normal))>EPS_GRAZING_INCIDENCE) continue;
+        Beam shadow;SetPolygonByFacet(f,shadow);shadow.SetLight(*m_incidentLight);
+        shadow.J.Fill(::complex(0.,0.));shadow.J.m11=shadow.J.m22=::complex(-1.,0.);
+        shadow.opticalPath=shadow.front=0.;shadow.nActs=0;
+        shadow.location=Location::Out;shadow.lastFacetId=__INT_MAX__;
+        beams.push_back(shadow);
+    }
+}
+
 bool ScatteringNonConvex::ScatterLight(double /*beta*/, double /*gamma*/,
                                        std::vector<Beam> &scaterredBeams)
 {
