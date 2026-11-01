@@ -43,7 +43,7 @@ public:
 	matrix	operator+(const matrix &) const;
 	matrix	operator+=(const matrix &m) { return *this = m+*this; }
 	matrix	operator-(const matrix &) const;
-	matrix	operator-=(const matrix &m) { return *this = m-*this; }
+	matrix	operator-=(const matrix &m) { return *this = *this-m; }
 
 	/// The operator returns a pointer to the i-th row of the array.
 	double*	operator[] (unsigned int i) const { return this->ptr[i]; }
@@ -117,7 +117,7 @@ public:
 	matrixC		operator+(const matrixC &) const;
 	matrixC		operator+=(const matrixC &m) { return *this = m+*this; }
 	matrixC		operator-(const matrixC &) const;
-	matrixC		operator-=(const matrixC &m) { return *this = m-*this; }
+	matrixC		operator-=(const matrixC &m) { return *this = *this-m; }
 
 	/// The operator returns a pointer to the i-th row of the array.
 	complex*	operator[](unsigned int N) const { return this->ptr[N]; }
