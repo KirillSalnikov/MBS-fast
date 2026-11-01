@@ -159,7 +159,9 @@ CQ_INLINE void rotate(Beam& b,Vec normal) {
 template<class Ray> CQ_INLINE bool split(const Input& input,const Beam& original,Vec normal,double cosA,Ray& reflected,Ray& transmitted) {
     const double ri=input.ri,eff=ri*ri;
     Vec r=sub(original.direction,mul(normal,cosA));double s=1.0/eff-norm(r);
-    bool normalIncidence=cosA>=0.99999999998254670756866631966593;
+    // Match Splitting::ComputeCosA, including nonzero angles whose cosine
+    // rounds to one. A normal-incidence shortcut must preserve tangential k.
+    bool normalIncidence=cosA>0.999&&norm(cross(normal,original.direction))<=Epsilon*Epsilon;
     Beam incident=original;if(!normalIncidence)rotate(incident,normal);
     transmitted=reflected;
     reflected.direction=normalIncidence?mul(incident.direction,-1):unit(sub(incident.direction,mul(normal,2*cosA)));

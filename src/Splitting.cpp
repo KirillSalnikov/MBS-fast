@@ -40,7 +40,7 @@ bool Splitting::IsCompleteReflection()
 
 bool Splitting::IsNormalIncidence()
 {
-    return cosA >= EPS_COS_00;
+    return m_normalIncidence;
 }
 
 bool Splitting::IsIncident()
@@ -172,6 +172,13 @@ void Splitting::ComputeCosA(const Point3f &normal, const Point3f &incidentDir)
 {
     cosA = std::max(-1.0, std::min(1.0,
         static_cast<double>(DotProduct(normal, incidentDir))));
+    // cos(A) can round to one while the tangential wavevector is nonzero.
+    // Snapping such a ray to normal incidence breaks Snell's law and phase
+    // matching. The cosine test only avoids a cross product far from normal;
+    // the actual angular tolerance applies to sin(A), on CPU and CUDA alike.
+    m_normalIncidence = cosA > 0.999
+        && Norm(CrossProduct(normal, incidentDir))
+            <= EPS_NORMAL_INCIDENCE * EPS_NORMAL_INCIDENCE;
 }
 
 void Splitting::ComputeRegularBeamsParams(const Point3f &normal,
