@@ -26,6 +26,18 @@ bool HandlerPO::HasInternalOpticalPath(const Beam &beam)
     return IsParticleBeam(beam) && beam.nActs > 0;
 }
 
+namespace {
+double SurfaceOrientationSign(const Particle& particle, const Beam& beam,
+                              const Point3f& polygonNormal)
+{
+    if (beam.lastFacetId == __INT_MAX__ || beam.lastFacetId == -1) return -1.;
+    // Aperture winding differs between convex and clipped nonconvex tracing.
+    // The surface-current normal must be consistent regardless of path depth.
+    return DotProduct(polygonNormal,
+                      particle.facets[beam.lastFacetId].in_normal) >= 0. ? 1. : -1.;
+}
+}
+
 // ---- Timing accumulators (static, printed at program exit) ----
 static double g_time_rotateJones_us    = 0;
 static double g_time_diffractFast_us   = 0;
@@ -642,9 +654,8 @@ matrixC HandlerPO::ApplyDiffractionFast(const Beam &beam, const BeamInfo &info,
                                         const Vector3d &vf)
 {
     auto t0 = std::chrono::high_resolution_clock::now();
-    matrixC fnJones = (beam.lastFacetId != __INT_MAX__) ?
-                ComputeFnJones(beam.J, info, direction) :
-                beam.J * exp_im(m_waveIndex*beam.opticalPath);
+    matrixC fnJones = ComputeFnJones(beam.J, info, direction);
+    fnJones *= SurfaceOrientationSign(*m_particle, beam, info.normal);
     auto t1 = std::chrono::high_resolution_clock::now();
 
     matrixC jones_rot(2, 2);
@@ -679,18 +690,9 @@ matrixC HandlerPO::ApplyDiffractionFast2(const Beam &beam, const BeamInfo &info,
                                          const Vector3d &direction,
                                          const Vector3d &vf)
 {
-    // J_phased already contains beam.J * fast_exp_im(k * projLength) [internal]
-    // or beam.J * fast_exp_im(k * opticalPath) [external].
-    // For internal beams, we only need the direction-dependent phase:
-    //   exp_im(-k * dot(direction, center))
-    // For external beams, J_phased is already complete (no direction dependence).
-    complex dirPhase;
-    if (!isExternal) {
-        double dp = DotProductD(direction, info.center);
-        dirPhase = exp_im(-m_waveIndex * dp);
-    } else {
-        dirPhase = complex(1.0, 0.0);
-    }
+    // Every aperture, including an incident-field (shadow) facet, carries
+    // the phase exp(ik[(k_in-k_out).center + opticalPath]).
+    const complex dirPhase = exp_im(-m_waveIndex * DotProductD(direction, info.center));
     matrixC jones_rot(2, 2);
     RotateJones(beam, info, vf, direction, jones_rot);
 
@@ -717,8 +719,7 @@ matrixC HandlerPO::ApplyDiffractionFast3(const BeamPolData &polData,
                                           const Vector3d &vf)
 {
     // Direction-dependent phase
-    complex dirPhase = isExternal ? complex(1.0, 0.0)
-                                  : fast_exp_im(-m_waveIndex * DotProductD(direction, info.center));
+    complex dirPhase = fast_exp_im(-m_waveIndex * DotProductD(direction, info.center));
 
     // Polarization rotation (uses precomputed beam-independent data)
     matrixC jones_rot(2, 2);
@@ -741,9 +742,8 @@ matrixC HandlerPO::ApplyDiffraction(const Beam &beam, const BeamInfo &info,
                                     bool useAbsorptionIntegral)
 {
     auto t0 = std::chrono::high_resolution_clock::now();
-    matrixC fnJones = (beam.lastFacetId != __INT_MAX__) ?
-                ComputeFnJones(beam.J, info, direction) :
-                beam.J * exp_im(m_waveIndex*beam.opticalPath);
+    matrixC fnJones = ComputeFnJones(beam.J, info, direction);
+    fnJones *= SurfaceOrientationSign(*m_particle, beam, info.normal);
     auto t1 = std::chrono::high_resolution_clock::now();
 
     matrixC jones_rot(2, 2);
@@ -1284,13 +1284,8 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
         PrecomputePolData(beam, info, polData);
 
         bool isExternal = (beam.lastFacetId == __INT_MAX__);
-        matrixC J_phased = isExternal
-            ? beam.J * fast_exp_im(m_waveIndex * beam.opticalPath)
-            : beam.J * fast_exp_im(m_waveIndex * info.projLenght);
-        if (isExternal)
-            J_phased *= -1.0;
-        if (!isExternal && (beam.nActs & 1))
-            J_phased *= -1.0;
+        matrixC J_phased = beam.J * fast_exp_im(m_waveIndex * info.projLenght);
+        J_phased *= SurfaceOrientationSign(*m_particle, beam, info.normal);
 
         // Extract scalars for inlined computation
         double horAx = info.horAxis.x, horAy = info.horAxis.y, horAz = info.horAxis.z;
@@ -1407,7 +1402,6 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
                                 phaseSinScratch[phase],
                                 phaseCosScratch[phase]);
 
-                if (!isExternal)
                 {
                     for (int j = 0; j < thetaCount; ++j)
                         directionPhaseScratch[j] = -m_waveIndex
@@ -1518,10 +1512,8 @@ void HandlerPO::HandleBeams(std::vector<Beam> &beams, double sinZenith)
 
                     if (!isnan(real(fresnel)))
                     {
-                        const double dpr = isExternal
-                            ? 1.0 : directionCosScratch[j];
-                        const double dpi = isExternal
-                            ? 0.0 : directionSinScratch[j];
+                        const double dpr = directionCosScratch[j];
+                        const double dpi = directionSinScratch[j];
 
                         double r00, r01, r10, r11;
                         rotate_jones_precomputed_inline(
@@ -1811,15 +1803,12 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         PrecomputePolData(beam, info, polData);
 
         pb.isExternal = (beam.lastFacetId == __INT_MAX__);
-        const complex phase = fast_exp_im(m_waveIndex *
-            (pb.isExternal ? beam.opticalPath : info.projLenght));
+        const complex phase = fast_exp_im(m_waveIndex * info.projLenght);
         complex jp00=beam.J.m11*phase,jp01=beam.J.m12*phase;
         complex jp10=beam.J.m21*phase,jp11=beam.J.m22*phase;
-        if (pb.isExternal || (beam.nActs & 1))
-        {
-            jp00 *= -1.0; jp01 *= -1.0;
-            jp10 *= -1.0; jp11 *= -1.0;
-        }
+        pb.phaseSign = SurfaceOrientationSign(*m_particle, beam, info.normal);
+        jp00 *= pb.phaseSign; jp01 *= pb.phaseSign;
+        jp10 *= pb.phaseSign; jp11 *= pb.phaseSign;
 
         // Extract scalars
         pb.horAx = info.horAxis.x; pb.horAy = info.horAxis.y; pb.horAz = info.horAxis.z;
@@ -1999,16 +1988,8 @@ double HandlerPO::ComputeForwardExtinctionOt(
             : m_otFarReferencePath;
 
         double dpr = 1.0, dpi = 0.0;
-        if (!pb.isExternal)
-        {
-            double dpArg = -m_waveIndex * (cos_t * tc.dp_cos + phaseReference);
-            fast_sincos(dpArg, dpi, dpr);
-        }
-        else if (phaseReference != 0.0)
-        {
-            double dpArg = -m_waveIndex * phaseReference;
-            fast_sincos(dpArg, dpi, dpr);
-        }
+        double dpArg = -m_waveIndex * (cos_t * tc.dp_cos + phaseReference);
+        fast_sincos(dpArg, dpi, dpr);
 
         double r00, r01, r10, r11;
         rotate_jones_inline(
@@ -2211,16 +2192,8 @@ double HandlerPO::ComputeForwardExtinctionOtScaled(
             : m_otFarReferencePath;
 
         double dpr = 1.0, dpi = 0.0;
-        if (!pb.isExternal)
-        {
-            double dpArg = -scaledWaveIndex * (cos_t * tc.dp_cos + phaseReference);
-            fast_sincos(dpArg, dpi, dpr);
-        }
-        else if (phaseReference != 0.0)
-        {
-            double dpArg = -scaledWaveIndex * phaseReference;
-            fast_sincos(dpArg, dpi, dpr);
-        }
+        double dpArg = -scaledWaveIndex * (cos_t * tc.dp_cos + phaseReference);
+        fast_sincos(dpArg, dpi, dpr);
 
         double r00, r01, r10, r11;
         rotate_jones_inline(
@@ -2231,16 +2204,10 @@ double HandlerPO::ComputeForwardExtinctionOtScaled(
             vfx, vfy, vfz, dx, dy, dz,
             r00, r01, r10, r11);
 
-        double path = pb.isExternal
-            ? pb.opticalPath * scale
-            : pb.projLength * scale;
+        double path = pb.projLength * scale;
         double sn = 0.0, cs = 1.0;
         fast_sincos(scaledWaveIndex * path, sn, cs);
-        double sign = 1.0;
-        if (pb.isExternal)
-            sign = -sign;
-        if (!pb.isExternal && (pb.nActs & 1))
-            sign = -sign;
+        const double sign = pb.phaseSign;
 
         double absorption = 1.0;
         if (!pb.absorptionPaths.empty())
@@ -2435,7 +2402,7 @@ void HandlerPO::DiffractControlPoints(const PreparedOrientation &prepared,
                 if (isnan(real(fresnel))) continue;
 
                 double dpr=1.0, dpi=0.0;
-                if (!isExternal) {
+                {
                     double dpArg = -m_waveIndex*(sin_t*tc.dp_sin+cos_t*tc.dp_cos);
                     fast_sincos(dpArg, dpi, dpr);
                 }
@@ -2587,7 +2554,7 @@ void HandlerPO::DiffractAtThetas(const PreparedOrientation &prepared,
                 if(isnan(real(fresnel)))continue;
 
                 double dpr=1.0,dpi=0.0;
-                if(!isExternal){
+                {
                     double dpArg=-m_waveIndex*(sin_t*tc.dp_sin+cos_t*tc.dp_cos);
                     fast_sincos(dpArg,dpi,dpr);
                 }
@@ -2780,7 +2747,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                         fast_sincos(allPhases[base + j],
                                     allVs[base + j], allVc[base + j]);
                 }
-                if (!isExternal) {
+                {
                     for (int j = 0; j <= nZen; ++j)
                         dpPhases[j] = -m_waveIndex*(sinTheta[j]*tc.dp_sin + cosTheta[j]*tc.dp_cos);
                     int jj = 0;
@@ -2790,8 +2757,6 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                         fast_sincos_4x(&dpPhases[jj], &dirDpi[jj], &dirDpr[jj]);
                     for (; jj <= nZen; ++jj)
                         fast_sincos(dpPhases[jj], dirDpi[jj], dirDpr[jj]);
-                } else {
-                    for (int j = 0; j <= nZen; ++j) { dirDpr[j] = 1.0; dirDpi[j] = 0.0; }
                 }
 
                 for (int j = 0; j <= nZen; ++j)
@@ -3201,10 +3166,9 @@ void HandlerPO::CacheBeams(std::vector<Beam> &beams, double weight,
             cb.edge_valid_y[i] = edgeData.edge_valid_y[i];
         }
 
-        // Match Natalia's Jones phase convention before coherent summation.
+        // Orient surface currents consistently before coherent summation.
         cb.J = beam.J;
-        if (beam.lastFacetId == __INT_MAX__ || (beam.nActs & 1))
-            cb.J *= -1.0;
+        cb.J *= SurfaceOrientationSign(*m_particle, beam, info.normal);
 
         // Normalized lengths
         cb.opticalPath_norm = beam.opticalPath * inv_D;
@@ -3405,7 +3369,7 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
             double j22r = real(cb.J.m22), j22i = imag(cb.J.m22);
 
             // Phase base: same for all sizes, differs only by kD[s] scale
-            double phase_base = cb.isExternal ? cb.opticalPath_norm : cb.projLength_norm;
+            double phase_base = cb.projLength_norm;
 
             for (int s = 0; s < nSizes; ++s)
             {
@@ -3550,7 +3514,6 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
 
                     // Precompute dirPhase for all sizes (batch across sizes)
                     double dpr_all[32], dpi_all[32];
-                    if (!cb.isExternal)
                     {
                         double dp_phases[32];
                         for (int s = 0; s < nSizes; ++s)
@@ -3563,11 +3526,6 @@ void HandlerPO::ComputeFromCache(const BeamCache &cache,
                             fast_sincos_4x(&dp_phases[ss], &dpi_all[ss], &dpr_all[ss]);
                         for (; ss < nSizes; ++ss)
                             fast_sincos(dp_phases[ss], dpi_all[ss], dpr_all[ss]);
-                    }
-                    else
-                    {
-                        for (int s = 0; s < nSizes; ++s)
-                        { dpr_all[s] = 1.0; dpi_all[s] = 0.0; }
                     }
 
                     // Now loop over sizes (the tight inner loop)

@@ -396,6 +396,7 @@ void Tracer::SetHandler(Handler *handler)
 {
     m_handler = handler;
     m_handler->SetScattering(m_scattering);
+    m_scattering->SetCoherentShadow(handler->isCoh);
 }
 
 void Tracer::HandleBeamsPO2(vector<Beam> &/*outBeams*/,

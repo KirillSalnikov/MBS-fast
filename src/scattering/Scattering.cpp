@@ -117,6 +117,7 @@ void Scattering::CopyRuntimeOptionsFrom(const Scattering &source)
     m_traceCpuProjectedPrefilterMargin = source.m_traceCpuProjectedPrefilterMargin;
     m_tracePrefilterStats = source.m_tracePrefilterStats;
     m_trackIdsRequired = source.m_trackIdsRequired;
+    m_coherentShadow = source.m_coherentShadow;
 }
 
 bool Scattering::ScatterLightWithLimitRetry(
@@ -490,6 +491,32 @@ void Scattering::RemoveDublicatedVertices2f(const std::vector<Point2f> &projecte
 
 void Scattering::FormShadowBeam(std::vector<Beam> &scaterredBeams)
 {
+    // On a convex surface the incident field on the illuminated facets closes
+    // the Kirchhoff surface with the outgoing fields. A projected flat screen
+    // has different off-forward phases and cannot cancel a transparent body.
+    // Include tangent facets: they carry tangential E/H even at zero ray flux.
+    // The incoherent beam-intensity approximation retains its single projected
+    // diffraction beam; it cannot enforce a coherent transparent-body limit.
+    if (m_coherentShadow && !m_particle->IsConcave())
+    {
+        for (int f = 0; f < m_particle->nFacets; ++f)
+        {
+            if (DotProduct(m_incidentDir, m_facets[f].in_normal)
+                    < -EPS_GRAZING_INCIDENCE)
+                continue;
+            Beam shadow;
+            SetPolygonByFacet(f, shadow);
+            shadow.SetLight(*m_incidentLight);
+            shadow.J.Fill(complex(0., 0.));
+            shadow.J.m11 = shadow.J.m22 = complex(-1., 0.);
+            shadow.opticalPath = shadow.front = 0.;
+            shadow.nActs = 0;
+            shadow.location = Location::Out;
+            shadow.lastFacetId = __INT_MAX__;
+            scaterredBeams.push_back(shadow);
+        }
+        return;
+    }
     std::vector<Point2f> projected;
     ProjectParticleToXY(projected);
 

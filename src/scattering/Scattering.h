@@ -50,6 +50,7 @@ protected:
     double m_traceRefArea = 0;
     double m_traceRefImportance = 0;
     bool m_trackIdsRequired = false;
+    bool m_coherentShadow = true;
     std::shared_ptr<TraceCutoffStatistics> m_traceCutoffStatistics;
     // Only enabled for exclusively owned preparation clones. These are
     // reporting counters, never the shared adaptive beam-limit state.
@@ -83,6 +84,7 @@ public:
     bool m_traceCpuProjectedPrefilter = true;
     double m_traceCpuProjectedPrefilterMargin = -1.0;
     bool m_tracePrefilterStats = false;
+    void SetCoherentShadow(bool value) { m_coherentShadow = value; }
     void SetTrackIdsRequired(bool value) { m_trackIdsRequired = value; }
     void CopyRuntimeOptionsFrom(const Scattering &source);
     std::string TraceCutoffReport() const;

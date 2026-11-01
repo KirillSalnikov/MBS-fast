@@ -781,6 +781,19 @@ and splitting retain the real-ray approximation.
 At exactly n=1+0i, CPU and resident CUDA tracing transmit the incident direction
 and Jones matrix unchanged and produce zero reflection, including grazing rays.
 
+Coherent PO evaluates the incident-field surface term on the actual illuminated
+facets (visible clipped patches for nonconvex geometry), including tangent
+facets. It retains the phase of each aperture centre on CPU, CUDA, and size-cache
+paths. A flat projected screen has incorrect off-forward phases and leaves a
+spurious signal at unit index. Surface-current signs follow the actual polygon
+normal relative to the particle facet, rather than reflection-count parity.
+These changes recover the transparent-body limit and continuity as n approaches
+one without zeroing the result by an index-specific condition. The incoherent
+per-beam intensity approximation keeps its single projected diffraction beam;
+it omits the interference needed for the coherent transparent-body limit.
+The analytic shadow controls remain control variates corrected by the full
+native residual; they do not replace this surface term.
+
 `--analytic-shadow-control facets|circular|off` selects the shadow model.
 Default `facets` uses projected-facet self terms and coherent area at0°.
 `circular` uses a circular diffraction aperture with geometry-derived mean
