@@ -613,7 +613,7 @@ bool ScatteringNonConvex::PushBeamsToTree(int facetId,
         in.pols.push_back(pol);
         out.pols.push_back(pol);
 #endif
-        Point3f p = pol.Center();
+        Point3f p = splitting.PhaseAnchor(pol);
         in.opticalPath = 0;
         out.opticalPath = 0;
         double path = splitting.ComputeIncidentOpticalPath(m_incidentDir, p);
@@ -621,8 +621,8 @@ bool ScatteringNonConvex::PushBeamsToTree(int facetId,
         in.ops.push_back(path);
         out.ops.push_back(path);
 #endif
-        in.AddOpticalPath(path);
-        out.AddOpticalPath(path);
+        in.AddOpticalPath(path, p);
+        out.AddOpticalPath(path, p);
         UpdateTraceReference(in);
         UpdateTraceReference(out);
         if (const char *initialDebugPath = std::getenv("MBS_INITIAL_BEAMR_DEBUG"))
@@ -2650,8 +2650,8 @@ bool ScatteringNonConvex::SetOpticalBeamParams(const Facet &facet, const Beam &i
                                                          inBeam, outBeam);
 //			if (m_isOpticalPath)
             {
-                double path = splitting.ComputeSegmentOpticalPath(incidentBeam,
-                                                                    inBeam.Center());
+                const Point3f anchor = splitting.PhaseAnchor(inBeam);
+                double path = splitting.ComputeSegmentOpticalPath(incidentBeam, anchor);
 #ifdef _DEBUG // DEB
     inBeam.ops = incidentBeam.ops;
     outBeam.ops = incidentBeam.ops;
@@ -2659,8 +2659,8 @@ bool ScatteringNonConvex::SetOpticalBeamParams(const Facet &facet, const Beam &i
     outBeam.ops.push_back(path);
 #endif
                 path += incidentBeam.opticalPath;
-                inBeam.AddOpticalPath(path);
-                outBeam.AddOpticalPath(path);
+                inBeam.AddOpticalPath(path, anchor);
+                outBeam.AddOpticalPath(path, anchor);
             }
         }
     }

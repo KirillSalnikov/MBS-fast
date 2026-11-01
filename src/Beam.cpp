@@ -273,8 +273,13 @@ void Beam::SetLight(const Light &other)
 
 void Beam::AddOpticalPath(double path)
 {
-	opticalPath += path;
-	front = DotProduct(-direction, Center());
+    AddOpticalPath(path, Center());
+}
+
+void Beam::AddOpticalPath(double path, const Point3f &phasePoint)
+{
+    opticalPath += path;
+    front = DotProduct(-direction, phasePoint);
 }
 
 void Beam::CopyTrack(const Track &other)

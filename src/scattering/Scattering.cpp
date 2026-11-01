@@ -301,12 +301,12 @@ void Scattering::SplitLightToBeams(int facetId, Beam &inBeam, Beam &outBeam)
 
 //	if (m_isOpticalPath)
     {
-        Point3f p = inBeam.Center();
+        Point3f p = splitting.PhaseAnchor(inBeam);
         double path = splitting.ComputeIncidentOpticalPath(m_incidentDir, p);
         inBeam.opticalPath = 0;
         outBeam.opticalPath = 0;
-        inBeam.AddOpticalPath(path);
-        outBeam.AddOpticalPath(path);
+        inBeam.AddOpticalPath(path, p);
+        outBeam.AddOpticalPath(path, p);
         outBeam.opticalPath += splitting.ComputeOutgoingOpticalPath(outBeam);
     }
 }

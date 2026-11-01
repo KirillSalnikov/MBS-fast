@@ -217,6 +217,9 @@ struct PreparedBeam
     // the large fixed edge arrays before they are immediately filled.
     PreparedBeam() {}
 
+    // Detaches fallback geometry before scaling a copied orientation.
+    void Scale(double scale, double waveIndex, double cAbs);
+
     double phaseSign = 1.; // Physical surface orientation, independent of depth.
 
     PreparedEdgeData edgeData;
@@ -443,6 +446,9 @@ protected:
 public:
     void CleanJ();
 protected:
+    matrixC ApplyPreparedFallback(const PreparedBeam &beam,
+                                 const Vector3d &direction,
+                                 const Vector3d &vf, double waveIndex = 0.0) const;
     matrixC ComputeFnJones(const Matrix2x2c &matrix, const BeamInfo &info,
                            const Vector3d &direction);
 

@@ -33,6 +33,8 @@ public:
 
 	double ComputeEffectiveReRi() const;
 
+    Point3f PhaseAnchor(const Polygon &aperture) const;
+
 	double ComputeIncidentOpticalPath(const Point3f &direction,
 									  const Point3f &facetPoint);
 	double ComputeOutgoingOpticalPath(const Beam &beam);

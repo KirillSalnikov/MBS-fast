@@ -131,6 +131,25 @@ Point3f Polygon::Center() const
     return Point3f(x*inv, y*inv, z*inv);
 }
 
+Point3f Polygon::AreaCentroid() const
+{
+    if (nVertices < 3)
+        return Center();
+    const Point3f origin = arr[0], normal = Normal();
+    Point3f moment(0, 0, 0);
+    double twiceArea = 0.0;
+    for (int i = 1; i + 1 < nVertices; ++i)
+    {
+        const Point3f a = arr[i] - origin, b = arr[i + 1] - origin;
+        const double weight = DotProduct(CrossProduct(a, b), normal);
+        twiceArea += weight;
+        moment = moment + (a + b) * weight;
+    }
+    if (!(twiceArea > DBL_MIN))
+        return Center();
+    return origin + moment / (3.0 * twiceArea);
+}
+
 Point3f Polygon::Normal() const
 {
     if (nVertices < MIN_VERTEX_NUM)

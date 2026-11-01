@@ -48,6 +48,14 @@ bool Splitting::IsIncident()
     return cosA > EPS_GRAZING_INCIDENCE;
 }
 
+Point3f Splitting::PhaseAnchor(const Polygon &aperture) const
+{
+    // The real-ray approximation for absorbing media uses an angle-dependent
+    // effective index. Its interface phase reference must not depend on how
+    // many collinear vertices happen to describe an aperture.
+    return imag(m_ri) == 0.0 ? aperture.Center() : aperture.AreaCentroid();
+}
+
 double Splitting::ComputeSegmentOpticalPath(const Beam &beam, const Point3f &facetPoint) const
 {
     // beam.front is the phase-plane offset established when the beam is
@@ -83,13 +91,14 @@ void Splitting::ComputeCRBeamParams(const Point3f &normal, const Beam &incidentB
 
     if (m_isOpticalPath)
     {
-        double path = ComputeSegmentOpticalPath(incidentBeam, inBeam.Center());
+        const Point3f anchor = PhaseAnchor(inBeam);
+        double path = ComputeSegmentOpticalPath(incidentBeam, anchor);
 #ifdef _DEBUG // DEB
         inBeam.ops = incidentBeam.ops;
         inBeam.ops.push_back(path);
 #endif
         path += incidentBeam.opticalPath;
-        inBeam.AddOpticalPath(path);
+        inBeam.AddOpticalPath(path, anchor);
     }
 }
 
@@ -185,7 +194,8 @@ void Splitting::ComputeRegularBeamsParams(const Point3f &normal,
 
     if (m_isOpticalPath)
     {
-        double path = ComputeSegmentOpticalPath(incidentBeam, inBeam.Center());
+        const Point3f anchor = PhaseAnchor(inBeam);
+        double path = ComputeSegmentOpticalPath(incidentBeam, anchor);
 #ifdef _DEBUG // DEB
         inBeam.ops = incidentBeam.ops;
         outBeam.ops = incidentBeam.ops;
@@ -193,8 +203,8 @@ void Splitting::ComputeRegularBeamsParams(const Point3f &normal,
         outBeam.ops.push_back(path);
 #endif
         path += incidentBeam.opticalPath;
-        inBeam.AddOpticalPath(path);
-        outBeam.AddOpticalPath(path);
+        inBeam.AddOpticalPath(path, anchor);
+        outBeam.AddOpticalPath(path, anchor);
     }
 }
 
@@ -218,7 +228,8 @@ void Splitting::ComputeNormalBeamParams(const Beam &incidentBeam,
 
     if (m_isOpticalPath)
     {
-        double path = ComputeSegmentOpticalPath(incidentBeam, inBeam.Center());
+        const Point3f anchor = PhaseAnchor(inBeam);
+        double path = ComputeSegmentOpticalPath(incidentBeam, anchor);
         path += incidentBeam.opticalPath;
 #ifdef _DEBUG // DEB
         inBeam.ops = incidentBeam.ops;
@@ -226,8 +237,8 @@ void Splitting::ComputeNormalBeamParams(const Beam &incidentBeam,
         outBeam.ops = incidentBeam.ops;
         outBeam.ops.push_back(path);
 #endif
-        inBeam.AddOpticalPath(path);
-        outBeam.AddOpticalPath(path);
+        inBeam.AddOpticalPath(path, anchor);
+        outBeam.AddOpticalPath(path, anchor);
     }
 }
 

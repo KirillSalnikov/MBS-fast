@@ -541,6 +541,15 @@ else
 fi
 echo ""
 
+echo "=== Test 13: prepared aperture representation and scaling ==="
+if python3 "$PROJECT_DIR/tests/test_prepared_aperture.py" "$MBS" > "$WORK_DIR/aperture.log" 2>&1; then
+    pass_test "Test 13: collinear subdivisions preserve PO fields and integrals"
+else
+    cat "$WORK_DIR/aperture.log"
+    fail_test "Test 13" "Prepared aperture fallback check failed"
+fi
+echo ""
+
 # =============================================================================
 # Summary
 # =============================================================================

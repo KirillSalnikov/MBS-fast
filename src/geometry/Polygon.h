@@ -86,6 +86,8 @@ public:
 
     double Area() const;
     Point3f Center() const;
+    /// Area centroid, independent of collinear edge subdivisions.
+    Point3f AreaCentroid() const;
     Point3f Normal() const;
 };
 
