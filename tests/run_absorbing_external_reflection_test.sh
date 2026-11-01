@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+test_source=${1:-test_absorbing_external_reflection.cpp}
 build_dir=$(mktemp -d "${TMPDIR:-/tmp}/mbs_external_fresnel.XXXXXX")
 trap 'rm -rf "$build_dir"' EXIT
 sources=(Splitting.cpp Beam.cpp geometry/Polygon.cpp geometry/geometry_lib.cpp
@@ -13,7 +14,7 @@ for directory in "" math geometry geometry/intrinsic geometry/sse particle scatt
     command+=("-I$repo/src/$directory")
 done
 for source in "${sources[@]}"; do command+=("$repo/src/$source"); done
-command+=("$repo"/src/bigint/*.cc "$repo/tests/test_absorbing_external_reflection.cpp"
+command+=("$repo"/src/bigint/*.cc "$repo/tests/$test_source"
     -Wl,--gc-sections -o "$build_dir/check")
 "${command[@]}"
 OMP_NUM_THREADS=1 "$build_dir/check"

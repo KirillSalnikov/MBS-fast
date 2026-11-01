@@ -748,6 +748,8 @@ reflection use complex Fresnel coefficients. Entry transmission uses the same
 complex normal wavevector, so reflection and transmission satisfy the interface
 boundary conditions in the complex Snell basis. Subsequent internal propagation
 and splitting retain the real-ray approximation.
+At exactly n=1+0i, CPU and resident CUDA tracing transmit the incident direction
+and Jones matrix unchanged and produce zero reflection, including grazing rays.
 
 `--analytic-shadow-control facets|circular|off` selects the shadow model.
 Default `facets` uses projected-facet self terms and coherent area at0°.

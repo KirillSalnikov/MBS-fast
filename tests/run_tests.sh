@@ -115,6 +115,17 @@ else
 fi
 echo ""
 
+# --- Matched-index grazing transport on CPU and resident CUDA math ---
+echo "=== Unit test: grazing index-matched interface ==="
+if bash "$SCRIPT_DIR/run_absorbing_external_reflection_test.sh" test_grazing_splitting.cpp \
+    > "$WORK_DIR/grazing_splitting.log" 2>&1; then
+    pass_test "Matched-index transmission, no false TIR, and stable phase directions"
+else
+    cat "$WORK_DIR/grazing_splitting.log"
+    fail_test "Grazing splitting" "Matched-index transport test failed"
+fi
+echo ""
+
 # --- Exact trajectory-ID arithmetic ---
 echo "=== Unit test: trajectory-ID multiply-add ==="
 if bash "$SCRIPT_DIR/run_big_integer_multiply_add_test.sh" \
