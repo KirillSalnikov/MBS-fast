@@ -12,6 +12,7 @@ import numpy as np
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('binary', type=Path)
 p.add_argument('--backend', choices=['cpu', 'cuda'], default='cpu')
+p.add_argument('--shadow-model', choices=['projected', 'surface'], default='surface')
 p.add_argument('--out', type=Path)
 a = p.parse_args()
 temporary = tempfile.TemporaryDirectory(prefix='mbs-po-sizes-') if a.out is None else None
@@ -20,6 +21,7 @@ root.mkdir(parents=True, exist_ok=True)
 sizes = root/'sizes.txt'
 sizes.write_text('20\n40\n')
 base = [str(a.binary.resolve()), '--method', 'po', '--backend', a.backend,
+        '--po-shadow-model', a.shadow_model,
         '--particle', '1', '1.2371791482634837', '1', '--wavelength-um', '.532',
         '--max-reflections', '4', '--euler-grid', '3', '3',
         '--scattering-grid', '0', '180', '12', '18', '--threads', '2',
@@ -72,7 +74,7 @@ for case, index, geometry in [
             error = float(np.max(abs(x[:, 2:]-ref[:, 2:])/np.maximum(ref[:, 2, None], 1.)))
             assert error < (1e-8 if a.backend == 'cpu' else 5e-5), (case, variant, k, error)
             maximum = float(np.max(abs(x[:, 2:])))
-            if index == ('1', '0'):
+            if index == ('1', '0') and a.shadow_model == 'surface':
                 assert maximum < threshold, (case, variant, k, maximum)
             entry[str(k)] = dict(max_difference_over_max_M11_1=error,
                                  maximum_abs_mueller=maximum)

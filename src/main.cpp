@@ -189,6 +189,8 @@ void ApplyFftOptions(const RunConfig &config, HandlerPO *handler)
 void ApplyTraceCutoffOptions(const ArgPP &args, Scattering *scattering,
                              bool useGpu)
 {
+    scattering->SetSurfaceShadow(args.IsCatched("po_shadow_model")
+        && args.GetStringValue("po_shadow_model") == "surface");
     const std::string profile = args.IsCatched("cutoff_profile")
         ? args.GetStringValue("cutoff_profile", 0)
         : ((args.IsCatched("beam_cutoff") || args.IsCatched("beam_cutoff_j")
@@ -2092,6 +2094,9 @@ int RunCalculation(int argc, const char* argv[])
     if (config.method == RunMethod::PhysicalOptics)
     {
         additionalSummary += "Physical optics";
+        additionalSummary += ", shadow model: ";
+        additionalSummary += args.IsCatched("po_shadow_model")
+            ? args.GetStringValue("po_shadow_model") : "projected";
 
         if (args.IsCatched("karczewski"))
         {

@@ -360,6 +360,20 @@ int main()
     CheckAdaptiveConfig();
     CheckOrientationFileUnits();
     ExpectSuccess("canonical command", CanonicalBase());
+    for (const std::string model : {"projected", "surface"})
+    {
+        auto command = CanonicalBase();
+        command.insert(command.end(), {"--po-shadow-model", model});
+        ExpectSuccess("PO shadow model " + model, command);
+    }
+    {
+        auto command = CanonicalBase();
+        command.insert(command.end(), {"--po-shadow-model", "unknown"});
+        ExpectFailure("unknown shadow model", command, "unknown --po-shadow-model");
+        command.back() = "surface";
+        command.push_back("--incoherent");
+        ExpectFailure("surface shadow requires coherence", command, "requires coherent PO");
+    }
     ExpectFailure("fixed beta degree range", {
         "--method", "po", "--particle", "1", "1", "1",
         "--refractive-index", "1.31", "0", "--wavelength-um", "1",

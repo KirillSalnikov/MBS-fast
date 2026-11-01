@@ -550,6 +550,15 @@ else
 fi
 echo ""
 
+echo "=== Test 14: selectable projected and surface shadow ==="
+if python3 "$PROJECT_DIR/tests/test_shadow_model.py" "$MBS" > "$WORK_DIR/shadow_model.log" 2>&1; then
+    pass_test "Test 14: shadow choice, unchanged rays and explicit transparent-limit tradeoff"
+else
+    cat "$WORK_DIR/shadow_model.log"
+    fail_test "Test 14" "Shadow model selection failed"
+fi
+echo ""
+
 # =============================================================================
 # Summary
 # =============================================================================

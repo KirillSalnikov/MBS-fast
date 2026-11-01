@@ -507,7 +507,7 @@ ScatteringNonConvex::ScatteringNonConvex(Particle *particle, Light *incidentLigh
 
 void ScatteringNonConvex::FormShadowBeam(std::vector<Beam>& beams)
 {
-    if (!m_coherentShadow) { Scattering::FormShadowBeam(beams); return; }
+    if (!UsesSurfaceShadow()) { Scattering::FormShadowBeam(beams); return; }
     // Use the same illuminated, uncloaked patches as the initial ray trace.
     // The reference incident field has no Fresnel or propagation attenuation.
     IntArray facets;
