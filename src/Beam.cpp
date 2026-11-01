@@ -209,48 +209,19 @@ void Beam::MultiplyJonesMatrix(const complex &c1, const complex &c2)
 
 void Beam::RotateJMatrix(const Vector3f &newBasis)
 {
-	// This is a basis-equivalence band, not a storage precision threshold. Near
-	// the poles an azimuthal basis is non-unique; suppressing an immaterial tiny
-	// rotation keeps the limiting Mueller basis continuous.
-	const double eps = 64.0 * DBL_EPSILON;
-	double cs = std::max(-1.0, std::min(1.0,
+	const double cs = std::max(-1.0, std::min(1.0,
 		static_cast<double>(DotProduct(newBasis, polarizationBasis))));
-
-	if (fabs(1.0 - cs) >= eps)
-	{
-		if (fabs(1.0 + cs) < eps)
-		{
-			J.m11 = -J.m11;
-			J.m12 = -J.m12;
-			J.m21 = -J.m21;
-			J.m22 = -J.m22;
-		}
-		else
-		{
-			Point3f k;
-			CrossProduct(polarizationBasis, newBasis, k);
-			Normalize(k);
-
-			double angle = acos(cs);
-
-			Point3f r = k + direction;
-
-			if (Norm(r) <= 0.5)
-			{
-				angle = -angle;
-			}
-
-			double sn = sin(angle); // the rotation of matrix "m"
-
-			complex b00 = J.m11*cs + J.m21*sn; // first row of the result
-			complex b01 = J.m12*cs + J.m22*sn;
-
-			J.m21 = J.m21*cs - J.m11*sn;
-			J.m22 = J.m22*cs - J.m12*sn;
-			J.m11 = b00;
-			J.m12 = b01;
-		}
-	}
+	// A new transverse basis must preserve the Cartesian electric field even
+	// when its cosine rounds to +/-1. The signed sine is well conditioned
+	// there; acos and a cosine dead band discard resolvable small rotations.
+	const double sn = DotProduct(direction,
+		CrossProduct(polarizationBasis, newBasis));
+	const complex b00 = J.m11*cs + J.m21*sn;
+	const complex b01 = J.m12*cs + J.m22*sn;
+	J.m21 = J.m21*cs - J.m11*sn;
+	J.m22 = J.m22*cs - J.m12*sn;
+	J.m11 = b00;
+	J.m12 = b01;
 }
 
 void Beam::SetPolygon(const Polygon &other)

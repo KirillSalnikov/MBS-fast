@@ -141,15 +141,11 @@ CQ_INLINE bool finiteBeam(const Beam& b) {
 }
 CQ_INLINE void rotateBasis(Beam& b,Vec basis) {
     double cs=maximum(-1.0,minimum(1.0,dot(basis,b.basis)));
-    if(fabs(1-cs)>=64*DBL_EPSILON){
-        if(fabs(1+cs)<64*DBL_EPSILON){for(int i=0;i<4;++i)b.j[i]=mul(b.j[i],-1);}
-        else {Vec k=unit(cross(b.basis,basis));double angle=acos(cs);
-            if(norm(add(k,b.direction))<=.5)angle=-angle;
-            double sn=sin(angle);
-            Cx a=add(mul(b.j[0],cs),mul(b.j[2],sn)),c=add(mul(b.j[1],cs),mul(b.j[3],sn));
-            b.j[2]=sub(mul(b.j[2],cs),mul(b.j[0],sn));b.j[3]=sub(mul(b.j[3],cs),mul(b.j[1],sn));b.j[0]=a;b.j[1]=c;
-        }
-    }
+    // Preserve the physical field for small rotations, including when the
+    // cosine rounds to +/-1. Match Beam::RotateJMatrix without acos.
+    double sn=dot(b.direction,cross(b.basis,basis));
+    Cx a=add(mul(b.j[0],cs),mul(b.j[2],sn)),c=add(mul(b.j[1],cs),mul(b.j[3],sn));
+    b.j[2]=sub(mul(b.j[2],cs),mul(b.j[0],sn));b.j[3]=sub(mul(b.j[3],cs),mul(b.j[1],sn));b.j[0]=a;b.j[1]=c;
     b.basis=basis;
 }
 CQ_INLINE void rotate(Beam& b,Vec normal) {
