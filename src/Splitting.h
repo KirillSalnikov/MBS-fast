@@ -4,10 +4,10 @@
 
 #include <cfloat>
 
-#define EPS_COS_00		0.99999999998254670756866631966593		//1 - cos(89.99999999)
 // Reject only numerically tangent incidence. Directions and normals are
 // double precision, so the former float-sized angular dead zone is too wide.
 constexpr double EPS_GRAZING_INCIDENCE = 0x1p-40;
+constexpr double EPS_NORMAL_INCIDENCE = 0x1p-40;
 
 inline double SignedPhasePlaneDistance(const Point3f &direction,
                                        double front,
@@ -64,6 +64,7 @@ private:
 	double s;
 //	double cosA;
 	bool m_isOpticalPath;
+    bool m_normalIncidence = false;
 
 	complex m_ri;	//  refractive index
 	double m_cRiRe;

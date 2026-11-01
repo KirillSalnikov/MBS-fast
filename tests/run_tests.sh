@@ -126,6 +126,17 @@ else
 fi
 echo ""
 
+# --- Near-normal Snell directions on CPU and resident CUDA math ---
+echo "=== Unit test: near-normal interface ==="
+if bash "$SCRIPT_DIR/run_absorbing_external_reflection_test.sh" test_near_normal_splitting.cpp \
+    > "$WORK_DIR/near_normal_splitting.log" 2>&1; then
+    pass_test "Near-normal directions preserve Snell's law and tangential phase"
+else
+    cat "$WORK_DIR/near_normal_splitting.log"
+    fail_test "Near-normal splitting" "Tangential wavevector test failed"
+fi
+echo ""
+
 # --- Exact trajectory-ID arithmetic ---
 echo "=== Unit test: trajectory-ID multiply-add ==="
 if bash "$SCRIPT_DIR/run_big_integer_multiply_add_test.sh" \

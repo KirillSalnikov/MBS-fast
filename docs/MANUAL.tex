@@ -1113,6 +1113,10 @@ complex Snell basis. Subsequent internal propagation and splitting retain the
 real-ray approximation.
 At exactly $n=1+0i$, CPU and resident CUDA tracing transmit the incident direction
 and Jones matrix unchanged and produce zero reflection, including grazing rays.
+Normal incidence is detected from the cross product of the direction and normal.
+Small nonzero tangential components survive even when the cosine rounds to one,
+preserving Snell refraction and interface phase matching. CPU and resident CUDA
+tracing use the same criterion.
 
 For absorbing beams, the default one-point attenuation and the interface phase
 anchor use the aperture's area centroid, which is independent of collinear edge
