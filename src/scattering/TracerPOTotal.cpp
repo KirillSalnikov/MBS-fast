@@ -2783,14 +2783,11 @@ static PreparedOrientation ScalePreparedOrientation(const PreparedOrientation &s
                 absorption = sum / count;
         }
 
-        matrixC J_base = pb.rawJ * absorption;
-        matrixC J_phased = pb.isExternal
-            ? pb.rawJ * exp_im(waveIndex * pb.opticalPath)
-            : J_base * exp_im(waveIndex * pb.projLength);
-        if (pb.isExternal)
-            J_phased *= -1.0;
-        if (!pb.isExternal && (pb.nActs & 1))
-            J_phased *= -1.0;
+        // The incident-field surface patches have the same aperture-center
+        // phase as particle beams. Preserve the actual polygon orientation
+        // recorded during preparation when reconstructing the scaled field.
+        matrixC J_phased = pb.rawJ * absorption
+            * exp_im(waveIndex * pb.projLength) * pb.phaseSign;
 
         ::complex jp00 = J_phased[0][0], jp01 = J_phased[0][1];
         ::complex jp10 = J_phased[1][0], jp11 = J_phased[1][1];

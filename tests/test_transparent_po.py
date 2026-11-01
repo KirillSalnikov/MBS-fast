@@ -24,6 +24,7 @@ base = [str(binary), '--method','po','--backend',a.backend,'--particle','1','1.2
 results = {}
 def run(name, orientation, index='1', extra=(), particle=None):
     folder = root/name
+    assert not folder.exists(), f'Use an empty output directory: {folder}'
     if a.backend == 'cuda' and '--fixed-orientation' in orientation:
         rule = root/(name+'_orientation.txt')
         rule.write_text(f'{orientation[1]} {orientation[2]} 0 1\n')
