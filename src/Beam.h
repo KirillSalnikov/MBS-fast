@@ -49,6 +49,7 @@ public:
     void SetLight(const Vector3f &dir, const Vector3f &polarBasis);
     void SetLight(const Light &other);
     void AddOpticalPath(double path);
+    void AddOpticalPath(double path, const Point3f &phasePoint);
     void CopyTrack(const Track &other);
 
     Beam & operator = (const Beam &other);

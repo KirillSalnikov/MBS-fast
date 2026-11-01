@@ -348,7 +348,7 @@ struct BeamInfo
     bool isBad = false;
     double area;
     double projLenght;
-    double opticalLengths[3];
+    double opticalLengths[3] = {};
     Point3f beamBasis{};
     Point3d center;
     Point3d projectedCenter;
@@ -356,7 +356,7 @@ struct BeamInfo
     Point3d normald;
     Point3d horAxis;
     Point3d verAxis;
-    Point3d lenIndices;
+    Point3d lenIndices = Point3d(0, 0, 0);
 };
 
 /// Precomputed polarization data for fast RotateJones (computed once per beam)
@@ -440,7 +440,7 @@ protected:
      * @return Fresnel coefficient
      */
     complex DiffractIncline(const BeamInfo &info, const Beam &beam,
-                            const Point3d &direction) const;
+                            const Point3d &direction, double waveIndex = 0.0) const;
 
     void PrecomputeEdgeData(const BeamInfo &info, const Beam &beam,
                             BeamEdgeData &edgeData) const;
@@ -461,7 +461,8 @@ protected:
     void ComputeCoordinateSystemAxes(const Point3d& normal,
                                      Point3d &hor, Point3d &ver) const;
 
-    void ComputeLengthIndices(const Beam &beam, BeamInfo &info);
+    void ComputeLengthIndices(const Beam &beam, BeamInfo &info,
+                              const int vertices[3]);
 
 protected:
     Scattering *m_scattering = nullptr;

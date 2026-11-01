@@ -5847,8 +5847,6 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                     // every clipped polygon. Keep the ENTIRE orientation on
                     // CPU: adding a single beam's Mueller matrix would lose its
                     // coherent cross terms with the other beams.
-                    if (scale != 1.0 || waveIndex != 0.0)
-                        return failDirect("bad-edge-data-scaled");
                     const int bad = start + oi;
                     std::fprintf(stderr,
                         "GPU aperture fallback: orientation-in-chunk=%d "
@@ -5869,7 +5867,17 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                         cpuJns.emplace_back(nAz + 1, nZen + 1, 2, 2);
                         cpuJns.back().ClearArr();
                     }
-                    const PreparedOrientation &cpuOrientation = prepared[bad];
+                    PreparedOrientation scaledOrientation;
+                    const PreparedOrientation *cpuSource = &prepared[bad];
+                    if (scale != 1.0 || waveIndex != 0.0)
+                    {
+                        scaledOrientation = prepared[bad];
+                        for (PreparedBeam &beam : scaledOrientation.beams)
+                            beam.Scale(scale, waveIndex > 0.0 ? waveIndex : m_waveIndex,
+                                       m_cAbs);
+                        cpuSource = &scaledOrientation;
+                    }
+                    const PreparedOrientation &cpuOrientation = *cpuSource;
                     HandleBeamsToLocal(cpuOrientation, localM, cpuJ,
                                        computeNoShadow ? &cpuJns : nullptr);
                     AddToMuellerLocal(cpuJ, cpuOrientation.sinZenith,

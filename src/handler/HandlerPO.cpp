@@ -736,6 +736,109 @@ matrixC HandlerPO::ApplyDiffractionFast3(const BeamPolData &polData,
     return scaled_rot * J_phased;
 }
 
+void PreparedBeam::Scale(double scale, double waveIndex, double cAbs)
+{
+    PreparedBeam &pb = *this;
+    const double scale2 = scale * scale;
+    if (pb.fallback)
+    {
+        pb.fallback = std::make_shared<PreparedBeamFallback>(*pb.fallback);
+    }
+    for (int e = 0; e < pb.edgeData.nVertices; ++e)
+    {
+        pb.edgeData.x[e] *= scale;
+        pb.edgeData.y[e] *= scale;
+    }
+
+    pb.cenx *= scale;
+    pb.ceny *= scale;
+    pb.cenz *= scale;
+    pb.beam_area *= scale2;
+    pb.opticalPath *= scale;
+    pb.projLength *= scale;
+    if (pb.fallback)
+    {
+        BeamInfo &info = pb.fallback->info;
+        info.area *= scale2;
+        info.projLenght *= scale;
+        info.center.x *= scale;
+        info.center.y *= scale;
+        info.center.z *= scale;
+        info.projectedCenter.x *= scale;
+        info.projectedCenter.y *= scale;
+        info.projectedCenter.z *= scale;
+        for (double &v : info.opticalLengths)
+            v *= scale;
+        info.lenIndices.z *= scale;
+        Beam &beam = pb.fallback->beam;
+        for (int v = 0; v < beam.nVertices; ++v)
+            beam.arr[v] = beam.arr[v] * scale;
+        beam.front *= scale;
+        beam.opticalPath *= scale;
+    }
+
+    ::complex absorption(1.0, 0.0);
+    if (!pb.absorptionPaths.empty())
+    {
+        double sum = 0.0;
+        int count = 0;
+        for (double path : pb.absorptionPaths)
+        {
+            sum += (path > DBL_EPSILON) ? std::exp(cAbs * path * scale) : 1.0;
+            ++count;
+        }
+        if (count > 0)
+            absorption = sum / count;
+    }
+
+    if (pb.fallback)
+        pb.fallback->beam.J = pb.rawJ * absorption;
+
+    // The incident-field surface patches have the same aperture-center
+    // phase as particle beams. Preserve the actual polygon orientation
+    // recorded during preparation when reconstructing the scaled field.
+    matrixC J_phased = pb.rawJ * absorption
+        * exp_im(waveIndex * pb.projLength) * pb.phaseSign;
+
+    ::complex jp00 = J_phased[0][0], jp01 = J_phased[0][1];
+    ::complex jp10 = J_phased[1][0], jp11 = J_phased[1][1];
+    pb.jp00r = real(jp00); pb.jp00i = imag(jp00);
+    pb.jp01r = real(jp01); pb.jp01i = imag(jp01);
+    pb.jp10r = real(jp10); pb.jp10i = imag(jp10);
+    pb.jp11r = real(jp11); pb.jp11i = imag(jp11);
+}
+
+matrixC HandlerPO::ApplyPreparedFallback(const PreparedBeam &pb,
+                                       const Vector3d &direction,
+                                       const Vector3d &vf, double waveIndex) const
+{
+    if (waveIndex <= 0.0) waveIndex = m_waveIndex;
+    matrixC result(2, 2);
+    result.Fill(complex(0.0, 0.0));
+    if (!pb.fallback)
+        return result;
+
+    const Beam &beam = pb.fallback->beam;
+    const BeamInfo &info = pb.fallback->info;
+    const complex fresnel = DiffractIncline(info, beam, direction, waveIndex);
+    if (std::isnan(real(fresnel)))
+        return result;
+
+    matrixC rotation(2, 2), phased(2, 2);
+    if (useKarczewski)
+        KarczewskiJones(beam, info, vf, direction, rotation);
+    else
+        RotateJones(beam, info, vf, direction, rotation);
+    // Preparation already captured absorption, path phase and surface sign.
+    // The live particle can have another orientation when this batch is read.
+    phased[0][0] = complex(pb.jp00r, pb.jp00i);
+    phased[0][1] = complex(pb.jp01r, pb.jp01i);
+    phased[1][0] = complex(pb.jp10r, pb.jp10i);
+    phased[1][1] = complex(pb.jp11r, pb.jp11i);
+    return fresnel * exp_im(-waveIndex * DotProductD(direction, info.center))
+        * rotation * phased;
+}
+
 matrixC HandlerPO::ApplyDiffraction(const Beam &beam, const BeamInfo &info,
                                     const Vector3d &direction,
                                     const Vector3d &vf,
@@ -848,7 +951,6 @@ BeamInfo HandlerPO::ComputeBeamInfo(Beam &beam,
     if (m_hasAbsorption && HasInternalOpticalPath(beam))
     {
         ComputeOpticalLengths(beam, info, track);
-        ComputeLengthIndices(beam, info);
     }
 
     info.area = beam.Area();
@@ -1091,6 +1193,37 @@ void HandlerPO::SetScatteringSphere(const ScatteringRange &grid)
 void HandlerPO::ComputeOpticalLengths(const Beam &beam, BeamInfo &info,
                                       const std::vector<int> *track)
 {
+    int vertices[3] = {0, 1, 2};
+    const Point3f a = beam.arr[1] - beam.arr[0];
+    const Point3f b = beam.arr[2] - beam.arr[0];
+    const double tolerance = geometry_area_tolerance(m_geometryScale);
+    if (Length(CrossProduct(a, b)) <= tolerance)
+    {
+        // Collinear subdivisions are valid aperture vertices. Pick a broad
+        // triangle only when the usual first three cannot determine a plane.
+        double farthest = 0.0;
+        for (int i = 1; i < beam.nVertices; ++i)
+        {
+            const Point3f delta = beam.arr[i] - beam.arr[0];
+            const double distance = DotProduct(delta, delta);
+            if (distance > farthest)
+            {
+                farthest = distance;
+                vertices[1] = i;
+            }
+        }
+        const Point3f edge = beam.arr[vertices[1]] - beam.arr[0];
+        double largest = 0.0;
+        for (int i = 1; i < beam.nVertices; ++i)
+        {
+            const double area = Length(CrossProduct(edge, beam.arr[i] - beam.arr[0]));
+            if (area > largest)
+            {
+                largest = area;
+                vertices[2] = i;
+            }
+        }
+    }
     std::vector<int> recoveredTrack;
     if (!track)
     {
@@ -1101,8 +1234,9 @@ void HandlerPO::ComputeOpticalLengths(const Beam &beam, BeamInfo &info,
     for (int i = 0; i < 3; ++i)
     {
         info.opticalLengths[i] = m_scattering->ComputeInternalOpticalPath(
-                    beam, beam.arr[i], *track);
+                    beam, beam.arr[vertices[i]], *track);
     }
+    ComputeLengthIndices(beam, info, vertices);
 
 //#ifdef _DEBUG // DEB
 //	if (info.opticalLengths[0] > 200)
@@ -1724,7 +1858,10 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
             };
             if (m_absorptionPointCount == 1 || beam.nVertices <= 0)
             {
-                addPathAt(beam.Center());
+                // A vertex mean moves when an edge is subdivided. The area
+                // centroid samples the same linear path field for the same
+                // aperture, regardless of its polygon representation.
+                addPathAt(beam.AreaCentroid());
             }
             else
             {
@@ -1836,7 +1973,6 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         if (!pb.edgeData.valid)
         {
             pb.fallback = std::make_shared<PreparedBeamFallback>(beam, info);
-            pb.fallback->beam.J = unabsorbedJ;
         }
     }
 
@@ -1879,6 +2015,17 @@ double HandlerPO::ComputeForwardExtinctionOt(
     {
         if (m_otPhaseAverage && !pb.isExternal)
             continue;
+        if (!pb.edgeData.valid && pb.fallback)
+        {
+            const matrixC amplitude = ApplyPreparedFallback(
+                pb, Point3d(dx, dy, dz), Point3d(vfx, vfy, vfz));
+            const double reference = pb.isExternal
+                ? pb.opticalPath : m_otFarReferencePath;
+            const complex phase = exp_im(-m_waveIndex * reference);
+            f00 += amplitude[0][0] * phase;
+            f11 += amplitude[1][1] * phase;
+            continue;
+        }
         if (!pb.edgeData.valid
             || pb.edgeData.nVertices <= 0
             || pb.edgeData.nVertices >= BeamEdgeData::MAX_EDGES)
@@ -2079,6 +2226,19 @@ double HandlerPO::ComputeForwardExtinctionOtScaled(
     {
         if (m_otPhaseAverage && !pb.isExternal)
             continue;
+        if (!pb.edgeData.valid && pb.fallback)
+        {
+            PreparedBeam scaled = pb;
+            scaled.Scale(scale, waveIndex, absorptionCoefficient);
+            const matrixC amplitude = ApplyPreparedFallback(
+                scaled, Point3d(dx, dy, dz), Point3d(vfx, vfy, vfz), waveIndex);
+            const double reference = pb.isExternal
+                ? scaled.opticalPath : m_otFarReferencePath;
+            const complex phase = exp_im(-waveIndex * reference);
+            f00 += amplitude[0][0] * phase;
+            f11 += amplitude[1][1] * phase;
+            continue;
+        }
         if (!pb.edgeData.valid
             || pb.edgeData.nVertices <= 0
             || pb.edgeData.nVertices >= BeamEdgeData::MAX_EDGES)
@@ -2301,7 +2461,20 @@ void HandlerPO::DiffractControlPoints(const PreparedOrientation &prepared,
     for (const PreparedBeam &pb : prepared.beams)
     {
         const PreparedEdgeData &edgeData = pb.edgeData;
-        if (!edgeData.valid) continue;
+        if (!edgeData.valid)
+        {
+            for (int p = 0; p < nAz; ++p)
+                for (int k = 0; k < nPoints; ++k)
+                {
+                    const int t = thetaIndices[k];
+                    const matrixC field = ApplyPreparedFallback(
+                        pb, m_sphere.directions[p][t], m_sphere.vf[p][t]);
+                    m11_out[k] += 0.5 * (norm(field[0][0]) + norm(field[0][1])
+                        + norm(field[1][0]) + norm(field[1][1]))
+                        * prepared.sinZenith / (nAz + 1);
+                }
+            continue;
+        }
 
         double bdx = pb.bdx, bdy = pb.bdy, bdz = pb.bdz;
         double horAx = pb.horAx, horAy = pb.horAy, horAz = pb.horAz;
@@ -2458,7 +2631,23 @@ void HandlerPO::DiffractAtThetas(const PreparedOrientation &prepared,
     for (const PreparedBeam &pb : prepared.beams)
     {
         const PreparedEdgeData &edgeData = pb.edgeData;
-        if (!edgeData.valid) continue;
+        if (!edgeData.valid)
+        {
+            for (int p = 0; p < nAz; ++p)
+                for (int k = 0; k < nPoints; ++k)
+                {
+                    const Point3d direction(sinTheta[k] * cosPhi[p],
+                                            sinTheta[k] * sinPhi[p], -cosTheta[k]);
+                    const Point3d vf = PoleMueller::IsBackward(theta_rads[k])
+                        ? Point3d(0, -1, 0) : (PoleMueller::IsForward(theta_rads[k])
+                        ? Point3d(0, 1, 0) : Point3d(-sinPhi[p], cosPhi[p], 0));
+                    const matrixC field = ApplyPreparedFallback(pb, direction, vf);
+                    m11_out[k] += 0.5 * (norm(field[0][0]) + norm(field[0][1])
+                        + norm(field[1][0]) + norm(field[1][1]))
+                        * prepared.sinZenith / (nAz + 1);
+                }
+            continue;
+        }
 
         double bdx=pb.bdx,bdy=pb.bdy,bdz=pb.bdz;
         double horAx=pb.horAx,horAy=pb.horAy,horAz=pb.horAz;
@@ -2962,8 +3151,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                     Point3d &vf = m_sphere.vf[i][j];
                     if (!pb.fallback)
                         continue;
-                    matrixC tmp = ApplyDiffraction(
-                        pb.fallback->beam, pb.fallback->info, dir, vf, false);
+                    matrixC tmp = ApplyPreparedFallback(pb, dir, vf);
                     d00 = tmp[0][0]; d01 = tmp[0][1];
                     d10 = tmp[1][0]; d11 = tmp[1][1];
                 }

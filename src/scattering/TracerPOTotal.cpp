@@ -2751,68 +2751,8 @@ static PreparedOrientation ScalePreparedOrientation(const PreparedOrientation &s
                                                     double cAbs)
 {
     PreparedOrientation dst = src;
-    const double scale2 = scale * scale;
     for (PreparedBeam &pb : dst.beams)
-    {
-        if (pb.fallback)
-        {
-            pb.fallback = std::make_shared<PreparedBeamFallback>(*pb.fallback);
-        }
-        for (int e = 0; e < pb.edgeData.nVertices; ++e)
-        {
-            pb.edgeData.x[e] *= scale;
-            pb.edgeData.y[e] *= scale;
-        }
-
-        pb.cenx *= scale;
-        pb.ceny *= scale;
-        pb.cenz *= scale;
-        pb.beam_area *= scale2;
-        pb.opticalPath *= scale;
-        pb.projLength *= scale;
-        if (pb.fallback)
-        {
-            BeamInfo &info = pb.fallback->info;
-            info.area *= scale2;
-            info.projLenght *= scale;
-            info.center.x *= scale;
-            info.center.y *= scale;
-            info.center.z *= scale;
-            info.projectedCenter.x *= scale;
-            info.projectedCenter.y *= scale;
-            info.projectedCenter.z *= scale;
-            for (double &v : info.opticalLengths)
-                v *= scale;
-            pb.fallback->beam.opticalPath *= scale;
-        }
-
-        ::complex absorption(1.0, 0.0);
-        if (!pb.absorptionPaths.empty())
-        {
-            double sum = 0.0;
-            int count = 0;
-            for (double path : pb.absorptionPaths)
-            {
-                sum += (path > DBL_EPSILON) ? std::exp(cAbs * path * scale) : 1.0;
-                ++count;
-            }
-            if (count > 0)
-                absorption = sum / count;
-        }
-
-        // The incident-field surface patches have the same aperture-center
-        // phase as particle beams. Preserve the actual polygon orientation
-        // recorded during preparation when reconstructing the scaled field.
-        matrixC J_phased = pb.rawJ * absorption
-            * exp_im(waveIndex * pb.projLength) * pb.phaseSign;
-
-        ::complex jp00 = J_phased[0][0], jp01 = J_phased[0][1];
-        ::complex jp10 = J_phased[1][0], jp11 = J_phased[1][1];
-        pb.jp00r = real(jp00); pb.jp00i = imag(jp00);
-        pb.jp01r = real(jp01); pb.jp01i = imag(jp01);
-        pb.jp10r = real(jp10); pb.jp10i = imag(jp10);
-        pb.jp11r = real(jp11); pb.jp11i = imag(jp11);
-    }
+        pb.Scale(scale, waveIndex, cAbs);
     return dst;
 }
 

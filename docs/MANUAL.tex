@@ -1117,6 +1117,16 @@ real-ray approximation.
 At exactly $n=1+0i$, CPU and resident CUDA tracing transmit the incident direction
 and Jones matrix unchanged and produce zero reflection, including grazing rays.
 
+For absorbing beams, the default one-point attenuation and the interface phase
+anchor use the aperture's area centroid, which is independent of collinear edge
+subdivisions. Optical-path gradients use a noncollinear triangle even when the
+first three vertices lie on one edge. Apertures outside the fixed edge buffer
+retain the prepared surface sign, attenuation and phase; their full geometry is
+scaled in size sweeps. They also contribute to forward extinction and angular
+control points. CUDA evaluates the entire affected orientation on CPU, preserving
+coherent cross terms, including in shared size sweeps. Ordinary small-aperture
+diffraction continues to use the existing fast kernels.
+
 Coherent PO evaluates the incident-field surface term on the actual illuminated
 facets (visible clipped patches for nonconvex geometry), including tangent
 facets. It retains the phase of each aperture centre on CPU, CUDA, and size-cache

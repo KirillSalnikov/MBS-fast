@@ -256,7 +256,7 @@ void Handler::ApplyAbsorption(Beam &beam)
 
     if (m_absorptionPointCount == 1 || beam.nVertices <= 0)
     {
-        addAbsorptionAt(beam.Center());
+        addAbsorptionAt(beam.AreaCentroid());
     }
     else
     {
@@ -301,16 +301,17 @@ void Handler::ComputeCoordinateSystemAxes(const Point3d& normal,
     }
 }
 
-void Handler::ComputeLengthIndices(const Beam &beam, BeamInfo &info)
+void Handler::ComputeLengthIndices(const Beam &beam, BeamInfo &info,
+                                   const int vertices[3])
 {
     auto *lens = info.opticalLengths;
 
     Point3d p1 = ChangeCoordinateSystem(info.horAxis, info.verAxis, info.normald,
-                                        beam.arr[0]) - info.projectedCenter;
+                                        beam.arr[vertices[0]]) - info.projectedCenter;
     Point3d p2 = ChangeCoordinateSystem(info.horAxis, info.verAxis, info.normald,
-                                        beam.arr[1]) - info.projectedCenter;
+                                        beam.arr[vertices[1]]) - info.projectedCenter;
     Point3d p3 = ChangeCoordinateSystem(info.horAxis, info.verAxis, info.normald,
-                                        beam.arr[2]) - info.projectedCenter;
+                                        beam.arr[vertices[2]]) - info.projectedCenter;
 
 //	double den = p1.x*(p2.y - p3.y) - p2.x*(p1.y + p3.y) + p3.x*(p1.y - p2.y);
     double den = (p1.x*p2.y-p1.x*p3.y-p2.x*p1.y+p2.x*p3.y+p3.x*p1.y-p3.x*p2.y);
@@ -515,8 +516,14 @@ double Handler::BeamCrossSection(const Beam &beam) const
 }
 
 ::complex Handler::DiffractIncline(const BeamInfo &info, const Beam &beam,
-                                 const Point3d &direction) const
+                                 const Point3d &direction, double waveIndex) const
 {
+    if (waveIndex <= 0.0) waveIndex = m_waveIndex;
+    const complex complWave = waveIndex == m_waveIndex ? m_complWave
+        : complex(0.0, -1.0 / (M_2PI * waveIndex));
+    const complex invComplWave = waveIndex == m_waveIndex ? m_invComplWave
+        : complex(0.0, waveIndex / M_2PI);
+
     const Point3f &dir = beam.direction;
     Point3d k_k0 = -direction + Point3d(dir.cx, dir.cy, dir.cz);
 
@@ -544,11 +551,11 @@ double Handler::BeamCrossSection(const Beam &beam) const
     }
     double smallPhaseReal = 0.0, smallPhaseImag = 0.0;
     if (small_phase_polygon_factor(
-            vx.data(), vy.data(), beam.nVertices, A, B, m_waveIndex,
+            vx.data(), vy.data(), beam.nVertices, A, B, waveIndex,
             smallPhaseReal, smallPhaseImag))
     {
         const ::complex areaLimit =
-            (m_legacySign ? m_invComplWave : -m_invComplWave) * info.area;
+            (m_legacySign ? invComplWave : -invComplWave) * info.area;
         return apply_small_phase_factor(
             areaLimit, smallPhaseReal, smallPhaseImag);
     }
@@ -597,16 +604,16 @@ double Handler::BeamCrossSection(const Beam &beam) const
             if (fabs(Ci) < m_eps1)
             {
                 tmp = StableComplexEdgeQuotient(
-                    ::complex(Ci, 0.0), p1.x, p2.x, m_waveIndex);
+                    ::complex(Ci, 0.0), p1.x, p2.x, waveIndex);
             }
             else
             {
-                double kCi = m_waveIndex*Ci;
+                double kCi = waveIndex*Ci;
                 tmp = (exp_im(kCi*p2.x) - exp_im(kCi*p1.x))/Ci;
             }
 
             const double bi = p1.y - ai*p1.x;
-            s += exp_im(m_waveIndex*B*bi) * tmp;
+            s += exp_im(waveIndex*B*bi) * tmp;
 
             p1 = p2;
         }
@@ -634,16 +641,16 @@ double Handler::BeamCrossSection(const Beam &beam) const
             if (fabs(Ei) < m_eps1)
             {
                 tmp = StableComplexEdgeQuotient(
-                    ::complex(Ei, 0.0), p1.y, p2.y, m_waveIndex);
+                    ::complex(Ei, 0.0), p1.y, p2.y, waveIndex);
             }
             else
             {
-                double kEi = m_waveIndex*Ei;
+                double kEi = waveIndex*Ei;
                 tmp = (exp_im(kEi*p2.y) - exp_im(kEi*p1.y))/Ei;
             }
 
             const double di = p1.x - ci*p1.y;
-            s += exp_im(m_waveIndex*A*di) * tmp;
+            s += exp_im(waveIndex*A*di) * tmp;
 
             p1 = p2;
         }
@@ -651,7 +658,7 @@ double Handler::BeamCrossSection(const Beam &beam) const
         s /= -A;
     }
 
-    return m_complWave * s;
+    return complWave * s;
 }
 
 void Handler::PrecomputeEdgeData(const BeamInfo &info, const Beam &beam,
