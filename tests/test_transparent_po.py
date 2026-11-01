@@ -19,6 +19,7 @@ temporary = tempfile.TemporaryDirectory(prefix='mbs-transparent-') if a.out is N
 root = Path(temporary.name) if temporary else a.out.resolve()
 root.mkdir(parents=True, exist_ok=True)
 base = [str(binary), '--method','po','--backend',a.backend,'--particle','1','1.2371791482634837','1',
+        '--po-shadow-model','surface',
         '--k-eq','40','--wavelength-um','.532','--max-reflections','14','--threads','2',
         '--scattering-grid','0','180','12','36','--cutoff-profile','off','--close']
 results = {}

@@ -118,6 +118,7 @@ void Scattering::CopyRuntimeOptionsFrom(const Scattering &source)
     m_tracePrefilterStats = source.m_tracePrefilterStats;
     m_trackIdsRequired = source.m_trackIdsRequired;
     m_coherentShadow = source.m_coherentShadow;
+    m_surfaceShadow = source.m_surfaceShadow;
 }
 
 bool Scattering::ScatterLightWithLimitRetry(
@@ -497,7 +498,9 @@ void Scattering::FormShadowBeam(std::vector<Beam> &scaterredBeams)
     // Include tangent facets: they carry tangential E/H even at zero ray flux.
     // The incoherent beam-intensity approximation retains its single projected
     // diffraction beam; it cannot enforce a coherent transparent-body limit.
-    if (m_coherentShadow && !m_particle->IsConcave())
+    // Surface shadow is explicit: its transparent-body cancellation does not
+    // establish better finite-contrast accuracy than projected diffraction.
+    if (UsesSurfaceShadow() && !m_particle->IsConcave())
     {
         for (int f = 0; f < m_particle->nFacets; ++f)
         {

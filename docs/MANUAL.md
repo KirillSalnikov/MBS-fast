@@ -791,18 +791,23 @@ control points. CUDA evaluates the entire affected orientation on CPU, preservin
 coherent cross terms, including in shared size sweeps. Ordinary small-aperture
 diffraction continues to use the existing fast kernels.
 
-Coherent PO evaluates the incident-field surface term on the actual illuminated
-facets (visible clipped patches for nonconvex geometry), including tangent
-facets. It retains the phase of each aperture centre on CPU, CUDA, and size-cache
-paths. A flat projected screen has incorrect off-forward phases and leaves a
-spurious signal at unit index. Surface-current signs follow the actual polygon
-normal relative to the particle facet, rather than reflection-count parity.
-These changes recover the transparent-body limit and continuity as n approaches
-one without zeroing the result by an index-specific condition. The incoherent
-per-beam intensity approximation keeps its single projected diffraction beam;
-it omits the interference needed for the coherent transparent-body limit.
-The analytic shadow controls remain control variates corrected by the full
-native residual; they do not replace this surface term.
+PO defaults to the previous projected shadow aperture:
+`--po-shadow-model projected`. Replacing it with a surface term worsened the
+ka=40 column comparison against BEM, so the surface model is now explicit.
+This is a partial model rollback, not a repair of the remaining MBS error.
+The projected model retains its known nonzero scattering residual at n=1.
+
+`--po-shadow-model surface` selects the coherent incident-field term on the
+actual illuminated facets, including tangent facets and visible clipped patches
+for nonconvex geometry. It restores the n=1 null without forcibly zeroing the
+result, but does not guarantee better finite-contrast accuracy. It cannot be
+combined with `--incoherent`.
+
+Both models retain the aperture-centre phase corrections on CPU, CUDA and
+shared size paths, and surface-current signs based on polygon winding relative
+to the facet normal. The model is included in checkpoint and FullAuto identities
+so unlike results cannot be reused together. The `--analytic-shadow-control`
+option selects a variance-reduction control and does not replace `--po-shadow-model`.
 
 `--analytic-shadow-control facets|circular|off` selects the shadow model.
 Default `facets` uses projected-facet self terms and coherent area at0°.

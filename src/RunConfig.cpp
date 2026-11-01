@@ -1858,6 +1858,16 @@ RunConfig RunConfig::FromCommandLine(const ArgPP &args,
         Fail("--no-shadow-output is available only for PO.", "select --method po or remove this option.");
     if (args.IsCatched("shadow_off") && config.method != RunMethod::PhysicalOptics)
         Fail("--no-shadow-beam is available only for PO.", "select --method po or remove this option.");
+    if (args.IsCatched("po_shadow_model"))
+    {
+        const std::string model = args.GetStringValue("po_shadow_model");
+        if (config.method != RunMethod::PhysicalOptics)
+            Fail("--po-shadow-model is available only for PO.", "select --method po or remove this option.");
+        if (model != "projected" && model != "surface")
+            Fail("unknown --po-shadow-model: " + model + ".", "choose projected or surface.");
+        if (model == "surface" && args.IsCatched("incoh"))
+            Fail("--po-shadow-model surface requires coherent PO.", "remove --incoherent or choose projected.");
+    }
     if ((args.IsCatched("ot_phase_avg") || args.IsCatched("ot_phase_shift")
          || args.IsCatched("ot_ping"))
         && config.method != RunMethod::PhysicalOptics)

@@ -2926,6 +2926,7 @@ void TracerPOTotal::TraceRandom(const AngleRange &betaRange,
     MixHashInt(oldautoParamHash, gammaStagger ? 1 : 0);
     MixHashInt(oldautoParamHash, m_mirrorGamma ? 1 : 0);
     MixHashInt(oldautoParamHash, shadowOff ? 1 : 0);
+    MixHashInt(oldautoParamHash, m_scattering->UsesSurfaceShadow() ? 1 : 0);
     MixHashInt(oldautoParamHash, handlerPO->IsGpuEnabled() ? 1 : 0);
     MixHashInt(oldautoParamHash, handlerPO->IsFftEnabled() ? 1 : 0);
     int resumeBeta = 0;
@@ -3757,6 +3758,7 @@ void TracerPOTotal::TraceFromFile(const std::string &orientFile,
         real(ri), imag(ri), m_scattering->GetMaxReflections(),
         nOrientations, m_particle->MaximalDimention(), 0, nAz, nZen);
     MixHashInt(paramHash, computeNoShadow ? 1 : 0);
+    MixHashInt(paramHash, m_scattering->UsesSurfaceShadow() ? 1 : 0);
     for (const auto &bg : orientations)
     {
         paramHash ^= std::hash<double>{}(bg.beta)

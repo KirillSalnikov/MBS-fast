@@ -1046,6 +1046,11 @@ struct Engine {
         // File headers can declare an unverified fundamental domain. Use
         // the full Haar measure for arbitrary files unless explicitly set.
         if(!args.IsCatched("sym")){base.push_back("--symmetry");base.push_back("1");base.push_back("1");fingerprint<<"verified_orientation_domain=full_SO3_initial\n";}
+        if(!go){
+            const std::string shadow=args.IsCatched("po_shadow_model")?args.GetStringValue("po_shadow_model"):"projected";
+            if(!args.IsCatched("po_shadow_model")){base.push_back("--po-shadow-model");base.push_back(shadow);}
+            fingerprint<<"po_shadow_model="<<shadow<<'\n';
+        }
         if(tracePolicy!="auto"&&!args.IsCatched("po_trace_backend")){base.push_back("--po-trace-backend");base.push_back(tracePolicy);}
         gpuCandidates=gpus;
         hostBudgetMb=std::max(64LL,QueryRuntimeResourceSnapshot().ramAvailableKb*65/100/1024/static_cast<long long>(std::min(WorkerGpus().size(),size_t(8))));
