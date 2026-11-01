@@ -284,6 +284,12 @@ A cone calculation does not supply full-sphere scattering integrals.
 
 Each traced beam carries a 2x2 complex Jones matrix `beam.J`. Refraction and reflection multiply it by Fresnel coefficients in `Splitting.cpp`. The two polarization channels are the local vertical/horizontal basis of the incident and outgoing ray.
 
+The columns retain the two independent incident states; the rows resolve the
+current local p/s field. Changing the transverse basis rotates both rows,
+preserving the Cartesian electric field. CPU and CUDA compute the signed sine
+directly from the direction and the cross product of the old and new bases,
+including small rotations whose cosine rounds to +1 or -1.
+
 For a beam with local Jones matrix
 
 ```text

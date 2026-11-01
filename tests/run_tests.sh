@@ -137,6 +137,17 @@ else
 fi
 echo ""
 
+# --- Physical polarization invariance and all Mueller columns ---
+echo "=== Unit test: polarization basis ==="
+if bash "$SCRIPT_DIR/run_absorbing_external_reflection_test.sh" test_polarization_basis.cpp \
+    > "$WORK_DIR/polarization_basis.log" 2>&1; then
+    pass_test "CPU/CUDA basis invariance and six-state Jones/Mueller conversion"
+else
+    cat "$WORK_DIR/polarization_basis.log"
+    fail_test "Polarization basis" "Cartesian field or Stokes conversion changed"
+fi
+echo ""
+
 # --- Exact trajectory-ID arithmetic ---
 echo "=== Unit test: trajectory-ID multiply-add ==="
 if bash "$SCRIPT_DIR/run_big_integer_multiply_add_test.sh" \
