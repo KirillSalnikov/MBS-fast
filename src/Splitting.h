@@ -74,6 +74,8 @@ public:
 	complex GetRi() const;
 
 private:
+	bool IsIndexMatched() const { return real(m_ri) == 1.0 && imag(m_ri) == 0.0; }
+
 	void ComputeCRJonesParams(complex &cv, complex &ch);
 
 	void ComputeRegularJonesParams(const Point3f &normal,

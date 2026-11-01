@@ -165,8 +165,12 @@ template<class Ray> CQ_INLINE bool split(const Input& input,const Beam& original
     reflected.direction=normalIncidence?mul(incident.direction,-1):unit(sub(incident.direction,mul(normal,2*cosA)));
     reflected.basis=transmitted.basis=incident.basis;
     for(int j=0;j<4;++j)reflected.j[j]=transmitted.j[j]=incident.j[j];
-    bool outgoing=normalIncidence||s>0;
-    if(normalIncidence){
+    bool outgoing=ri==1.0||normalIncidence||s>0;
+    if(ri==1.0){
+        // Equal indices cannot refract or totally reflect a grazing ray.
+        transmitted.direction=incident.direction;
+        rows(reflected,Cx{0,0},Cx{0,0});
+    }else if(normalIncidence){
         transmitted.direction=incident.direction;
         Cx t=divide(Cx{1-ri,0},Cx{1+ri,0});rows(reflected,t,mul(t,-1));
         Cx u=divide(Cx{2*ri,0},Cx{1+ri,0});rows(transmitted,u,u);

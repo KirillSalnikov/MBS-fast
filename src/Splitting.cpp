@@ -28,7 +28,9 @@ void Splitting::ComputeSplittingParams(const Point3f &dir, const Point3f &normal
     // values overflowed or lost most significant digits.
     r = dir - normal*cosA;
     reRiEff = ComputeEffectiveReRi();
-    s = 1.0/reRiEff - Norm(r);
+    // At equal indices the interface cannot cause total internal reflection.
+    // 1-Norm(r) rounds to zero for near-tangent unit rays.
+    s = IsIndexMatched() ? cosA*cosA : 1.0/reRiEff - Norm(r);
 }
 
 bool Splitting::IsCompleteReflection()
@@ -96,6 +98,12 @@ void Splitting::ComputeRegularJonesParams(const Point3f &normal, const Beam &inc
     inBeam.J = incidentBeam.J;
     outBeam.J = incidentBeam.J;
 
+    if (IsIndexMatched())
+    {
+        inBeam.J.Fill(complex(0.0, 0.0));
+        return;
+    }
+
     double cosG = DotProduct(normal, outBeam.direction);
 
     complex tmp0 = m_ri * cosA;
@@ -117,7 +125,12 @@ void Splitting::ComputeInternalRefractiveDirection(const Vector3f &tangential,
                                                    Vector3f &dir)
 {
     const double sinA2 = std::max(0.0, Norm(tangential));
-    const double delta = m_cRiRe - sinA2;
+    // Close to grazing, sin(A)^2 may round to one. Keep cos(A)^2
+    // explicitly so a nearly index-matched ray retains its normal component.
+    const double re = real(m_ri), im = imag(m_ri);
+    const double delta = cosA*cosA < 0.5
+        ? (re-1.0)*(re+1.0) - im*im + cosA*cosA
+        : m_cRiRe - sinA2;
     const double loss = std::sqrt(std::max(0.0, m_cRiIm));
     const double root = std::hypot(delta, loss);
 
@@ -160,8 +173,12 @@ void Splitting::ComputeRegularBeamsParams(const Point3f &normal,
     Normalize(reflDir);
     inBeam.SetLight(reflDir, incidentBeam.polarizationBasis);
 
-    Point3f refrDir = r + normal*std::sqrt(std::max(0.0, s));
-    Normalize(refrDir);
+    Point3f refrDir = incidentBeam.direction;
+    if (!IsIndexMatched())
+    {
+        refrDir = r + normal*std::sqrt(std::max(0.0, s));
+        Normalize(refrDir);
+    }
     outBeam.SetLight(refrDir, incidentBeam.polarizationBasis);
 
     ComputeRegularJonesParams(normal, incidentBeam, inBeam, outBeam);
@@ -244,9 +261,18 @@ void Splitting::ComputeRegularBeamParamsExternal(const Point3f &facetNormal,
     refrDir = dir - facetNormal*(2.0*cosA);
     Normalize(refrDir);
 
-    ComputeInternalRefractiveDirection(tangential, -facetNormal, inBeam.direction);
-
     outBeam.SetLight(refrDir, incidentBeam.polarizationBasis);
+
+    if (IsIndexMatched())
+    {
+        // An artificial interface in the exterior medium has no reflected
+        // field and must preserve the transmitted direction and Jones matrix.
+        inBeam.SetLight(incidentBeam);
+        outBeam.J.Fill(complex(0.0, 0.0));
+        return;
+    }
+
+    ComputeInternalRefractiveDirection(tangential, -facetNormal, inBeam.direction);
 
     if (imag(m_ri) != 0.0)
     {
@@ -311,6 +337,9 @@ Point3f Splitting::ChangeBeamDirection(const Vector3f &oldDir,
                                        const Vector3f &normal,
                                        Location oldLoc, Location loc)
 {
+    if (IsIndexMatched() && oldLoc != loc)
+        return oldDir;
+
     Point3f newDir;
 
     if (oldLoc == Location::Out) // refraction
