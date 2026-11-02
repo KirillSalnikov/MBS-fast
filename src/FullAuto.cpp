@@ -562,6 +562,7 @@ struct Engine {
     std::string compatibleBinary,compatibleHash;
     bool refinementWindow=false;double refinementLo=0,refinementHi=0,refinementEps=0;
     std::string refinementParent,refinementPolicy,meanReferenceOverride;
+    bool legacyProjectedShadowIdentity=false;
     std::set<std::string> refinementLocalJobs;bool refinementLocalJobsIndexed=false;
     void IndexRefinementLocalJobs(){
         if(refinementParent.empty()||refinementLocalJobsIndexed)return;
@@ -1047,9 +1048,13 @@ struct Engine {
         // File headers can declare an unverified fundamental domain. Use
         // the full Haar measure for arbitrary files unless explicitly set.
         if(!args.IsCatched("sym")){base.push_back("--symmetry");base.push_back("1");base.push_back("1");fingerprint<<"verified_orientation_domain=full_SO3_initial\n";}
+        size_t implicitShadowFingerprint=std::string::npos,implicitShadowBase=0;
         if(!go){
             const std::string shadow=args.IsCatched("po_shadow_model")?args.GetStringValue("po_shadow_model"):"projected";
-            if(!args.IsCatched("po_shadow_model")){base.push_back("--po-shadow-model");base.push_back(shadow);}
+            if(!args.IsCatched("po_shadow_model")){
+                implicitShadowFingerprint=fingerprint.str().size();implicitShadowBase=base.size();
+                base.push_back("--po-shadow-model");base.push_back(shadow);
+            }
             fingerprint<<"po_shadow_model="<<shadow<<'\n';
         }
         if(tracePolicy!="auto"&&!args.IsCatched("po_trace_backend")){base.push_back("--po-trace-backend");base.push_back(tracePolicy);}
@@ -1063,6 +1068,26 @@ struct Engine {
         const char* visible=getenv("CUDA_VISIBLE_DEVICES");fingerprint<<"visible="<<(visible?visible:"")<<'\n';
         for(const auto& gpu:gpus)fingerprint<<"gpu="<<gpu<<'\n';
         signature=Hash(fingerprint.str());
+        // Old projected-shadow checkpoints predate the explicit model field.
+        // Retain their exact identity and worker recipe only after numerical
+        // certification of these exact executables. Explicit model changes,
+        // altered inputs and unverified binaries must still be rejected.
+        if(!compatibleHash.empty()&&implicitShadowFingerprint!=std::string::npos
+                &&Exists(root+"/configuration.txt")&&Read(root+"/configuration.txt")!=signature+"\n"){
+            std::string legacy=fingerprint.str();
+            const std::string field="po_shadow_model=projected\n";
+            Require(legacy.compare(implicitShadowFingerprint,field.size(),field)==0,"invalid implicit shadow identity");
+            legacy.erase(implicitShadowFingerprint,field.size());
+            const std::string legacySignature=Hash(legacy);
+            if(Read(root+"/configuration.txt")==legacySignature+"\n"){
+                Require(VerifiedCompatibleExecutable(exe,compatibleHash,binaryHash),
+                        "legacy projected-shadow resume requires numerical certification of the exact binaries");
+                Require(base.at(implicitShadowBase)=="--po-shadow-model"&&base.at(implicitShadowBase+1)=="projected",
+                        "invalid implicit shadow worker recipe");
+                base.erase(base.begin()+implicitShadowBase,base.begin()+implicitShadowBase+2);
+                signature=legacySignature;legacyProjectedShadowIdentity=true;
+            }
+        }
         std::ostringstream supplied;supplied<<"{\"priority\":\"explicit CLI > config file > automatic selection\",\"options\":[";bool first=true;
         for(const auto& spec:GetCliOptionSpecs())if(args.IsCatched(spec.key)){
             supplied<<(first?"":",")<<"{\"flag\":"<<Quoted(CliCanonicalFlag(spec.key))<<",\"policy\":"<<Quoted(FullAutoOptionPolicy(spec.key))<<",\"values\":[";
@@ -2270,6 +2295,11 @@ int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],do
     // the original JSON; signature validation checks result-affecting values.
     if(!Exists(commandFile))Atomic(commandFile,replay.str());
     if(!controller->compatibleHash.empty())Atomic(controller->root+"/controller_resume_command.json",replay.str());
+    if(controller->legacyProjectedShadowIdentity)
+        controller->Record(controller->root+"/legacy_shadow_resume.json",
+            "{\"policy\":\"certified-implicit-projected-v1\",\"model\":\"projected\","
+            "\"configuration_preserved\":true,\"worker_recipe_preserved\":true,"
+            "\"exact_binary_pair_verified\":true,\"native_blocks_deleted\":0}");
     signal(SIGTERM,StopWorkers);signal(SIGINT,StopWorkers);
     for(;;){Engine& e=*controller;
         if(e.go){e.PrepareGOCutoffs();e.PrepareGOMirror();}
