@@ -1683,7 +1683,13 @@ AngleRange GetRange(const ArgPP &parser, const std::string &key,
 
 static std::string PreparedRecipe(const ArgPP& args,bool memoryProfile=false){
     // Observation coordinates and output destinations cannot affect a beam.
-    const std::set<std::string> omit={"o","close","log","profile_phases","grid","tgrid","nphi","trace_cache_mb","po_prepare_threads","threads","chunk","orientation_pipeline","orientation_prefix_output"};
+    const std::set<std::string> omit={"o","close","log","no_text_reports","profile_phases","grid","tgrid","nphi","trace_cache_mb","po_prepare_threads","threads","chunk","orientation_pipeline","orientation_prefix_output",
+        // These files/threads affect the control estimator after beam
+        // preparation. In fullauto each angular packet has another weight
+        // file; including its path discarded otherwise identical CPU traces.
+        // Keep the control mode, geometry, material, pruning, depth, sampling
+        // and backend in the key, including particle-file contents.
+        "analytic_control_weights","analytic_mean_cache","analytic_mean_reference","analytic_mean_threads"};
     std::ostringstream key;
     for(const auto& spec:GetCliOptionSpecs())if(args.IsCatched(spec.key)&&!omit.count(spec.key)){
         if(memoryProfile&&(spec.key=="sobol_offset"||spec.key=="orientation_prefix_output"))continue;
