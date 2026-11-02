@@ -128,7 +128,7 @@ void BoundResumedRound(Engine& e,AdaptiveState& state,const std::vector<int>& de
     auto selected=state.counts;
     const bool residualFirst=residualPending&&!state.interpolationCounts.empty();
     if(residualFirst)selected=baseline; // Pending residual growth remains in its own saved allocation.
-    else BoundRoundWork(e,work,baseline,selected,depths,ids,priorities,state.knots,{},state.interpolationCounts.empty()?nullptr:&state.interpolationCounts);
+    else BoundRoundWork(e,work,baseline,selected,depths,ids,priorities,state.knots,{},state.interpolationCounts.empty()?nullptr:&state.interpolationCounts,SavedAngularPriorities(e,state,folder));
     if(selected==state.counts)return;
     state.counts=selected;
     e.Record(e.root+"/resume_round_work.json","{\"policy\":\"bound unfinished round using last published allocation and complete cached prefixes\",\"snapshot\":"+Quoted(folder)

@@ -75,6 +75,7 @@ protected:
                         int zenith, int azimuth, CalcTimer &timer, int nBeams);
     void OutputOrientationToLog(int i, int j, std::ostream &logfile);
     void AppendTextLog(const std::string &text) const;
+    bool TextReportsEnabled() const;
     void AppendFinalResourceReport();
 
 private:

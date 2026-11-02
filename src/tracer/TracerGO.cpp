@@ -612,23 +612,27 @@ void TracerGO::OutputSummary(int orNumber, CalcTimer &timer)
 #endif
 
 	// out << "\nAveraged cross section = " << incomingEnergy*NRM;
-	ofstream out(m_resultDirName + "_out.txt", ios::out);
-	if (!out.is_open())
-	{
-		throw std::runtime_error(
-			"cannot open GO summary output.\n"
-			"  Fix: verify output permissions and free disk space.");
-	}
-	out << m_summary;
-	if (!m_handler->m_integralSummary.empty())
-		out << "\n" << m_handler->m_integralSummary;
-	out.flush();
-	if (!out)
-	{
-		throw std::runtime_error(
-			"failed while writing GO summary output.\n"
-			"  Fix: verify free disk space and filesystem health.");
-	}
+    if (TextReportsEnabled())
+    {
+        ofstream out(m_resultDirName + "_out.txt", ios::out);
+        if (!out.is_open())
+        {
+            throw std::runtime_error(
+                "cannot open GO summary output.\n"
+                "  Fix: verify output permissions and free disk space.");
+        }
+        out << m_summary;
+        if (!m_handler->m_integralSummary.empty())
+            out << "\n" << m_handler->m_integralSummary;
+        out.flush();
+        if (!out)
+        {
+            throw std::runtime_error(
+                "failed while writing GO summary output.\n"
+                "  Fix: verify free disk space and filesystem health.");
+        }
+
+    }
 
 	cout << m_summary;
 }

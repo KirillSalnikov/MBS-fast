@@ -1,0 +1,735 @@
+{
+  "particle": "hexagonal column L562.3 D165 um",
+  "wavelength_um": 0.532,
+  "refractive_index": [
+    1.3116,
+    0
+  ],
+  "coherent": false,
+  "round": 162,
+  "phi": 32,
+  "depths": [
+    8,
+    10,
+    12
+  ],
+  "seeds": [
+    11,
+    23,
+    37,
+    53,
+    71,
+    89,
+    107,
+    131
+  ],
+  "source_sha256": "f3bd46997a1ea58eff390071c5b21b8f3771bcca9e06181483193c6410cfb984",
+  "fixture_sha256": "4ab8c1a3076db5795f83b82d8b75824c0965e7b1d11ae761be6b3165f6859dff",
+  "sources": [
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 32768,
+      "seed": 11,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/aa2b1d15348782be0",
+      "sha256": "318ef54b01a31bb812722cbdf31340372d18e19cb1cef8511f3d00ad43d364e4"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 32768,
+      "seed": 23,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/af2b539049ce085c7",
+      "sha256": "dad76538924504ca16542056611c661c578ad70f5da347c758a4c8637e40a34b"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 32768,
+      "seed": 37,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a4df0d2c325b42b3c",
+      "sha256": "f869e91a4c50fc3eef3579056fa68a133ebd8d7d874119a76cdf6c8b6b5b590a"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 32768,
+      "seed": 53,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a4a89dbcf3cd45c0e",
+      "sha256": "2c85fb0804f1f408fc9e904f10799d36d4558eb2f82876f12be92178410b47a7"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 32768,
+      "seed": 71,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/acd501f77bcf72846",
+      "sha256": "dca8837079cd1cd47891503a07df3d803c8fe7cf8f430a2783aa8c7aef3a1f89"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 32768,
+      "seed": 89,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a4c3c768ba214f23",
+      "sha256": "00d8539cff1138c3486bb6cd657af13250528ecb4883fa28a5ad6357ccfbb02c"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 32768,
+      "seed": 107,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a62dc0bda8459523c",
+      "sha256": "c022000d73ffd70d05076d83be856cac9bb3b06bc665df3ee2f42666903b4a91"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 32768,
+      "seed": 131,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ab71cf4537a5304b3",
+      "sha256": "ffba8cf248c2d0d3c54aa2164b8b6f35879de3b10e4792d954ede116943d5459"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 65536,
+      "seed": 11,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a1e8db64df0a001f9",
+      "sha256": "f29ce69054eb5216ea6c8f2059c525379b8ea7d93938e1685d0afeea8ea123d9"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 65536,
+      "seed": 23,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ad00a02bcc747805e",
+      "sha256": "2184be0c1c3c9680804b1c82a01c122ce41769f962457ac4f2e69efe69e0f69c"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 65536,
+      "seed": 37,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ab6e5012b54cb1741",
+      "sha256": "4aade2b1223e3dcc112d048af017177a2bda06b0ed7b29e3a4b70f56b6a1e3e3"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 65536,
+      "seed": 53,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/abe942c0facba3d7",
+      "sha256": "1c6e265af2414685bdc1e3b3e2105155fb66532934969b4482e86005564b5ba0"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 65536,
+      "seed": 71,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a9f450bb2fd9319cb",
+      "sha256": "a1b9a95a228b9638cccc55559c698af41ba326eb45d383e6d9a54552e595ffa4"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 65536,
+      "seed": 89,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a29ade89c74070d16",
+      "sha256": "41490478d7228eb42ab7774f8e0ce0172a31c5cdb858fbc44aa96cd85dced45a"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 65536,
+      "seed": 107,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ac5b6083d4761c3b7",
+      "sha256": "d37d08390b4bd26b64b16df0bee8a414969cfde25f24c70e6e17645f7e4cb9cb"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 65536,
+      "seed": 131,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a18595b03112aea5c",
+      "sha256": "4529acfd37d6e210cce163b8e187a686e2a2ba9c3d39c1c3074fe17a8ab490ed"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 131072,
+      "seed": 11,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ac9b8e7313922e03b",
+      "sha256": "f342ef12b8893b0ed46082fef3e78f3e48b041dfe4f03a81a7cb7423c8be2bc3"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 131072,
+      "seed": 23,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/af3c73e6b61f6329c",
+      "sha256": "3a1bcabdf8b22599179331e7ba32f0b6d35050bbf9c87fa0c65eb69462d1f95a"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 131072,
+      "seed": 37,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ab32e5225bc467357",
+      "sha256": "7951670c928222413d490e9997c4ffce6d4519d32012a8a9ac556c6c15da8cf2"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 131072,
+      "seed": 53,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a55d24f5bcec1479",
+      "sha256": "0931ecbdfbceb2b7a398af74f6a60424f03d05a7e8282defaf207205a5a86629"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 131072,
+      "seed": 71,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ac819c69d72339ce1",
+      "sha256": "2acba32f02523882452c5bfbd1a96711ca0fa13d88557aa8342c1d09b009bf8b"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 131072,
+      "seed": 89,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a34f91723d0437d00",
+      "sha256": "aa1218da25e95151ef1ed96faf9c78516d1e5744257f710dafd04d1c33d70ce9"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 131072,
+      "seed": 107,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a23b10ff1b12323ef",
+      "sha256": "2881dacceab59a495710e080404838ffb4c8e8444065e8a402abf2e0d18d0ff9"
+    },
+    {
+      "level": 0,
+      "sign": 1,
+      "n": 131072,
+      "seed": 131,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a43394502a987da28",
+      "sha256": "4a1f3403a46fe37e4ddd245803a46cff81c56633aed6728ef475bf90cd686df0"
+    },
+    {
+      "level": 1,
+      "sign": 1,
+      "n": 512,
+      "seed": 11,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ae847cc3c92fd518d",
+      "sha256": "455fd273ef110262c9f457ca88f876f06a9e143cd25a770e6e5b11da135cd698"
+    },
+    {
+      "level": 1,
+      "sign": 1,
+      "n": 512,
+      "seed": 23,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a2921d88bf92d58f4",
+      "sha256": "a7ef9122e1823a872e1719cef3a9e11194b0a4394c1dec3bed958b77f93d9aeb"
+    },
+    {
+      "level": 1,
+      "sign": 1,
+      "n": 512,
+      "seed": 37,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a14c89a4b924aaf9",
+      "sha256": "2836f93b8a10286462f070d7d150f1c417e9fda999447ea59c255e4612f1b5ac"
+    },
+    {
+      "level": 1,
+      "sign": 1,
+      "n": 512,
+      "seed": 53,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ab8b684ddd8062d77",
+      "sha256": "ea28c28f78798a43e8f68996c2c001977db2f452fbae094d7806526881cac74e"
+    },
+    {
+      "level": 1,
+      "sign": 1,
+      "n": 512,
+      "seed": 71,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a6c4d7599f33ad7bf",
+      "sha256": "48bbb5b1d6ba1cb4870122ae5ca8f85d2c428c5c6663245228037f3581055edc"
+    },
+    {
+      "level": 1,
+      "sign": 1,
+      "n": 512,
+      "seed": 89,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a422ced9a22ac3790",
+      "sha256": "4335f813d48c20c096b6e55b71f8f81f44f9ddbee44b7ff0c73c1c29aed2eaba"
+    },
+    {
+      "level": 1,
+      "sign": 1,
+      "n": 512,
+      "seed": 107,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ac68cb676767cc509",
+      "sha256": "a334ee1a6d2a570706daeb8b470ab3f7befb3573883b53d99add8a078e27e50d"
+    },
+    {
+      "level": 1,
+      "sign": 1,
+      "n": 512,
+      "seed": 131,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a76bae5a4ac64acf0",
+      "sha256": "b29a7ef70e08a218a08d73edc8a3006f41b41e1303da70c3b189bc4a8626417b"
+    },
+    {
+      "level": 1,
+      "sign": -1,
+      "n": 512,
+      "seed": 11,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/aa242ce28a99dc90e",
+      "sha256": "7c4faa5c5b524dd9f09dcd4658f934a3ed9e334d0f099e90ea8db380ec7eab29"
+    },
+    {
+      "level": 1,
+      "sign": -1,
+      "n": 512,
+      "seed": 23,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ad7572a581d291bed",
+      "sha256": "5b0e9500ad161fffe916b1665e692eb8c34c296fd1a0d7a4019b25670fc0b9cb"
+    },
+    {
+      "level": 1,
+      "sign": -1,
+      "n": 512,
+      "seed": 37,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/aa710548fdc823ee2",
+      "sha256": "81a1347e568807bc7cc1f3113217e474ee56c075af0fbbabd44db3d1a94db974"
+    },
+    {
+      "level": 1,
+      "sign": -1,
+      "n": 512,
+      "seed": 53,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a589369ff233a9a54",
+      "sha256": "33b7d026eb3fc16998bd34d648073dc6ed537d656e8634eeaf4193755df2221f"
+    },
+    {
+      "level": 1,
+      "sign": -1,
+      "n": 512,
+      "seed": 71,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a86a5368090ca941c",
+      "sha256": "90fe598451f159d94e92f54d8c30fd52c8c960032ac23282f554be889c09a3c1"
+    },
+    {
+      "level": 1,
+      "sign": -1,
+      "n": 512,
+      "seed": 89,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ac4d5925ec9577f01",
+      "sha256": "0afe1ed9bbd9b73fba4e333c97aec58b413f1e4b375b671105fc4e7fb0aceee8"
+    },
+    {
+      "level": 1,
+      "sign": -1,
+      "n": 512,
+      "seed": 107,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a6898ce82a4175872",
+      "sha256": "3e93842ff305c7e41510217aad28fdd16914b8b7b9a638e9fdd5a5360d006211"
+    },
+    {
+      "level": 1,
+      "sign": -1,
+      "n": 512,
+      "seed": 131,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a85627f326cba36e1",
+      "sha256": "b17c7e8271cb3637fb2aac902d3ccfd8f4c8f60f937536717d86aea9b52702b6"
+    },
+    {
+      "level": 1,
+      "sign": 1,
+      "n": 8192,
+      "seed": 11,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a20a56a563a7df569",
+      "sha256": "af6ae14a364da417c2f88b88850d4078fcde279a97e97eca63ce0df644e8010a"
+    },
+    {
+      "level": 1,
+      "sign": 1,
+      "n": 8192,
+      "seed": 23,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ad36cd78552bc1d0c",
+      "sha256": "d595b39acd818881e7fbb35360d77507113989c1dca840149a5eed42b39b2de7"
+    },
+    {
+      "level": 1,
+      "sign": 1,
+      "n": 8192,
+      "seed": 37,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ad6043b98a339b98d",
+      "sha256": "c4dabe170a7c904973cacaf546defd43e0e1c00940e4bdca81cf57679eebb73f"
+    },
+    {
+      "level": 1,
+      "sign": 1,
+      "n": 8192,
+      "seed": 53,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a2e12b3f4e7c8312f",
+      "sha256": "7686a99bc6e1bbe9f11f7736449bb58b07b4fa17a294d967be5a29ae1c48722c"
+    },
+    {
+      "level": 1,
+      "sign": 1,
+      "n": 8192,
+      "seed": 71,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ae32f6a512127b87",
+      "sha256": "d9d5a8221c42884a1208706f6052eed9c9633e9be5c66356a031d81b04cb83f8"
+    },
+    {
+      "level": 1,
+      "sign": 1,
+      "n": 8192,
+      "seed": 89,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a18bf9b740c6fc590",
+      "sha256": "6d8cee480aa615f0f4c69120fac2c870bb518682f50816883ceda1b35821adcb"
+    },
+    {
+      "level": 1,
+      "sign": 1,
+      "n": 8192,
+      "seed": 107,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a905d322336b737d",
+      "sha256": "9d2b6164ca43dda3c9555e9e4eb30b5c9dd28799807f56906fbce37e580fb739"
+    },
+    {
+      "level": 1,
+      "sign": 1,
+      "n": 8192,
+      "seed": 131,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/af0f67a11dde83370",
+      "sha256": "27b550b9cbcaad09a485182b6fc299a2b4049f671b607bf136f7f36162ce0762"
+    },
+    {
+      "level": 1,
+      "sign": -1,
+      "n": 8192,
+      "seed": 11,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/aca3db78bd63357ea",
+      "sha256": "9c234c0ad41da9f4d6cb3b8713762422462e9beababc56b1acf32dd0af32fcc5"
+    },
+    {
+      "level": 1,
+      "sign": -1,
+      "n": 8192,
+      "seed": 23,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ab87482149a3164c9",
+      "sha256": "bdd99e0731c0718d63e527b394cf82bcebb884cbba69b2c1fad0c8f41035dfde"
+    },
+    {
+      "level": 1,
+      "sign": -1,
+      "n": 8192,
+      "seed": 37,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ab76f9e7a336ecd86",
+      "sha256": "6cfc622766f0a61972f0b5b5b6ea4320b55d42e379c6aa619e36359ca77047be"
+    },
+    {
+      "level": 1,
+      "sign": -1,
+      "n": 8192,
+      "seed": 53,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a2571c39ceaaabcec",
+      "sha256": "7418787336988e83f27ab7a96f9e433c01437a88e8077af50c807f672a2b9a9d"
+    },
+    {
+      "level": 1,
+      "sign": -1,
+      "n": 8192,
+      "seed": 71,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a74268d629d9a24",
+      "sha256": "7051afafe772c5c45ab6e7a4b6ef8e103bffc48e46e7424646c7d7af8bdff0b3"
+    },
+    {
+      "level": 1,
+      "sign": -1,
+      "n": 8192,
+      "seed": 89,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ad981d2d574752645",
+      "sha256": "ecb7fb6c22533c0bc58ff1134f6897df0b91c57cb9a15fc00ac06e2a0292f139"
+    },
+    {
+      "level": 1,
+      "sign": -1,
+      "n": 8192,
+      "seed": 107,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a9e2ad009c488c936",
+      "sha256": "1c266591ab37bc966823f0489f434094b6dd6f0dd3400aaa40abaee71347dfe9"
+    },
+    {
+      "level": 1,
+      "sign": -1,
+      "n": 8192,
+      "seed": 131,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a851f97b33a2c10a5",
+      "sha256": "0c07bd80fcb2d9a46e3b6519b3f0e86e8fac7a2dd7d6ab3bd0979eacced0d846"
+    },
+    {
+      "level": 2,
+      "sign": 1,
+      "n": 512,
+      "seed": 11,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a563d30b876498788",
+      "sha256": "f764b824addbed1cf570ab55ed3df223188e08dc0142d030e8d405f2917d070e"
+    },
+    {
+      "level": 2,
+      "sign": 1,
+      "n": 512,
+      "seed": 23,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a8dddb4dda46fa963",
+      "sha256": "b06f52524a67bdd2f140e5cf4c2ba0228a77f8e7f6b71656b0a67e2461f93209"
+    },
+    {
+      "level": 2,
+      "sign": 1,
+      "n": 512,
+      "seed": 37,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/aac5db69ca708ebe4",
+      "sha256": "4a75c099c1ad88176d4d43386192998a198299d4162cf37e2d2d26ae503b1543"
+    },
+    {
+      "level": 2,
+      "sign": 1,
+      "n": 512,
+      "seed": 53,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/adfd7e29d63aff3de",
+      "sha256": "ba0a2a61d2d57b9c47c05d8eb1d08eba9916d5410e4e58db33b60856ab8a7fb0"
+    },
+    {
+      "level": 2,
+      "sign": 1,
+      "n": 512,
+      "seed": 71,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ae823afc3628bcb56",
+      "sha256": "18ee84b8f8be4a303112be8a66096e206792038c4e6460bdb5b9c471ca3604d4"
+    },
+    {
+      "level": 2,
+      "sign": 1,
+      "n": 512,
+      "seed": 89,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/aa9c05637d022854f",
+      "sha256": "5b81e6568c78a74c02d0391cacbfa7c2834d6e44601338196df2d7570425ca9c"
+    },
+    {
+      "level": 2,
+      "sign": 1,
+      "n": 512,
+      "seed": 107,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/abf4612a5db8548f4",
+      "sha256": "ccd018fb144edc8f110b58064b0f6440799aa569f83e51284a75dab4bfa2875f"
+    },
+    {
+      "level": 2,
+      "sign": 1,
+      "n": 512,
+      "seed": 131,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a74b88fbe95a30faf",
+      "sha256": "b44ffcbbebe95471d45bd404c43046db78d2b76509ab959f17582c7167587da2"
+    },
+    {
+      "level": 2,
+      "sign": -1,
+      "n": 512,
+      "seed": 11,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a492b08e39bbd1aa",
+      "sha256": "5f26c2c0c438908169618e3ce00a4b66a38f526ee3d95ceb63adaca2e08e62a5"
+    },
+    {
+      "level": 2,
+      "sign": -1,
+      "n": 512,
+      "seed": 23,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a5c2e1f639d71e075",
+      "sha256": "3197c651898beb67c1114ff53138cb7faf900b3455aa9e06ce13ab9a14dffd4d"
+    },
+    {
+      "level": 2,
+      "sign": -1,
+      "n": 512,
+      "seed": 37,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/af6a416a3990ad636",
+      "sha256": "90f1837811141259b2690e9045cd777de445c6f8ba981b0697f14d3228d8415d"
+    },
+    {
+      "level": 2,
+      "sign": -1,
+      "n": 512,
+      "seed": 53,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ac4db48021c8a870c",
+      "sha256": "8d5491d3b25331a28194e5fd0fb9ede003a9398df7bdedcafefa40b7e264610d"
+    },
+    {
+      "level": 2,
+      "sign": -1,
+      "n": 512,
+      "seed": 71,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a37adc07f4f454204",
+      "sha256": "18dc5b273d8213db693e008a74adf1fbe342b765ecb67be5f088d60182b55b3a"
+    },
+    {
+      "level": 2,
+      "sign": -1,
+      "n": 512,
+      "seed": 89,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a252bfe8df19e6c01",
+      "sha256": "891147ab5edfb6c06afcb59788741aa8f49b4e2d34896ed4dfe2f3c0f5b29be5"
+    },
+    {
+      "level": 2,
+      "sign": -1,
+      "n": 512,
+      "seed": 107,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a86832207fea124c6",
+      "sha256": "4d91a2484b6a721b9764357f21223632b7fea240c85d0f006a4f528418d1f626"
+    },
+    {
+      "level": 2,
+      "sign": -1,
+      "n": 512,
+      "seed": 131,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ad3e6bdbee15020e1",
+      "sha256": "c220451ba25810f2ca13f815616594a9e2762d183396df9101426bcc5ee3e61d"
+    },
+    {
+      "level": 2,
+      "sign": 1,
+      "n": 2048,
+      "seed": 11,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ab6337e0d8a51fc67",
+      "sha256": "228e708f79be9f35381fae423ef94cad0dd9efa2b80013067150775d6e525460"
+    },
+    {
+      "level": 2,
+      "sign": 1,
+      "n": 2048,
+      "seed": 23,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a4544c1499c38924c",
+      "sha256": "72d40e4075451e5d0a4ed7f6659955d5b49a36469184a4f5eddf2893f3db8cee"
+    },
+    {
+      "level": 2,
+      "sign": 1,
+      "n": 2048,
+      "seed": 37,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a6aace3865ec845e3",
+      "sha256": "492f71dd8051567a2ccc5bf807a61fb729da5921a3af616f8a430615627830ab"
+    },
+    {
+      "level": 2,
+      "sign": 1,
+      "n": 2048,
+      "seed": 53,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/aaf7ff35b97f4de61",
+      "sha256": "87ece701f3d2c5a6682e115309306c11556ae07fcf5330472d5f3d3706f7f4ac"
+    },
+    {
+      "level": 2,
+      "sign": 1,
+      "n": 2048,
+      "seed": 71,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/abb81f8b2c58800f9",
+      "sha256": "e9478c2a0cb6fe52bda86c7c1bd60e7397db8feac4afad7d330093faae3d468c"
+    },
+    {
+      "level": 2,
+      "sign": 1,
+      "n": 2048,
+      "seed": 89,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/abfc0038eb2a0fa70",
+      "sha256": "b2521debf6c720b57f053bf917a758c970f15bb437e6f96eee35d7b524ebba36"
+    },
+    {
+      "level": 2,
+      "sign": 1,
+      "n": 2048,
+      "seed": 107,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a428dbc0c26c99d5b",
+      "sha256": "a045b66f9c8494e47642300eb0aa05a7405ea7f585fc8d7eb85be538a4f4409a"
+    },
+    {
+      "level": 2,
+      "sign": 1,
+      "n": 2048,
+      "seed": 131,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/adee8d29e2507ea28",
+      "sha256": "7a19c11342059d1195baa3e0d7786ded25b9c29b6f8bf35a0121c7fd190a30f9"
+    },
+    {
+      "level": 2,
+      "sign": -1,
+      "n": 2048,
+      "seed": 11,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/abf7b7e18c6c20e6d",
+      "sha256": "9f46e0dc4319f92fd5c44ae06d7b8da12dc77441892b0e5cafa66435d97ecdb3"
+    },
+    {
+      "level": 2,
+      "sign": -1,
+      "n": 2048,
+      "seed": 23,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/aee82324bde9e716a",
+      "sha256": "ec8d26a9d109df7fab3c2134d44c1bd0fb9db1f023cbb07971fda5baedc3f2fe"
+    },
+    {
+      "level": 2,
+      "sign": -1,
+      "n": 2048,
+      "seed": 37,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a4705192df96e68c9",
+      "sha256": "e2747a4291dea050c6b95333a7f11b53a50964a5154df4ef1a8605330b119c80"
+    },
+    {
+      "level": 2,
+      "sign": -1,
+      "n": 2048,
+      "seed": 53,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a2719f65e7e24b9bb",
+      "sha256": "b2da47dae0f89c2bbb863c034f2f8078f700a09536bc26c5aeffc843d444e5cf"
+    },
+    {
+      "level": 2,
+      "sign": -1,
+      "n": 2048,
+      "seed": 71,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a86a35b1ed54dd313",
+      "sha256": "215ea1cf28ba294a73dc82e54edb1312c47829f417a3621fd244e243f494e0a5"
+    },
+    {
+      "level": 2,
+      "sign": -1,
+      "n": 2048,
+      "seed": 89,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/a89a5e090c2f6897e",
+      "sha256": "8d9d568abed3f9cc3f8a49ccb4a9bd3ce65a33908851e874e1689ecbe07fccd5"
+    },
+    {
+      "level": 2,
+      "sign": -1,
+      "n": 2048,
+      "seed": 107,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/abff7b60859a40b01",
+      "sha256": "1c5c5d6ea2638753a77b3d8f2134ca87d055e42710f8c2cad4f45b7fdcac1194"
+    },
+    {
+      "level": 2,
+      "sign": -1,
+      "n": 2048,
+      "seed": 131,
+      "job": "/home/kirill_epyc/campaigns/droxtal_columns_fullauto4_20261027/epyc1_gpu2_parallel2/results/list2_column_L562.3_D165.0_w0.532_theta160_170_incoherent/jobs/ad7f5a056b97e0f36",
+      "sha256": "ff7d73d0a6b241227ad26e7fad4171a54268bbf487588f8d218de8cc5e96369e"
+    }
+  ],
+  "description": "Exact signed production-level replicas restored from source graph; not the low-N common-prefix control and not a converged reference."
+}

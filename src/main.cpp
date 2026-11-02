@@ -171,6 +171,7 @@ void ApplyPOOutputOptions(const ArgPP &args, HandlerPO *handler, double wave)
     if (!handler)
         return;
     handler->SetFullOnly(!args.IsCatched("noshadow_output"));
+    handler->m_writeTextReports = !args.IsCatched("no_text_reports");
     handler->m_otPhaseAverage = args.IsCatched("ot_phase_avg");
     if (args.IsCatched("ot_phase_shift"))
         handler->m_otFarReferencePath =
@@ -2132,6 +2133,7 @@ int RunCalculation(int argc, const char* argv[])
             ApplyAbsorptionPointOption(args, &handler);
             ApplyBeamCutoffOptions(args, &handler);
             handler.m_keepIntegralRayBudget = true;
+            handler.m_writeTextReports = !args.IsCatched("no_text_reports");
             tracer.SetHandler(&handler);
             tracer.TraceExtinctionOnly(args.GetIntValue("hammersley", 0), diameters);
         }
@@ -3607,6 +3609,7 @@ int RunCalculation(int argc, const char* argv[])
         tracer.m_summary = additionalSummary;
         ScatteringRange grid = SetConus(args);
         handler->fullautoOutput = args.IsCatched("go_fullauto_worker");
+        handler->m_writeTextReports = !args.IsCatched("no_text_reports");
         handler->isCoh = !args.IsCatched("incoh");
             handler->m_legacySign = args.IsCatched("legacy_sign");
         ApplyNphiOverride(args, grid);

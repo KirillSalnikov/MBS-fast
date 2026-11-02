@@ -732,6 +732,7 @@ struct Engine {
     bool local=true,ratios=true,phiRecheck=true,polarControls=true,finalChecks=true,finalAudit=true,physicsAudit=false;
     std::vector<std::array<Mueller,2>> polarWeights;
     double lastRatio=0,lastAnalyticError=0,lastCombined=-1,lastIndependentCombined=-1;bool independentPassed=false,independentNeedsSampling=true;
+    std::string angularSamplingStatus=",\"angular_sampling_checked\":false";
     int fixedPhi=0;std::string requestedMeanCache;bool coherent=true,fixedPipeline=false,fixedBlock=false,fixedWarp=false;
     // Sparse exceptions to the current phi rule. Each theta has one complete
     // estimator (all depths and seeds); never average unlike phi prefixes.
@@ -1091,7 +1092,7 @@ struct Engine {
             <<",\"execution_budget\":"<<((resourcePolicy=="auto"||config.useGpu)?eps/1024:0)<<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"effective_analytic_mean_threads\":"<<(dispatchThreads?dispatchThreads:analyticMeanThreads)<<",\"angular_audit_policy\":"<<Quoted(angularAuditPolicy)<<",\"short_packet_policy\":"<<Quoted(shortPacketPolicy)<<",\"dispatch_threads\":"<<dispatchThreads<<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
             <<",\"rotation_beta_factor\":"<<rotationBeta<<",\"rotation_gamma_factor\":"<<rotationGamma<<",\"rotation_budget\":"<<((rotationBeta>1||rotationGamma>1)?eps/256:0)
             <<",\"cutoff_estimator\":"<<Quoted(balancedCorrection?"balanced_with_paired_off_correction":"direct")<<",\"cutoff_correction_fraction\":"<<(balancedCorrection?.125:0)<<",\"selected_cutoff\":"<<Quoted(selectedCutoff)<<",\"cutoff_budget\":"<<(selectedCutoff!="requested"&&selectedCutoff!="off"?eps/8:0)<<",\"max_cutoff_residual95\":"<<cutoffError
-            <<",\"coherent\":"<<(coherent?"true":"false")<<",\"fixed_phi\":"<<fixedPhi<<",\"scope\":\"eight-seed pointwise intervals; interpolation guards on requested grid; mirror paired pilot when enabled; current target physics; final audit policy is reported separately; no global simultaneous confidence claim\"}\n";
+            <<angularSamplingStatus<<",\"coherent\":"<<(coherent?"true":"false")<<",\"fixed_phi\":"<<fixedPhi<<",\"scope\":\"eight-seed pointwise intervals; interpolation guards on requested grid; mirror paired pilot when enabled; current target physics; final audit policy is reported separately; no global simultaneous confidence claim\"}\n";
         Record(root+"/fullauto_status.json",s.str());
         if(status=="converged")Record(root+"/final_parameters.json",Parameters(s.str()));
         std::cout<<"fullauto "<<status<<" round="<<round<<" theta="<<nodes;
@@ -1430,7 +1431,14 @@ struct Engine {
     void ExecutePrepared(std::vector<Job>& result,std::vector<std::vector<std::string>>& commands,const std::vector<size_t>& todo,const std::function<void(size_t)>& onComplete={}){
         if(balancedCorrection&&!correctionExecuting&&ExecuteCorrected(result,commands,todo,onComplete))return;
         Require(!forbidNativeWork||todo.empty(),"read-only probe would launch native optical work"+(todo.empty()?std::string():std::string(" N=")+Number(result[todo[0]].count)+" seed="+Number(result[todo[0]].seed)+" depth="+Number(result[todo[0]].depth)+" rows="+Number(result[todo[0]].inputAngles.size())+" execution="+result[todo[0]].executionHash+" folder="+result[todo[0]].folder));
-        for(size_t index:todo){ApplyDispatchThreads(result[index],commands[index]);ApplyShortPacketChunk(result[index],commands[index]);}
+        for(size_t index:todo){
+            // Presentation-only: add after cache identities are formed. Keep
+            // the real recipe in command.args for forked and persistent jobs.
+            auto& command=commands[index];
+            if(std::find(command.begin(),command.end(),"--no-text-reports")==command.end())
+                command.push_back("--no-text-reports");
+            ApplyDispatchThreads(result[index],command);ApplyShortPacketChunk(result[index],command);
+        }
         if(PersistentEnabled()){ExecutePersistent(result,commands,todo,onComplete);return;}
         for(auto& service:services)service.reset();
         WorkerCleanup cleanup;DispatchProgressScope progress(*this,todo.size());
@@ -2218,6 +2226,11 @@ int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],do
     controller->ConfigureIndex(!Exists(identity));
     if(Exists(identity))Require(Read(identity)==controller->signature+"\n","resume inputs/binary/environment changed; choose a new output directory");else Atomic(identity,controller->signature+"\n");
     controller->RecordFinalChecksPolicy();
+    controller->Record(controller->root+"/worker_output_policy.json",
+        "{\"policy\":\"no-duplicate-worker-text-v1\",\"new_workers_only\":true,"
+        "\"omitted\":[\"*_log.txt\",\"*_out.txt\"],\"stdout_preserved\":true,"
+        "\"matrices_and_integrals_preserved\":true,\"checkpoint_graph_preserved\":true,"
+        "\"existing_files_deleted\":false}");
     // A legacy audit may have committed native blocks but never assembled or
     // inspected its holdout. Preserve that reserved namespace during the
     // verified controller upgrade, only while the production sources agree.

@@ -2099,7 +2099,8 @@ static void WriteAveragedRowsFile(const std::string &destName,
                                   double cExtOt,
                                   bool hasExtinctionOt,
                                   bool hasAbsorption,
-                                  std::string &integralSummary)
+                                  std::string &integralSummary,
+                                  bool writeTextReports)
 {
     std::ofstream outFile(destName + ".dat", std::ios::out);
     if (!outFile.is_open())
@@ -2143,7 +2144,7 @@ static void WriteAveragedRowsFile(const std::string &destName,
     const std::string log = FormatIntegralCharacteristicsLog(
         characteristics, label);
     WriteIntegralCharacteristicsTsv(destName, label, characteristics);
-    AppendIntegralCharacteristicsLog(destName, log);
+    if (writeTextReports) AppendIntegralCharacteristicsLog(destName, log);
     std::cerr << log;
     if (label == "full")
         integralSummary = log;
@@ -5814,7 +5815,7 @@ void TracerPOTotal::TraceExtinctionOnly(int nOrient, const std::vector<double> &
         << "Max output beam count=" << *std::max_element(beamCounts.begin(),beamCounts.end())
         << "; elapsed seconds=" << seconds << "\n"
         << m_scattering->TraceCutoffReport() << handler->BeamCutoffReport();
-    AppendIntegralCharacteristicsLog(m_resultDirName,log.str());
+    if (TextReportsEnabled()) AppendIntegralCharacteristicsLog(m_resultDirName,log.str());
     std::cout << log.str() << "Saved " << filename << std::endl;
 }
 
@@ -8444,7 +8445,7 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
                               handlerPO->m_extinctionCrossSectionOt,
                               handlerPO->m_hasExtinctionOt,
                               handlerPO->HasAbsorptionAccounting(),
-                              handlerPO->m_integralSummary);
+                              handlerPO->m_integralSummary, handlerPO->m_writeTextReports);
         double finalMeanError = 0.0;
         if (!seedRows.empty())
         {
@@ -8461,7 +8462,7 @@ double TracerPOTotal::TraceFromSobolVariablePhi(int nOrient, double betaSym,
                                   m_incomingEnergy,
                                   handlerPO->m_extinctionCrossSectionOt,
                                   handlerPO->m_hasExtinctionOt,
-                                  false, dummySummary);
+                                  false, dummySummary, handlerPO->m_writeTextReports);
         }
         OutputStatisticsPO(timer, totalOrientationWork, m_resultDirName);
         return finalMeanError;

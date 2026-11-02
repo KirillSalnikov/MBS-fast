@@ -221,9 +221,14 @@ void Tracer::OutputProgress(int nOrientation, long long count,
     }
 }
 
+bool Tracer::TextReportsEnabled() const
+{
+    return !m_handler || m_handler->m_writeTextReports;
+}
+
 void Tracer::AppendTextLog(const std::string &text) const
 {
-    if (m_resultDirName.empty())
+    if (!TextReportsEnabled() || m_resultDirName.empty())
         return;
 
     ofstream out(m_resultDirName + "_log.txt", ios::app);
@@ -274,16 +279,19 @@ void Tracer::OutputStatisticsPO(CalcTimer &timer, long long orNumber, const stri
     //		m_summary += "\n\nWARNING! NAN values occured. See 'log.txt'";
     //	}
 
+    if (TextReportsEnabled())
+    {
 #ifdef _WIN32
-    ofstream out(path + "\\out.txt", ios::out);
+        ofstream out(path + "\\out.txt", ios::out);
 #else
-    ofstream out(path + "_out.txt", ios::out);
+        ofstream out(path + "_out.txt", ios::out);
 #endif
 
-    out << m_summary;
-    if (!m_handler->m_integralSummary.empty())
-        out << "\n" << m_handler->m_integralSummary;
-    out.close();
+        out << m_summary;
+        if (!m_handler->m_integralSummary.empty())
+            out << "\n" << m_handler->m_integralSummary;
+        out.close();
+    }
 
     AppendTextLog("\n===== RUN SUMMARY =====\n" + m_summary + "\n");
 
@@ -381,6 +389,7 @@ void Tracer::OutputStartTime(CalcTimer &timer)
     cout << "OpenMP threads: " << nThreads << endl;
     cout << "Prog.\tDone/Total\tTime\tBeams"<< endl;
 
+    if (!TextReportsEnabled()) return;
     ofstream out(m_resultDirName + "_log.txt", ios::out);
     if (out.is_open())
     {

@@ -424,6 +424,7 @@ public:
     double m_otPingDistance = 0.0;
     bool m_otPhaseAverage = false;
     std::string m_integralSummary;
+    bool m_writeTextReports = true; // Human-readable duplicates; numeric products stay enabled.
 
     std::ofstream *betaFile = nullptr;
     int m_fixedItr = -1;

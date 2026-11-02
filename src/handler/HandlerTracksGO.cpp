@@ -71,7 +71,7 @@ void HandlerTracksGO::WriteMatricesToFile(std::string &destName, double nrg)
     const std::string log = FormatIntegralCharacteristicsLog(
         characteristics, "full");
     WriteIntegralCharacteristicsTsv(destName, "full", characteristics);
-    AppendIntegralCharacteristicsLog(destName, log);
+    if (m_writeTextReports) AppendIntegralCharacteristicsLog(destName, log);
     std::cerr << log;
     m_integralSummary = log;
 }

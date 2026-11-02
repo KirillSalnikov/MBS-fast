@@ -115,7 +115,7 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
     const std::string log = FormatIntegralCharacteristicsLog(
         characteristics, label);
     WriteIntegralCharacteristicsTsv(destName, label, characteristics);
-    AppendIntegralCharacteristicsLog(destName, log);
+    if (m_writeTextReports) AppendIntegralCharacteristicsLog(destName, log);
     std::cerr << log;
     if (label == "full")
         m_integralSummary = log;
