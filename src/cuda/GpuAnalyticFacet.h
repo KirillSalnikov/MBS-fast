@@ -16,6 +16,13 @@ struct AnalyticGpuModel
     double indexReal,indexImag,wave,circleRadius;
     int shadowMode;
 };
+// FP64 radial preparation only; the small-z core and convergence checks stay
+// on CPU. A bounded workspace is used per host thread/device. False requests
+// an exact CPU fallback and never authorizes an approximate mean.
+int AnalyticMeanGpuDevice();
+bool EvaluateAnalyticMeanTailGpu(int device,int degree,double step,size_t first,size_t end,
+    const std::vector<double>&factor,double z0,double offset,double fluxOffset,
+    double*values,double*derivatives,std::string*error=nullptr);
 bool EvaluateAnalyticFacetGpu(const AnalyticGpuModel &model,
     // Each frame contains transverse azimuth axes followed by the direction
     // toward the source, all in particle coordinates. Incidence is arbitrary;

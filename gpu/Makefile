@@ -121,6 +121,10 @@ DEPS := $(OBJECTS:.o=.d)
 
 all: $(TARGET)
 
+# Preserve the scalar primitive's operation order in the FP64 analytic mean,
+# independently of the diffraction kernel's precision/trigonometry profile.
+$(OBJDIR)/src/cuda/GpuAnalyticMean.o: NVCCFLAGS += --fmad=false
+
 cuda_check:
 	@$(NVCC) --version >/dev/null 2>&1 || { \
 		echo "CUDA compiler not found: $(NVCC)" >&2; \
