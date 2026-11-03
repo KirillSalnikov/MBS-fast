@@ -90,8 +90,8 @@ bool VerifiedCompatibleExecutable(const std::string& executable,const std::strin
     const auto text=Read(path);const auto split=text.find('\n');
     Require(split!=std::string::npos&&Hash(text.substr(split+1))==text.substr(0,split),"native compatibility receipt changed");
     std::istringstream rows(text.substr(split+1));std::string magic,line;
-    Require(bool(std::getline(rows,magic))&&(magic=="FULLAUTO_NATIVE_COMPATIBILITY_V1"||magic=="FULLAUTO_NATIVE_COMPATIBILITY_DS_V2"),"unsupported native compatibility receipt");
-    if(requireDoubleSingle&&magic!="FULLAUTO_NATIVE_COMPATIBILITY_DS_V2")return false;
+    Require(bool(std::getline(rows,magic))&&(magic=="FULLAUTO_NATIVE_COMPATIBILITY_V1"||magic=="FULLAUTO_NATIVE_COMPATIBILITY_DS_NONABS_V2"),"unsupported native compatibility receipt");
+    if(requireDoubleSingle&&magic!="FULLAUTO_NATIVE_COMPATIBILITY_DS_NONABS_V2")return false;
     bool matched=false;
     while(std::getline(rows,line)){
         if(line.empty())continue;
@@ -1032,7 +1032,8 @@ struct Engine {
             const size_t oldLine=oldVersion.find('\n'),newLine=newVersion.find('\n');
             Require(oldLine!=std::string::npos&&(oldVersion.substr(0,oldLine)=="MBS-fast 8ae9e85"||oldVersion.substr(0,oldLine)=="MBS-fast 89f83a3"||oldVersion.substr(0,oldLine)=="MBS-fast 336ef78"||oldVersion.substr(0,oldLine)=="MBS-fast ef50662"||oldVersion.substr(0,oldLine)=="MBS-fast a866f0d"||oldVersion.substr(0,oldLine)=="MBS-fast bbe6cea"||oldVersion.substr(0,oldLine)=="MBS-fast 3522122"||oldVersion.substr(0,oldLine)=="MBS-fast 0ee3a83"||oldVersion.substr(0,oldLine)=="MBS-fast e26308f"||VerifiedCompatibleExecutable(exe,compatibleHash,binaryHash)),
                 "compatible resume requires a known origin or a native-compatibility.tsv receipt for these exact binaries");
-            const bool certifiedPhaseBridge=newLine!=std::string::npos&&oldLine!=std::string::npos
+            const bool certifiedPhaseBridge=config.refractiveImag==0.0
+                &&newLine!=std::string::npos&&oldLine!=std::string::npos
                 &&FullAutoDoubleSingleProfileBridge(oldVersion.substr(oldLine),newVersion.substr(newLine))
                 &&VerifiedCompatibleExecutable(exe,compatibleHash,binaryHash,true);
             Require(newLine!=std::string::npos&&(oldVersion.substr(oldLine)==newVersion.substr(newLine)||certifiedPhaseBridge),
