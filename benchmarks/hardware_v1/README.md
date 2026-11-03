@@ -148,3 +148,6 @@ Each variant gets a warmup and three fresh-process measurements. All 181 angles
 and 16 Mueller entries are checked against the frozen reference. Overrides,
 chunk sizes, commands and rejected variants remain in its JSON. These tuning
 experiments are separate from the fixed hardware-ranking protocol.
+
+
+[RTX 5080 optimization checks (2026-11-03)](results/rtx5080_optimization_20261103/README.md)

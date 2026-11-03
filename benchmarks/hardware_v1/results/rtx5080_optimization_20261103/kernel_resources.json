@@ -1,0 +1,214 @@
+{
+  "method": "Static cuobjdump resource usage; not measured runtime occupancy or bandwidth",
+  "architecture": "sm_120",
+  "profiles": {
+    "mbs-po-gpu-fp32": {
+      "binary": "/home/kika/.local/opt/mbs-fast-rtx5080-opt/build/004837c0f876c279/src/gpu/bin/mbs_po_gpu_float",
+      "sha256": "ccf7e67c37549744534a732d947d1cfcf88a73235b51e80d32b0e3ce746fad9b",
+      "functions": [
+        {
+          "name": "void diffraction_grid_mueller_full48_kernel<false, false>(GpuCompactBeam<4> const*, int const*, int const*, GpuCompactBeam<8> const*, int const*, float const*, float const*, float const*, float const*, float const*, float const*, int, int, int, float, float, float, float, float, float, float, float, int, float*)",
+          "symbol": "_Z38diffraction_grid_mueller_full48_kernelILb0ELb0EEvPK14GpuCompactBeamILi4EEPKiS5_PKS0_ILi8EES5_PKfSA_SA_SA_SA_SA_iiiffffffffiPf",
+          "resources": {
+            "REG": 96,
+            "STACK": 112,
+            "SHARED": 0,
+            "LOCAL": 0
+          }
+        },
+        {
+          "name": "void diffraction_grid_mueller_full48_kernel<false, true>(GpuCompactBeam<4> const*, int const*, int const*, GpuCompactBeam<8> const*, int const*, float const*, float const*, float const*, float const*, float const*, float const*, int, int, int, float, float, float, float, float, float, float, float, int, float*)",
+          "symbol": "_Z38diffraction_grid_mueller_full48_kernelILb0ELb1EEvPK14GpuCompactBeamILi4EEPKiS5_PKS0_ILi8EES5_PKfSA_SA_SA_SA_SA_iiiffffffffiPf",
+          "resources": {
+            "REG": 105,
+            "STACK": 112,
+            "SHARED": 0,
+            "LOCAL": 0
+          }
+        },
+        {
+          "name": "void diffraction_grid_mueller_full48_kernel<true, false>(GpuCompactBeam<4> const*, int const*, int const*, GpuCompactBeam<8> const*, int const*, float const*, float const*, float const*, float const*, float const*, float const*, int, int, int, float, float, float, float, float, float, float, float, int, float*)",
+          "symbol": "_Z38diffraction_grid_mueller_full48_kernelILb1ELb0EEvPK14GpuCompactBeamILi4EEPKiS5_PKS0_ILi8EES5_PKfSA_SA_SA_SA_SA_iiiffffffffiPf",
+          "resources": {
+            "REG": 96,
+            "STACK": 112,
+            "SHARED": 0,
+            "LOCAL": 0
+          }
+        },
+        {
+          "name": "void diffraction_grid_mueller_full48_kernel<true, true>(GpuCompactBeam<4> const*, int const*, int const*, GpuCompactBeam<8> const*, int const*, float const*, float const*, float const*, float const*, float const*, float const*, int, int, int, float, float, float, float, float, float, float, float, int, float*)",
+          "symbol": "_Z38diffraction_grid_mueller_full48_kernelILb1ELb1EEvPK14GpuCompactBeamILi4EEPKiS5_PKS0_ILi8EES5_PKfSA_SA_SA_SA_SA_iiiffffffffiPf",
+          "resources": {
+            "REG": 102,
+            "STACK": 112,
+            "SHARED": 0,
+            "LOCAL": 0
+          }
+        }
+      ],
+      "occupancy_estimate": [
+        {
+          "block": 64,
+          "active_blocks_per_sm": 8,
+          "resident_threads": 512,
+          "max_threads_per_sm": 1536,
+          "theoretical_occupancy": 0.3333333333333333
+        },
+        {
+          "block": 128,
+          "active_blocks_per_sm": 4,
+          "resident_threads": 512,
+          "max_threads_per_sm": 1536,
+          "theoretical_occupancy": 0.3333333333333333
+        },
+        {
+          "block": 256,
+          "active_blocks_per_sm": 2,
+          "resident_threads": 512,
+          "max_threads_per_sm": 1536,
+          "theoretical_occupancy": 0.3333333333333333
+        }
+      ]
+    },
+    "mbs-po-gpu-fp32-reduced": {
+      "binary": "/home/kika/.local/opt/mbs-fast-rtx5080-opt/build/004837c0f876c279/src/gpu/bin/mbs_po_gpu_float_reduced",
+      "sha256": "9b4d2617363096d0b590067fded85e003f30ce2c323aa1a25b5e33b17cd7a917",
+      "functions": [
+        {
+          "name": "void diffraction_grid_mueller_full48_kernel<false, false>(GpuCompactBeam<4> const*, int const*, int const*, GpuCompactBeam<8> const*, int const*, float const*, float const*, float const*, float const*, float const*, float const*, int, int, int, float, float, float, float, float, float, float, float, int, float*)",
+          "symbol": "_Z38diffraction_grid_mueller_full48_kernelILb0ELb0EEvPK14GpuCompactBeamILi4EEPKiS5_PKS0_ILi8EES5_PKfSA_SA_SA_SA_SA_iiiffffffffiPf",
+          "resources": {
+            "REG": 112,
+            "STACK": 144,
+            "SHARED": 0,
+            "LOCAL": 0
+          }
+        },
+        {
+          "name": "void diffraction_grid_mueller_full48_kernel<false, true>(GpuCompactBeam<4> const*, int const*, int const*, GpuCompactBeam<8> const*, int const*, float const*, float const*, float const*, float const*, float const*, float const*, int, int, int, float, float, float, float, float, float, float, float, int, float*)",
+          "symbol": "_Z38diffraction_grid_mueller_full48_kernelILb0ELb1EEvPK14GpuCompactBeamILi4EEPKiS5_PKS0_ILi8EES5_PKfSA_SA_SA_SA_SA_iiiffffffffiPf",
+          "resources": {
+            "REG": 110,
+            "STACK": 144,
+            "SHARED": 0,
+            "LOCAL": 0
+          }
+        },
+        {
+          "name": "void diffraction_grid_mueller_full48_kernel<true, false>(GpuCompactBeam<4> const*, int const*, int const*, GpuCompactBeam<8> const*, int const*, float const*, float const*, float const*, float const*, float const*, float const*, int, int, int, float, float, float, float, float, float, float, float, int, float*)",
+          "symbol": "_Z38diffraction_grid_mueller_full48_kernelILb1ELb0EEvPK14GpuCompactBeamILi4EEPKiS5_PKS0_ILi8EES5_PKfSA_SA_SA_SA_SA_iiiffffffffiPf",
+          "resources": {
+            "REG": 110,
+            "STACK": 144,
+            "SHARED": 0,
+            "LOCAL": 0
+          }
+        },
+        {
+          "name": "void diffraction_grid_mueller_full48_kernel<true, true>(GpuCompactBeam<4> const*, int const*, int const*, GpuCompactBeam<8> const*, int const*, float const*, float const*, float const*, float const*, float const*, float const*, int, int, int, float, float, float, float, float, float, float, float, int, float*)",
+          "symbol": "_Z38diffraction_grid_mueller_full48_kernelILb1ELb1EEvPK14GpuCompactBeamILi4EEPKiS5_PKS0_ILi8EES5_PKfSA_SA_SA_SA_SA_iiiffffffffiPf",
+          "resources": {
+            "REG": 105,
+            "STACK": 144,
+            "SHARED": 0,
+            "LOCAL": 0
+          }
+        }
+      ],
+      "occupancy_estimate": [
+        {
+          "block": 64,
+          "active_blocks_per_sm": 8,
+          "resident_threads": 512,
+          "max_threads_per_sm": 1536,
+          "theoretical_occupancy": 0.3333333333333333
+        },
+        {
+          "block": 128,
+          "active_blocks_per_sm": 4,
+          "resident_threads": 512,
+          "max_threads_per_sm": 1536,
+          "theoretical_occupancy": 0.3333333333333333
+        },
+        {
+          "block": 256,
+          "active_blocks_per_sm": 2,
+          "resident_threads": 512,
+          "max_threads_per_sm": 1536,
+          "theoretical_occupancy": 0.3333333333333333
+        }
+      ]
+    },
+    "mbs-po-gpu-fp64": {
+      "binary": "/home/kika/.local/opt/mbs-fast-rtx5080-opt/build/004837c0f876c279/src/gpu/bin/mbs_po_gpu_double",
+      "sha256": "bf4a431b4d1b7bf8652ab935d12492897ace4ae98959eab3de19c7747621688d",
+      "functions": [
+        {
+          "name": "void diffraction_grid_mueller_full48_kernel<false, false>(GpuCompactBeam<4> const*, int const*, int const*, GpuCompactBeam<8> const*, int const*, double const*, double const*, double const*, double const*, double const*, double const*, int, int, int, double, double, double, double, double, double, double, double, int, double*)",
+          "symbol": "_Z38diffraction_grid_mueller_full48_kernelILb0ELb0EEvPK14GpuCompactBeamILi4EEPKiS5_PKS0_ILi8EES5_PKdSA_SA_SA_SA_SA_iiiddddddddiPd",
+          "resources": {
+            "REG": 142,
+            "STACK": 176,
+            "SHARED": 0,
+            "LOCAL": 0
+          }
+        },
+        {
+          "name": "void diffraction_grid_mueller_full48_kernel<false, true>(GpuCompactBeam<4> const*, int const*, int const*, GpuCompactBeam<8> const*, int const*, double const*, double const*, double const*, double const*, double const*, double const*, int, int, int, double, double, double, double, double, double, double, double, int, double*)",
+          "symbol": "_Z38diffraction_grid_mueller_full48_kernelILb0ELb1EEvPK14GpuCompactBeamILi4EEPKiS5_PKS0_ILi8EES5_PKdSA_SA_SA_SA_SA_iiiddddddddiPd",
+          "resources": {
+            "REG": 142,
+            "STACK": 176,
+            "SHARED": 0,
+            "LOCAL": 0
+          }
+        },
+        {
+          "name": "void diffraction_grid_mueller_full48_kernel<true, false>(GpuCompactBeam<4> const*, int const*, int const*, GpuCompactBeam<8> const*, int const*, double const*, double const*, double const*, double const*, double const*, double const*, int, int, int, double, double, double, double, double, double, double, double, int, double*)",
+          "symbol": "_Z38diffraction_grid_mueller_full48_kernelILb1ELb0EEvPK14GpuCompactBeamILi4EEPKiS5_PKS0_ILi8EES5_PKdSA_SA_SA_SA_SA_iiiddddddddiPd",
+          "resources": {
+            "REG": 140,
+            "STACK": 176,
+            "SHARED": 0,
+            "LOCAL": 0
+          }
+        },
+        {
+          "name": "void diffraction_grid_mueller_full48_kernel<true, true>(GpuCompactBeam<4> const*, int const*, int const*, GpuCompactBeam<8> const*, int const*, double const*, double const*, double const*, double const*, double const*, double const*, int, int, int, double, double, double, double, double, double, double, double, int, double*)",
+          "symbol": "_Z38diffraction_grid_mueller_full48_kernelILb1ELb1EEvPK14GpuCompactBeamILi4EEPKiS5_PKS0_ILi8EES5_PKdSA_SA_SA_SA_SA_iiiddddddddiPd",
+          "resources": {
+            "REG": 140,
+            "STACK": 176,
+            "SHARED": 0,
+            "LOCAL": 0
+          }
+        }
+      ],
+      "occupancy_estimate": [
+        {
+          "block": 64,
+          "active_blocks_per_sm": 6,
+          "resident_threads": 384,
+          "max_threads_per_sm": 1536,
+          "theoretical_occupancy": 0.25
+        },
+        {
+          "block": 128,
+          "active_blocks_per_sm": 3,
+          "resident_threads": 384,
+          "max_threads_per_sm": 1536,
+          "theoretical_occupancy": 0.25
+        },
+        {
+          "block": 256,
+          "active_blocks_per_sm": 1,
+          "resident_threads": 256,
+          "max_threads_per_sm": 1536,
+          "theoretical_occupancy": 0.16666666666666666
+        }
+      ]
+    }
+  },
+  "occupancy_note": "CUDA driver occupancy API for full48<true,true> with zero dynamic shared memory; resource ceiling, not measured achieved occupancy or bandwidth"
+}
