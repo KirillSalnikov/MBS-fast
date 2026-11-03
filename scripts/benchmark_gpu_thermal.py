@@ -2,8 +2,10 @@
 """Minute-scale MBS workload with excluded thermal warmup and GPU-bound gates."""
 import argparse
 import json
+import os
 import re
 import statistics
+import threading
 import time
 from pathlib import Path
 import benchmark_hardware as b
@@ -43,7 +45,33 @@ def main():
                 cases=[],passed=False)
     def invoke(label):
         directory=a.output/label;command=b.command_for(case,build,a.profile,a.threads,directory)
-        run=b.timed_process(command,env,directory,a.device,a.timeout)
+        guard=[];stop=threading.Event()
+        def monitor_processes():
+            while not stop.is_set():
+                value=b.capture([b.smi_path(),'-i',str(a.device),'--query-compute-apps=pid','--format=csv,noheader,nounits'])
+                entry=dict(time=time.time(),processes=[],forbidden=[])
+                if value is None:entry['error']='GPU compute process query unavailable'
+                for token in (value or '').splitlines():
+                    pid=token.strip()
+                    if not pid.isdigit():
+                        entry['error']='Unrecognized GPU process query output'
+                        continue
+                    try:
+                        status=Path('/proc/'+pid+'/stat').read_text().split()
+                        executable=str(Path('/proc/'+pid+'/exe').resolve())
+                        ours=executable==build['native_binary'] and int(status[3])==os.getpid()
+                        entry['processes'].append(dict(pid=int(pid),state=status[2],start_ticks=status[21],benchmark=ours))
+                        if not ours:entry['forbidden'].append(int(pid))
+                    except FileNotFoundError:
+                        continue
+                guard.append(entry);stop.wait(1)
+        thread=threading.Thread(target=monitor_processes,daemon=True);thread.start()
+        try:run=b.timed_process(command,env,directory,a.device,a.timeout)
+        finally:stop.set();thread.join(timeout=35)
+        b.write(directory/'compute_process_guard.json',guard)
+        if not guard or any(v.get('error') or v['forbidden'] for v in guard):
+            raise RuntimeError('Concurrent/unidentified GPU compute process; hardware score rejected')
+        run['compute_process_guard']=guard
         matrix,metrics,work=b.read_result(case,directory,a.profile)
         grids=set(re.findall(r'nAz=(\d+) nZen=(\d+)',(directory/'stdout.log').read_text()))
         if grids!={('2048','180')}:raise ValueError('Native angular GPU work does not match the frozen case')
