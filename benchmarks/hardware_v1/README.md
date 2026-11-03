@@ -14,6 +14,8 @@ and provenance in `~/.local/opt/mbs-fast` or `~/.local/opt/bem-cpp`.
 python3 scripts/benchmark_hardware.py run --profile gpu-fp32 --output runs/hw_mixed
 # MBS: FP64 GPU or CPU/OpenMP, same fixed optical workload
 python3 scripts/benchmark_hardware.py run --profile gpu-fp64 --output runs/hw_fp64
+# Optional profile, built by install_rtx50.py --with-reduced-phase
+python3 scripts/benchmark_hardware.py run --profile gpu-fp32-reduced --output runs/hw_reduced
 python3 scripts/benchmark_hardware.py run --profile cpu --output runs/hw_cpu
 
 # BEM-CPP checkout: native mixed-precision GPU and complete T/SO(3) pipeline
@@ -103,7 +105,7 @@ the full matrix also has an L2 gate. Limits are:
 
 | Profile | Maximum scaled error | Relative L2 |
 |---|---:|---:|
-| MBS GPU FP32 | 2e-4 | 5e-5 |
+| MBS GPU FP32 / explicit FP32 range-reduced trigonometry | 2e-4 | 5e-5 |
 | MBS GPU FP64 / CPU | 1e-6 | 1e-7 |
 | BEM mixed | 5e-3 | 1e-3 |
 
@@ -127,3 +129,22 @@ checkpoints and intermediate run directories are intentionally not committed.
 
 
 [Measured RTX 5080 baseline (2026-11-03)](results/rtx5080_20261103/README.md)
+
+
+The optional `gpu-fp32-reduced` profile uses the **original frozen FP64 curve**
+as its reference. The range reducer and trigonometry mode are explicit in the
+native version and JSON. Substituting reduced trigonometry into a precise
+profile is rejected; cross-profile timing ratios are precision-mode comparisons,
+not hardware comparisons. Default FP32 and FP64 profiles keep FP64 trigonometry.
+
+For a validated exploration of block sizes, thread layouts and orientation
+chunks without changing program defaults:
+
+```bash
+python3 scripts/tune_cuda_launch.py --profile gpu-fp32 --output runs/launch_tuning
+```
+
+Each variant gets a warmup and three fresh-process measurements. All 181 angles
+and 16 Mueller entries are checked against the frozen reference. Overrides,
+chunk sizes, commands and rejected variants remain in its JSON. These tuning
+experiments are separate from the fixed hardware-ranking protocol.

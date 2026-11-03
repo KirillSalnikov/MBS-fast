@@ -53,6 +53,20 @@ It enables native CPU instructions, host LTO, native `sm_120`, and preserves
 FP64 phase construction/trigonometry. Fast math and reduced/consumer phase
 profiles are not silently enabled.
 
+An additional MBS profile is available explicitly:
+
+```bash
+python3 scripts/install_rtx50.py --cuda-version 13.4.3 --with-reduced-phase
+~/.local/opt/mbs-fast/bin/mbs-po-gpu-fp32-reduced --version
+```
+
+This adds `mbs-po-gpu-fp32-reduced` alongside the three original profiles.
+It retains FP64 geometry/phase construction, reduces phase arguments in FP64,
+then uses FP32 trigonometry within the tested range. Larger arguments and
+sensitive branches retain FP64 trigonometry. It does not enable `--use_fast_math`
+and does not select this mode automatically. Its numerical/performance results
+are documented under `benchmarks/hardware_v1/results/rtx5080_optimization_20261103/`.
+
 BEM installs the mixed-precision Muller solver, T-matrix FMM server, CPU dense
 reference, and FP64/FP32 analytic SO(3) tools. CUDA compilation uses C++17 for
 current CCCL and the build handles the CUDA 13 managed-memory advice API.
