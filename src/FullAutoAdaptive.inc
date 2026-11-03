@@ -684,6 +684,7 @@ bool PhysicsAudit(Engine& e,const AdaptiveState& state,const std::vector<size_t>
 }
 #include "FullAutoLevelStability.inc"
 #include "FullAutoResumeRound.inc"
+#include "FullAutoPositiveSampling.inc"
 int RunAdaptive(Engine& e){
     const auto depths=AdaptiveDepths(e);
     AdaptiveState state;state.counts=Budgets(depths.size(),std::vector<int>(e.theta.size(),e.minimum));state.counts[0].assign(e.theta.size(),e.initial);
@@ -751,7 +752,11 @@ int RunAdaptive(Engine& e){
         // stability within this round; a new round/resume gets a fresh scope.
         ValidationBatch roundValidation("one adaptive round");
         AdaptiveData stage;Samples data;Statistics stats;
-        try{e.VerifyDepthSharing(WorkingGrid(e,ids));stage=EvaluateBudget(e,depths,state.counts,ids,e.seeds.data());data=Combine(stage.levels);stats=Estimate(data);
+        try{e.VerifyDepthSharing(WorkingGrid(e,ids));stage=EvaluateBudget(e,depths,state.counts,ids,e.seeds.data());data=Combine(stage.levels);
+            const int recovery=RecoverNonpositiveProduction(e,state,depths,stage,ids,data,"production");
+            if(recovery==2)return 4;
+            if(recovery==1)continue;
+            stats=Estimate(data);
             e.lastAnalyticError=0;for(size_t r=0;r<ids.size();++r)e.lastAnalyticError=std::max(e.lastAnalyticError,stage.analytic[r]/stats.mean[r][0]);
             Require(!e.controls||e.lastAnalyticError<=e.eps/64,"analytic mean numerical budget exceeded; use complete sampled PO or refine the analytic provider");}
         catch(const std::exception& error){if(!e.RecoverUnsupportedControls(error,WorkingGrid(e,ids),true))throw;std::fill(state.coarse.begin(),state.coarse.end(),false);std::fill(state.valid.begin(),state.valid.end(),false);state.streak=0;SaveAdaptive(e,state);--state.round;continue;}
@@ -765,7 +770,11 @@ int RunAdaptive(Engine& e){
         e.SetExecutionPhase("cached_prefix_validation",state.round);
         const auto geometryCounts=state.counts;const auto geometrySources=stage.sources;
         if(CheckCachedLevelPrefixes(e,depths,state,stage,ids,true)){
-            data=Combine(stage.levels);stats=Estimate(data);
+            data=Combine(stage.levels);
+            const int recovery=RecoverNonpositiveProduction(e,state,depths,stage,ids,data,"cached_promotion");
+            if(recovery==2)return 4;
+            if(recovery==1)continue;
+            stats=Estimate(data);
             e.lastAnalyticError=0;for(size_t r=0;r<ids.size();++r)e.lastAnalyticError=std::max(e.lastAnalyticError,stage.analytic[r]/stats.mean[r][0]);
             Require(!e.controls||e.lastAnalyticError<=e.eps/64,"cached output analytic mean numerical budget exceeded");
             auto promoted=InterpolateBudget(e,state.knots,ids,data,&stage,&state.counts);

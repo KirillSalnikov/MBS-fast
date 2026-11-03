@@ -85,6 +85,9 @@ void PrepareDepthStartup(Engine& e){
     Atomic(checkpoint,Hash(payload.str())+"\n"+payload.str());
     e.Record(e.root+"/depth_startup.json","{\"order\":\"kernel-first\",\"phi\":"+Number(e.phi)+",\"kernel_pipeline\":"+(e.kernel.pipeline?std::string("true"):"false")+",\"pilot_count\":"+Number(std::min(oldPilot,64))+",\"theta_rows\":"+Number(x.size())+",\"seconds\":"+Number(Seconds()-begin)+",\"full_phi_search_deferred\":true,\"scope\":\"bounded kernel pilot before paired depth; complete phi/control selection and resource tuning follow at the selected physical depth\"}");
 }
+bool DepthPilotFailureResolved(double lower,double interval,double budget,bool terminal){
+    return lower>budget&&(!terminal||interval<=budget/4);
+}
 bool SelectAutomaticDepth(Engine& e){
     if(!e.autoDepth){e.Record(e.root+"/depth_selection.json","{\"automatic\":false,\"target_depth\":"+Number(e.target)+",\"explicit_target_preserved\":true}");return true;}
     const std::string checkpoint=e.root+"/automatic_depth.tsv";
@@ -141,7 +144,11 @@ bool SelectAutomaticDepth(Engine& e){
                     <<",\"budget\":"<<Number(e.depthBudget)<<",\"passed\":"<<(passed?"true":"false")<<",\"theta_file\":"<<Quoted(e.root+"/depth_pilot_theta.csv")<<",\"scope\":\"paired initial orientation pilot; representative requested angles; fresh final depth audit required\"}";
                 e.Record(e.root+"/depth_selection_candidate"+Number(depth)+"_N"+Number(count)+".json",report.str());e.Log("depth_candidate",report.str());
                 const bool preferNext=FullAutoScheduling::PreferNextDepth(residual.mean,residual.interval,e.depthBudget,attempt,depth==e.depthMaximum);
-                const bool stop=passed||preferNext||residual.lower>e.depthBudget||count>=e.maxCount||attempt==(depth==e.depthMaximum?8:4);
+                // At the last permitted depth there is no cheaper next
+                // candidate. Resolve a noisy 512-orientation pilot before
+                // stopping the whole task for a barely failing lower bound.
+                const bool resolvedFailure=DepthPilotFailureResolved(residual.lower,residual.interval,e.depthBudget,depth==e.depthMaximum);
+                const bool stop=passed||preferNext||resolvedFailure||count>=e.maxCount||attempt==(depth==e.depthMaximum?8:4);
                 const std::string action=passed?"accept":(!stop?"extend_same_candidate":(depth==e.depthMaximum?"unresolved":(preferNext?"advance_depth_cost_heuristic":"advance_depth_restart_pilot")));
                 e.Log("depth_pilot_decision","{\"candidate\":"+Number(depth)+",\"count_per_seed\":"+Number(count)
                     +",\"action\":"+Quoted(action)+",\"next_candidate_initial_count\":"+Number(e.depthPilot)
