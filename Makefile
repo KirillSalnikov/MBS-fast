@@ -59,8 +59,8 @@ endif
 ifneq ($(filter 0 1,$(GPU_FAST_MATH)),$(GPU_FAST_MATH))
 $(error GPU_FAST_MATH must be 0 or 1)
 endif
-ifeq ($(filter precise consumer reduced,$(GPU_PHASE_TRIG)),)
-$(error GPU_PHASE_TRIG must be one of: precise, consumer, reduced)
+ifeq ($(filter precise consumer reduced double_single,$(GPU_PHASE_TRIG)),)
+$(error GPU_PHASE_TRIG must be one of: precise, consumer, reduced, double_single)
 endif
 ifneq ($(filter float fp32,$(GPU_PRECISION)),)
 GPU_PRECISION_CANON := float
@@ -83,6 +83,15 @@ $(error GPU_PHASE_TRIG=reduced requires GPU_PRECISION=fp32 or float)
 endif
 GPU_PHASE_DEFINES := -DMBS_GPU_PHASE_REDUCED
 GPU_PHASE_SUFFIX := _reduced
+else ifeq ($(GPU_PHASE_TRIG),double_single)
+ifneq ($(GPU_PRECISION_CANON),float)
+$(error GPU_PHASE_TRIG=double_single requires GPU_PRECISION=fp32 or float)
+endif
+ifneq ($(GPU_FAST_MATH),0)
+$(error GPU_PHASE_TRIG=double_single requires GPU_FAST_MATH=0)
+endif
+GPU_PHASE_DEFINES := -DMBS_GPU_PHASE_DS
+GPU_PHASE_SUFFIX := _ds
 else
 GPU_PHASE_DEFINES :=
 GPU_PHASE_SUFFIX :=
@@ -138,7 +147,7 @@ cuda_check:
 
 $(OBJECTS): | cuda_check
 $(TARGET): | cuda_check
-$(ROOT_CUDA_OBJDIR)/src/cuda/GpuDiffraction.o: src/cuda/GpuPhaseReduction.cuh
+$(ROOT_CUDA_OBJDIR)/src/cuda/GpuDiffraction.o: src/cuda/GpuPhaseReduction.cuh src/cuda/DoubleSingle.cuh
 $(ROOT_CUDA_OBJDIR)/src/cuda/GpuDiffraction.o: src/cuda/GpuResidentPrepare.cuh src/cuda/GpuConvexQueueMath.cuh src/cuda/GpuConvexQueue.h
 $(ROOT_CUDA_OBJDIR)/src/cuda/GpuConvexQueue.o: src/cuda/GpuConvexQueueMath.cuh src/cuda/GpuConvexQueue.h src/cuda/GpuFacetWavefront.cuh src/cuda/GpuSplitWavefront.cuh src/cuda/GpuTraceWorkspace.cuh src/cuda/GpuTraceReuse.cuh
 endif
@@ -154,6 +163,12 @@ gpu_float:
 
 gpu_float_consumer:
 	$(MAKE) -C gpu float_consumer
+
+gpu_float_ds gpu_fp32_ds:
+	$(MAKE) -C gpu float_ds
+
+cuda_float_ds:
+	$(MAKE) USE_CUDA=1 GPU_PRECISION=float GPU_PHASE_TRIG=double_single GPU_FAST_MATH=0 TARGET=bin/mbs_po_float_ds
 
 gpu_float_reduced:
 	$(MAKE) -C gpu float_reduced
@@ -442,7 +457,7 @@ gpu_quaternion_probe:
 	@false
 endif
 
-.PHONY: all cuda_check cpu gpu gpu_float gpu_float_consumer gpu_float_reduced gpu_float_fast gpu_double gpu_double_fast \
+.PHONY: gpu_float_ds gpu_fp32_ds cuda_float_ds all cuda_check cpu gpu gpu_float gpu_float_consumer gpu_float_reduced gpu_float_fast gpu_double gpu_double_fast \
 	gpu_fp32 gpu_fp32_consumer gpu_fp32_reduced gpu_fp64 gpu_fp32_fast gpu_fp64_fast split docs \
 	test test_gpu_optimization test_cli test_release test_adaptive test_regression test_so3 test_poles \
 	test_beam_topology test_coherence test_analytic test_analytic_facets test_analytic_directions test_analytic_azimuth test_forward_depth test_concave_visibility test_warnings test_cuda_build test_cuda \

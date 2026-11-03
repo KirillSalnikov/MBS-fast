@@ -507,7 +507,9 @@ void PrintVersion()
 #endif
 #if defined(MBS_GPU_FP32) || defined(MBS_GPU_FLOAT)
     std::cout << " fp32-diffraction-storage trace-geometry-fp64";
-#ifdef MBS_GPU_PHASE_FP32
+#ifdef MBS_GPU_PHASE_DS
+    std::cout << " phase-build-double-single phase-trig-double-single phase-trig-fallback-fp64 moments-double-single reduction-double-single";
+#elif defined(MBS_GPU_PHASE_FP32)
     std::cout << " phase-build-mixed phase-trig-fp32";
 #elif defined(MBS_GPU_PHASE_REDUCED)
     std::cout << " phase-build-fp64 phase-trig-reduced-fp32 phase-fallback-fp64";

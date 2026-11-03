@@ -1,5 +1,10 @@
 #include "HandlerPO.h"
 #include "GpuPhaseReduction.cuh"
+#ifdef MBS_GPU_PHASE_DS
+#include "DoubleSingle.cuh"
+#else
+using DsReal = double;
+#endif
 
 #include <cuda_runtime.h>
 #include <cufft.h>
@@ -8,6 +13,13 @@
 #include <chrono>
 #include <cstdlib>
 #include <cfloat>
+#ifdef MBS_GPU_PHASE_DS
+#define DS_REAL_MAX FLT_MAX
+#define DS_REAL_MIN FLT_MIN
+#else
+#define DS_REAL_MAX DBL_MAX
+#define DS_REAL_MIN DBL_MIN
+#endif
 #include <cstdio>
 #include <vector>
 #include <utility>
@@ -56,12 +68,16 @@ static inline cufftResult gpu_cufft_exec(cufftHandle plan, GpuComplex *in,
 }
 #endif
 
+#if defined(MBS_GPU_PHASE_DS) && (!defined(MBS_GPU_FLOAT) || defined(MBS_GPU_PHASE_FP32) || defined(MBS_GPU_PHASE_REDUCED) || defined(MBS_GPU_FAST_MATH))
+#error "Double-single requires FP32 storage, its own phase profile and precise math"
+#endif
+
 #ifdef MBS_GPU_PHASE_FP32
 using GpuVertexPhaseReal = float;
 static_assert(sizeof(GpuVertexPhaseReal) == 4,
               "Consumer vertex-phase arithmetic must use FP32");
 #else
-using GpuVertexPhaseReal = double;
+using GpuVertexPhaseReal = DsReal;
 #endif
 
 __device__ inline void gpu_sincos(GpuReal x, GpuReal *s, GpuReal *c)
@@ -81,7 +97,7 @@ __device__ inline void gpu_sincos_phase(double x, GpuReal *s, GpuReal *c,
     // The consumer profile retains the common beam-centre phase in FP64,
     // then evaluates the completed phase on the much faster FP32 units.
     sincosf((GpuReal)x, s, c);
-#elif defined(MBS_GPU_PHASE_REDUCED)
+#elif defined(MBS_GPU_PHASE_REDUCED) || defined(MBS_GPU_PHASE_DS)
     double reduced;
     if (!precise && MbsGpuPhase::Reduce(x, reduced))
         sincosf((float)reduced, s, c);
@@ -102,6 +118,11 @@ __device__ inline void gpu_sincos_phase(double x, GpuReal *s, GpuReal *c,
     sincos(x, s, c);
 #endif
 }
+
+#ifdef MBS_GPU_PHASE_DS
+__device__ inline void gpu_sincos_phase(DsReal x, GpuReal *s, GpuReal *c, bool precise = false)
+{ MbsDS::sincos_float(x, s, c, precise); }
+#endif
 
 __device__ inline void gpu_atomic_add(GpuReal *address, GpuReal value)
 {
@@ -1088,31 +1109,31 @@ __device__ inline bool small_phase_polygon_factor_gpu(
 {
     if (nv < 3)
         return false;
-    // Keep the moment reduction in double precision even in the optional
+    // Keep the moment reduction in extended precision even in the optional
     // float GPU build: signed polygon moments are cancellation-prone.
-    const double qx = UnitWave ? (double)A
-                               : (double)waveIndex * (double)A;
-    const double qy = UnitWave ? (double)B
-                               : (double)waveIndex * (double)B;
+    const DsReal qx = UnitWave ? (DsReal)A
+                               : (DsReal)waveIndex * (DsReal)A;
+    const DsReal qy = UnitWave ? (DsReal)B
+                               : (DsReal)waveIndex * (DsReal)B;
     for (int i = 0; i < nv; ++i)
     {
         // The small-phase cone is rare. Most directions can reject it after
         // the first few vertices instead of scanning the complete polygon.
-        if (fabs(qx * (double)b.x[i] + qy * (double)b.y[i]) > 1e-3)
+        if (fabs(qx * (DsReal)b.x[i] + qy * (DsReal)b.y[i]) > 1e-3)
             return false;
     }
 
-    double twiceArea = 0.0;
-    double firstX6 = 0.0, firstY6 = 0.0;
-    double secondX12 = 0.0, secondY12 = 0.0, secondXY24 = 0.0;
-    double minX = DBL_MAX, maxX = -DBL_MAX;
-    double minY = DBL_MAX, maxY = -DBL_MAX;
+    DsReal twiceArea = 0.0;
+    DsReal firstX6 = 0.0, firstY6 = 0.0;
+    DsReal secondX12 = 0.0, secondY12 = 0.0, secondXY24 = 0.0;
+    DsReal minX = DS_REAL_MAX, maxX = -DS_REAL_MAX;
+    DsReal minY = DS_REAL_MAX, maxY = -DS_REAL_MAX;
     for (int i = 0; i < nv; ++i)
     {
         const int j = (i + 1 < nv) ? i + 1 : 0;
-        const double xi = (double)b.x[i], yi = (double)b.y[i];
-        const double xj = (double)b.x[j], yj = (double)b.y[j];
-        const double cross = xi * yj - xj * yi;
+        const DsReal xi = (DsReal)b.x[i], yi = (DsReal)b.y[i];
+        const DsReal xj = (DsReal)b.x[j], yj = (DsReal)b.y[j];
+        const DsReal cross = xi * yj - xj * yi;
         twiceArea += cross;
         firstX6 += (xi + xj) * cross;
         firstY6 += (yi + yj) * cross;
@@ -1123,8 +1144,8 @@ __device__ inline bool small_phase_polygon_factor_gpu(
         minX = fmin(minX, xi); maxX = fmax(maxX, xi);
         minY = fmin(minY, yi); maxY = fmax(maxY, yi);
     }
-    const double areaScale = fmax(
-        (maxX - minX)*(maxY - minY), DBL_MIN);
+    const DsReal areaScale = fmax(
+        (maxX - minX)*(maxY - minY), DS_REAL_MIN);
     if (fabs(twiceArea) <= 0x1p-40*areaScale)
     {
         factorReal = 1.0;
@@ -1132,14 +1153,14 @@ __device__ inline bool small_phase_polygon_factor_gpu(
         return true;
     }
 
-    const double invArea = 2.0 / twiceArea;
-    const double meanX = (firstX6 / 6.0) * invArea;
-    const double meanY = (firstY6 / 6.0) * invArea;
-    const double meanXX = (secondX12 / 12.0) * invArea;
-    const double meanYY = (secondY12 / 12.0) * invArea;
-    const double meanXY = (secondXY24 / 24.0) * invArea;
-    const double meanPhase = qx * meanX + qy * meanY;
-    const double meanPhase2 = qx * qx * meanXX
+    const DsReal invArea = 2.0 / twiceArea;
+    const DsReal meanX = (firstX6 / 6.0) * invArea;
+    const DsReal meanY = (firstY6 / 6.0) * invArea;
+    const DsReal meanXX = (secondX12 / 12.0) * invArea;
+    const DsReal meanYY = (secondY12 / 12.0) * invArea;
+    const DsReal meanXY = (secondXY24 / 24.0) * invArea;
+    const DsReal meanPhase = qx * meanX + qy * meanY;
+    const DsReal meanPhase2 = qx * qx * meanXX
                             + 2.0 * qx * qy * meanXY
                             + qy * qy * meanYY;
     factorReal = (GpuReal)(1.0 - 0.5 * meanPhase2);
@@ -1147,12 +1168,12 @@ __device__ inline bool small_phase_polygon_factor_gpu(
     return true;
 }
 
-__device__ inline double stable_sinc_gpu(double x)
+__device__ inline DsReal stable_sinc_gpu(DsReal x)
 {
-    const double ax = fabs(x);
+    const DsReal ax = fabs(x);
     if (ax < 1e-4)
     {
-        const double x2 = x*x;
+        const DsReal x2 = x*x;
         return 1.0 - x2/6.0 + x2*x2/120.0;
     }
     return sin(x)/x;
@@ -1164,18 +1185,18 @@ __device__ inline void add_stable_edge_quotient_gpu(
     GpuReal delta, GpuReal coefficient, GpuReal waveIndex,
     GpuReal &sumReal, GpuReal &sumImag)
 {
-    // Evaluate the rare near-singular branch in double precision even when
+    // Evaluate the rare near-singular branch in extended precision even when
     // MBS_GPU_FLOAT is selected.  The result is the exact half-angle form of
     // exp(i*phaseStart)*(exp(i*k*coefficient*delta)-1)/coefficient.
-    const double d = (double)delta;
-    const double c = (double)coefficient;
-    const double k = UnitWave ? 1.0 : (double)waveIndex;
-    const double z = k*c*d;
-    const double sincHalf = stable_sinc_gpu(0.5*z);
-    const double localReal = -0.5*k*k*c*d*d*sincHalf*sincHalf;
-    const double localImag = k*d*stable_sinc_gpu(z);
-    const double pr = (double)phaseReal;
-    const double pi = (double)phaseImag;
+    const DsReal d = (DsReal)delta;
+    const DsReal c = (DsReal)coefficient;
+    const DsReal k = UnitWave ? 1.0 : (DsReal)waveIndex;
+    const DsReal z = k*c*d;
+    const DsReal sincHalf = stable_sinc_gpu(0.5*z);
+    const DsReal localReal = -0.5*k*k*c*d*d*sincHalf*sincHalf;
+    const DsReal localImag = k*d*stable_sinc_gpu(z);
+    const DsReal pr = (DsReal)phaseReal;
+    const DsReal pi = (DsReal)phaseImag;
     sumReal += (GpuReal)(pr*localReal - pi*localImag);
     sumImag += (GpuReal)(pr*localImag + pi*localReal);
 }
@@ -1198,7 +1219,7 @@ __device__ inline bool compute_beam_integral_cached_gpu(const BeamT &b,
                                                               GpuReal B,
                                                               GpuReal absA,
                                                               GpuReal absB,
-                                                              double commonPhase,
+                                                              DsReal commonPhase,
                                                               bool &usedSmallPhase,
                                                               GpuReal &fr,
                                                               GpuReal &fi)
@@ -1219,7 +1240,7 @@ __device__ inline bool compute_beam_integral_cached_gpu(const BeamT &b,
 
     GpuReal vc[MaxVertices], vs[MaxVertices];
     bool precisePhase = false;
-#ifdef MBS_GPU_PHASE_REDUCED
+#if defined(MBS_GPU_PHASE_REDUCED) || defined(MBS_GPU_PHASE_DS)
     if (!NativePhase)
     {
         // Edge quotients subtract endpoint phasors. For a short phase step,
@@ -1359,14 +1380,14 @@ __device__ inline bool compute_beam_jones_context_limited_gpu(const BeamT &b,
     // beam-centre phase into those phasors removes one FP64 sincos per
     // internal beam in the normal branch.  The small-phase moment branch has
     // no vertex phasors, so it applies the common phase below as before.
-    double commonPhase = 0.0;
+    DsReal commonPhase = 0.0;
     {
-        const double dpSin = (double)cp * (double)b.cenx
-                           + (double)sp * (double)b.ceny;
-        const double dpCos = -(double)b.cenz;
-        const double phaseWave = UnitWave ? 1.0 : (double)waveIndex;
+        const DsReal dpSin = (DsReal)cp * (DsReal)b.cenx
+                           + (DsReal)sp * (DsReal)b.ceny;
+        const DsReal dpCos = -(DsReal)b.cenz;
+        const DsReal phaseWave = UnitWave ? 1.0 : (DsReal)waveIndex;
         commonPhase = -phaseWave
-                    * ((double)sin_t * dpSin + (double)cos_t * dpCos);
+                    * ((DsReal)sin_t * dpSin + (DsReal)cos_t * dpCos);
     }
 
     GpuReal fr, fi;
@@ -1570,13 +1591,13 @@ __device__ inline bool compute_beam_jones_context_gpu_multik(
     const GpuReal waveIndexEff = waveIndex * scale;
     const GpuReal wi2Eff = wi2 * scale2;
 
-    double commonPhase = 0.0;
+    DsReal commonPhase = 0.0;
     {
-        const double dpSin = (double)cp * (double)b.cenx
-                           + (double)sp * (double)b.ceny;
-        const double dpCos = -(double)b.cenz;
-        commonPhase = -(double)waveIndexEff
-                    * ((double)sin_t * dpSin + (double)cos_t * dpCos);
+        const DsReal dpSin = (DsReal)cp * (DsReal)b.cenx
+                           + (DsReal)sp * (DsReal)b.ceny;
+        const DsReal dpCos = -(DsReal)b.cenz;
+        commonPhase = -(DsReal)waveIndexEff
+                    * ((DsReal)sin_t * dpSin + (DsReal)cos_t * dpCos);
     }
 
     GpuReal fr, fi;
@@ -4057,9 +4078,9 @@ __global__ void reduce_mueller_orient_kernel(const GpuReal *__restrict__ mOrient
     const int grid = (int)((long long)blockIdx.x * blockDim.x + threadIdx.x);
     if (grid >= gridCount) return;
 
-    // Only the final reduction uses double in an FP32 build. Diffraction,
+    // Only the final reduction uses extended precision in an FP32 build. Diffraction,
     // storage and transfers retain their selected precision.
-    double sum[16];
+    DsReal sum[16];
 #pragma unroll
     for (int k = 0; k < 16; ++k)
         sum[k] = 0.0;
@@ -4075,7 +4096,7 @@ __global__ void reduce_mueller_orient_kernel(const GpuReal *__restrict__ mOrient
     GpuReal *dst = &mFull[grid * 16];
 #pragma unroll
     for (int k = 0; k < 16; ++k)
-        dst[k] = sum[k];
+        dst[k] = (GpuReal)sum[k];
 }
 
 __global__ void reduce_mueller_orient_warp_kernel(
@@ -4091,14 +4112,14 @@ __global__ void reduce_mueller_orient_warp_kernel(
     const long long grid = warp * 2 + (lane >> 4);
     if (grid >= gridCount) return;
 
-    double sum = 0.0;
+    DsReal sum = 0.0;
     for (int orient = 0; orient < nOrient; ++orient)
     {
         const long long src =
             ((long long)orient * gridCount + grid) * 16 + element;
         sum += mOrient[src];
     }
-    mFull[grid * 16 + element] = sum;
+    mFull[grid * 16 + element] = (GpuReal)sum;
 }
 
 __global__ void diffraction_grid_mueller_full_nocache_kernel(const GpuBeam *__restrict__ beams,
