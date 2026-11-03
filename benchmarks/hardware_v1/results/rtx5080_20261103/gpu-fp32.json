@@ -1,0 +1,1102 @@
+{
+  "schema": 1,
+  "suite": "hardware-v1",
+  "profile": "gpu-fp32",
+  "threads": 8,
+  "timing_protocol": "fresh processes and solver setup, warmed driver/filesystem cache, no completed-work reuse; spread OpenMP core binding",
+  "controlled_environment": {
+    "OMP_NUM_THREADS": "8",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "OMP_DYNAMIC": "FALSE",
+    "OMP_PROC_BIND": "spread",
+    "OMP_PLACES": "cores",
+    "CUDA_MODULE_LOADING": "EAGER",
+    "MBS_GPU_TIMING": "1",
+    "BEM_MIXED_ITERATIVE_REFINEMENT": "1"
+  },
+  "warmups": 1,
+  "repeats": 5,
+  "time": 1793694472.6984584,
+  "runner_sha256": "07ea8cb599436da1865bbe981f6569873992e8fbb1fcceca3744c5c418270e85",
+  "build": {
+    "executable": "/home/kika/.local/opt/mbs-fast/bin/mbs-po-gpu-fp32",
+    "native_binary": "/home/kika/.local/opt/mbs-fast/build/b1772b3b5059fb1d/src/gpu/bin/mbs_po_gpu_float",
+    "binary_sha256": "c29086c137ec0de57fe7d9782d5d46cf2f74c8ac702316b4d1bc1cf2faad4871",
+    "components": {},
+    "analysis_environment": {},
+    "version": "MBS-fast 781f1e0\nbackend-build: CUDA sm_120 fp32-diffraction-storage trace-geometry-fp64 phase-build-fp64 phase-trig-fp64 precise-math\ncompiler: GCC 14.3.0\nopenmp: enabled (_OPENMP=201511)\nmpi: disabled",
+    "numerical_source_signature_schema": 2,
+    "numerical_source_sha256": "822777bd71d56f56272a59c9b45684547a7fdf1f799969a01272148832fbd34d",
+    "host_compiler_build_ids": [
+      "(Ubuntu 14.3.0-14ubuntu1) 14.3.0"
+    ],
+    "source_root": "/home/kika/.local/opt/mbs-fast/build/b1772b3b5059fb1d/src",
+    "python": "/usr/bin/python3",
+    "installation": {
+      "project": "mbs-fast",
+      "revision": "781f1e0",
+      "source_sha256": "2ab68488bdbc666fedef1712b8074a91ea37428c1f2b7f6de6d9f0d9ec0bddca",
+      "architecture": "sm_120",
+      "hardware": {
+        "gpu": "NVIDIA GeForce RTX 5080",
+        "compute": 120,
+        "driver_api": 13050,
+        "runtime_api": 13040,
+        "kernel_result": 120
+      },
+      "cuda_home": "/home/kika/.local/share/cuda/13.4.3",
+      "nvcc": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2026 NVIDIA Corporation\nBuilt on Tue_Sep_01_08:45:21_PDT_2026\nCuda compilation tools, release 13.4, V13.4.92\nBuild cuda_13.4.r13.4/compiler.38855100_0",
+      "compiler": "/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+      "commands": [
+        {
+          "stage": "cpu",
+          "command": [
+            "make",
+            "-C",
+            "cpu",
+            "-j4",
+            "CXX=/usr/bin/mpicxx",
+            "ARCH_FLAGS=-march=native",
+            "GIT_DESCRIBE=781f1e0"
+          ],
+          "seconds": 66.36232089996338
+        },
+        {
+          "stage": "gpu-fp64",
+          "command": [
+            "make",
+            "-C",
+            "gpu",
+            "fp64",
+            "-j4",
+            "GPU_ARCH=120",
+            "CUDA_PATH=/home/kika/.local/share/cuda/13.4.3",
+            "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+            "CUDA_HOST_CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+            "ARCH_FLAGS=-march=native",
+            "GPU_LTO=1",
+            "GPU_FAST_MATH=0",
+            "GPU_PHASE_TRIG=precise",
+            "LDFLAGS=-lm -lgomp -L/home/kika/.local/share/cuda/13.4.3/lib64 -Wl,-rpath,/home/kika/.local/share/cuda/13.4.3/lib64 -lcufft -lcudart",
+            "GIT_DESCRIBE=781f1e0"
+          ],
+          "seconds": 54.80135178565979
+        },
+        {
+          "stage": "gpu-fp32",
+          "command": [
+            "make",
+            "-C",
+            "gpu",
+            "fp32",
+            "-j4",
+            "GPU_ARCH=120",
+            "CUDA_PATH=/home/kika/.local/share/cuda/13.4.3",
+            "CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+            "CUDA_HOST_CXX=/home/kika/.local/bem-cuda-13.1/usr/bin/x86_64-linux-gnu-g++-14",
+            "ARCH_FLAGS=-march=native",
+            "GPU_LTO=1",
+            "GPU_FAST_MATH=0",
+            "GPU_PHASE_TRIG=precise",
+            "LDFLAGS=-lm -lgomp -L/home/kika/.local/share/cuda/13.4.3/lib64 -Wl,-rpath,/home/kika/.local/share/cuda/13.4.3/lib64 -lcufft -lcudart",
+            "GIT_DESCRIBE=781f1e0"
+          ],
+          "seconds": 54.81176400184631
+        }
+      ],
+      "binaries": {
+        "mbs-po-cpu": "/home/kika/.local/opt/mbs-fast/build/b1772b3b5059fb1d/src/cpu/bin/mbs_po_mpi",
+        "mbs-po-gpu-fp64": "/home/kika/.local/opt/mbs-fast/build/b1772b3b5059fb1d/src/gpu/bin/mbs_po_gpu_double",
+        "mbs-po-gpu-fp32": "/home/kika/.local/opt/mbs-fast/build/b1772b3b5059fb1d/src/gpu/bin/mbs_po_gpu_float"
+      },
+      "binary_sha256": {
+        "mbs-po-cpu": "cfcdc42c8e4a76a7039fe5af476a5b05f7420cc5a60a1bc0ca72e9b9f8b9fbd6",
+        "mbs-po-gpu-fp64": "d6f088208f392557285dd8f85d0ff82ced0176473d4fb102f994c8bd226f24a9",
+        "mbs-po-gpu-fp32": "c29086c137ec0de57fe7d9782d5d46cf2f74c8ac702316b4d1bc1cf2faad4871"
+      },
+      "native_cubins_verified": {
+        "mbs-po-gpu-fp64": true,
+        "mbs-po-gpu-fp32": true
+      },
+      "versions": {
+        "mbs-po-cpu": "MBS-fast 781f1e0\nbackend-build: CPU double\ncompiler: GCC 14.3.0\nopenmp: enabled (_OPENMP=201511)\nmpi: enabled",
+        "mbs-po-gpu-fp64": "MBS-fast 781f1e0\nbackend-build: CUDA sm_120 fp64-diffraction-storage trace-geometry-fp64 phase-build-fp64 phase-trig-fp64 precise-math\ncompiler: GCC 14.3.0\nopenmp: enabled (_OPENMP=201511)\nmpi: disabled",
+        "mbs-po-gpu-fp32": "MBS-fast 781f1e0\nbackend-build: CUDA sm_120 fp32-diffraction-storage trace-geometry-fp64 phase-build-fp64 phase-trig-fp64 precise-math\ncompiler: GCC 14.3.0\nopenmp: enabled (_OPENMP=201511)\nmpi: disabled"
+      },
+      "driver_installed": false,
+      "fast_math_enabled": false,
+      "scope": "Native sm_120 build and GPU execution probe; this does not certify full numerical convergence or all possible kernel optimizations"
+    }
+  },
+  "hardware": {
+    "label": "RTX5080-kika",
+    "cpu": {
+      "model": "AMD Ryzen 9 9950X3D 16-Core Processor",
+      "logical_cpus": 32,
+      "affinity": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31
+      ],
+      "lscpu": {
+        "lscpu": [
+          {
+            "field": "Architecture:",
+            "data": "x86_64"
+          },
+          {
+            "field": "CPU op-mode(s):",
+            "data": "32-bit, 64-bit"
+          },
+          {
+            "field": "Address sizes:",
+            "data": "48 bits physical, 48 bits virtual"
+          },
+          {
+            "field": "Byte Order:",
+            "data": "Little Endian"
+          },
+          {
+            "field": "CPU(s):",
+            "data": "32"
+          },
+          {
+            "field": "On-line CPU(s) list:",
+            "data": "0-31"
+          },
+          {
+            "field": "Vendor ID:",
+            "data": "AuthenticAMD"
+          },
+          {
+            "field": "Model name:",
+            "data": "AMD Ryzen 9 9950X3D 16-Core Processor"
+          },
+          {
+            "field": "CPU family:",
+            "data": "26"
+          },
+          {
+            "field": "Model:",
+            "data": "68"
+          },
+          {
+            "field": "Thread(s) per core:",
+            "data": "2"
+          },
+          {
+            "field": "Core(s) per socket:",
+            "data": "16"
+          },
+          {
+            "field": "Socket(s):",
+            "data": "1"
+          },
+          {
+            "field": "Stepping:",
+            "data": "0"
+          },
+          {
+            "field": "BogoMIPS:",
+            "data": "8599.82"
+          },
+          {
+            "field": "Flags:",
+            "data": "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl tsc_reliable nonstop_tsc cpuid extd_apicid tsc_known_freq pni pclmulqdq ssse3 fma cx16 sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy svm cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw topoext perfctr_core ssbd ibrs ibpb stibp vmmcall fsgsbase bmi1 avx2 smep bmi2 erms invpcid avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx_vnni avx512_bf16 clzero xsaveerptr arat npt nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold v_vmsave_vmload avx512vbmi umip avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid fsrm avx512_vp2intersect"
+          },
+          {
+            "field": "Virtualization:",
+            "data": "AMD-V"
+          },
+          {
+            "field": "Hypervisor vendor:",
+            "data": "Microsoft"
+          },
+          {
+            "field": "Virtualization type:",
+            "data": "full"
+          },
+          {
+            "field": "L1d cache:",
+            "data": "768 KiB (16 instances)"
+          },
+          {
+            "field": "L1i cache:",
+            "data": "512 KiB (16 instances)"
+          },
+          {
+            "field": "L2 cache:",
+            "data": "16 MiB (16 instances)"
+          },
+          {
+            "field": "L3 cache:",
+            "data": "96 MiB (1 instance)"
+          },
+          {
+            "field": "NUMA node(s):",
+            "data": "1"
+          },
+          {
+            "field": "NUMA node0 CPU(s):",
+            "data": "0-31"
+          },
+          {
+            "field": "Vulnerability Gather data sampling:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Indirect target selection:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Itlb multihit:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability L1tf:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Mds:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Meltdown:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Mmio stale data:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Reg file data sampling:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Retbleed:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Spec rstack overflow:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Spec store bypass:",
+            "data": "Mitigation; Speculative Store Bypass disabled via prctl"
+          },
+          {
+            "field": "Vulnerability Spectre v1:",
+            "data": "Mitigation; usercopy/swapgs barriers and __user pointer sanitization"
+          },
+          {
+            "field": "Vulnerability Spectre v2:",
+            "data": "Mitigation; Retpolines; IBPB conditional; IBRS_FW; STIBP always-on; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected"
+          },
+          {
+            "field": "Vulnerability Srbds:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Tsa:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Tsx async abort:",
+            "data": "Not affected"
+          },
+          {
+            "field": "Vulnerability Vmscape:",
+            "data": "Not affected"
+          }
+        ]
+      }
+    },
+    "gpu": "NVIDIA GeForce RTX 5080, 12.0, 16303 MiB, 621.01, 360.00 W",
+    "os": "Linux-6.6.114.1-microsoft-standard-WSL2-x86_64-with-glibc2.43",
+    "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+    "meminfo": "MemTotal:       60264436 kB\nMemFree:        56714920 kB\nMemAvailable:   59114096 kB\nBuffers:           10340 kB\nCached:          2835540 kB\nSwapCached:            0 kB\nActive:           702592 kB\nInactive:        2283808 kB\nActive(anon):       2664 kB\nInactive(anon):   142520 kB\nActive(file):     699928 kB\nInactive(file):  2141288 kB\nUnevictable:           0 kB\nMlocked:               0 kB\nSwapTotal:      12435456 kB\nSwapFree:       12435456 kB\nDirty:              6032 kB\nWriteback:             0 kB\nAnonPages:        140560 kB\nMapped:           133484 kB\nShmem:              4640 kB\nKReclaimable:      97432 kB\nSlab:             215876 kB\nSReclaimable:      97432 kB\nSUnreclaim:       118444 kB\nKernelStack:        6848 kB\nPageTables:         3156 kB\nSecPageTables:         0 kB\nNFS_Unstable:          0 kB\nBounce:                0 kB\nWritebackTmp:          0 kB\nCommitLimit:    42567672 kB\nCommitted_AS:     647396 kB\nVmallocTotal:   34359738367 kB\nVmallocUsed:       35204 kB\nVmallocChunk:          0 kB\nPercpu:            14976 kB\nHardwareCorrupted:     0 kB\nAnonHugePages:         0 kB\nShmemHugePages:        0 kB\nShmemPmdMapped:        0 kB\nFileHugePages:         0 kB\nFilePmdMapped:         0 kB\nUnaccepted:            0 kB\nHugePages_Total:       0\nHugePages_Free:        0\nHugePages_Rsvd:        0\nHugePages_Surp:        0\nHugepagesize:       2048 kB\nHugetlb:               0 kB\nDirectMap4k:      125952 kB\nDirectMap2M:    13080576 kB\nDirectMap1G:    56623104 kB\n",
+    "loadavg": [
+      3.07470703125,
+      1.955078125,
+      1.228515625
+    ],
+    "before": {
+      "time": 1793694472.696074,
+      "temperature.gpu": 37.0,
+      "utilization.gpu": 0.0,
+      "memory.used": 344.0,
+      "power.draw": 43.21,
+      "clocks.sm": 2730.0,
+      "clocks.mem": 7001.0
+    },
+    "nvcc": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2026 NVIDIA Corporation\nBuilt on Tue_Sep_01_08:45:21_PDT_2026\nCuda compilation tools, release 13.4, V13.4.92\nBuild cuda_13.4.r13.4/compiler.38855100_0"
+  },
+  "cases": [
+    {
+      "id": "mbs-prism-ka10-2048",
+      "workload_sha256": "68de5f31d2eaf2d814e522a776c8170f76ddb213c200c58aeb8b5c8e8685f0a2",
+      "reference_sha256": "29ebb7a1f30228943ecff7706c0acda032dccd3d6af5f4f88db633c2fd0079d8",
+      "comparison_key": "d24477cebc540bba0255a24ae2d384ebc5941e61afd73cfbf236ce05997a3f22",
+      "runs": [
+        {
+          "wall_s": 4.658083246999922,
+          "cpu_user_s": 7.932382,
+          "cpu_system_s": 0.09590699999999999,
+          "peak_child_rss_MiB": 268.83984375,
+          "telemetry": [
+            {
+              "time": 1793694472.7605035,
+              "temperature.gpu": 37.0,
+              "utilization.gpu": 0.0,
+              "memory.used": 344.0,
+              "power.draw": 38.24,
+              "clocks.sm": 2730.0,
+              "clocks.mem": 7001.0
+            },
+            {
+              "time": 1793694473.792889,
+              "temperature.gpu": 40.5,
+              "utilization.gpu": 91.0,
+              "memory.used": 619.0,
+              "power.draw": 90.93,
+              "clocks.sm": 2872.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694474.8291159,
+              "temperature.gpu": 43.5,
+              "utilization.gpu": 96.0,
+              "memory.used": 619.0,
+              "power.draw": 106.03,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694475.8611228,
+              "temperature.gpu": 43.8,
+              "utilization.gpu": 96.0,
+              "memory.used": 619.0,
+              "power.draw": 105.75,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694476.8983662,
+              "temperature.gpu": 43.8,
+              "utilization.gpu": 91.0,
+              "memory.used": 619.0,
+              "power.draw": 105.83,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            }
+          ],
+          "name": "warmup_0",
+          "warmup": true,
+          "command": [
+            "/home/kika/.local/opt/mbs-fast/build/b1772b3b5059fb1d/src/gpu/bin/mbs_po_gpu_float",
+            "--method",
+            "po",
+            "--particle",
+            "1",
+            "1.8162922498144123",
+            "1.4680915471003348",
+            "--ri",
+            "1.3116",
+            "0",
+            "--wavelength-um",
+            ".532",
+            "--sobol-seed",
+            "2048",
+            "314159",
+            "--haar-alpha",
+            "--scattering-grid",
+            "0",
+            "180",
+            "64",
+            "180",
+            "--max-reflections",
+            "8",
+            "--cutoff-profile",
+            "off",
+            "--orientation-chunk",
+            "64",
+            "--threads",
+            "8",
+            "--profile-phases",
+            "--backend",
+            "cuda",
+            "--output",
+            "/home/kika/benchmarks/hardware_v1_final_20261103/run_MBS-fast_gpu-fp32_1793694472500900656/mbs-prism-ka10-2048/warmup_0/result",
+            "--close"
+          ],
+          "metrics": {
+            "trace_prepare_s": 0.21290508200000002,
+            "diffraction_and_controls_s": 4.202588504,
+            "gpu_diffraction_including_packing_s": 4.16583784,
+            "processing_s": 4.424069934,
+            "gpu_kernels_s": 4.086138
+          },
+          "work": {
+            "orientations": 2048
+          },
+          "validation": {
+            "max_scaled_M11": 3.2874674913506646e-09,
+            "relative_L2": 1.0051150938550514e-09
+          },
+          "matrix_sha256": "e2985672ae7e9dbf7be2a88db3a78945540e2f3eeef1440657b0639b8a32b259"
+        },
+        {
+          "wall_s": 5.1555711610008075,
+          "cpu_user_s": 8.452167,
+          "cpu_system_s": 0.430187,
+          "peak_child_rss_MiB": 264.88671875,
+          "telemetry": [
+            {
+              "time": 1793694477.4151351,
+              "temperature.gpu": 44.2,
+              "utilization.gpu": 77.0,
+              "memory.used": 344.0,
+              "power.draw": 103.9,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694478.4450824,
+              "temperature.gpu": 44.1,
+              "utilization.gpu": 91.0,
+              "memory.used": 619.0,
+              "power.draw": 93.97,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694479.4770012,
+              "temperature.gpu": 44.5,
+              "utilization.gpu": 95.0,
+              "memory.used": 619.0,
+              "power.draw": 105.73,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694480.5090473,
+              "temperature.gpu": 44.1,
+              "utilization.gpu": 95.0,
+              "memory.used": 619.0,
+              "power.draw": 106.08,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694481.5431104,
+              "temperature.gpu": 44.9,
+              "utilization.gpu": 91.0,
+              "memory.used": 619.0,
+              "power.draw": 106.61,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            }
+          ],
+          "name": "repeat_1",
+          "warmup": false,
+          "command": [
+            "/home/kika/.local/opt/mbs-fast/build/b1772b3b5059fb1d/src/gpu/bin/mbs_po_gpu_float",
+            "--method",
+            "po",
+            "--particle",
+            "1",
+            "1.8162922498144123",
+            "1.4680915471003348",
+            "--ri",
+            "1.3116",
+            "0",
+            "--wavelength-um",
+            ".532",
+            "--sobol-seed",
+            "2048",
+            "314159",
+            "--haar-alpha",
+            "--scattering-grid",
+            "0",
+            "180",
+            "64",
+            "180",
+            "--max-reflections",
+            "8",
+            "--cutoff-profile",
+            "off",
+            "--orientation-chunk",
+            "64",
+            "--threads",
+            "8",
+            "--profile-phases",
+            "--backend",
+            "cuda",
+            "--output",
+            "/home/kika/benchmarks/hardware_v1_final_20261103/run_MBS-fast_gpu-fp32_1793694472500900656/mbs-prism-ka10-2048/repeat_1/result",
+            "--close"
+          ],
+          "metrics": {
+            "trace_prepare_s": 0.26260015400000003,
+            "diffraction_and_controls_s": 4.268424598999999,
+            "gpu_diffraction_including_packing_s": 4.2056409010000015,
+            "processing_s": 4.630336403,
+            "gpu_kernels_s": 4.091726
+          },
+          "work": {
+            "orientations": 2048
+          },
+          "validation": {
+            "max_scaled_M11": 2.994044774012846e-09,
+            "relative_L2": 1.098253880658026e-09
+          },
+          "matrix_sha256": "a49c95c6a0a8a2200919f26e38ac9e97a8be974d752a79377467983abaea1466"
+        },
+        {
+          "wall_s": 5.490013093999551,
+          "cpu_user_s": 8.418125,
+          "cpu_system_s": 1.009515,
+          "peak_child_rss_MiB": 261.578125,
+          "telemetry": [
+            {
+              "time": 1793694482.869782,
+              "temperature.gpu": 40.0,
+              "utilization.gpu": 0.0,
+              "memory.used": 344.0,
+              "power.draw": 58.35,
+              "clocks.sm": 2872.0,
+              "clocks.mem": 15001.0
+            },
+            {
+              "time": 1793694483.9700637,
+              "temperature.gpu": 41.6,
+              "utilization.gpu": 23.0,
+              "memory.used": 619.0,
+              "power.draw": 60.76,
+              "clocks.sm": 2872.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694485.0792572,
+              "temperature.gpu": 45.2,
+              "utilization.gpu": 95.0,
+              "memory.used": 619.0,
+              "power.draw": 104.63,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694486.189604,
+              "temperature.gpu": 45.2,
+              "utilization.gpu": 96.0,
+              "memory.used": 619.0,
+              "power.draw": 106.77,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694487.2186997,
+              "temperature.gpu": 45.8,
+              "utilization.gpu": 93.0,
+              "memory.used": 619.0,
+              "power.draw": 107.19,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            }
+          ],
+          "name": "repeat_2",
+          "warmup": false,
+          "command": [
+            "/home/kika/.local/opt/mbs-fast/build/b1772b3b5059fb1d/src/gpu/bin/mbs_po_gpu_float",
+            "--method",
+            "po",
+            "--particle",
+            "1",
+            "1.8162922498144123",
+            "1.4680915471003348",
+            "--ri",
+            "1.3116",
+            "0",
+            "--wavelength-um",
+            ".532",
+            "--sobol-seed",
+            "2048",
+            "314159",
+            "--haar-alpha",
+            "--scattering-grid",
+            "0",
+            "180",
+            "64",
+            "180",
+            "--max-reflections",
+            "8",
+            "--cutoff-profile",
+            "off",
+            "--orientation-chunk",
+            "64",
+            "--threads",
+            "8",
+            "--profile-phases",
+            "--backend",
+            "cuda",
+            "--output",
+            "/home/kika/benchmarks/hardware_v1_final_20261103/run_MBS-fast_gpu-fp32_1793694472500900656/mbs-prism-ka10-2048/repeat_2/result",
+            "--close"
+          ],
+          "metrics": {
+            "trace_prepare_s": 0.23266994299999996,
+            "diffraction_and_controls_s": 4.299922318,
+            "gpu_diffraction_including_packing_s": 4.251853637999999,
+            "processing_s": 4.544574864,
+            "gpu_kernels_s": 4.088187
+          },
+          "work": {
+            "orientations": 2048
+          },
+          "validation": {
+            "max_scaled_M11": 2.857420129184225e-09,
+            "relative_L2": 1.1638594094147888e-09
+          },
+          "matrix_sha256": "addc7dd5eb16eab49fd909ca307e93c9870db341218df2a8dd71136404c13c51"
+        },
+        {
+          "wall_s": 4.532857105999938,
+          "cpu_user_s": 6.984184,
+          "cpu_system_s": 0.12400299999999999,
+          "peak_child_rss_MiB": 255.90625,
+          "telemetry": [
+            {
+              "time": 1793694488.236816,
+              "temperature.gpu": 45.4,
+              "utilization.gpu": 81.0,
+              "memory.used": 344.0,
+              "power.draw": 106.02,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694489.2794921,
+              "temperature.gpu": 45.9,
+              "utilization.gpu": 93.0,
+              "memory.used": 619.0,
+              "power.draw": 97.02,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694490.308198,
+              "temperature.gpu": 46.2,
+              "utilization.gpu": 97.0,
+              "memory.used": 619.0,
+              "power.draw": 108.18,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694491.3420084,
+              "temperature.gpu": 46.6,
+              "utilization.gpu": 96.0,
+              "memory.used": 619.0,
+              "power.draw": 108.69,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694492.3764536,
+              "temperature.gpu": 46.3,
+              "utilization.gpu": 96.0,
+              "memory.used": 619.0,
+              "power.draw": 108.47,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            }
+          ],
+          "name": "repeat_3",
+          "warmup": false,
+          "command": [
+            "/home/kika/.local/opt/mbs-fast/build/b1772b3b5059fb1d/src/gpu/bin/mbs_po_gpu_float",
+            "--method",
+            "po",
+            "--particle",
+            "1",
+            "1.8162922498144123",
+            "1.4680915471003348",
+            "--ri",
+            "1.3116",
+            "0",
+            "--wavelength-um",
+            ".532",
+            "--sobol-seed",
+            "2048",
+            "314159",
+            "--haar-alpha",
+            "--scattering-grid",
+            "0",
+            "180",
+            "64",
+            "180",
+            "--max-reflections",
+            "8",
+            "--cutoff-profile",
+            "off",
+            "--orientation-chunk",
+            "64",
+            "--threads",
+            "8",
+            "--profile-phases",
+            "--backend",
+            "cuda",
+            "--output",
+            "/home/kika/benchmarks/hardware_v1_final_20261103/run_MBS-fast_gpu-fp32_1793694472500900656/mbs-prism-ka10-2048/repeat_3/result",
+            "--close"
+          ],
+          "metrics": {
+            "trace_prepare_s": 0.14425320999999994,
+            "diffraction_and_controls_s": 4.192565138000001,
+            "gpu_diffraction_including_packing_s": 4.1573519459999995,
+            "processing_s": 4.344681294,
+            "gpu_kernels_s": 4.089475
+          },
+          "work": {
+            "orientations": 2048
+          },
+          "validation": {
+            "max_scaled_M11": 2.8999426775901674e-09,
+            "relative_L2": 1.0940788224980668e-09
+          },
+          "matrix_sha256": "f4a1df211a9c2f7e889ccff9ef395d07376cf217194953a1ff80818ee7fe80b2"
+        },
+        {
+          "wall_s": 4.5282022549999965,
+          "cpu_user_s": 7.098275,
+          "cpu_system_s": 0.08318199999999999,
+          "peak_child_rss_MiB": 257.26953125,
+          "telemetry": [
+            {
+              "time": 1793694492.778004,
+              "temperature.gpu": 46.3,
+              "utilization.gpu": 61.0,
+              "memory.used": 344.0,
+              "power.draw": 104.4,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694493.8116186,
+              "temperature.gpu": 46.9,
+              "utilization.gpu": 97.0,
+              "memory.used": 619.0,
+              "power.draw": 97.12,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694494.8443096,
+              "temperature.gpu": 46.1,
+              "utilization.gpu": 94.0,
+              "memory.used": 619.0,
+              "power.draw": 108.94,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694495.8767068,
+              "temperature.gpu": 47.3,
+              "utilization.gpu": 93.0,
+              "memory.used": 619.0,
+              "power.draw": 108.59,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694496.9091349,
+              "temperature.gpu": 47.6,
+              "utilization.gpu": 96.0,
+              "memory.used": 619.0,
+              "power.draw": 109.2,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            }
+          ],
+          "name": "repeat_4",
+          "warmup": false,
+          "command": [
+            "/home/kika/.local/opt/mbs-fast/build/b1772b3b5059fb1d/src/gpu/bin/mbs_po_gpu_float",
+            "--method",
+            "po",
+            "--particle",
+            "1",
+            "1.8162922498144123",
+            "1.4680915471003348",
+            "--ri",
+            "1.3116",
+            "0",
+            "--wavelength-um",
+            ".532",
+            "--sobol-seed",
+            "2048",
+            "314159",
+            "--haar-alpha",
+            "--scattering-grid",
+            "0",
+            "180",
+            "64",
+            "180",
+            "--max-reflections",
+            "8",
+            "--cutoff-profile",
+            "off",
+            "--orientation-chunk",
+            "64",
+            "--threads",
+            "8",
+            "--profile-phases",
+            "--backend",
+            "cuda",
+            "--output",
+            "/home/kika/benchmarks/hardware_v1_final_20261103/run_MBS-fast_gpu-fp32_1793694472500900656/mbs-prism-ka10-2048/repeat_4/result",
+            "--close"
+          ],
+          "metrics": {
+            "trace_prepare_s": 0.14916060999999997,
+            "diffraction_and_controls_s": 4.190492675000001,
+            "gpu_diffraction_including_packing_s": 4.154581898000001,
+            "processing_s": 4.34867026,
+            "gpu_kernels_s": 4.090235
+          },
+          "work": {
+            "orientations": 2048
+          },
+          "validation": {
+            "max_scaled_M11": 3.6217455899674834e-09,
+            "relative_L2": 1.1711913672037146e-09
+          },
+          "matrix_sha256": "93003f1817b2cf10671c91de18384d9e59c276dd990e4c03ead86ff529ab3405"
+        },
+        {
+          "wall_s": 4.52559739499975,
+          "cpu_user_s": 7.002099,
+          "cpu_system_s": 0.119353,
+          "peak_child_rss_MiB": 255.5234375,
+          "telemetry": [
+            {
+              "time": 1793694497.315668,
+              "temperature.gpu": 47.6,
+              "utilization.gpu": 96.0,
+              "memory.used": 344.0,
+              "power.draw": 107.49,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 15001.0
+            },
+            {
+              "time": 1793694498.3606896,
+              "temperature.gpu": 47.6,
+              "utilization.gpu": 96.0,
+              "memory.used": 619.0,
+              "power.draw": 97.87,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694499.3928907,
+              "temperature.gpu": 48.0,
+              "utilization.gpu": 96.0,
+              "memory.used": 619.0,
+              "power.draw": 109.76,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694500.4246972,
+              "temperature.gpu": 47.8,
+              "utilization.gpu": 96.0,
+              "memory.used": 619.0,
+              "power.draw": 109.91,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            },
+            {
+              "time": 1793694501.4628384,
+              "temperature.gpu": 48.3,
+              "utilization.gpu": 93.0,
+              "memory.used": 619.0,
+              "power.draw": 109.13,
+              "clocks.sm": 2865.0,
+              "clocks.mem": 14801.0
+            }
+          ],
+          "name": "repeat_5",
+          "warmup": false,
+          "command": [
+            "/home/kika/.local/opt/mbs-fast/build/b1772b3b5059fb1d/src/gpu/bin/mbs_po_gpu_float",
+            "--method",
+            "po",
+            "--particle",
+            "1",
+            "1.8162922498144123",
+            "1.4680915471003348",
+            "--ri",
+            "1.3116",
+            "0",
+            "--wavelength-um",
+            ".532",
+            "--sobol-seed",
+            "2048",
+            "314159",
+            "--haar-alpha",
+            "--scattering-grid",
+            "0",
+            "180",
+            "64",
+            "180",
+            "--max-reflections",
+            "8",
+            "--cutoff-profile",
+            "off",
+            "--orientation-chunk",
+            "64",
+            "--threads",
+            "8",
+            "--profile-phases",
+            "--backend",
+            "cuda",
+            "--output",
+            "/home/kika/benchmarks/hardware_v1_final_20261103/run_MBS-fast_gpu-fp32_1793694472500900656/mbs-prism-ka10-2048/repeat_5/result",
+            "--close"
+          ],
+          "metrics": {
+            "trace_prepare_s": 0.14639085499999996,
+            "diffraction_and_controls_s": 4.184347431,
+            "gpu_diffraction_including_packing_s": 4.148486147999999,
+            "processing_s": 4.338806711,
+            "gpu_kernels_s": 4.084364
+          },
+          "work": {
+            "orientations": 2048
+          },
+          "validation": {
+            "max_scaled_M11": 4.237090714476522e-09,
+            "relative_L2": 1.3147628475786846e-09
+          },
+          "matrix_sha256": "fac723bace588e9f48878f5379196ff139fabcee724fd977a2a239a7ee666eb1"
+        }
+      ],
+      "passed": true,
+      "statistics": {
+        "wall_s": {
+          "n": 5,
+          "median": 4.532857105999938,
+          "min": 4.52559739499975,
+          "max": 5.490013093999551,
+          "mean": 4.846448202200008,
+          "MAD": 0.007259711000187963,
+          "relative_MAD": 0.001601575083974876
+        },
+        "cpu_user_s": {
+          "n": 5,
+          "median": 7.098275,
+          "min": 6.984184,
+          "max": 8.452167,
+          "mean": 7.5909699999999996,
+          "MAD": 0.11409100000000016,
+          "relative_MAD": 0.016073060004015084
+        },
+        "cpu_system_s": {
+          "n": 5,
+          "median": 0.12400299999999999,
+          "min": 0.08318199999999999,
+          "max": 1.009515,
+          "mean": 0.353248,
+          "MAD": 0.040820999999999996,
+          "relative_MAD": 0.3291936485407611
+        },
+        "peak_child_rss_MiB": {
+          "n": 5,
+          "median": 257.26953125,
+          "min": 255.5234375,
+          "max": 264.88671875,
+          "mean": 259.0328125,
+          "MAD": 1.74609375,
+          "relative_MAD": 0.006787021150605062
+        },
+        "diffraction_and_controls_s": {
+          "n": 5,
+          "median": 4.192565138000001,
+          "min": 4.184347431,
+          "max": 4.299922318,
+          "mean": 4.2271504322,
+          "MAD": 0.008217707000000907,
+          "relative_MAD": 0.0019600666249686553
+        },
+        "processing_s": {
+          "n": 5,
+          "median": 4.34867026,
+          "min": 4.338806711,
+          "max": 4.630336403,
+          "mean": 4.4414139064,
+          "MAD": 0.009863548999999416,
+          "relative_MAD": 0.002268175881424364
+        },
+        "gpu_diffraction_including_packing_s": {
+          "n": 5,
+          "median": 4.1573519459999995,
+          "min": 4.148486147999999,
+          "max": 4.251853637999999,
+          "mean": 4.1835829062,
+          "MAD": 0.008865798000000424,
+          "relative_MAD": 0.002132558925767798
+        },
+        "gpu_kernels_s": {
+          "n": 5,
+          "median": 4.089475,
+          "min": 4.084364,
+          "max": 4.091726,
+          "mean": 4.0887974,
+          "MAD": 0.001288000000000622,
+          "relative_MAD": 0.0003149548536182815
+        },
+        "trace_prepare_s": {
+          "n": 5,
+          "median": 0.14916060999999997,
+          "min": 0.14425320999999994,
+          "max": 0.26260015400000003,
+          "mean": 0.18701495439999996,
+          "MAD": 0.004907400000000034,
+          "relative_MAD": 0.032900106804336846
+        }
+      },
+      "timing_stable": true
+    }
+  ],
+  "passed": true
+}

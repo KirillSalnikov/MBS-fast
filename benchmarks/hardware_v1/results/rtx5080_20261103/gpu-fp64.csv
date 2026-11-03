@@ -1,0 +1,2 @@
+case,profile,threads,median_wall_s,min_wall_s,max_wall_s,MAD_s,timing_stable,validated
+mbs-prism-ka10-2048,gpu-fp64,8,8.648574340000778,8.606601296000008,9.205974254000466,0.04197304400076973,True,True
