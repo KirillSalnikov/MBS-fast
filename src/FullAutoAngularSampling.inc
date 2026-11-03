@@ -2,9 +2,10 @@
 // their individual values. This checks sampling noise, not physical slope or
 // curvature: deterministic sharp structure is never flattened or penalized.
 // No matrices are modified. Failed pairs become bounded scheduling cohorts.
-const char* AngularSamplingPolicy(){return "incoherent-paired-support-noise-v1";}
+const char* AngularSamplingPolicy(){return "incoherent-component-envelope-noise-v2";}
 struct AngularSamplingDecision {
     bool enabled=false,passed=true;double maximum=0,tolerance=0;
+    double maximumRatio=0;Mueller envelope{},allowance{};
     size_t pairs=0,failed=0;Budgets proposed;
     std::vector<RoundOutputPriority> priorities;
     std::string table;
@@ -26,11 +27,22 @@ AngularSamplingDecision CheckAngularSampling(const Engine& e,const AdaptiveState
     Require(!stage.levels.empty()&&stage.levels.size()==state.counts.size(),"angular sampling level mismatch");
     for(const auto& sample:samples)Require(sample.size()==ids.size(),"angular sampling row mismatch");
     if(e.ratios)Require(stats.ratioInterval.size()==ids.size(),"missing angular ratio intervals");
+    // The M11-scaled contract alone can accept visibly noisy weak elements.
+    // Bound adjacent noise by epsilon times each component's peak normalized
+    // amplitude across the evaluated cone, without dividing by a local zero.
+    // epsilon is the amplitude floor; the old epsilon/4 bound is never relaxed.
+    // These are stopping diagnostics, not weights applied to the estimator.
+    Require(e.eps>0&&e.eps<1,"invalid angular component tolerance");
+    result.envelope.fill(e.eps);
+    for(const auto& mean:stats.mean)if(std::isfinite(mean[0])&&mean[0]>0)
+        for(int j=0;j<16;++j)if(std::isfinite(mean[j]))
+            result.envelope[j]=std::max(result.envelope[j],std::fabs(mean[j]/mean[0]));
+    for(int j=0;j<16;++j)result.allowance[j]=std::min(result.tolerance,e.eps*result.envelope[j]);
     for(size_t l=0;l<stage.levels.size();++l){
         Require(state.counts[l].size()==e.theta.size()&&stage.levels[l].size()==8,"angular sampling budget/replica mismatch");
         for(const auto& sample:stage.levels[l])Require(sample.size()==ids.size(),"angular level row mismatch");
     }
-    struct Pair {size_t left,right;double noise;bool passed;int element;bool ratio;};
+    struct Pair {size_t left,right;double noise,allowance,score;bool passed;int element;bool ratio;};
     std::vector<Pair> pairs;
     for(size_t k=1;k<state.knots.size();++k){
         const size_t left=state.knots[k-1],right=state.knots[k];
@@ -42,7 +54,7 @@ AngularSamplingDecision CheckAngularSampling(const Engine& e,const AdaptiveState
         // Nonpositive intermediate estimates already fail the ordinary gate.
         // Keep them refinable instead of terminating the controller here.
         const double scale=positive?std::min(ma[0],mb[0]):1.;
-        double worst=-1;int element=0;bool ratio=false;
+        double worst=-1,worstScore=-1;int element=0;bool ratio=false;
         std::array<double,8> contrast{};
         auto value=[&](const Mueller& va,const Mueller& vb,int j,bool normalized){
             if(!normalized)return (vb[j]-va[j])/scale;
@@ -56,11 +68,14 @@ AngularSamplingDecision CheckAngularSampling(const Engine& e,const AdaptiveState
             // denominator. The ordinary Fieller gate remains authoritative.
             if(normalized&&(!std::isfinite(stats.ratioInterval[a][j])||!std::isfinite(stats.ratioInterval[b][j])
                     ||stats.ratioInterval[a][j]>=1e50||stats.ratioInterval[b][j]>=1e50))noise=1e100;
-            if(noise>worst){worst=noise;element=j;ratio=normalized;contrast=v;}
+            result.maximum=std::max(result.maximum,noise);
+            const double score=noise/result.allowance[j];
+            if(score>worstScore){worst=noise;worstScore=score;element=j;ratio=normalized;contrast=v;}
         }
-        if(!positive)worst=1e100;
+        if(!positive){worst=1e100;worstScore=worst/result.allowance[element];}
         ++result.pairs;result.maximum=std::max(result.maximum,worst);
-        const bool passed=worst<=result.tolerance;
+        result.maximumRatio=std::max(result.maximumRatio,worstScore);
+        const bool passed=worstScore<=1;
         if(!passed){
             result.passed=false;++result.failed;
             // Positive covariance identifies levels that contribute noise to
@@ -91,15 +106,15 @@ AngularSamplingDecision CheckAngularSampling(const Engine& e,const AdaptiveState
                 for(size_t id:{left,right})result.proposed[dominant][id]=
                     std::max(result.proposed[dominant][id],Doubled(e,state.counts[dominant][id]));
             }
-            result.priorities.push_back({worst,{left,right}});
+            result.priorities.push_back({worstScore*result.tolerance,{left,right}});
         }
-        pairs.push_back({left,right,worst,passed,element,ratio});
+        pairs.push_back({left,right,worst,result.allowance[element],worstScore,passed,element,ratio});
     }
     // Report the final combined proposal after overlapping pairs have voted.
     for(const auto& pair:pairs){
         const size_t left=pair.left,right=pair.right;const double worst=pair.noise;
         const bool passed=pair.passed,ratio=pair.ratio;const int element=pair.element;
-        table<<Number(e.theta[left])<<','<<Number(e.theta[right])<<','<<Number(worst)<<','<<Number(result.tolerance)
+        table<<Number(e.theta[left])<<','<<Number(e.theta[right])<<','<<Number(worst)<<','<<Number(pair.allowance)
             <<','<<passed<<",M"<<element/4+1<<element%4+1<<','<<ratio;
         for(size_t l=0;l<state.counts.size();++l)table<<','<<state.counts[l][left]<<','<<state.counts[l][right]
             <<','<<result.proposed[l][left]<<','<<result.proposed[l][right];
@@ -113,11 +128,17 @@ std::string AngularSamplingFields(const AngularSamplingDecision& result){
         +",\"angular_sampling_pass\":"+(result.passed?"true":"false")
         +",\"angular_sampling_noise95\":"+Number(result.maximum)
         +",\"angular_sampling_tolerance\":"+Number(result.tolerance)
+        +",\"angular_sampling_max_allowance_ratio\":"+Number(result.maximumRatio)
         +",\"angular_sampling_failed_pairs\":"+Number(result.failed);
 }
 void SaveAngularSampling(Engine& e,const AngularSamplingDecision& result,const std::string& folder){
     Atomic(folder+"/angular_sampling.csv",result.table);
-    const auto report="{\"schema\":1"+AngularSamplingFields(result)
+    std::string scales="[",limits="[";
+    for(int j=0;j<16;++j){if(j){scales+=",";limits+=",";}scales+=Number(result.envelope[j]);limits+=Number(result.allowance[j]);}
+    scales+="]";limits+="]";
+    const auto report="{\"schema\":2"+AngularSamplingFields(result)
+        +",\"component_envelopes\":"+scales+",\"component_allowances\":"+limits
+        +",\"component_amplitude_floor\":"+Number(e.eps)
         +",\"checked_pairs\":"+Number(result.pairs)
         +",\"replicas\":8,\"physical_slope_constrained\":false,\"matrices_modified\":false"
          ",\"scope\":\"paired support-increment sampling noise; ratios use linearized influence with an unresolved-Fieller guard; not a simultaneous confidence bound\"}";
@@ -134,6 +155,7 @@ void PrepareAngularSamplingPolicy(Engine& e,AdaptiveState& state,bool resumed){
     }
     e.Record(path,"{\"policy\":"+Quoted(AngularSamplingPolicy())
         +",\"scope\":\"incoherent PO with local orientation budgets\",\"tolerance\":"+Number(e.interpolation)
+        +",\"component_rule\":\"min(interpolation_tolerance, epsilon*max(epsilon, peak_abs_Mij_over_M11))\""
         +",\"native_blocks_deleted\":0,\"sampling_noise_only\":true,\"all16\":true,\"ratios_follow_fullauto_ratios\":true}");
 }
 // Saved diagnostics are scheduling hints only. Never restore acceptance from
@@ -157,7 +179,7 @@ std::vector<RoundOutputPriority> SavedAngularPriorities(const Engine& e,const Ad
         const size_t i=left-e.theta.begin(),j=right-e.theta.begin();
         const auto knot=std::lower_bound(state.knots.begin(),state.knots.end(),i);
         if(knot==state.knots.end()||*knot!=i||knot+1==state.knots.end()||*(knot+1)!=j)continue;
-        priorities.push_back({noise,{i,j}});
+        priorities.push_back({noise/tolerance*e.interpolation,{i,j}});
     }
     return priorities;
 }

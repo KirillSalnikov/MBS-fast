@@ -702,9 +702,14 @@ int RunAdaptive(Engine& e){
         // it as evidence that this newer output policy was applied retroactively.
         const bool currentOutputPolicy=Exists(e.root+"/output_cache_policy.json")
             &&Read(e.root+"/output_cache_policy.json").find(OutputCachePolicy())!=std::string::npos;
+        const bool angularApplies=!e.go&&!e.coherent&&e.local;
+        const bool currentAngularPolicy=!angularApplies||(Exists(e.root+"/angular_sampling_policy.json")
+            &&Read(e.root+"/angular_sampling_policy.json").find(AngularSamplingPolicy())!=std::string::npos);
         e.Log("completed_output_policy", "{\"current_output_cache_policy\":"+std::string(currentOutputPolicy?"true":"false")
+            +",\"current_angular_sampling_policy\":"+(currentAngularPolicy?"true":"false")
             +",\"legacy_output_preserved\":"+(currentOutputPolicy?"false":"true")+",\"optical_recalculation\":false}");
         if(!currentOutputPolicy)std::cout<<"fullauto: preserved completed legacy output; current output-cache policy was not applied to it"<<std::endl;
+        if(!currentAngularPolicy)std::cout<<"fullauto: preserved completed legacy output; current angular component-noise policy was not applied; use a child refinement to reassess it"<<std::endl;
         CompleteSavedPOIntegrals(e);
         const std::string path=e.root+"/fullauto_status.json";if(Exists(path)){std::string text=Read(path);const size_t key=text.find("\"status\":\"");if(key!=std::string::npos){const size_t begin=key+10,end=text.find('"',begin);text.replace(begin,end-begin,"converged");Atomic(path,text);}}
         std::cout<<"fullauto: completed outputs and dependencies verified; no calculation repeated"<<std::endl;return 0;

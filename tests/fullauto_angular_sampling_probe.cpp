@@ -48,8 +48,10 @@ void RealReplay(const std::string& fixture,const std::string& root){
     Close(stats.mean[2][0],1448.5684709154918,"right production M11 changed");
     const auto result=Check(e,state,data);
     Require(result.enabled&&!result.passed&&result.failed==2&&result.priorities.size()==2,"real jagged supports were accepted");
-    Close(result.priorities[0].error,.07789106231351053,"left paired noise changed");
-    Close(result.priorities[1].error,.07982800520590279,"right paired noise changed");
+    Close(result.maximum,.07982800520590279,"raw paired noise changed");
+    // v2 prioritizes the more poorly resolved weak M43/M34 rather than M33.
+    Close(result.priorities[0].error,.2551012778371969,"left component priority changed");
+    Close(result.priorities[1].error,.20594001091880645,"right component priority changed");
     Require(data.levels==original&&state.counts==counts,"checking altered data or current allocation");
     bool grew=false;
     for(size_t l=0;l<levels;++l)for(size_t r=0;r<rows;++r){
@@ -72,10 +74,40 @@ void RealReplay(const std::string& fixture,const std::string& root){
     Require(intact,"time limiter destroyed all paired growth");
     std::cout<<"PASS measured 562.3: two noisy pairs rejected; saved matrices unchanged; local bounded growth\n";
 }
+void CompletedReplays(const std::string& fixture,const std::string& root){
+    std::ifstream in(fixture);size_t cases;Require(bool(in>>cases)&&cases==7,"bad completed fixture header");
+    for(size_t k=0;k<cases;++k){
+        std::string name;Require(bool(in>>name),"missing completed job name");
+        ArgPP args;RunConfig config;Engine e(args,config);AdaptiveState state;Init(e,state,root+"/"+Number(k),3);
+        for(double& angle:e.theta)Require(bool(in>>angle),"missing completed angle");
+        for(auto& level:state.counts)for(int& n:level)Require(bool(in>>n),"missing completed prefix");
+        auto data=Quiet(3);
+        for(auto& level:data.levels)for(auto& sample:level)for(auto& row:sample)for(double& v:row)
+            Require(bool(in>>v)&&std::isfinite(v),"missing completed Mueller element");
+        const auto original=data.levels;const auto counts=state.counts;
+        const auto result=Check(e,state,data);
+        Require(result.maximum<e.interpolation,"fixture did not pass the old M11-scale angular rule");
+        Require(!result.passed&&result.maximumRatio>1&&result.failed>0,"noisy weak completed element accepted");
+        Require(result.allowance[5]<e.interpolation,"weak M22 kept the full M11 allowance");
+        Require(data.levels==original&&state.counts==counts,"quality check changed measured matrices");
+        bool grew=false;for(size_t l=0;l<counts.size();++l)for(size_t r=0;r<3;++r){
+            Require(result.proposed[l][r]>=counts[l][r]&&result.proposed[l][r]<=4*counts[l][r],"unbounded weak-element refinement");
+            grew=grew||result.proposed[l][r]>counts[l][r];
+        }
+        Require(grew,"failed completed stencil did not schedule refinement");
+        SaveAngularSampling(e,result,e.root);
+        const auto saved=SavedAngularPriorities(e,state,e.root);
+        Require(saved.size()==result.priorities.size(),"weak-element priorities lost on resume");
+        for(size_t i=0;i<saved.size();++i)Close(saved[i].error,result.priorities[i].error,"weak-element priority scale changed on resume");
+        std::cout<<"PASS completed replay "<<name<<" old_max="<<result.maximum<<" allowance_ratio="<<result.maximumRatio<<'\n';
+    }
+    std::string extra;Require(!(in>>extra),"trailing completed fixture data");
+}
 }
 int main(int argc,char** argv){try{
-    Require(argc==3,"expected fixture and private output directory");
+    Require(argc==4,"expected old fixture, private output directory and completed fixture");
     const std::string root=argv[2];Directory(root);RealReplay(argv[1],root+"/real562");
+    CompletedReplays(argv[3],root+"/completed");
     ArgPP args;RunConfig config;size_t tests=0;
     for(int j=0;j<16;++j){
         Engine e(args,config);AdaptiveState state;Init(e,state,root+"/raw"+Number(j));e.ratios=false;
@@ -83,6 +115,16 @@ int main(int argc,char** argv){try{
         const auto result=Check(e,state,data);
         Require(!result.passed&&result.failed==2&&result.proposed[0]==state.counts[0],"raw noise missed or quiet base grew");
         Require(result.proposed[1]==std::vector<int>({1024,1024,1024}),"equal-prefix pair did not grow together");++tests;
+    }
+    {
+        Engine e(args,config);AdaptiveState state;Init(e,state,root+"/weak-zero");auto data=Quiet();
+        for(int s=0;s<8;++s){for(int r=0;r<3;++r)data.levels[0][s][r][5]=2*(r-1);
+            data.levels[1][s][1][5]=.2*signs[s];}
+        const auto noisy=Check(e,state,data);
+        Require(noisy.maximum<e.interpolation&&!noisy.passed,"weak zero-crossing noise was accepted");
+        Close(noisy.allowance[5],.04*.04,"zero crossing lost the nonzero amplitude floor");
+        for(int s=0;s<8;++s)data.levels[1][s][1][5]=0;
+        Require(Check(e,state,data).passed,"resolved physical zero crossing failed");++tests;
     }
     {
         Engine e(args,config);AdaptiveState state;Init(e,state,root+"/unequal");auto data=Quiet();
