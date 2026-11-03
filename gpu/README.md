@@ -126,3 +126,10 @@ CUDA runtime errors stop the process by default. This is intentional: otherwise
 an invalid GPU build can silently fall back to CPU and ruin speed measurements.
 For debugging only, set `MBS_GPU_ALLOW_FALLBACK=1` to restore the old fallback
 behavior.
+# Профиль для потребительских RTX
+
+`make -C gpu fp32_ds GPU_ARCH=86` из корня проекта собирает
+`gpu/bin/mbs_po_gpu_float_ds`: чувствительные операции используют две FP32,
+а трассировка сохраняет FP64. Для RTX 5080 задайте `GPU_ARCH=120`.
+Сборка запрещает fast-math и имеет отдельный каталог объектов.
+Подробности, измерения и ограничения: [DOUBLE_SINGLE.md](../docs/DOUBLE_SINGLE.md).

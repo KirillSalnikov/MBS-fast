@@ -194,3 +194,9 @@ implementation. For MBS-1 cite D. N. Timofeev, A. V. Konoshonkin and N. V. Kusto
 Scattering by Nonconvex Atmospheric Ice Particles*, Atmospheric and Oceanic
 Optics 31(6), 642–649 (2018), [DOI](https://doi.org/10.1134/S1024856018060179),
 and the exact MBS-fast tag or commit. [GPLv3 license](LICENSE).
+# Ускоренная арифметика для RTX
+
+Для RTX 3080 Ti доступна сборка `make -C gpu fp32_ds GPU_ARCH=86`;
+для RTX 5080 — `GPU_ARCH=120`. Она использует две FP32 в чувствительных
+частях дифракционного ядра и сохраняет FP64 в трассировке.
+[Команды, измеренная точность и восстановление fullauto](docs/DOUBLE_SINGLE.md).
