@@ -64,10 +64,13 @@ def main():
                         if not ours:entry['forbidden'].append(int(pid))
                     except FileNotFoundError:
                         continue
+                    except (OSError,ValueError,IndexError) as error:
+                        entry['error']='Cannot identify GPU PID '+pid+': '+str(error)
                 guard.append(entry);stop.wait(1)
         thread=threading.Thread(target=monitor_processes,daemon=True);thread.start()
         try:run=b.timed_process(command,env,directory,a.device,a.timeout)
         finally:stop.set();thread.join(timeout=35)
+        if thread.is_alive():guard.append(dict(error='GPU process monitor did not terminate',forbidden=[]))
         b.write(directory/'compute_process_guard.json',guard)
         if not guard or any(v.get('error') or v['forbidden'] for v in guard):
             raise RuntimeError('Concurrent/unidentified GPU compute process; hardware score rejected')

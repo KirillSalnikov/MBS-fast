@@ -151,3 +151,7 @@ experiments are separate from the fixed hardware-ranking protocol.
 
 
 [RTX 5080 optimization checks (2026-11-03)](results/rtx5080_optimization_20261103/README.md)
+
+For a longer test that heats the GPU and verifies GPU dominance, use the
+[minute-scale GPU suite](../gpu_thermal_v1/README.md). Its score is separate
+from this short full-program suite.
