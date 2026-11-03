@@ -1,0 +1,31 @@
+{
+  "source_host": "gpu2",
+  "source_result": "list3_column_L112.2_D73.7_w0.532_theta160_170_incoherent/refine_theta160_170_eps0p04",
+  "source_commit": "66acbc6",
+  "source_round": 56,
+  "replicas": [
+    11,
+    23,
+    37,
+    53,
+    71,
+    89,
+    107,
+    131
+  ],
+  "source_policy": "incoherent-component-envelope-noise-v2",
+  "source_acceptance": "passed v2, residual noise remains",
+  "meaning": "Combined production Mueller estimators, not raw single-level physical contributions. Acceptance replay only. No smoothing.",
+  "sources": {
+    "replicas/production_evaluated_seed89.dat": "41b12405b649c2bde305f85e428015e3d7578f8926f06335d4420a20bffb16d4",
+    "replicas/production_evaluated_seed23.dat": "3955caaf78c1c589dfd2eb6a4c40cb1c305d3fb44fc9694dfa5cca4ec2232474",
+    "replicas/production_evaluated_seed71.dat": "007af5966586a53bf10ca1342ca1f875d1a2c96735d912b72574761c803df949",
+    "replicas/production_evaluated_seed53.dat": "01c191a5fbf2bfa011fbd7e938d04e3e4fdff2b8b9290517ad029bc30acb3b94",
+    "replicas/production_evaluated_seed11.dat": "f32631db133aea669bce7caa8e31bc68dcaf4d90b2b82fcafba354e9ae752d9a",
+    "replicas/production_evaluated_seed37.dat": "3f482f6ddb7204e2fbf0a2489118d4a68acacb84635036545194dcbee512a5c1",
+    "replicas/production_evaluated_seed131.dat": "65cd8d6af230a2ca3ccf2c3f334263b2f46d8c1b0b67d8b831b80fc85967a136",
+    "replicas/production_evaluated_seed107.dat": "9927ec734ef282a36591f434f1d4f90be191dcaa38a92e41991cfee8f793eb6b",
+    "theta_support.csv": "ca46eade22d7994832471d40797195ffc606147d9556a0b589dab0d05bcbd716"
+  },
+  "fixture_sha256": "06dd32ae5d429d6762de685dce23547f3e7def30ae28734a39bab3d512118dbb"
+}

@@ -47,11 +47,11 @@ void RealReplay(const std::string& fixture,const std::string& root){
     Close(stats.mean[1][0],1243.038413748135,"middle production M11 changed");
     Close(stats.mean[2][0],1448.5684709154918,"right production M11 changed");
     const auto result=Check(e,state,data);
-    Require(result.enabled&&!result.passed&&result.failed==2&&result.priorities.size()==2,"real jagged supports were accepted");
+    Require(result.enabled&&!result.passed&&result.failed==2&&result.priorities.size()==result.failed+result.failedShapes,"real jagged supports were accepted");
     Close(result.maximum,.07982800520590279,"raw paired noise changed");
-    // v2 prioritizes the more poorly resolved weak M43/M34 rather than M33.
-    Close(result.priorities[0].error,.2551012778371969,"left component priority changed");
-    Close(result.priorities[1].error,.20594001091880645,"right component priority changed");
+    // v3 reserves a quarter of the component tolerance for angular noise.
+    Close(result.priorities[0].error,4*.2551012778371969,"left component priority changed");
+    Close(result.priorities[1].error,4*.20594001091880645,"right component priority changed");
     Require(data.levels==original&&state.counts==counts,"checking altered data or current allocation");
     bool grew=false;
     for(size_t l=0;l<levels;++l)for(size_t r=0;r<rows;++r){
@@ -61,7 +61,7 @@ void RealReplay(const std::string& fixture,const std::string& root){
     Require(grew,"real pair did not schedule refinement");
     SaveAngularSampling(e,result,root);
     const auto saved=SavedAngularPriorities(e,state,root);
-    Require(saved.size()==2&&saved[0].nodes==std::vector<size_t>({0,1})&&saved[1].nodes==std::vector<size_t>({1,2}),"resume split/lost measured pairs");
+    Require(saved.size()==result.priorities.size()&&saved[0].nodes==std::vector<size_t>({0,1})&&saved[1].nodes==std::vector<size_t>({1,2}),"resume split/lost measured stencils");
     // Unknown-cost round limiting must retain one entire selected pair.
     e.orientationBlock=4096;AdditionalWork work(e,e.seeds.data());
     auto proposal=result.proposed;
@@ -103,11 +103,44 @@ void CompletedReplays(const std::string& fixture,const std::string& root){
     }
     std::string extra;Require(!(in>>extra),"trailing completed fixture data");
 }
+void ResidualReplay(const std::string& fixture,const std::string& root){
+    // These are the ACTUAL combined estimator replicas after v2 accepted
+    // 112.2 um. Representing the combined estimator as one level tests only
+    // acceptance; it does not claim to reproduce its multilevel allocation.
+    std::ifstream in(fixture);size_t rows,knots,replicas;
+    Require(bool(in>>rows>>knots>>replicas)&&rows==165&&knots==83&&replicas==8,"bad residual fixture dimensions");
+    ArgPP args;RunConfig config;Engine e(args,config);AdaptiveState state;Init(e,state,root,1);
+    e.theta.resize(rows);for(double& angle:e.theta)Require(bool(in>>angle),"missing residual angle");
+    state.knots.resize(knots);for(size_t& k:state.knots)Require(bool(in>>k)&&k<rows,"bad residual knot");
+    state.counts=Budgets(1,std::vector<int>(rows,512));
+    AdaptiveData data;data.levels.assign(1,Samples(8,Matrix(rows)));
+    for(auto& sample:data.levels[0])for(auto& row:sample)for(double& v:row)
+        Require(bool(in>>v)&&std::isfinite(v),"missing residual replica");
+    std::string extra;Require(!(in>>extra),"trailing residual fixture");
+    const auto original=data.levels;const auto counts=state.counts;
+    std::vector<size_t> ids;for(size_t i=0;i<rows;++i)ids.push_back(i);
+    const auto samples=Combine(data.levels);const auto stats=Estimate(samples);
+    const auto result=CheckAngularSampling(e,state,data,ids,samples,stats);
+    Require(!result.passed&&result.pairs==82&&result.failed==72,"v2 residual pairs incorrectly accepted");
+    Require(result.shapes==160&&result.failedShapes>0,"residual shape noise not checked");
+    Close(result.allowance[5],.0005793091420364889,"M22 residual allowance changed");
+    Require(data.levels==original&&state.counts==counts,"residual replay modified physical values");
+    SaveAngularSampling(e,result,root);
+    const auto saved=SavedAngularPriorities(e,state,root);
+    Require(saved.size()==result.priorities.size(),"residual scheduling priorities lost on resume");
+    for(size_t i=0;i<saved.size();++i){
+        Require(saved[i].nodes==result.priorities[i].nodes,"residual stencil split on resume");
+        Close(saved[i].error,result.priorities[i].error,"residual priority changed on resume");
+    }
+    std::cout<<"PASS measured v2 residual: "<<result.failed<<"/"<<result.pairs<<" pairs and "
+        <<result.failedShapes<<"/"<<result.shapes<<" shapes rejected; saved values unchanged\n";
+}
 }
 int main(int argc,char** argv){try{
-    Require(argc==4,"expected old fixture, private output directory and completed fixture");
+    Require(argc==5,"expected old fixture, private output directory, completed and residual fixtures");
     const std::string root=argv[2];Directory(root);RealReplay(argv[1],root+"/real562");
     CompletedReplays(argv[3],root+"/completed");
+    ResidualReplay(argv[4],root+"/residual112");
     ArgPP args;RunConfig config;size_t tests=0;
     for(int j=0;j<16;++j){
         Engine e(args,config);AdaptiveState state;Init(e,state,root+"/raw"+Number(j));e.ratios=false;
@@ -122,7 +155,7 @@ int main(int argc,char** argv){try{
             data.levels[1][s][1][5]=.2*signs[s];}
         const auto noisy=Check(e,state,data);
         Require(noisy.maximum<e.interpolation&&!noisy.passed,"weak zero-crossing noise was accepted");
-        Close(noisy.allowance[5],.04*.04,"zero crossing lost the nonzero amplitude floor");
+        Close(noisy.allowance[5],.01*.04,"zero crossing lost the nonzero amplitude floor");
         for(int s=0;s<8;++s)data.levels[1][s][1][5]=0;
         Require(Check(e,state,data).passed,"resolved physical zero crossing failed");++tests;
     }
@@ -170,6 +203,54 @@ int main(int argc,char** argv){try{
         e.coherent=true;Require(!Check(e,state,data).enabled,"coherent mode changed");
         e.coherent=false;e.go=true;Require(!Check(e,state,data).enabled,"GO mode changed");
         e.go=false;e.local=false;Require(!Check(e,state,data).enabled,"explicit global orientation mode changed");++tests;
+    }
+    {
+        Engine e(args,config);AdaptiveState state;Init(e,state,root+"/span-two");
+        e.theta={160.,160.2,160.4,160.6,160.8};state.knots={0,1,2,3,4};
+        state.counts=Budgets(2,std::vector<int>(5,512));e.ratios=false;
+        AdaptiveData data;data.levels.assign(2,Samples(8,Matrix(5)));
+        // Every short increment and span-one bend is below the allowance;
+        // the broad correlated bump exceeds it at span two.
+        std::array<double,8> unit{};for(int s=0;s<8;++s)unit[s]=signs[s];
+        const double amplitude=.75*(e.eps/4)*e.eps*100/AngularNoise(unit);
+        const double bump[5]={0,1,2,1,0};
+        for(int s=0;s<8;++s)for(size_t r=0;r<5;++r){
+            data.levels[0][s][r][0]=100;data.levels[0][s][r][5]=1;
+            data.levels[1][s][r][5]=amplitude*bump[r]*signs[s];
+        }
+        const std::vector<size_t> ids={0,1,2,3,4};
+        const auto samples=Combine(data.levels);const auto stats=Estimate(samples);
+        const auto result=CheckAngularSampling(e,state,data,ids,samples,stats);
+        Require(result.failed==0&&result.shapes==4&&result.failedShapes==1&&!result.passed,"broad shape noise escaped pair-only gate");
+        Require(result.priorities.size()==1&&result.priorities[0].nodes==std::vector<size_t>({0,2,4}),"span-two cohort missing");
+        Require(result.proposed[0]==state.counts[0]&&result.proposed[1]==std::vector<int>({1024,512,1024,512,1024}),"shape refinement grew unrelated rows");
+        SaveAngularSampling(e,result,e.root);const auto saved=SavedAngularPriorities(e,state,e.root);
+        Require(saved.size()==1&&saved[0].nodes==result.priorities[0].nodes,"shape-only resume lost the cohort");
+        e.orientationBlock=4096;AdditionalWork work(e,e.seeds.data());auto proposed=result.proposed;
+        BoundRoundWork(e,work,state.counts,proposed,{4,6},ids,stats,{}, {},nullptr,saved);
+        Require(proposed==result.proposed,"unknown-cost limiter split the shape-only cohort");
+        e.maxCount=512;const auto capped=CheckAngularSampling(e,state,data,ids,samples,stats);
+        Require(!capped.passed&&capped.proposed==state.counts,"shape maxCount manufactured acceptance");
+        ++tests;
+    }
+    {
+        Engine e(args,config);AdaptiveState state;Init(e,state,root+"/uneven-linear");auto data=Quiet();
+        e.theta={160.,160.01,170.};
+        // Random affine angular offsets have zero curvature even on an
+        // uneven grid; a large deterministic peak must also remain intact.
+        for(int s=0;s<8;++s)for(int r=0;r<3;++r){
+            data.levels[0][s][r][5]=(r==1?50.:0.);
+            data.levels[1][s][r][5]=signs[s]*(10+e.theta[r]);
+        }
+        const auto result=Check(e,state,data);
+        Require(result.failedShapes==0&&result.maximumShapeRatio<1e-9,"affine noise/physical peak constrained as curvature");
+        ++tests;
+    }
+    {
+        Engine e(args,config);AdaptiveState state;Init(e,state,root+"/custom-budget");auto data=Quiet();
+        e.interpolation=.001;Close(Check(e,state,data).allowance[5],.001*.04,"strict explicit interpolation budget ignored");
+        e.interpolation=.1;Close(Check(e,state,data).allowance[5],.01*.04,"loose interpolation consumed full component budget");
+        ++tests;
     }
     {
         Engine e(args,config);AdaptiveState state;Init(e,state,root+"/migration");state.streak=2;e.independentPassed=true;
