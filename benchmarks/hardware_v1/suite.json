@@ -27,6 +27,14 @@
         "max_scaled_M11": 1e-06,
         "relative_L2": 1e-07
       }
+    },
+    "gpu-fp32-reduced": {
+      "wrapper": "mbs-po-gpu-fp32-reduced",
+      "relative_binary": "gpu/bin/mbs_po_gpu_float_reduced",
+      "validation": {
+        "max_scaled_M11": 0.0002,
+        "relative_L2": 5e-05
+      }
     }
   },
   "cases": [

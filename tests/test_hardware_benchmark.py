@@ -9,6 +9,14 @@ def report(seconds,key='same',passed=True,source='abc'):
     return dict(passed=passed,hardware=dict(label='GPU'),build=dict(numerical_source_sha256=source,host_compiler_build_ids=['GCC 14'],installation=dict(nvcc='CUDA 13.4')),cases=[dict(id='test',comparison_key=key,statistics=dict(wall_s=dict(median=seconds,n=5,relative_MAD=.01)))])
 
 class BenchmarkTests(unittest.TestCase):
+    def test_precision_profiles_cannot_silently_change_trigonometry(self):
+        precise='CUDA sm_120 fp32-diffraction-storage phase-build-fp64 phase-trig-fp64 precise-math'
+        reduced=precise.replace('phase-trig-fp64','phase-trig-reduced-fp32 phase-fallback-fp64')
+        b.validate_mbs_version('gpu-fp32',precise)
+        b.validate_mbs_version('gpu-fp32-reduced',reduced)
+        for profile,version in [('gpu-fp32',reduced),('gpu-fp32-reduced',precise)]:
+            with self.assertRaises(RuntimeError):b.validate_mbs_version(profile,version)
+
     def test_scaled_error_does_not_divide_by_weak_elements(self):
         ref=matrix();actual=matrix();actual[0][2]=1e-7
         error=b.matrix_error(actual,ref)

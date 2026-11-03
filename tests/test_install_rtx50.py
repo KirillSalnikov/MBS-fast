@@ -51,6 +51,16 @@ class InstallerTests(unittest.TestCase):
             paths=[str(p) for p in setup.source_files(root)]
             self.assertEqual(paths,['scripts/new_installer.py','src/main.cpp'])
 
+    def test_optional_reduced_profile_keeps_fp64_phase_build_and_precise_defaults(self):
+        plans=setup.commands('mbs-fast',Path('/cuda'),'/g++',2,include_reduced=True)
+        self.assertEqual([name for name,cmd in plans],['cpu','gpu-fp64','gpu-fp32','gpu-fp32-reduced'])
+        for name,cmd in plans[1:3]:self.assertIn('GPU_PHASE_TRIG=precise',cmd)
+        cmd=plans[-1][1]
+        self.assertIn('GPU_PRECISION=float',cmd)
+        self.assertIn('GPU_PHASE_TRIG=reduced',cmd)
+        self.assertNotIn('GPU_PHASE_TRIG=precise',cmd)
+        self.assertIn('GPU_FAST_MATH=0',cmd)
+
     def test_wrapper_quotes_paths_and_preserves_arguments(self):
         with tempfile.TemporaryDirectory() as temp:
             p=Path(temp)/'with spaces'/'wrapper'

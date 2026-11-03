@@ -58,6 +58,14 @@ def numerical_files(source,program):
     else:paths.append(source/'cpu/GpuSupportStub.cpp')
     return sorted(set(paths))
 
+def validate_mbs_version(profile,version):
+    if profile.startswith('gpu') and ('CUDA ' not in version or 'precise-math' not in version or 'phase-build-fp64' not in version):raise RuntimeError('Benchmark requires precise GPU phase math')
+    if profile.startswith('gpu-fp32') and 'fp32-diffraction-storage' not in version:raise RuntimeError('Not an FP32 storage build')
+    if profile=='gpu-fp64' and 'fp64-diffraction-storage' not in version:raise RuntimeError('Not an FP64 storage build')
+    expected_trig='phase-trig-reduced-fp32' if profile=='gpu-fp32-reduced' else 'phase-trig-fp64'
+    if profile.startswith('gpu') and expected_trig not in version:raise RuntimeError('Trigonometry profile does not match benchmark profile')
+    if profile=='cpu' and 'CPU double' not in version:raise RuntimeError('Not a CPU double build')
+
 def build_info(args,suite):
     prefix=(args.prefix or Path.home()/'.local/opt'/suite['program']).expanduser().absolute()
     installation=prefix/'installation.json';manifest=json.loads(installation.read_text()) if installation.exists() else {}
@@ -75,11 +83,7 @@ def build_info(args,suite):
     env=dict(os.environ);env.update(exports)
     version=capture([native,'--version'],env)
     if not version:raise RuntimeError('Executable --version failed')
-    if suite['program']=='mbs-fast':
-        if args.profile.startswith('gpu') and ('CUDA ' not in version or 'precise-math' not in version or 'phase-build-fp64' not in version):raise RuntimeError('Benchmark requires precise GPU phase math')
-        if args.profile=='gpu-fp32' and 'fp32-diffraction-storage' not in version:raise RuntimeError('Not an FP32 storage build')
-        if args.profile=='gpu-fp64' and 'fp64-diffraction-storage' not in version:raise RuntimeError('Not an FP64 storage build')
-        if args.profile=='cpu' and 'CPU double' not in version:raise RuntimeError('Not a CPU double build')
+    if suite['program']=='mbs-fast':validate_mbs_version(args.profile,version)
     python=args.python
     if python is None and (prefix/'bin/bem').exists():python=wrapper(prefix/'bin/bem')[0]
     python=Path(python or sys.executable).absolute()

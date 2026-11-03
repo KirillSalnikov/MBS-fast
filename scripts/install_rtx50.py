@@ -51,12 +51,16 @@ def compiler(cuda,requested,kind):
         return str(Path(path).resolve())
     raise RuntimeError('No compatible GNU C++ compiler. Install g++-14 or pass --cxx. '+ '; '.join(reasons))
 
-def commands(kind,cuda,cxx,jobs,arch=120,mpicxx='mpicxx'):
+def commands(kind,cuda,cxx,jobs,arch=120,mpicxx='mpicxx',include_reduced=False):
     if arch!=120:raise ValueError('This installer targets RTX 50 / Blackwell compute capability 12.0 (sm_120)')
     rpath=f'-Wl,-rpath,{cuda}/lib64'
     if kind=='mbs-fast':
         gpu=['-j'+str(jobs),'GPU_ARCH=120','CUDA_PATH='+str(cuda),'CXX='+cxx,'CUDA_HOST_CXX='+cxx,'ARCH_FLAGS=-march=native','GPU_LTO=1','GPU_FAST_MATH=0','GPU_PHASE_TRIG=precise',f'LDFLAGS=-lm -lgomp -L{cuda}/lib64 {rpath} -lcufft -lcudart']
-        return [('cpu',['make','-C','cpu','-j'+str(jobs),'CXX='+mpicxx,'ARCH_FLAGS=-march=native']),('gpu-fp64',['make','-C','gpu','fp64']+gpu),('gpu-fp32',['make','-C','gpu','fp32']+gpu)]
+        stages=[('cpu',['make','-C','cpu','-j'+str(jobs),'CXX='+mpicxx,'ARCH_FLAGS=-march=native']),('gpu-fp64',['make','-C','gpu','fp64']+gpu),('gpu-fp32',['make','-C','gpu','fp32']+gpu)]
+        if include_reduced:
+            reduced=[v for v in gpu if v!='GPU_PHASE_TRIG=precise']
+            stages.append(('gpu-fp32-reduced',['make','-C','gpu','fp32_reduced']+reduced+['GPU_PRECISION=float','GPU_PHASE_TRIG=reduced']))
+        return stages
     flags=['CXX='+cxx,'CUDA_HOME='+str(cuda),'ARCH=-arch=sm_120','CUDA_CPP_STD=c++17']
     return [('cpu-reference',['make','bin/muller_nodal_demo','-j'+str(jobs)]+flags),('so3-fp64',['make','bin/tmatrix_so3_mstm','-j1']+flags),('so3-fp32',['make','bin/tmatrix_so3_mstm_fp32','-j1']+flags),('gpu',['make','muller-fp32','-j'+str(jobs)]+flags),('tmatrix-server',['make','bin/muller_tmatrix_fmm_server','-j'+str(jobs)]+flags)]
 
@@ -99,13 +103,15 @@ def main():
     p.add_argument('--cxx');p.add_argument('--jobs',type=int,default=min(4,os.cpu_count() or 1));p.add_argument('--device',type=int,default=0)
     p.add_argument('--install-deps',action='store_true',help='Explicitly install host packages using apt; never installs NVIDIA display drivers')
     p.add_argument('--python',default=sys.executable,help='Python >=3.10 for the BEM launcher and analysis requirements')
+    p.add_argument('--with-reduced-phase',action='store_true',help='Also build the optional MBS FP64 range-reduced/FP32 trigonometry profile; precise profiles remain available')
     p.add_argument('--plan',action='store_true',help='Print make commands without installing or building; requires --cuda-home and --cxx')
     args=p.parse_args();root=Path(__file__).resolve().parents[1];kind=project(root)
+    if args.with_reduced_phase and kind!='mbs-fast':p.error('--with-reduced-phase applies to MBS-fast')
     if args.jobs<1 or args.device<0:p.error('--jobs must be positive and --device nonnegative')
     if platform.system()!='Linux' or platform.machine() not in ['x86_64','amd64']:p.error('Supported platform: x86-64 Linux or WSL2')
     if args.plan:
         if not args.cuda_home or not args.cxx:p.error('--plan requires --cuda-home and --cxx')
-        print(json.dumps(dict(project=kind,architecture='sm_120',driver_install=False,commands=commands(kind,args.cuda_home,args.cxx,args.jobs)),indent=2));return
+        print(json.dumps(dict(project=kind,architecture='sm_120',driver_install=False,commands=commands(kind,args.cuda_home,args.cxx,args.jobs,include_reduced=args.with_reduced_phase)),indent=2));return
     if args.install_deps:system_deps(kind)
     arch=gpu_arch(args.device)
     if arch!=120:raise RuntimeError(f'Expected RTX 50 / Blackwell sm_120; detected sm_{arch}')
@@ -132,7 +138,7 @@ def main():
     compat=source/('src/cuda/CudaHostCompat.h' if kind=='mbs-fast' else 'src/cuda_host_compat.h')
     with (work/'gpu_probe_build.log').open('w') as log:run([cuda/'bin/nvcc','-std=c++17','-arch=sm_120','-ccbin',cxx,'-U_GNU_SOURCE','-D_DEFAULT_SOURCE','-D_XOPEN_SOURCE=700','-include',compat,probe,'-o',work/'gpu_probe'],env=env,stdout=log,stderr=subprocess.STDOUT)
     hardware=json.loads(output([work/'gpu_probe'],env=env));assert hardware['kernel_result']==120 and hardware['compute']==120
-    stages=commands(kind,cuda,cxx,args.jobs,mpicxx=shutil.which('mpicxx') or 'mpicxx');records=[]
+    stages=commands(kind,cuda,cxx,args.jobs,mpicxx=shutil.which('mpicxx') or 'mpicxx',include_reduced=args.with_reduced_phase);records=[]
     for name,cmd in stages:
         if kind=='mbs-fast':cmd+=['GIT_DESCRIBE='+revision]
         print('Building',kind,name,flush=True);start=time.time()
@@ -140,6 +146,7 @@ def main():
         records.append(dict(stage=name,command=cmd,seconds=time.time()-start))
     if kind=='mbs-fast':
         bins={'mbs-po-cpu':'cpu/bin/mbs_po_mpi','mbs-po-gpu-fp64':'gpu/bin/mbs_po_gpu_double','mbs-po-gpu-fp32':'gpu/bin/mbs_po_gpu_float'}
+        if args.with_reduced_phase:bins['mbs-po-gpu-fp32-reduced']='gpu/bin/mbs_po_gpu_float_reduced'
     else:
         bins={'bem-gpu':'bin/muller_nodal_fmm_demo_fp32','bem-tmatrix-server':'bin/muller_tmatrix_fmm_server','bem-so3-fp64':'bin/tmatrix_so3_mstm','bem-so3-fp32':'bin/tmatrix_so3_mstm_fp32','bem-cpu-reference':'bin/muller_nodal_demo'}
         python=Path(shutil.which(args.python) or args.python).resolve();version=output([python,'-c','import sys;print(sys.version_info.major*100+sys.version_info.minor)'])
@@ -154,10 +161,10 @@ def main():
         wrapper(prefix/'bin/bem',[python,source/'bem'],{'PATH':env['PATH'],'LD_LIBRARY_PATH':env['LD_LIBRARY_PATH']})
     for name,relative in bins.items():wrapper(prefix/'bin'/name,[source/relative],{'LD_LIBRARY_PATH':env['LD_LIBRARY_PATH']})
     versions={}
-    for name in (['mbs-po-cpu','mbs-po-gpu-fp64','mbs-po-gpu-fp32'] if kind=='mbs-fast' else ['bem-gpu']):versions[name]=output([prefix/'bin'/name,'--version'],env=env)
+    for name in (list(bins) if kind=='mbs-fast' else ['bem-gpu']):versions[name]=output([prefix/'bin'/name,'--version'],env=env)
     cubins={}
     if (cuda/'bin/cuobjdump').exists():
-        for name in (['mbs-po-gpu-fp64','mbs-po-gpu-fp32'] if kind=='mbs-fast' else ['bem-gpu','bem-tmatrix-server']):
+        for name in ([name for name in bins if name.startswith('mbs-po-gpu-')] if kind=='mbs-fast' else ['bem-gpu','bem-tmatrix-server']):
             listing=output([cuda/'bin/cuobjdump','--list-elf',source/bins[name]],env=env)
             if 'sm_120' not in listing:raise RuntimeError('Native sm_120 cubin missing from '+name)
             cubins[name]=True
