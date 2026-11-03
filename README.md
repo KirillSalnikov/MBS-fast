@@ -1,5 +1,7 @@
 # MBS-fast
 
+RTX 50 / Blackwell: [one-command Linux/WSL installer](docs/INSTALL_RTX50.md) with verified CUDA downloads and native `sm_120` builds.
+
 Light scattering by faceted particles: **physical optics (PO)** and **geometrical
 optics (GO)**, with CPU/OpenMP/MPI and CUDA implementations.
 

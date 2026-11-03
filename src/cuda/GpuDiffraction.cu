@@ -658,15 +658,16 @@ static bool gpu_warp_beams_enabled()
         return mode != 0;
 
     int device = 0;
-    cudaDeviceProp prop;
+    int fp32_to_fp64_ratio = 0;
     if (cudaGetDevice(&device) != cudaSuccess
-        || cudaGetDeviceProperties(&prop, device) != cudaSuccess)
+        || cudaDeviceGetAttribute(&fp32_to_fp64_ratio,
+            cudaDevAttrSingleToDoublePrecisionPerfRatio, device) != cudaSuccess)
         return true;
 
     // A thread that owns one output cell outperforms the warp reduction on
     // consumer GPUs with a large FP32:FP64 throughput ratio. Datacenter GPUs
     // retain the warp path, which is better suited to their FP64 pipelines.
-    return prop.singleToDoublePrecisionPerfRatio < 16;
+    return fp32_to_fp64_ratio < 16;
 }
 
 static bool gpu_warp_grid_3d_enabled()
