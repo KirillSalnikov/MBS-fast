@@ -1,5 +1,6 @@
 #pragma once
 #include "BoundedCache.h"
+#include "PackedJobStore.h"
 #include <cstdint>
 #include <fstream>
 #include <sstream>
@@ -25,7 +26,23 @@ class CheckedFileCache {
     }
     static std::string Hex(uint64_t hash){std::ostringstream out;out<<std::hex<<hash;return out.str();}
     std::shared_ptr<const Entry> Get(const std::string& path,bool text){
-        struct stat before,after;Check(stat(path.c_str(),&before)==0,"cannot stat "+path);
+        struct stat before,after;
+        if(stat(path.c_str(),&before)!=0){
+            PackedJobStore::Member member;
+            Check(PackedJobStore::Locate(path,member)&&!member.directory,"cannot stat "+path);
+            // Our own verified appends preserve the member generation. Any
+            // unexplained archive stamp change invalidates the whole generation.
+            const auto key=Key(member.stamp)+":"+std::to_string(member.generation)+":"+std::to_string(member.offset);
+            const auto found=entries.Get(key);
+            if(found&&(!text||found->hasText)){if(text)++textHits;else ++hashHits;return found;}
+            const auto bytes=PackedJobStore::Read(member);++opens;bytesRead+=bytes.size();
+            auto value=std::make_shared<Entry>();value->stamp=member.stamp;value->hash=member.hash;
+            const bool marker=path.size()>=13&&path.compare(path.size()-13,13,"/complete.txt")==0;
+            value->hasText=text||marker;if(value->hasText)value->text=bytes;
+            std::shared_ptr<Entry> retained=value;
+            if(value->text.size()>65536){retained=std::make_shared<Entry>();retained->stamp=member.stamp;retained->hash=member.hash;}
+            entries.Put(key,retained,sizeof(Entry)+retained->hash.capacity()+retained->text.capacity());return value;
+        }
         const auto key=Key(before);const auto found=entries.Get(key);
         if(found&&Same(before,found->stamp)&&(!text||found->hasText)){
             if(text)++textHits;else ++hashHits;return found;
@@ -68,7 +85,8 @@ public:
         return value->text;
     }
     static std::string Read(const std::string& path){
-        std::ifstream input(path.c_str(),std::ios::binary);Check(bool(input),"cannot read "+path);
+        std::ifstream input(path.c_str(),std::ios::binary);
+        if(!input){PackedJobStore::Member member;Check(PackedJobStore::Locate(path,member)&&!member.directory,"cannot read "+path);return PackedJobStore::Read(member);}
         std::string result;char buffer[65536];
         while(input){input.read(buffer,sizeof(buffer));result.append(buffer,input.gcount());}
         Check(input.eof(),"cannot read "+path);return result;

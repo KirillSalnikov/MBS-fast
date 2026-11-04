@@ -70,6 +70,12 @@ void ExecutePersistent(std::vector<Job>& result,std::vector<std::vector<std::str
     auto launch=[&](size_t slot,size_t index){
         CheckHostMemory();
         Job& j=result[index];ApplyAutomaticPreparation(j,commands[index]);begun[index]=Seconds();
+        // Publish ownership before sending work, so a controller-only crash
+        // remains detectable. Flush the launch files AFTER the worker starts:
+        // their bytes and durability fence are unchanged, but tracing can
+        // overlap the disk wait. No completion can be committed before this
+        // fence succeeds. A machine crash also terminates the worker.
+        AtomicFileBatch launchFiles(j.folder);
         std::string command=exe+"\n";for(const auto& v:commands[index])command+=v+"\n";
         Atomic(j.folder+"/command.args",command);
         if(!services[slot]){
@@ -87,6 +93,7 @@ void ExecutePersistent(std::vector<Job>& result,std::vector<std::vector<std::str
         std::vector<std::string> request{j.folder+"/stdout.log",Number(j.block),j.warp};
         request.insert(request.end(),commands[index].begin(),commands[index].end());
         Require(WorkerProtocol::Send(service.fd,request),"persistent worker channel closed; see "+j.folder+"/stdout.log");
+        launchFiles.Commit();
         Log("worker_start","{\"folder\":"+Quoted(j.folder)+",\"command_file\":"+Quoted(j.folder+"/command.args")+",\"pid\":"+Number(j.pid)
             +",\"gpu\":"+Quoted(workerGpus[slot])+WorkerResourceFields(workerGpus[slot])+",\"count\":"+Number(j.count)+",\"offset\":"+Number(j.offset)+",\"seed\":"+Number(j.seed)
             +",\"depth\":"+Number(j.depth)+",\"paired_depth\":"+Number(j.pairedDepth)+",\"phi\":"+Number(j.phi)+",\"theta_rows\":"+Number(j.inputAngles.size())

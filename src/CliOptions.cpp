@@ -263,7 +263,7 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
         {"fullauto_audit_angular", "fullauto-audit-angular", 1, "auto|on|off", "Orientation",
          "Independent PO audit: frozen production-trained angular residual control; auto requires predicted savings, on forces testing, off keeps direct audit. Accuracy gates unchanged."},
         {"fullauto_dispatch_threads", "fullauto-dispatch-threads", 1, "N", "Orientation",
-         "CUDA PO only: fix CPU preparation and analytic-mean pools to N without changing checkpoint identities or ordered accumulation. Conflicts with explicit thread flags."},
+         "CUDA PO only: fix CPU preparation and analytic-mean pools to N without changing checkpoint identities or ordered accumulation. With --fullauto-resume-compatible this explicitly overrides saved thread pools; otherwise conflicts with explicit thread flags. CPU affinity must also allow N cores."},
         {"fullauto_dispatch_gpus", "fullauto-dispatch-gpus", 1, "LIST", "Orientation",
          "Compatible CUDA resume only: dispatch saved work to visible devices. Repeating an index twice (0,0) shares a GPU; requires --fullauto-dispatch-threads per worker and divides automatic RAM/VRAM budgets. Maximum 8 slots. Saved sampling is unchanged."},
         {"fullauto_gpus", "fullauto-gpus", 1, "LIST", "Orientation",

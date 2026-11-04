@@ -1,8 +1,28 @@
 """A real subprocess verifies serial replay and terminal-job preservation."""
 from pathlib import Path
-import tempfile,json,hashlib,subprocess,unittest
+import tempfile,json,hashlib,subprocess,unittest,importlib.util,sys
+from unittest.mock import patch
 SCRIPT=Path(__file__).resolve().parents[1]/'scripts/run_fullauto_campaign.py'
+sys.path.insert(0,str(SCRIPT.parent))
+spec=importlib.util.spec_from_file_location('campaign',SCRIPT)
+campaign=importlib.util.module_from_spec(spec);spec.loader.exec_module(campaign)
 class Resume(unittest.TestCase):
+ def test_storage_pause_is_visible_without_discarding_resume_metadata(self):
+  statuses={'job':{'status':'running','pid':123,'command':['solver'],'elapsed_seconds':42}}
+  health={'ready':False,'reason':'inode reserve'}
+  calls=[]
+  with patch.object(campaign,'record_runtime') as runtime:
+   campaign.publish_storage_block('/lane',statuses,'job',health,lambda *args:calls.append(args))
+  self.assertEqual(calls,[('storage_blocked','job')])
+  self.assertEqual(statuses['job']['status'],'storage_blocked')
+  self.assertEqual(statuses['job']['elapsed_seconds'],42)
+  self.assertEqual(statuses['job']['command'],['solver'])
+  runtime.assert_called_once()
+ def test_runtime_diagnostic_survives_queue_write_failure(self):
+  def fail(*args):raise OSError(28,'full')
+  with patch.object(campaign,'record_runtime') as runtime:
+   campaign.publish_storage_block('/lane',{},'job',{'ready':False},fail)
+  self.assertEqual(runtime.call_args.args[1]['status'],'storage_blocked')
  def test_terminal_and_interrupted(self):
   with tempfile.TemporaryDirectory()as d:
    p=Path(d);exe=p/'solver';out=p/'result'

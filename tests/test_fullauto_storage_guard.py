@@ -27,4 +27,25 @@ class StorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory()as d,patch.dict(os.environ,{'XDG_RUNTIME_DIR':d}):
             guard.record_runtime('/unwritable-lane',{'status':'storage_blocked'})
             self.assertTrue(guard.runtime_path('/unwritable-lane').exists())
+    def test_result_mount_failure_is_not_hidden_by_writable_queue(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);lane=root/'lane';output=root/'other_mount'
+            lane.mkdir();output.mkdir()
+            with patch.object(guard,'check_storage',side_effect=[
+                    dict(ready=True),dict(ready=False,reason='metadata full',errno=28)]) as probe:
+                health=guard.check_job_storage(lane,output)
+            self.assertFalse(health['ready'])
+            self.assertEqual(health['role'],'result')
+            self.assertEqual(health['path'],str(output))
+            self.assertEqual(probe.call_count,2)
+    def test_new_relative_result_checks_existing_parent(self):
+        with tempfile.TemporaryDirectory() as d:
+            lane=Path(d);(lane/'results').mkdir()
+            with patch.object(guard,'check_storage',return_value=dict(ready=True)) as probe:
+                self.assertTrue(guard.check_job_storage(lane,'results/new_task')['ready'])
+            self.assertEqual(probe.call_args_list[-1].args[0],lane/'results')
+    def test_permission_error_is_a_storage_block(self):
+        with tempfile.TemporaryDirectory() as d,patch.object(guard,'check_storage',side_effect=PermissionError(13,'denied')):
+            health=guard.check_job_storage(d)
+            self.assertFalse(health['ready']);self.assertEqual(health['errno'],13)
 if __name__=='__main__':unittest.main()

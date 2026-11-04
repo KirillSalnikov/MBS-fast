@@ -12,7 +12,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-from fullauto_storage import check_storage, record_runtime, StorageBlocked
+from fullauto_storage import check_job_storage, record_runtime, StorageBlocked
 
 
 def write_json(path, value):
@@ -40,6 +40,19 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def publish_storage_block(root, statuses, current, health, save_on_disk):
+    """Publish a pause even when the result disk itself cannot accept writes."""
+    record_runtime(root, dict(status='storage_blocked', current_job=current, storage=health))
+    if current in statuses:
+        statuses[current].update(status='storage_blocked', storage=health)
+        statuses[current].setdefault('storage_blocked_unix', time.time())
+    try:
+        save_on_disk('storage_blocked', current)
+    except OSError:
+        # /run or /dev/shm remains authoritative when the queue disk is full.
+        pass
+
+
 def main():
     manifest_path = Path(sys.argv[1]).resolve()
     root = manifest_path.parent
@@ -59,18 +72,22 @@ def main():
 
     last_storage_check = [0.0]
 
+    def storage_health(current=None):
+        job = next((j for j in manifest['jobs'] if j['id'] == current), None)
+        return check_job_storage(root, job.get('output') if job else None)
+
     def save(state, current=None):
         if time.time() - last_storage_check[0] >= 30:
-            health = check_storage(root)
+            health = storage_health(current)
             last_storage_check[0] = time.time()
             if not health['ready']:
-                record_runtime(root, dict(status='storage_blocked', current_job=current, storage=health))
+                publish_storage_block(root, statuses, current, health, save_on_disk)
                 raise StorageBlocked(health['reason'])
         try:
             return save_on_disk(state, current)
         except OSError as error:
-            record_runtime(root, dict(status='storage_blocked', current_job=current,
-                                     errno=error.errno, reason=str(error)))
+            publish_storage_block(root, statuses, current,
+                                  dict(ready=False, errno=error.errno, reason=str(error)), save_on_disk)
             raise
 
     def save_on_disk(state, current=None):
@@ -99,9 +116,9 @@ def main():
             save('needs_attention', job['id'])
             print('HOLD {}: failed calculation awaits an explicit resume'.format(job['id']), flush=True)
             return
-        health = check_storage(root)
+        health = storage_health(job['id'])
         if not health['ready']:
-            record_runtime(root, dict(status='storage_blocked', current_job=job['id'], storage=health))
+            publish_storage_block(root, statuses, job['id'], health, save_on_disk)
             print('WAIT storage: ' + health['reason'], flush=True)
             time.sleep(30)
             continue
@@ -190,7 +207,8 @@ def main():
                                         output=str(output), command=command, binary_sha256=expected,
                                         attempt_history=attempt_history)
             for obsolete in ('pid', 'returncode', 'finished_unix', 'adaptive_state',
-                             'adopted_running_process', 'exit_confirmation', 'recovery_error'):
+                             'adopted_running_process', 'exit_confirmation', 'recovery_error',
+                             'storage', 'storage_blocked_unix'):
                 statuses[identifier].pop(obsolete, None)
             save('running', identifier)
             print('START {} binary={}'.format(identifier, binary), flush=True)

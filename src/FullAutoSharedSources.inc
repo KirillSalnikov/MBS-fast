@@ -24,7 +24,11 @@ void WriteSharedSources(const std::string& path,const std::string& text){
     }
     Require(Read(shared)==text,"shared source manifest changed or hash collision");
     struct stat source={},target={};
-    Require(stat(shared.c_str(),&source)==0,"shared source manifest disappeared");
+    if(stat(shared.c_str(),&source)!=0){
+        // The immutable source may now reside in the inode-bounded store.
+        // A new unfinished view cannot hard-link an archive member.
+        Atomic(path,text);return;
+    }
     if(stat(path.c_str(),&target)==0&&source.st_dev==target.st_dev&&source.st_ino==target.st_ino){
         activeAtomicFileBatch->AddedDurableLink(path);return;
     }

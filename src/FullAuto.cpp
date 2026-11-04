@@ -1,4 +1,5 @@
 #include "FullAutoBinaryProfile.h"
+#include "FullAutoRoundPath.h"
 #include <memory>
 #include <functional>
 #include <exception>
@@ -82,7 +83,7 @@ CheckedFileCache& ValidationFiles(){static thread_local CheckedFileCache files;r
 std::string FileHash(const std::string& path) { return ValidationFiles().Hash(path); }
 std::string ReadValidationText(const std::string& path) { return ValidationFiles().Text(path); }
 std::string ReadVerifiedText(const std::string& path,const std::string& expected) { return ValidationFiles().VerifiedText(path,expected); }
-bool Exists(const std::string& p) { struct stat s;return stat(p.c_str(),&s)==0; }
+bool Exists(const std::string& p) { struct stat s;return stat(p.c_str(),&s)==0||PackedJobStore::Exists(p); }
 // A deployment may certify another exact binary pair after numerical tests.
 // The receipt is an installation artifact, not inferred from a version label.
 bool VerifiedCompatibleExecutable(const std::string& executable,const std::string& origin,const std::string& current,bool requireDoubleSingle=false){
@@ -135,7 +136,8 @@ void Directory(const std::string& p) {
 // small files together, then flush every file and each directory before that
 // commit marker. This lets the filesystem coalesce writeback instead of
 // forcing a separate directory/journal transaction for every tiny file.
-// Native blocks and already completed jobs never enter this transaction.
+// Native launch metadata may also use it to overlap its durability fence
+// with worker execution. Native results and completed jobs never enter it.
 struct AtomicFileBatch;
 thread_local AtomicFileBatch* activeAtomicFileBatch=nullptr;
 struct AtomicFileBatch {
@@ -571,7 +573,7 @@ struct Engine {
         DIR* directory=opendir((root+"/jobs").c_str());Require(directory!=nullptr,"cannot open refinement jobs");
         while(auto* entry=readdir(directory))if(entry->d_name[0]!='.'&&Exists(root+"/jobs/"+entry->d_name+"/complete.txt"))
             refinementLocalJobs.insert(entry->d_name);
-        closedir(directory);refinementLocalJobsIndexed=true;
+        closedir(directory);for(const auto& name:PackedJobStore::Jobs(root))refinementLocalJobs.insert(name);refinementLocalJobsIndexed=true;
     }
     std::string CachedJobFolder(const std::string& name){
         if(refinementParent.empty())return root+"/jobs/"+name;
@@ -697,6 +699,11 @@ struct Engine {
         else payloads.Erase(job.identity);
         samplingIndex[key][job.identity]=&stored;folderIndex[job.folder]=&stored;
         if(newEntry)AppendIndex(job);
+        if(packJobs&&!restoringIndex&&!unpackedOversizeJobs.count(job.identity)&&job.folder.compare(0,root.size()+6,root+"/jobs/")==0){
+            try{packedInodesReleased+=PackedJobStore::Pack(job.folder);}
+            catch(const PackedJobStore::Oversize& error){unpackedOversizeJobs.insert(job.identity);
+                Log("checkpoint_pack_oversize_retained","{\"folder\":"+Quoted(job.folder)+",\"message\":"+Quoted(error.what())+",\"original_preserved\":true}");}
+        }
     }
     const JobBucket& SamplingCandidates(int n,unsigned seed,int depth,int offset=0)const{
         static const JobBucket empty;
@@ -826,7 +833,8 @@ struct Engine {
         angularAuditPolicy=args.IsCatched("fullauto_audit_angular")?args.GetStringValue("fullauto_audit_angular"):"auto";
         dispatchThreads=Int("fullauto_dispatch_threads",0);
         Require(!dispatchThreads||(config.useGpu&&!go&&dispatchThreads>0),"dispatch threads require CUDA physical optics and a positive count");
-        Require(!dispatchThreads||(!args.IsCatched("threads")&&!args.IsCatched("po_prepare_threads")&&!args.IsCatched("analytic_mean_threads")),"dispatch threads conflict with explicit worker/prepare/analytic thread flags");
+        Require(!dispatchThreads||args.IsCatched("fullauto_resume_compatible")||(!args.IsCatched("threads")&&!args.IsCatched("po_prepare_threads")&&!args.IsCatched("analytic_mean_threads")),
+            "dispatch threads override saved explicit pools only with --fullauto-resume-compatible; otherwise conflicting thread flags");
         const RuntimeEnvironmentSnapshot environment=QueryRuntimeEnvironmentSnapshot();
         Require(environment.experimental.empty() || args.IsCatched("allow_experimental_environment"),"unset experimental MBS_* variables or acknowledge --allow-experimental-environment");
         for(const char* name:{"OMPI_COMM_WORLD_SIZE","PMI_SIZE","MV2_COMM_WORLD_SIZE"}){const char* v=getenv(name);Require(!v||std::atoi(v)<=1,"use one MPI rank; controller launches its own GPU workers");}
@@ -1068,7 +1076,10 @@ struct Engine {
         hostBudgetMb=std::max(64LL,QueryRuntimeResourceSnapshot().ramAvailableKb*65/100/1024/static_cast<long long>(std::min(WorkerGpus().size(),size_t(8))));
         if(!dispatchGpus.empty())ValidateDispatchResources();
         // Result-affecting environment forms part of resume/cache identity.
-        fingerprint<<FormatRuntimeEnvironmentReport(environment);
+        auto opticalEnvironment=environment;
+        opticalEnvironment.active.erase(std::remove_if(opticalEnvironment.active.begin(),opticalEnvironment.active.end(),
+            [](const std::pair<std::string,std::string>& entry){return entry.first=="MBS_FULLAUTO_PACK_JOBS";}),opticalEnvironment.active.end());
+        fingerprint<<FormatRuntimeEnvironmentReport(opticalEnvironment);
         char host[256]={};Require(gethostname(host,sizeof(host)-1)==0,"cannot determine host identity");
         fingerprint<<"host="<<host<<"\nthreads="<<workerThreads<<"\nanalytic_mean_threads="<<analyticMeanThreads<<'\n';
         const char* visible=getenv("CUDA_VISIBLE_DEVICES");fingerprint<<"visible="<<(visible?visible:"")<<'\n';
@@ -1193,13 +1204,19 @@ struct Engine {
         std::vector<std::string> folders,cacheRoots{root};
         if(!refinementParent.empty()){IndexRefinementLocalJobs();cacheRoots.push_back(refinementParent);}
         for(const auto& cacheRoot:cacheRoots){
+            std::set<std::string> discovered;
             DIR* directory=opendir((cacheRoot+"/jobs").c_str());if(!directory)continue;
             while(auto* entry=readdir(directory)){if(entry->d_name[0]!='.'){
                 const std::string name=entry->d_name;
                 if(cacheRoot!=root&&refinementLocalJobs.count(name))continue;
                 const auto folder=cacheRoot+"/jobs/"+name;
-                if(!compactIndex||!folderIndex.count(folder))folders.push_back(folder);
+                if(!compactIndex||!folderIndex.count(folder)){folders.push_back(folder);discovered.insert(name);}
             }}closedir(directory);
+            for(const auto& name:PackedJobStore::Jobs(cacheRoot)){
+                if(discovered.count(name)||(cacheRoot!=root&&refinementLocalJobs.count(name)))continue;
+                const auto folder=cacheRoot+"/jobs/"+name;
+                if(!compactIndex||!folderIndex.count(folder))folders.push_back(folder);
+            }
         }
         Log("cache_index_journal","{\"enabled\":"+std::string(compactIndex?"true":"false")+",\"journal_jobs\":"+Number(journalJobs)
             +",\"fallback_folders\":"+Number(folders.size())+",\"seconds\":"+Number(Seconds()-journalStarted)+"}");

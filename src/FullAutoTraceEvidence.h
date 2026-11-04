@@ -1,4 +1,5 @@
 #pragma once
+#include "CheckedFileCache.h"
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -7,16 +8,22 @@
 // Corrected jobs contain an assembly log, not the logs of their native
 // children. Follow the recorded source graph to verify actual GPU execution.
 namespace FullAutoTraceEvidence {
+inline std::string OptionalText(const std::string& path){
+    struct stat info{};
+    if(stat(path.c_str(),&info)!=0&&!PackedJobStore::Exists(path))return "";
+    // A missing optional log is ordinary; a corrupt packed log is not.
+    return CheckedFileCache::Read(path);
+}
 inline bool Executed(const std::string& folder,std::set<std::string>& seen){
     if(!seen.insert(folder).second)return false;
-    std::ifstream log(folder+"/stdout.log");std::string line;
+    std::istringstream log(OptionalText(folder+"/stdout.log"));std::string line;
     const std::string marker="GPU convex resident direct: accepted=";
     while(std::getline(log,line)){
         const auto pos=line.find(marker);if(pos==std::string::npos)continue;
         std::istringstream value(line.substr(pos+marker.size()));long long count=0;
         if(value>>count&&count>0)return true;
     }
-    std::ifstream sources(folder+"/angular_sources.tsv");
+    std::istringstream sources(OptionalText(folder+"/angular_sources.tsv"));
     while(std::getline(sources,line)){
         const auto tab=line.find('\t');if(tab==std::string::npos||!tab)continue;
         if(Executed(line.substr(0,tab),seen))return true;

@@ -58,3 +58,35 @@ def check_storage(root, minimum_bytes=2*1024**3, minimum_inodes=250000):
 
 class StorageBlocked(RuntimeError):
     pass
+
+
+def check_job_storage(lane, output=None):
+    """Probe both write locations; the result may be on a different mount.
+
+    For a new result use its nearest existing parent.  Probe distinct paths
+    even on one device: a read-only bind mount can share the same st_dev.
+    """
+    locations = [('queue', Path(lane))]
+    if output is not None:
+        target = Path(output)
+        if not target.is_absolute():
+            target = Path(lane) / target
+        while not target.exists() and target.parent != target:
+            target = target.parent
+        locations.append(('result', target))
+    checks = []
+    seen = set()
+    for role, path in locations:
+        key = str(path.absolute())
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            health = check_storage(path)
+        except OSError as error:
+            health = dict(ready=False, reason=str(error), errno=error.errno)
+        health = dict(health, role=role, path=str(path))
+        checks.append(health)
+        if not health['ready']:
+            return dict(health, checks=checks)
+    return dict(ready=True, reason='queue and result storage verified', checks=checks)

@@ -30,6 +30,9 @@ void WriteExecutionProgress(bool force=false){
         <<",\"native_requests_committed\":"<<nativeCommitted<<",\"native_requests_retried\":"<<nativeRetries
         <<",\"committed_orientation_samples_all_seeds\":"<<nativeOrientations
         <<",\"summed_worker_seconds\":"<<nativeWorkerSeconds<<",\"checkpoint_seconds\":"<<nativeCheckpointSeconds
+        <<",\"completed_job_storage\":"<<Quoted(packJobs?"packed":"individual_files")
+        <<",\"packed_inodes_released_this_invocation\":"<<packedInodesReleased
+        <<",\"oversized_jobs_left_unpacked_this_invocation\":"<<unpackedOversizeJobs.size()
         <<",\"last_native_commit_age_seconds\":"<<(lastNativeCommit>=0?Number(now-lastNativeCommit):"null")
         <<",\"batch_requested\":"<<(dispatchProgress.empty()?0:dispatchProgress.back().requested)
         <<",\"batch_committed\":"<<(dispatchProgress.empty()?0:dispatchProgress.back().committed)
@@ -49,7 +52,7 @@ void WriteExecutionProgress(bool force=false){
             <<",\"count\":"<<b.count<<",\"depth\":"<<b.depth<<",\"phi\":"<<b.phi<<",\"theta_rows\":"<<b.rows
             <<",\"theta_min\":"<<b.lo<<",\"theta_max\":"<<b.hi<<",\"committed_age_seconds\":"<<now-b.completed<<"}";first=false;
     }
-    out<<"],\"completed_block_scope\":\"durably saved native blocks; angular bounds may contain gaps; not a new accuracy estimate\"}";
+    out<<"],\"completed_block_scope\":\"durably saved native blocks; folder is a logical path when packed; angular bounds may contain gaps; not a new accuracy estimate\"}";
     Record(root+"/execution_progress.json",out.str());executionProgressWritten=now;
 }
 void SetExecutionPhase(const std::string& phase,int round=-1){

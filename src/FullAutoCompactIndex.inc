@@ -2,6 +2,8 @@
 // authority for an optical result. Each referenced complete marker and source
 // graph is verified before a restored payload can enter an estimator.
 bool compactIndex=false,restoringIndex=false,indexJournalRestored=false;
+bool packJobs=false;size_t packedInodesReleased=0;
+std::set<std::string> unpackedOversizeJobs;
 int indexImportFd=-1;size_t indexImportPendingBytes=0;
 size_t indexJournalFlushes=0;
 void BeginIndexImport(){
@@ -47,6 +49,17 @@ bool ParseSampling(const std::string& text,const std::string& folder,Job& j,bool
     return true;
 }
 void ConfigureIndex(bool fresh){
+    const char* packed=getenv("MBS_FULLAUTO_PACK_JOBS");
+    if(packed&&*packed)Require(std::string(packed)=="0"||std::string(packed)=="1","MBS_FULLAUTO_PACK_JOBS must be 0 or 1");
+    const auto packedPolicy=root+"/job_pack_format.txt";
+    if(Exists(packedPolicy)){Require(Read(packedPolicy)=="sharded_jobs_v1\n","unsupported packed job format");packJobs=true;}
+    if(packed&&*packed)packJobs=std::string(packed)=="1";
+    if(packJobs)Atomic(packedPolicy,"sharded_jobs_v1\n");
+    Record(root+"/job_storage_policy.json","{\"format\":\"sharded_jobs_v1\",\"packing_new_jobs\":"+std::string(packJobs?"true":"false")
+        +",\"maximum_archive_files\":256,\"logical_files_and_hashes_preserved\":true,\"physical_source_removed_after_verified_durable_pack\":true"
+        +",\"commit_boundary\":\"two alternating checksummed 4 KiB frontier slots; data fsync before frontier fsync\""
+        +",\"maximum_record_bytes\":"+Number(PackedJobStore::MaximumRecordBytes)+",\"oversize_action\":\"retain original job and log checkpoint_pack_oversize_retained\""
+        +",\"unpack_tool\":\"fullauto_pack_jobs OUTPUT --unpack\",\"legacy_worker_output_policy_scope\":\"native duplicate text report suppression only\"}");
     const auto path=root+"/job_index_format.txt";
     if(Exists(path)){Require(Read(path)=="compact_v1\n","unsupported job index format");compactIndex=true;}
     else{

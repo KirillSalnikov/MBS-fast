@@ -70,6 +70,14 @@ int main(int argc,const char* argv[]){try{
         ArgPP fixed;RegisterCliOptions(fixed);const char* av[]={"probe",flag,"2"};fixed.Parse(3,av);
         Engine explicitEngine(fixed,config);explicitEngine.workerThreads=1;explicitEngine.prepareThreadCap=8;
         Require(explicitEngine.AutoPrepareThreads(8192,4,0,26)==0,"explicit thread override ignored");
+        // A requested dispatch override changes only the preparation pool;
+        // the saved flags and ordered accumulation thread count stay intact.
+        const auto identity=explicitEngine.ExecutionHash();
+        explicitEngine.dispatchThreads=8;
+        Job restored;std::vector<std::string> command={"--threads","2","--po-prepare-threads","2"};
+        explicitEngine.ApplyDispatchThreads(restored,command);
+        Require(command==std::vector<std::string>({"--threads","2","--po-prepare-threads","8"}),"saved pool could not be explicitly reassigned");
+        Require(explicitEngine.ExecutionHash()==identity&&fixed.GetIntValue(flag==std::string("--threads")?"threads":"po_prepare_threads")==2,"dispatch changed saved numerical identity or user flags");
     }
     for(size_t n:{size_t(1),size_t(2),size_t(3),size_t(26),size_t(8192)}){
         size_t b=FullAutoPreparation::Bucket(n);Require(b<=n&&b>n/2,"invalid comparable-work bucket");

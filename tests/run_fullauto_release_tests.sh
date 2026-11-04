@@ -5,6 +5,9 @@ task_root=$(cd "$(dirname "$0")/.." && pwd)
 task_output=${1:?Pass a new output directory}
 mkdir -p "$task_output/bin"
 task_output=$(cd "$task_output" && pwd)
+"${CXX:-c++}" -std=c++11 -O2 -I"$task_root/src" \
+    "$task_root/tests/test_fullauto_round_path.cpp" -o "$task_output/bin/fullauto_round_path"
+"$task_output/bin/fullauto_round_path"
 make -C "$task_root/cpu" -j2
 task_binary="$task_root/cpu/bin/mbs_po_mpi"
 mapfile -t task_objects < <(find "$task_root/cpu/build/obj" -name '*.o' ! -name main.o ! -name FullAuto.o | sort)

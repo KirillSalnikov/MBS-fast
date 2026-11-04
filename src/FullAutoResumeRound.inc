@@ -20,9 +20,9 @@ bool PublishedRoundBudget(Engine& e,const AdaptiveState& state,Budgets& counts,
     const auto at=text.find(key);if(at==std::string::npos)return false;
     const auto begin=at+key.size(),end=text.find('"',begin);if(end==std::string::npos)return false;
     folder=text.substr(begin,end-begin);
-    // Escaped/nonlocal paths are optional scheduling hints we decline to use.
-    if(folder.find('\\')!=std::string::npos||folder.find("..")!=std::string::npos
-            ||folder.compare(0,e.root.size()+17,e.root+"/round_snapshots/")!=0)return false;
+    // Preserve scheduling hints when a verified checkpoint has moved behind
+    // a path alias, but still reject directories outside this result.
+    if(!FullAutoRoundPath::Resolve(e.root,folder,folder))return false;
     if(!Exists(folder+"/parameters_accuracy.csv")||!Exists(folder+"/theta_support.csv"))return false;
     if(ReadGrid(folder+"/theta_support.csv")!=Angles(e.theta,state.knots))return false;
     const auto ids=AdaptiveGuards(state.knots,e.theta.size());counts=state.counts;
@@ -71,8 +71,7 @@ bool PublishedSchedulingBudget(Engine& e,const AdaptiveState& state,Budgets& cou
     const auto begin=at+key.size(),end=text.find('"',begin);
     if(end==std::string::npos)return false;
     folder=text.substr(begin,end-begin);
-    if(folder.find('\\')!=std::string::npos||folder.find("..")!=std::string::npos
-            ||folder.compare(0,e.root.size()+17,e.root+"/round_snapshots/")!=0)return false;
+    if(!FullAutoRoundPath::Resolve(e.root,folder,folder))return false;
     if(!Exists(folder+"/parameters_accuracy.csv"))return false;
     struct Row {std::vector<int> counts;Mueller interval{},ratio{};int phi=0;};std::map<size_t,Row> rows;
     std::istringstream file(Read(folder+"/parameters_accuracy.csv"));std::string line;
