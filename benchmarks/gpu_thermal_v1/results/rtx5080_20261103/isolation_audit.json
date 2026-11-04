@@ -1,0 +1,8 @@
+{
+  "passed": true,
+  "scope": "Manual post-run PID/start-time isolation audit; continuous PID guard was added after this measured run",
+  "last_benchmark_sample_unix_s": 1793700044.30313,
+  "external_campaign_launcher_start_unix_s": 1793700690.2924,
+  "external_campaign_worker_start_unix_s": 1793700690.7124,
+  "note": "Campaign began after all MBS measured work completed. Measured runner d133006; measured native 7ee3eb1. Current runner additionally rejects foreign GPU processes throughout each run."
+}
