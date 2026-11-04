@@ -22,6 +22,7 @@ namespace PackedJobStore {
 inline void Check(bool good,const std::string& message){if(!good)throw std::runtime_error("fullauto pack: "+message);}
 inline uint64_t Digest(const std::string& bytes){uint64_t h=14695981039346656037ULL;for(unsigned char c:bytes){h^=c;h*=1099511628211ULL;}return h;}
 inline std::string Hex(uint64_t value){std::ostringstream s;s<<std::hex<<value;return s.str();}
+inline uint64_t HexNumber(const std::string& text){Check(!text.empty()&&text.size()<=16,"invalid stored member hash");uint64_t value=0;for(char c:text){Check((c>='0'&&c<='9')||(c>='a'&&c<='f'),"invalid stored member hash");value=16*value+uint64_t(c<='9'?c-'0':c-'a'+10);}return value;}
 inline bool Same(const struct stat& a,const struct stat& b){return a.st_dev==b.st_dev&&a.st_ino==b.st_ino&&a.st_size==b.st_size&&a.st_mtim.tv_sec==b.st_mtim.tv_sec&&a.st_mtim.tv_nsec==b.st_mtim.tv_nsec&&a.st_ctim.tv_sec==b.st_ctim.tv_sec&&a.st_ctim.tv_nsec==b.st_ctim.tv_nsec;}
 struct Descriptor {int fd;explicit Descriptor(int value):fd(value){}~Descriptor(){if(fd>=0)close(fd);}Descriptor(const Descriptor&)=delete;};
 inline std::string Bytes(int fd,uint64_t offset,size_t size){
@@ -93,7 +94,11 @@ public:
 };
 struct Index {struct stat stamp{};uint64_t validEnd=DataBegin,generation=0,frontierSequence=0;CompactIndex jobs;};
 struct Member {std::string archive,hash;uint64_t offset=0,size=0,generation=0;bool directory=false;struct stat stamp{};};
-struct MemberIndex {std::map<std::string,Member> entries;};
+// Cache the extent only. Repeating a long archive path and a struct stat in
+// every file entry made a few thousand ordinary jobs evict each other.
+// Archive identity/freshness belongs to the shard index, once per lookup.
+struct MemberExtent {uint64_t offset=0,size=0,hash=0;bool directory=false;};
+struct MemberIndex {std::map<std::string,MemberExtent> entries;};
 struct Store {std::mutex mutex;uint64_t generation=0;BoundedCache<Index> indices{128*1024*1024};BoundedCache<MemberIndex> members{8*1024*1024};};
 inline Store& Global(){static Store store;return store;}
 inline Record ParseHeader(const std::string& header,std::string& name){
@@ -140,10 +145,14 @@ inline bool Locate(const std::string& path,Member& member){
     const auto archive=Shard(root,name);std::lock_guard<std::mutex> lock(Global().mutex);auto index=LoadIndex(archive);if(!index)return false;
     uint64_t offset=0;if(!index->jobs.Find(name,offset))return false;
     if(part.empty()){member.archive=archive;member.directory=true;member.stamp=index->stamp;member.generation=index->generation;return true;}
-    const auto key=archive+":"+std::to_string(index->generation)+":"+std::to_string(offset);auto members=Global().members.Get(key);
-    if(!members){Descriptor fd(open(archive.c_str(),O_RDONLY));Check(fd.fd>=0,"cannot open archive");auto loaded=std::make_shared<MemberIndex>();loaded->entries=Members(fd.fd,archive,ReadRecord(fd.fd,name,offset),index->stamp);
-        size_t size=sizeof(MemberIndex);for(const auto& item:loaded->entries)size+=sizeof(Member)+160+item.first.size()+item.second.archive.size()+item.second.hash.size();Global().members.Put(key,loaded,size);members=loaded;}
-    const auto item=members->entries.find(part);if(item==members->entries.end())return false;member=item->second;member.stamp=index->stamp;member.generation=index->generation;return true;
+    std::string key(reinterpret_cast<const char*>(&index->stamp.st_dev),sizeof(index->stamp.st_dev));
+    key.append(reinterpret_cast<const char*>(&index->stamp.st_ino),sizeof(index->stamp.st_ino));
+    key.append(reinterpret_cast<const char*>(&index->generation),sizeof(index->generation));key.append(reinterpret_cast<const char*>(&offset),sizeof(offset));
+    auto members=Global().members.Get(key);
+    if(!members){Descriptor fd(open(archive.c_str(),O_RDONLY));Check(fd.fd>=0,"cannot open archive");auto loaded=std::make_shared<MemberIndex>();const auto decoded=Members(fd.fd,archive,ReadRecord(fd.fd,name,offset),index->stamp);
+        size_t size=sizeof(MemberIndex);for(const auto& item:decoded){MemberExtent extent;extent.offset=item.second.offset;extent.size=item.second.size;extent.directory=item.second.directory;if(!extent.directory)extent.hash=HexNumber(item.second.hash);loaded->entries.emplace(item.first,extent);size+=sizeof(MemberExtent)+128+item.first.size();}Global().members.Put(key,loaded,size);members=loaded;}
+    const auto item=members->entries.find(part);if(item==members->entries.end())return false;
+    member.archive=archive;member.offset=item->second.offset;member.size=item->second.size;member.directory=item->second.directory;member.hash=member.directory?"":Hex(item->second.hash);member.stamp=index->stamp;member.generation=index->generation;return true;
 }
 inline bool Exists(const std::string& path){Member member;return Locate(path,member);}
 inline std::string Read(const Member& member){
