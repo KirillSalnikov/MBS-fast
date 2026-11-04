@@ -1214,7 +1214,8 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
         RequirePositiveInt(args,"fullauto_dispatch_threads");
         if(!args.IsCatched("fullauto")||!config.useGpu||config.method!=RunMethod::PhysicalOptics)
             Fail("--fullauto-dispatch-threads requires CUDA PO fullauto.","select --method po --backend cuda --fullauto EPS.");
-        if(args.IsCatched("threads")||args.IsCatched("po_prepare_threads")||args.IsCatched("analytic_mean_threads"))
+        if(!args.IsCatched("fullauto_resume_compatible")&&
+           (args.IsCatched("threads")||args.IsCatched("po_prepare_threads")||args.IsCatched("analytic_mean_threads")))
             Fail("dispatch threads conflict with explicit thread flags.","choose one CPU resource policy.");
     }
     for(const char* gpuKey:{"fullauto_gpus","fullauto_dispatch_gpus"})if(args.IsCatched(gpuKey)){

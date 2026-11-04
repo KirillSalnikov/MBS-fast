@@ -1066,6 +1066,13 @@ int main()
     ExpectFailureForBuild("three dispatch workers rejected",tripleGpu,false,true,"too many worker slots");
     auto unboundedGpu=sharedGpu;unboundedGpu.resize(unboundedGpu.size()-2);
     ExpectFailureForBuild("shared dispatch needs thread bound",unboundedGpu,false,true,"bounded CPU pool");
+    for(const std::string flag:{"--threads","--po-prepare-threads","--analytic-mean-threads"}){
+        auto resumeThreads=gpuAuto;
+        resumeThreads.insert(resumeThreads.end(),{flag,"2","--fullauto-dispatch-threads","4"});
+        ExpectFailureForBuild("fresh dispatch conflicts with "+flag,resumeThreads,false,true,"conflict with explicit thread flags");
+        resumeThreads.insert(resumeThreads.end(),{"--fullauto-resume-compatible","/bin/true"});
+        ExpectSuccessForBuild("compatible dispatch overrides saved "+flag,resumeThreads,false,true);
+    }
 
 
     for(const std::string flag:{"--fullauto-ratio-accuracy","--fullauto-phi-recheck","--fullauto-polarization-controls","--fullauto-final-audit","--fullauto-physics-audit","--fullauto-depth-sharing"}){
