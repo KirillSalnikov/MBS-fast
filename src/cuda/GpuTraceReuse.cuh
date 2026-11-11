@@ -10,6 +10,7 @@ struct TraceCacheEntry {
 struct TraceCache {
     std::mutex mutex;size_t limit=0,bytes=0;
     std::list<std::unique_ptr<TraceCacheEntry>> entries;
+    Capacity::Hint capacityHint; // One bounded CPU-only recipe; no device retention.
 };
 TraceCache& RawCache(){static TraceCache cache;return cache;}
 }

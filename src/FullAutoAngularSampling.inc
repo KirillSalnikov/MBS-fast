@@ -2,14 +2,17 @@
 // their individual values. This checks sampling noise, not physical slope or
 // curvature: deterministic sharp structure is never flattened or penalized.
 // No matrices are modified. Failed pairs/triples become bounded cohorts.
-const char* AngularSamplingPolicy(){return "incoherent-component-shape-noise-v3";}
+const char* AngularSamplingPolicy(){return "incoherent-component-shape-noise-v4";}
 struct AngularSamplingDecision {
     bool enabled=false,passed=true;double maximum=0,tolerance=0;
+    double absoluteCap=0;
     double maximumRatio=0;Mueller envelope{},allowance{};
     size_t pairs=0,failed=0;Budgets proposed;
     size_t shapes=0,failedShapes=0;double maximumShapeRatio=0;
+    size_t haloCohorts=0,haloAddedRows=0,maximumCohortNodes=0;
     std::vector<RoundOutputPriority> priorities;
-    std::string table,shapeTable;
+    std::vector<bool> expandedCohorts;
+    std::string table,shapeTable,cohortTable;
 };
 double AngularNoise(const std::array<double,8>& values){
     double mean=0,variance=0;for(double v:values){if(!std::isfinite(v))return 1e100;mean+=v/8;}
@@ -20,6 +23,7 @@ double AngularNoise(const std::array<double,8>& values){
 AngularSamplingDecision CheckAngularSampling(const Engine& e,const AdaptiveState& state,
         const AdaptiveData& stage,const std::vector<size_t>& ids,const Samples& samples,const Statistics& stats){
     AngularSamplingDecision result;result.proposed=state.counts;
+    result.cohortTable="error_scaled_M11,node_count,expanded,theta_degrees\n";
     result.enabled=!e.go&&!e.coherent&&e.local;result.tolerance=e.interpolation;
     std::ostringstream table;table<<"theta_left_deg,theta_right_deg,noise95,allowance,passed,element,normalized_ratio";
     for(size_t l=0;l<state.counts.size();++l)table<<",N_left_level"<<l<<",N_right_level"<<l<<",next_left_level"<<l<<",next_right_level"<<l;
@@ -38,20 +42,23 @@ AngularSamplingDecision CheckAngularSampling(const Engine& e,const AdaptiveState
     // amplitude. v2 used the whole epsilon and still accepted visible noise.
     // A stricter explicit interpolation tolerance is respected as well.
     // epsilon is the amplitude floor; no division by a local zero is needed.
-    // These are stopping diagnostics, not weights applied to the estimator.
+    // Strong components need an additional M11-scaled noise cap: the former
+    // epsilon/4 allowance could accept visible sub-percent M11 fluctuations.
+    // Keep the stricter v3 allowance of weak components; do not multiply every
+    // component's tolerance by another factor of eight. These are stopping
+    // diagnostics, not weights applied to the estimator or limits on the
+    // magnitude of deterministic physical slopes/curvature.
     Require(e.eps>0&&e.eps<1,"invalid angular component tolerance");
-    result.envelope.fill(e.eps);
-    for(const auto& mean:stats.mean)if(std::isfinite(mean[0])&&mean[0]>0)
-        for(int j=0;j<16;++j)if(std::isfinite(mean[j]))
-            result.envelope[j]=std::max(result.envelope[j],std::fabs(mean[j]/mean[0]));
-    const double angularFraction=std::min(result.tolerance,e.eps/4);
-    for(int j=0;j<16;++j)result.allowance[j]=std::min(result.tolerance,angularFraction*result.envelope[j]);
+    result.envelope=FullAutoAngularPilotCost::ComponentEnvelope(stats.mean,e.eps);
+    result.absoluteCap=FullAutoAngularPilotCost::AbsoluteCap(e.eps,result.tolerance);
+    result.allowance=FullAutoAngularPilotCost::ComponentAllowances(result.envelope,e.eps,result.tolerance);
     for(size_t l=0;l<stage.levels.size();++l){
         Require(state.counts[l].size()==e.theta.size()&&stage.levels[l].size()==8,"angular sampling budget/replica mismatch");
         for(const auto& sample:stage.levels[l])Require(sample.size()==ids.size(),"angular level row mismatch");
     }
     struct Stencil {std::vector<size_t> nodes;int span;double noise,allowance,mean;bool passed;int element;bool ratio;};
     std::vector<Stencil> stencils;
+    std::set<size_t> haloRows;
     auto check=[&](const std::vector<size_t>& nodes,const std::vector<double>& weights,int span){
         std::vector<size_t> rows;bool positive=true;double scale=1e300;
         for(size_t id:nodes){
@@ -106,9 +113,10 @@ AngularSamplingDecision CheckAngularSampling(const Engine& e,const AdaptiveState
                 for(int s=0;s<8;++s)covariance[l]+=(v[s]-average)*(contrast[s]-mean)/7;
             }
             size_t dominant=0;for(size_t l=1;l<covariance.size();++l)if(covariance[l]>covariance[dominant])dominant=l;
-            bool synchronized=false;
+            bool synchronized=false;std::vector<size_t> synchronizationLevels;
             for(size_t l=0;l<covariance.size();++l){
                 if(covariance[dominant]>0&&covariance[l]<covariance[dominant]/8)continue;
+                synchronizationLevels.push_back(l);
                 int largest=0;for(size_t id:nodes)largest=std::max(largest,state.counts[l][id]);
                 for(size_t id:nodes){
                     const int n=state.counts[l][id],cap=n>e.maxCount/4?e.maxCount:4*n;
@@ -116,13 +124,26 @@ AngularSamplingDecision CheckAngularSampling(const Engine& e,const AdaptiveState
                     result.proposed[l][id]=std::max(result.proposed[l][id],next);synchronized=synchronized||next>n;
                 }
             }
-            if(!synchronized){
+            std::vector<size_t> cohort=nodes;
+            if(synchronized){
+                const auto plan=FullAutoAngularCohort::Build(state.knots,ids,state.counts,
+                    synchronizationLevels,nodes,e.maxCount,[&](size_t id){return e.PhiForTheta(id);});
+                for(const auto& target:plan.targets)for(size_t id:plan.nodes)
+                    result.proposed[target.first][id]=std::max(result.proposed[target.first][id],target.second);
+                cohort=plan.nodes;
+                if(cohort.size()>nodes.size()){
+                    ++result.haloCohorts;
+                    for(size_t id:cohort)if(!std::binary_search(nodes.begin(),nodes.end(),id))haloRows.insert(id);
+                }
+            }else{
                 // Matching prefixes already cancel most common fluctuations.
                 // If noise remains, grow the complete stencil together.
                 for(size_t id:nodes)result.proposed[dominant][id]=
                     std::max(result.proposed[dominant][id],Doubled(e,state.counts[dominant][id]));
             }
-            result.priorities.push_back({worstScore*result.tolerance,nodes});
+            result.maximumCohortNodes=std::max(result.maximumCohortNodes,cohort.size());
+            result.priorities.push_back({worstScore*result.tolerance,cohort});
+            result.expandedCohorts.push_back(cohort.size()>nodes.size());
         }
         double mean=0;for(size_t k=0;k<rows.size();++k){const auto& m=stats.mean[rows[k]];
             mean+=weights[k]*(ratio?m[element]/m[0]:m[element]/scale);}
@@ -153,7 +174,15 @@ AngularSamplingDecision CheckAngularSampling(const Engine& e,const AdaptiveState
         }
         out<<'\n';
     }
-    result.table=table.str();result.shapeTable=shapeTable.str();return result;
+    result.haloAddedRows=haloRows.size();
+    std::ostringstream cohorts;cohorts<<result.cohortTable;
+    for(size_t g=0;g<result.priorities.size();++g){
+        const auto& group=result.priorities[g];
+        cohorts<<Number(group.error)<<','<<group.nodes.size()<<','<<result.expandedCohorts[g];
+        for(size_t id:group.nodes)cohorts<<','<<Number(e.theta[id]);
+        cohorts<<'\n';
+    }
+    result.cohortTable=cohorts.str();result.table=table.str();result.shapeTable=shapeTable.str();return result;
 }
 std::string AngularSamplingFields(const AngularSamplingDecision& result){
     return ",\"angular_sampling_policy\":"+Quoted(AngularSamplingPolicy())
@@ -161,23 +190,32 @@ std::string AngularSamplingFields(const AngularSamplingDecision& result){
         +",\"angular_sampling_pass\":"+(result.passed?"true":"false")
         +",\"angular_sampling_noise95\":"+Number(result.maximum)
         +",\"angular_sampling_tolerance\":"+Number(result.tolerance)
+        +",\"angular_sampling_absolute_cap_scaled_M11\":"+Number(result.absoluteCap)
         +",\"angular_sampling_max_allowance_ratio\":"+Number(result.maximumRatio)
         +",\"angular_sampling_failed_pairs\":"+Number(result.failed)
         +",\"angular_shape_checked_stencils\":"+Number(result.shapes)
         +",\"angular_shape_failed_stencils\":"+Number(result.failedShapes)
-        +",\"angular_shape_max_allowance_ratio\":"+Number(result.maximumShapeRatio);
+        +",\"angular_shape_max_allowance_ratio\":"+Number(result.maximumShapeRatio)
+        +",\"angular_halo_cohorts\":"+Number(result.haloCohorts)
+        +",\"angular_halo_added_rows\":"+Number(result.haloAddedRows)
+        +",\"angular_maximum_cohort_nodes\":"+Number(result.maximumCohortNodes);
 }
 void SaveAngularSampling(Engine& e,const AngularSamplingDecision& result,const std::string& folder){
     Atomic(folder+"/angular_sampling.csv",result.table);
     Atomic(folder+"/angular_shape.csv",result.shapeTable);
+    Atomic(folder+"/angular_cohorts.csv",result.cohortTable);
     std::string scales="[",limits="[";
     for(int j=0;j<16;++j){if(j){scales+=",";limits+=",";}scales+=Number(result.envelope[j]);limits+=Number(result.allowance[j]);}
     scales+="]";limits+="]";
-    const auto report="{\"schema\":3"+AngularSamplingFields(result)
+    const auto report="{\"schema\":4"+AngularSamplingFields(result)
         +",\"component_envelopes\":"+scales+",\"component_allowances\":"+limits
         +",\"component_amplitude_floor\":"+Number(e.eps)
         +",\"component_angular_fraction\":"+Number(std::min(result.tolerance,e.eps/4))
+        +",\"component_absolute_cap_rule\":\"min(interpolation_tolerance,epsilon/32)\""
         +",\"shape_support_spans\":[1,2],\"physical_curvature_constrained\":false"
+        +",\"cohort_planner_policy\":\"bounded-existing-prefix-halo-v1\",\"cohort_node_limit\":8"
+        +",\"expanded_cohorts\":"+Number(result.haloCohorts)+",\"halo_added_theta_rows\":"+Number(result.haloAddedRows)
+        +",\"maximum_cohort_nodes\":"+Number(result.maximumCohortNodes)
         +",\"checked_pairs\":"+Number(result.pairs)
         +",\"replicas\":8,\"physical_slope_constrained\":false,\"matrices_modified\":false"
          ",\"scope\":\"noise of support increments and centered three-point contrasts at two spans; ratios use linearized influence with an unresolved-Fieller guard; not a simultaneous confidence bound\"}";
@@ -194,18 +232,73 @@ void PrepareAngularSamplingPolicy(Engine& e,AdaptiveState& state,bool resumed){
     }
     e.Record(path,"{\"policy\":"+Quoted(AngularSamplingPolicy())
         +",\"scope\":\"incoherent PO with local orientation budgets\",\"tolerance\":"+Number(e.interpolation)
-        +",\"component_rule\":\"min(interpolation_tolerance, min(interpolation_tolerance,epsilon/4)*max(epsilon,peak_abs_Mij_over_M11))\""
+        +",\"component_rule\":\"min(interpolation_tolerance,epsilon/32,min(interpolation_tolerance,epsilon/4)*max(epsilon,peak_abs_Mij_over_M11))\""
+        +",\"absolute_cap_scaled_M11\":"+Number(std::min(e.interpolation,e.eps/32))
         +",\"shape_support_spans\":[1,2],\"physical_curvature_constrained\":false"
         +",\"native_blocks_deleted\":0,\"sampling_noise_only\":true,\"all16\":true,\"ratios_follow_fullauto_ratios\":true}");
 }
 // Saved diagnostics are scheduling hints only. Never restore acceptance from
 // them. The current samples, means and accuracy gates are recomputed on resume.
+bool ReadSavedAngularCohorts(const Engine& e,const AdaptiveState& state,
+        const std::string& text,size_t expected,std::vector<RoundOutputPriority>& output){
+    std::istringstream input(text);std::string line;
+    if(!std::getline(input,line)||line!="error_scaled_M11,node_count,expanded,theta_degrees")return false;
+    std::vector<RoundOutputPriority> checked;
+    while(std::getline(input,line)){
+        std::replace(line.begin(),line.end(),',',' ');std::istringstream row(line);
+        double error;size_t count;int expanded;
+        if(!(row>>error>>count>>expanded)||!std::isfinite(error)||!(error>0)
+                ||count<2||count>8||(expanded!=0&&expanded!=1)||(!expanded&&count>3))return false;
+        std::vector<size_t> nodes,positions;
+        for(size_t k=0;k<count;++k){
+            double angle;if(!(row>>angle)||!std::isfinite(angle))return false;
+            const auto at=std::lower_bound(e.theta.begin(),e.theta.end(),angle);
+            if(at==e.theta.end()||*at!=angle)return false;
+            const size_t id=at-e.theta.begin();
+            const auto knot=std::lower_bound(state.knots.begin(),state.knots.end(),id);
+            if(knot==state.knots.end()||*knot!=id||(!nodes.empty()&&id<=nodes.back()))return false;
+            nodes.push_back(id);positions.push_back(knot-state.knots.begin());
+        }
+        std::string extra;if(row>>extra)return false;
+        if(positions.back()-positions.front()+1>8)return false;
+        if(expanded){
+            if(positions.back()-positions.front()+1!=count)return false;
+            for(size_t id:nodes)if(e.PhiForTheta(id)!=e.PhiForTheta(nodes.front()))return false;
+        }else if(count==2){
+            if(positions[1]-positions[0]!=1)return false;
+        }else{
+            const size_t span=positions[1]-positions[0];
+            if((span!=1&&span!=2)||positions[2]-positions[1]!=span)return false;
+        }
+        checked.push_back({error,nodes});
+        if(checked.size()>expected)return false;
+    }
+    if(checked.size()!=expected)return false;
+    output.swap(checked);return true;
+}
+bool AngularDiagnosticCount(const std::string& text,const std::string& key,size_t limit,size_t& count){
+    const auto compact=CompactJson(text),needle=Quoted(key)+":";
+    const auto at=compact.find(needle);if(at==std::string::npos)return false;
+    size_t pos=at+needle.size();count=0;bool digit=false;
+    for(;pos<compact.size()&&compact[pos]>='0'&&compact[pos]<='9';++pos){
+        const size_t value=compact[pos]-'0';
+        if(value>limit||count>(limit-value)/10)return false;
+        count=10*count+value;digit=true;
+    }
+    return digit&&pos<compact.size()&&(compact[pos]==','||compact[pos]=='}');
+}
 std::vector<RoundOutputPriority> SavedAngularPriorities(const Engine& e,const AdaptiveState& state,
         const std::string& folder){
     if(e.go||e.coherent||!e.local||!Exists(folder+"/angular_sampling.json")
-            ||Read(folder+"/angular_sampling.json").find(AngularSamplingPolicy())==std::string::npos
             ||!Exists(folder+"/angular_sampling.csv")||!Exists(folder+"/angular_shape.csv"))return {};
+    const auto saved=Read(folder+"/angular_sampling.json");
+    if(saved.find(AngularSamplingPolicy())==std::string::npos)return {};
     std::vector<RoundOutputPriority> priorities;
+    size_t pairCount=0,shapeCount=0;
+    if(Exists(folder+"/angular_cohorts.csv")
+            &&AngularDiagnosticCount(saved,"angular_sampling_failed_pairs",state.knots.size(),pairCount)
+            &&AngularDiagnosticCount(saved,"angular_shape_failed_stencils",2*state.knots.size(),shapeCount)
+            &&ReadSavedAngularCohorts(e,state,Read(folder+"/angular_cohorts.csv"),pairCount+shapeCount,priorities))return priorities;
     std::istringstream file(Read(folder+"/angular_sampling.csv"));std::string line;
     if(!std::getline(file,line)||line.find("theta_left_deg,theta_right_deg,noise95,allowance,passed,element,")!=0)return {};
     while(std::getline(file,line)){

@@ -6,20 +6,30 @@
 // directly. Preserve the serialized recipe so old jobs remain compatible.
 mutable bool executionRecipeValid=false;
 mutable int executionRecipeThreads=0,executionRecipeChunk=0;
-mutable bool executionRecipePhiPilot=false;
+mutable bool executionRecipePhiPilot=false,executionRecipeDispatchPipeline=false;
 mutable std::vector<std::string> executionRecipeGpus,executionRecipeBase;
-mutable std::string executionRecipeAnglePilot,executionRecipeHash;
+mutable std::string executionRecipeAnglePilot,executionRecipeHash,executionRecipeCutoffBase;
+bool StagedCutoff()const{return cutoffPolicy=="staged"||cutoffUpgrade;}
+std::string CutoffEstimator()const{return StagedCutoff()?"staged_fast_balanced_off":CutoffBaseProfile()+"_with_paired_off_correction";}
+std::string CutoffBaseProfile()const{return (cutoffPolicy=="fast"||StagedCutoff())?"fast":"balanced";}
 const std::string& ExecutionHash()const{
     if(executionRecipeValid&&executionRecipeThreads==workerThreads&&executionRecipeChunk==workerChunk
-            &&executionRecipePhiPilot==phiCutoffPilot&&executionRecipeAnglePilot==angleBatchPilotRecipe
-            &&executionRecipeGpus==gpus&&executionRecipeBase==base)return executionRecipeHash;
+            &&executionRecipePhiPilot==phiCutoffPilot&&executionRecipeDispatchPipeline==dispatchPipeline&&executionRecipeAnglePilot==angleBatchPilotRecipe
+            &&executionRecipeGpus==gpus&&executionRecipeBase==base&&executionRecipeCutoffBase==CutoffEstimator())return executionRecipeHash;
     std::ostringstream s;s<<workerThreads<<' '<<workerChunk<<'\n';for(const auto& gpu:gpus)s<<gpu<<'\n';for(const auto& v:base)s<<v<<'\n';
     // A variance pilot of B_N+(O_m-B_m) is a different estimator from a
     // full-off pilot with the same seed. Never reuse the latter's cache.
     if(phiCutoffPilot)s<<"matched-cutoff-phi-pilot-v1\n";
+    // Keep default balanced identities byte-for-byte compatible, while never
+    // reusing coarse/prefix products made with the stronger pruning recipe.
+    if(dispatchPipeline&&phiCutoffPilot)s<<"dispatch-pipeline-variance-pilot-v1\n";
+    if(cutoffUpgrade&&phiCutoffPilot)s<<"upgraded-staged-variance-pilot-v1\n";
+    if(cutoffPolicy=="staged")s<<"staged-cutoff-v1 N N/8 N/64 min64\n";
+    if(cutoffPolicy=="fast"||cutoffPolicy=="staged")s<<"cutoff-base "<<"fast"<<"-v1\n";
     if(!angleBatchPilotRecipe.empty())s<<"angle-batch-pilot "<<angleBatchPilotRecipe<<'\n';
-    executionRecipeThreads=workerThreads;executionRecipeChunk=workerChunk;executionRecipePhiPilot=phiCutoffPilot;
+    executionRecipeThreads=workerThreads;executionRecipeChunk=workerChunk;executionRecipePhiPilot=phiCutoffPilot;executionRecipeDispatchPipeline=dispatchPipeline;
     executionRecipeGpus=gpus;executionRecipeBase=base;executionRecipeAnglePilot=angleBatchPilotRecipe;
+    executionRecipeCutoffBase=CutoffEstimator();
     executionRecipeHash=Hash(s.str());executionRecipeValid=true;return executionRecipeHash;
 }
 void RemoveOption(const std::string& option,int count=1){
@@ -204,7 +214,7 @@ void TuneCutoffs(const std::vector<double>& input){
     // bias; uncertainty is measured from the complete eight combined replicas.
     tuneCutoffs=false;SetCutoff("off");cutoffError=0;
     balancedCorrection=!go;
-    Record(root+"/cutoff_calibration.json","{\"enabled\":true,\"selected\":\"balanced_with_paired_off_correction\",\"physical_target\":\"off\",\"profile_search\":false,\"correction_fraction\":0.125,\"minimum_block\":512,\"supported\":"+std::string(balancedCorrection?"true":"false")+"}");
+    Record(root+"/cutoff_calibration.json","{\"enabled\":true,\"selected\":"+Quoted(CutoffEstimator())+",\"physical_target\":\"off\",\"profile_search\":false,\"correction_fraction\":0.125,\"minimum_block\":512,\"supported\":"+std::string(balancedCorrection?"true":"false")+"}");
 }
 void TuneTracing(const std::vector<double>& x){
 #ifdef MBS_GPU_FP32
@@ -239,7 +249,7 @@ void TuneTracing(const std::vector<double>& x){
                 for(int j=1;j<16;++j){const double ar=a[j]/a[0],br=b[j]/b[0];
                     error=std::max(error,std::fabs(ar-br)/std::max(1.,std::max(std::fabs(ar),std::fabs(br))));}
             }
-            acceptedGpu=acceptedGpu||FullAutoTraceEvidence::Executed(candidate[i].folder);}
+            acceptedGpu=acceptedGpu||FullAutoTraceEvidence::ExecutedWithReader(candidate[i].folder,[](const std::string& path){return Exists(path)?Read(path):std::string();});}
         const bool accepted=acceptedGpu&&error<traceTolerance;
         report<<",{\"backend\":"<<Quoted(mode)<<",\"wall_seconds\":"<<Number(wall)<<",\"error\":"<<Number(error)<<",\"gpu_executed\":"<<(acceptedGpu?"true":"false")<<",\"accepted\":"<<(accepted?"true":"false")<<"}";
         if(accepted&&wall<best*.95){best=wall;chosen=mode;}
@@ -251,6 +261,9 @@ void TuneTracing(const std::vector<double>& x){
 
 void PrepareTuning(const std::vector<double>& angles){
     if(RestoreTuning()){
+        if(cutoffUpgrade){Require(selectedCutoff=="off", "cutoff upgrade requires a saved unpruned physical target");
+            Record(root+"/cutoff_upgrade.json","{\"source_policy\":\"auto\",\"new_block_estimator\":\"staged_fast_balanced_off\",\"physical_target\":\"off\",\"completed_parent_identities_preserved\":true,\"native_child_namespace\":\"staged-source-v1\",\"pilot_variance_identity_separate\":true}");}
+
         bool explicitCutoff=args.IsCatched("r");for(const char* key:{"cutoff_profile","beam_cutoff","beam_cutoff_j","beam_cutoff_area","beam_cutoff_importance","trace_cutoff","trace_cutoff_j","trace_cutoff_area","trace_cutoff_importance"})explicitCutoff=explicitCutoff||args.IsCatched(key);
         // Completed direct-off blocks already estimate the unpruned target.
         // Keep their exact cache keys and values; only missing native blocks
@@ -258,9 +271,10 @@ void PrepareTuning(const std::vector<double>& angles){
         // their orientation counts, and all eight replicas include the
         // correction variance. This also applies to old incoherent runs.
         balancedCorrection=!go&&cutoffPolicy!="off"&&!explicitCutoff&&selectedCutoff=="off";
-        Log("cutoff_estimator_restore","{\"balanced_with_paired_off_correction\":"+std::string(balancedCorrection?"true":"false")+",\"saved_physical_target\":"+Quoted(selectedCutoff)+",\"old_completed_blocks_preserved\":true,\"correction_applies_to_new_blocks_only\":true,\"profile_search\":false}");
+        Log("cutoff_estimator_restore","{\"balanced_with_paired_off_correction\":"+std::string(balancedCorrection?"true":"false")+",\"base_profile\":"+Quoted(CutoffBaseProfile())+",\"saved_physical_target\":"+Quoted(selectedCutoff)+",\"old_completed_blocks_preserved\":true,\"correction_applies_to_new_blocks_only\":true,\"profile_search\":false}");
         return;
     }
+    Require(!cutoffUpgrade,"cutoff upgrade requires a valid saved execution tuning recipe");
     Record(root+"/automatic_cutoff_validation.json","{\"enabled\":false}");
     std::vector<double> x;const size_t rows=std::min(size_t(17),angles.size());for(size_t i=0;i<rows;++i)x.push_back(angles[i*(angles.size()-1)/(rows-1)]);
     const bool oldControls=controls;controls=false;SetMirror(false);phi=fixedPhi?fixedPhi:std::max(minPhi,std::min(maxPhi,4));

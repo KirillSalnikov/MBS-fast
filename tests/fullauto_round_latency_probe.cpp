@@ -3,11 +3,11 @@
 void StopPolicy(){
     for(bool final:{false,true})for(bool loaded:{false,true})for(bool explicitFlag:{false,true}){
         ArgPP args;RegisterCliOptions(args);const char* av[]={"probe","--convergence-passes","3"};if(explicitFlag)args.Parse(3,av);
-        RunConfig c;c.adaptive.stablePasses=explicitFlag?3:2;c.adaptive.loadedFromFile=loaded;
+        RunConfig c;c.adaptive.stablePasses=explicitFlag?3:2;c.adaptive.loadedFromFile=loaded;c.adaptive.stablePassesExplicit=loaded;
         Engine e(args,c);e.finalChecks=final;
-        Require(e.RequiredProductionPasses()==(!final&&!loaded&&!explicitFlag?1:c.adaptive.stablePasses),"explicit/config pass policy lost");
+        Require(e.RequiredProductionPasses()==(!loaded&&!explicitFlag?1:c.adaptive.stablePasses),"explicit/config pass policy lost");
     }
-    ArgPP args;RunConfig c;c.adaptive.loadedFromFile=true;c.adaptive.stablePasses=0;Engine e(args,c);bool rejected=false;
+    ArgPP args;RunConfig c;c.adaptive.loadedFromFile=true;c.adaptive.stablePassesExplicit=true;c.adaptive.stablePasses=0;Engine e(args,c);bool rejected=false;
     try{e.RequiredProductionPasses();}catch(const std::exception&){rejected=true;}Require(rejected,"invalid pass count accepted");
     e.gpus={"0","1"};e.dispatchGpus={"1"};Require(RoundPhysicalGpus(e)==1,"original GPU selection overrode dispatch");
     e.dispatchGpus={"1","1"};Require(RoundPhysicalGpus(e)==1,"duplicate workers counted as two physical GPUs");
@@ -55,7 +55,8 @@ void CompleteResidualCohorts(const std::string& root){
     Require(proposed!=wanted&&proposed!=current,"residual cohort scheduling made no bounded progress");
     for(const auto& group:cohorts)for(size_t id:group){
         Require(proposed[0][id]==proposed[0][group.front()],"signed residual cohort split");
-        Require(proposed[0][id]==256||proposed[0][id]==8192,"cohort common-prefix prescription truncated");}
+        Require(proposed[0][id]==256||proposed[0][id]==512||proposed[0][id]==8192,
+            "cohort prefix is neither a whole prescribed step nor its bounded 2x step");}
 }
 int main(int argc,char** argv){try{
     Require(argc==2,"OUTPUT");StopPolicy();SavedPass(std::string(argv[1])+"/saved");InterpolationEnvelope(std::string(argv[1])+"/envelope");

@@ -22,6 +22,7 @@ public:
                       std::vector<Beam> &) override; ///> for predefined trajectories
 
 #ifdef USE_CUDA
+    bool CanPrepareGpuInput() const;
     bool PrepareGpuInput(GpuConvexQueue::Input& input, std::vector<Beam>& external);
     void AddGpuStatistics(const GpuConvexQueue::Status& status);
     static Beam DecodeGpuBeam(const GpuConvexQueue::Beam& beam, int diagnosticFacets = 0);

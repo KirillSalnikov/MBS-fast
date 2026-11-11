@@ -13,7 +13,7 @@ inputs}\label{start-with-the-physical-inputs}
 make -C cpu -j2
 cpu/bin/mbs_po_mpi --method po --backend cpu \
   --particle 1 5 2 --ri 1.3116 0 --wavelength-um 0.532 \
-  --fullauto 0.02 --output results/column_5um
+  --fullauto 0.02 --checkpoint --output results/column_5um
 \end{verbatim}
 \end{minipage}
 
@@ -26,6 +26,12 @@ Dmax is the maximum vertex separation, not a volume-equivalent diameter.
 No Python controller or hand-written orientation file is required. Do
 not add an explicit Sobol selector to make fullauto use Sobol. Run one
 controller per output directory, without a multi-rank MPI launch.
+
+New output directories use bounded RAM working storage by default.
+\nolinkurl{-\/-checkpoint} enables recovery snapshots every 300 seconds;
+without it, published matrices remain available but an interrupted
+adaptive run cannot resume. Existing legacy outputs retain their
+previous storage policy.
 
 For CUDA, build \texttt{make\ -C\ gpu\ fp64\ GPU\_ARCH=70\ -j2} and use
 \texttt{gpu/bin/mbs\_po\_gpu\_double\ -\/-backend\ cuda} instead of the
@@ -109,6 +115,17 @@ reflection depth unless fixed. CUDA uses a bounded kernel/phi pilot
 before the depth comparison; complete production tuning follows at the
 selected depth.
 
+CUDA layout calibration uses fresh timing requests after a warmup and
+repeats the two fastest numerically valid candidates before changing the
+default. The comparison includes the complete request time and checks
+all 16 elements and enabled normalized ratios on identical orientations.
+Explicit layout options remain fixed. Further probes are limited by a
+production-cost forecast and a five-second soft budget; a running
+request is not interrupted. If the budget is insufficient, the current
+layout remains selected. See \nolinkurl{kernel_calibration.json} for
+individual timings, numerical checks and the fallback reason. Trial
+matrices are temporary and are not checkpoint sources.
+
 Each new depth candidate restarts at the configured depth pilot; only
 resuming the same unresolved candidate retains its expanded count. After
 two pilots, the controller may try the next depth if the mean residual
@@ -125,12 +142,13 @@ phi and execution settings from measured cost and variance. Unsupported
 controls are disabled while the full PO calculation remains available.
 
 Production evaluates support/check angles, depth levels and eight
-replicas. Completed blocks are durable and reused. Each round estimates
-statistical uncertainty, matched interpolation residuals and prefix
-stability. The next round increases samples or angular support where
-needed. After working criteria pass, enabled independent and physical
-audits run. An unresolved limit or failed audit is not a converged
-result.
+replicas. Completed blocks are retained for reuse; their recovery
+lifetime depends on the checkpoint policy described below. Each round
+estimates statistical uncertainty, matched interpolation residuals and
+prefix stability. The next round increases samples or angular support
+where needed. After working criteria pass, enabled independent and
+physical audits run. An unresolved limit or failed audit is not a
+converged result.
 
 \subsection{Sobol and the orientation
 measure}\label{sobol-and-the-orientation-measure}
@@ -362,9 +380,37 @@ equations, or proof that every unsampled angular feature has been found.
 
 \subsection{Results and recovery}\label{results-and-recovery}
 
-Old output directories acquire a compact discovery journal on their
-first resume with the current controller. The initial migration still
-reads the old metadata once; later resumes read
+New runs default to \texttt{-\/-fullauto-storage\ memory}. Native blocks
+travel over an interprocess channel in chunks of at most 64 KiB.
+Requests with at most 64 MiB of estimated inputs and outputs use
+temporary RAM staging when reserves allow; larger jobs use disposable
+disk staging without per-file durability barriers. Controller values use
+a 512 MiB retained-cache budget; overflow values and, when needed, the
+SQLite catalog use anonymous temporary files. These files are
+disposable, not recovery checkpoints. The cache budget excludes other
+controller indexes, workers, temporary read buffers, library code and
+the OS page cache. Disk spill size is not bounded by the RAM budget.
+Catalog spill dynamically requires \texttt{libsqlite3.so.0} or
+\texttt{libsqlite3.so}; the normal build links with \texttt{-ldl}.
+
+\nolinkurl{-\/-checkpoint} enables periodic
+\nolinkurl{fullauto_checkpoint.bin} snapshots, including the separate
+eight-seed state and paired corrections. An explicit
+\texttt{-\/-fullauto-checkpoint-seconds\ N} wins, including \texttt{0}
+to disable snapshots. Snapshots publish atomically at a consistent
+controller point; an unfinished write cannot replace the last complete
+generation. They currently include all live working records, so their
+size and duration grow with the stored state.
+\nolinkurl{fullauto_storage.json} reports the policy and actual
+memory/spill sizes. See the
+\href{FULLAUTO_RU.md\#рабочее-состояние-и-периодический-чекпоинт}{detailed
+storage options}.
+
+Existing legacy output directories automatically keep \texttt{legacy}
+storage. Do not change an existing legacy directory to \texttt{memory};
+start a new output instead. Legacy directories acquire a compact
+discovery journal on their first resume with the current controller. The
+initial migration still reads the old metadata once; later resumes read
 \nolinkurl{completed_jobs.journal} and inspect only directories missing
 from it. Existing matrices and completion markers are not rewritten. The
 journal accelerates discovery; hashes and source dependencies are still
@@ -377,15 +423,20 @@ as \texttt{stdout.memory-retry.log}. For the system RAM reserve guard,
 the controller waits at most 60 seconds for the reserve to recover after
 releasing that worker. It records \nolinkurl{resource_wait.json} and
 memory-retry events. The reserve is not lowered. Continued pressure or
-an unrelated numerical/CUDA failure stops the task and preserves
-completed checkpoints for recovery.
+an unrelated numerical/CUDA failure stops the task. Recovery requires an
+enabled published memory checkpoint or the retained legacy blocks; a DAT
+alone does not restore adaptive state.
 
 Read \nolinkurl{fullauto_status.json} for convergence and selected
 settings. \nolinkurl{intermediate_current.json} points to the last
-published matrix snapshot. \nolinkurl{execution_progress.json} reports
-active work, not a newly measured accuracy.
-\nolinkurl{fullauto_history.jsonl} records parameter changes and execution
-events.
+published matrix snapshot. In memory mode this pointer changes
+atomically only after the complete immutable
+\texttt{public\_snapshots/\textless{}hash\textgreater{}/} generation has
+been written. The current and previous generations are retained; follow
+the pointer instead of assuming a fixed folder.
+\nolinkurl{execution_progress.json} reports active work, not a newly
+measured accuracy. \nolinkurl{fullauto_history.jsonl} records parameter
+changes and execution events.
 
 \nolinkurl{mueller_fullauto.dat} contains the requested output grid. Guard
 rows can contain interpolation even when a separate direct check exists.
@@ -396,12 +447,17 @@ mean unavailable, not zero. \nolinkurl{parameters_accuracy.csv} and
 \nolinkurl{interpolation_orientation_budget.csv} in each snapshot
 distinguish production and residual sample budgets.
 
-Resume the exact command with the same binary and output directory. Keep
-the whole directory, including \nolinkurl{jobs/}, configuration, source
-manifests and checkpoints. An incomplete block can repeat; complete
-blocks are reused. Schema 6 stores both budgets and residual phi; older
-checkpoint parsing does not by itself prove cross-binary numerical
-compatibility.
+With recovery enabled, resume the exact command with the same binary and
+output directory. Keep the whole directory: memory mode needs its
+marker, configuration and complete binary snapshot; legacy mode also
+needs \nolinkurl{jobs/} and source manifests. Work after the last memory
+snapshot can repeat. Without a snapshot, restart in a new directory.
+Legacy schema 6 stores both budgets and residual phi; older checkpoint
+parsing does not by itself prove cross-binary numerical compatibility.
+Keep the original particle file and its visibility sidecar accessible at
+their original paths, including when they live inside the output
+directory. Inputs are read before restoring the snapshot; it is not a
+portable input archive.
 
 A new binary requires an exact tested compatibility receipt before
 \texttt{-\/-fullauto-resume-compatible\ OLD\_BINARY} can be used. Do not
@@ -412,7 +468,9 @@ recipe rather than silently changing its physics.
 \texttt{scripts/run\_fullauto\_service.sh\ UNIT\ BINARY\ LOG\ {[}arguments...{]}}
 installs and starts a user systemd service for process recovery.
 Numerical decisions remain native. It is an optional launcher, not a
-required Python audit.
+required Python audit. Pass \nolinkurl{-\/-checkpoint} to the calculation
+for recoverable new memory-mode runs; restarting a service alone does
+not save adaptive state.
 
 \subsection{Tracing and preparation
 memory}\label{tracing-and-preparation-memory}

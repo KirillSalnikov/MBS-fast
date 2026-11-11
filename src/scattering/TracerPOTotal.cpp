@@ -10,6 +10,9 @@
 #include "OrientationFile.h"
 #include "AnalyticBackscatter.h"
 #include "AnalyticFacetAverage.h"
+#include "ResidentFacetControl.h"
+#include "GpuChunkRetry.h"
+#include "CpuTraceSchedule.h"
 #include "AnalyticAzimuthGaussian.h"
 #include "cuda/GpuAnalyticFacet.h"
 #include <array>
@@ -18,6 +21,7 @@
 #ifdef USE_CUDA
 #include "ScatteringConvex.h"
 #include "cuda/GpuConvexQueue.h"
+#include "cuda/GpuTraceCapacity.h"
 #include "BigIntegerUtils.hh"
 #endif
 
@@ -106,21 +110,23 @@ static long long ReadMeminfoKb(const char *key)
     return 0;
 }
 
-static long long ReadProcessRssKb()
+static long long ReadProcessStatusKb(const char* key)
 {
     std::ifstream f("/proc/self/status");
     std::string line;
     while (std::getline(f, line))
     {
-        if (line.find("VmRSS:") == 0)
+        if (line.compare(0,std::strlen(key),key) == 0)
         {
             long long kb = 0;
-            std::sscanf(line.c_str(), "VmRSS: %lld", &kb);
+            std::sscanf(line.c_str()+std::strlen(key), " %lld", &kb);
             return kb;
         }
     }
     return 0;
 }
+
+static long long ReadProcessRssKb() { return ReadProcessStatusKb("VmRSS:"); }
 
 static double EnvDouble(const char *name, double fallback)
 {
@@ -6160,6 +6166,11 @@ void TracerPOTotal::TraceWeightedOrientations(
     }
 
     const auto facetWeights=AnalyticFacetAverage::ReadControlWeights(m_analyticControlWeights,facetTheta);
+    const bool residentFacetControl = ResidentFacetControl::Eligible(
+        ResidentFacetControl::Enabled(std::getenv("MBS_GPU_RESIDENT_FACET_CONTROL")),
+        bool(facetControl), bool(analyticControl), m_analyticFacetSamples,
+        m_analyticAzimuthGaussian, EnvEnabled("MBS_GPU_TRACE_HYBRID"));
+
 
     m_incomingEnergy = 0;
     handlerPO->m_outputEnergy = 0;
@@ -6205,6 +6216,41 @@ void TracerPOTotal::TraceWeightedOrientations(
     // the CPU. The device allocator still rechecks current free memory.
     if(handlerPO->IsGpuEnabled()&&m_particle->nFacets>16
        &&EnvEnabled("MBS_GPU_TRACE_CONVEX_DIRECT"))maximumChunk=std::min(maximumChunk,64);
+    bool orderedResidentFacet = false;
+    bool wideResident = false;
+#ifdef USE_CUDA
+    const auto* residentScattering=dynamic_cast<const ScatteringConvex*>(m_scattering);
+    const bool directRequested=EnvEnabled("MBS_GPU_TRACE_CONVEX_DIRECT");
+    const bool directEligible=(!facetControl||residentFacetControl)&&!analyticControl&&!m_analyticFacetSamples
+        &&!m_analyticAzimuthGaussian&&handlerPO->CanHandleResidentConvexGpu();
+    const bool queueEligible=handlerPO->IsGpuEnabled()&&EnvEnabled("MBS_GPU_TRACE_CONVEX_QUEUE")
+        &&residentScattering&&residentScattering->CanPrepareGpuInput()&&(!directRequested||directEligible);
+    const bool residentEligible=queueEligible&&directRequested&&directEligible;
+    orderedResidentFacet = residentEligible && residentFacetControl;
+    // Hybrid also feeds a CPU producer from maximumChunk. Its existing CPU
+    // packet limit must not grow when this GPU-only experiment is selected.
+    wideResident = residentEligible && GpuConvexQueue::Capacity::WideChunksEnabled()
+        && !EnvEnabled("MBS_GPU_TRACE_HYBRID");
+    // One boundary cleanup before producers start. Raw-queue tracing with
+    // direct=0 still owns its trace scratch; unsupported modes release both
+    // otherwise idle pools without taking locks in each diffraction call.
+    if((!queueEligible||GpuConvexQueue::Capacity::WorkspaceExplicitlyDisabled())
+       &&!GpuConvexQueue::ReleaseWorkspace())
+        throw std::runtime_error("GPU trace workspace cleanup failed at native boundary");
+    if(!residentEligible&&!HandlerPO::ReleaseIdleBoundedResidentGpuCache())
+        throw std::runtime_error("GPU resident workspace cleanup failed at native boundary");
+    if(GpuConvexQueue::Capacity::DeepEnabled()&&residentEligible){
+        const int requested=maximumChunk;
+        const auto limit=GpuConvexQueue::ResidentChunkLimit(requested,m_particle->nFacets,
+            m_scattering->GetMaxReflections(),wideResident);
+        maximumChunk=std::min(maximumChunk,limit.count);
+        std::cerr<<"GPU convex resident chunk cap: requested_upper="<<requested<<" selected="<<maximumChunk
+            <<" faces="<<m_particle->nFacets<<" depth="<<m_scattering->GetMaxReflections()
+            <<" budget_MiB="<<limit.budgetBytes/1048576.<<" worst_retry_MiB="<<limit.reservedBytes/1048576.
+            <<" wide_chunks="<<(wideResident?1:0)<<" CPU_fallback_max="<<GpuChunkRetry::SafeUpper
+            <<" retries_reserved=2 reason="<<(limit.fits?"memory_budget":limit.queried?"insufficient_budget_CPU_fallback_possible":"memory_query_failed_conservative_1")<<std::endl;
+    }
+#endif
     const bool pipeline=m_orientationPipeline && handlerPO->IsGpuEnabled();
     PreparedChunkController memoryChunks(maximumChunk,(pipeline ? 2:1)*(m_pairedDepth?2:1),m_preparedMemoryKey);
     int nThreads = 1;
@@ -6234,6 +6280,9 @@ void TracerPOTotal::TraceWeightedOrientations(
     double phase1_total = 0, phase2_total = 0;
     const bool profileOrientation = m_profilePhases || EnvEnabled("MBS_ORIENTATION_TIMING");
     double controlSeconds=0.0,diffractionSeconds=0.0,residentTraceKernelSeconds=0.0;
+    double pairedLowerDiffractionSeconds=0.0,memoryAccountingSeconds=0.0,progressReportSeconds=0.0;
+    double consumerReleaseSeconds=0.0,producerReleaseSeconds=0.0,retireWaitSeconds=0.0;
+    double analyticPackOverlapSeconds=0.0;size_t analyticPackOverlapChunks=0;
     double preparedWaitSeconds=0.0,producerWaitSeconds=0.0;
     const auto processingStarted=std::chrono::steady_clock::now();
     double rotationCpuSeconds = 0.0;
@@ -6241,7 +6290,9 @@ void TracerPOTotal::TraceWeightedOrientations(
     double prepareCpuSeconds = 0.0;
     std::vector<Beam> outBeams;
     long long count = 0;
+    const auto parallelSetupStarted=std::chrono::steady_clock::now();
     m_scattering->PrepareForParallelTrace();
+    const double parallelSetupSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-parallelSetupStarted).count();
 
     struct PreparedBlock
     {
@@ -6252,6 +6303,14 @@ void TracerPOTotal::TraceWeightedOrientations(
         std::vector<std::array<AnalyticBackscatter::Vec,3>> frames;
         std::unique_ptr<Arr2D> residentFull,residentNS,residentLower;
         double seconds=0,rotation=0,trace=0,prepare=0,residentConsumer=0,residentTraceKernel=0;
+    };
+    // Measure actual member destruction, not just the destructor's body.
+    // The two callers use separate counters; producer updates are read only
+    // after its future has joined. No CUDA work is launched by this operation.
+    const auto releasePreparedBlock=[](PreparedBlock& block,double& seconds){
+        const auto started=std::chrono::steady_clock::now();
+        {PreparedBlock released=std::move(block);}
+        seconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
     };
     auto prepareBlock = [&](int iStart,int thisChunk,bool allowResident,int prepareThreads)
     {
@@ -6283,7 +6342,7 @@ void TracerPOTotal::TraceWeightedOrientations(
 
 #ifdef USE_CUDA
         const bool directRequested=allowResident && EnvEnabled("MBS_GPU_TRACE_CONVEX_DIRECT");
-        const bool directModeEligible=!facetControl && !analyticControl
+        const bool directModeEligible=(!facetControl||residentFacetControl) && !analyticControl
             && !m_analyticFacetSamples && !m_analyticAzimuthGaussian
             && handlerPO->CanHandleResidentConvexGpu();
         const bool residentQueue=allowResident && handlerPO->IsGpuEnabled()
@@ -6352,7 +6411,7 @@ void TracerPOTotal::TraceWeightedOrientations(
                         const bool ok=lowerOk&&handlerPO->HandleResidentConvexGpu(deviceInputs,raw,beamCount,weights,
                             *block.residentFull,*block.residentNS,block.outputEnergies,extinction);
                         block.residentConsumer=std::chrono::duration<double>(std::chrono::steady_clock::now()-consumerStart).count();
-                        return ok;});
+                        return ok;},m_preparedMemoryKey);
                 if(success){
                     block.residentTraceKernel=metrics.kernelSeconds;
                     for(int i=0;i<thisChunk;++i){block.energies[i]=residentEnergy[i]*weights[i];
@@ -6392,10 +6451,60 @@ void TracerPOTotal::TraceWeightedOrientations(
         }
 #endif
 
+        // A failed wide GPU packet must not become a large CPU beam tree.
+        // Every unsuccessful direct path (input, packing, trace or consumer)
+        // reaches this guard; only complete GPU success returns above it.
+        if(wideResident && allowResident && thisChunk>GpuChunkRetry::SafeUpper)
+            throw GpuChunkRetry::Required(size_t(thisChunk),
+                "resident GPU packet unavailable; wide CPU preparation refused");
+
+        const bool fineSchedule=CpuTraceSchedule::Fine(std::getenv("MBS_CPU_TRACE_FINE_SCHEDULE"));
+        const int scheduleGrain=CpuTraceSchedule::Grain(fineSchedule);
+        size_t scratchEstimate=0,scratchBudget=0;
+        int cpuPrepareThreads=prepareThreads;
+        if(fineSchedule){
+            // More active pilot threads also mean more transient beam trees.
+            // Admit their initial reserve and a matching raw-beam vector, plus
+            // copied geometry/grid and fixed scratch. This is NOT a hard bound
+            // on beam-tree growth; the existing live host guards remain active.
+            size_t base=16u*1024u*1024u+sizeof(Particle)+sizeof(HandlerPO);
+            const auto addBase=[&](size_t count,size_t item){
+                if(item && count>(std::numeric_limits<size_t>::max()-base)/item)
+                    throw HostMemoryReserve::BudgetExhausted("CPU trace scratch estimate overflow");
+                base+=count*item;
+            };
+            addBase(handlerPO->m_sphere.thetaValues.capacity(),sizeof(double));
+            for(const auto* grid:{&handlerPO->m_sphere.directions,&handlerPO->m_sphere.vf}){
+                addBase(grid->capacity(),sizeof(std::vector<Point3d>));
+                for(const auto& row:*grid)addBase(row.capacity(),sizeof(Point3d));
+            }
+            if(!CpuTraceSchedule::ScratchBytes(sizeof(Beam),
+                CpuTraceSchedule::ReserveCount(std::getenv("MBS_TRACE_TREE_RESERVE"),!m_particle->IsConcave() && !m_particle->isAggregated),base,scratchEstimate))
+                throw HostMemoryReserve::BudgetExhausted("CPU trace scratch estimate overflow");
+            // Hybrid has a second CPU-capable producer. Keep half the available
+            // admission budget for it instead of giving both the whole budget.
+            scratchBudget=size_t(PreparedStorageBudgetBytes())/(EnvEnabled("MBS_GPU_TRACE_HYBRID")?2:1);
+            cpuPrepareThreads=CpuTraceSchedule::Threads(true,prepareThreads,thisChunk,scratchBudget,scratchEstimate);
+            if(!cpuPrepareThreads)
+                throw HostMemoryReserve::BudgetExhausted("CPU fine trace schedule cannot admit one scratch estimate within the live host budget");
+        }
+        const auto cpuPreparationStarted=profileOrientation?CpuTraceSchedule::Clock::now():CpuTraceSchedule::Clock::time_point();
+        const long long rssBefore=profileOrientation?ReadProcessRssKb():0;
+        std::vector<CpuTraceSchedule::ThreadProfile> cpuProfiles(profileOrientation?size_t(cpuPrepareThreads):0);
         // std::async workers do not inherit the calling thread's OpenMP ICV.
         // Keep four concurrent GPU jobs within the requested CPU budget.
-        #pragma omp parallel num_threads(prepareThreads)
+        #pragma omp parallel num_threads(cpuPrepareThreads)
         {
+            int threadId=0;
+#ifdef _OPENMP
+            threadId=omp_get_thread_num();
+#endif
+            auto* cpuProfile=profileOrientation?&cpuProfiles[size_t(threadId)]:nullptr;
+            const auto threadStarted=profileOrientation?CpuTraceSchedule::Clock::now():CpuTraceSchedule::Clock::time_point();
+            const double threadCpuStarted=profileOrientation?CpuTraceSchedule::ThreadCpuSeconds():-1;
+            CpuTraceSchedule::Clock::time_point loopStarted,barrierFinished;
+            if(cpuProfile)cpuProfile->present=true;
+            {
             // Thread-local copies of all mutable tracing/preprocessing state.
             Particle localParticle = *m_particle;
             Scattering *localScatter = m_scattering->CloneFor(&localParticle, &m_incidentLight);
@@ -6413,9 +6522,11 @@ void TracerPOTotal::TraceWeightedOrientations(
             double localTraceSeconds = 0.0;
             double localPrepareSeconds = 0.0;
 
-            #pragma omp for schedule(dynamic, 4)
+            if(cpuProfile){loopStarted=CpuTraceSchedule::Clock::now();cpuProfile->setup=CpuTraceSchedule::Seconds(threadStarted,loopStarted);}
+            #pragma omp for schedule(dynamic, scheduleGrain) nowait
             for (int i = 0; i < thisChunk; ++i)
             {
+                CpuTraceSchedule::TaskProfile taskProfile(cpuProfile);
                 if (parallelError.Failed())
                     continue;
                 try
@@ -6590,6 +6701,12 @@ void TracerPOTotal::TraceWeightedOrientations(
                 }
             }
 
+            if(cpuProfile)cpuProfile->loop=CpuTraceSchedule::Seconds(loopStarted,CpuTraceSchedule::Clock::now());
+            const auto barrierStarted=profileOrientation?CpuTraceSchedule::Clock::now():CpuTraceSchedule::Clock::time_point();
+            // Equivalent to the previous omp-for implicit barrier; record its
+            // tail separately from useful orientation work and thread teardown.
+            #pragma omp barrier
+            if(cpuProfile){barrierFinished=CpuTraceSchedule::Clock::now();cpuProfile->barrier=CpuTraceSchedule::Seconds(barrierStarted,barrierFinished);}
             if (profileOrientation)
             {
                 #pragma omp atomic update
@@ -6601,6 +6718,31 @@ void TracerPOTotal::TraceWeightedOrientations(
             }
 
             delete localScatter;
+            }
+            if(cpuProfile){
+                cpuProfile->teardown=CpuTraceSchedule::Seconds(barrierFinished,CpuTraceSchedule::Clock::now());
+                const double cpuEnd=CpuTraceSchedule::ThreadCpuSeconds();
+                cpuProfile->cpu=threadCpuStarted>=0&&cpuEnd>=threadCpuStarted?cpuEnd-threadCpuStarted:-1;
+            }
+        }
+        if(profileOrientation){
+            const auto s=CpuTraceSchedule::Summarize(cpuProfiles);
+            std::ostringstream row;row<<std::setprecision(9)<<"CPU orientation preparation: start="<<iStart
+                <<" count="<<thisChunk<<" grain="<<scheduleGrain<<" requested_threads="<<prepareThreads
+                <<" admitted_threads="<<cpuPrepareThreads<<" threads="<<s.threads<<" active_threads="<<s.active
+                <<" tasks="<<s.tasks<<" min_tasks="<<s.minTasks<<" max_tasks="<<s.maxTasks
+                <<" prepare_wall_s="<<CpuTraceSchedule::Seconds(cpuPreparationStarted,CpuTraceSchedule::Clock::now())
+                <<" setup_sum_wall_s="<<s.setup<<" work_sum_wall_s="<<s.work<<" work_max_wall_s="<<s.maxWork
+                <<" loop_sum_wall_s="<<s.loop<<" loop_max_wall_s="<<s.maxLoop
+                <<" barrier_sum_wall_s="<<s.barrier<<" barrier_max_wall_s="<<s.maxBarrier
+                <<" teardown_sum_wall_s="<<s.teardown<<" thread_cpu_available="<<(s.cpuAvailable?1:0)
+                <<" thread_cpu_sum_s="<<(s.cpuAvailable?s.cpu:-1)
+                <<" rss_before_MiB="<<rssBefore/1024.<<" rss_after_MiB="<<ReadProcessRssKb()/1024.
+                <<" hwm_MiB="<<ReadProcessStatusKb("VmHWM:")/1024.
+                <<" scratch_estimate_MiB="<<scratchEstimate/1048576.<<" scratch_budget_MiB="<<scratchBudget/1048576.
+                <<" task_semantics=assigned_including_cache_or_failed_skip cpu_clock_scope=thread_region_including_barrier"
+                <<" scratch_policy="<<(fineSchedule?"admission_estimate_not_growth_limit":"legacy");
+            std::cerr<<row.str()<<std::endl;
         }
         parallelError.Rethrow();
 
@@ -6680,7 +6822,38 @@ void TracerPOTotal::TraceWeightedOrientations(
             gaussianSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
         }
 
+        const auto evaluateFacetControls = [&](const std::vector<double>& weights,
+                std::vector<double>& reflection, std::vector<double>& shadow,
+                std::vector<AnalyticFacetAverage::Components>* samples) {
+            std::string error;
+            if (!EvaluateAnalyticFacetGpu(facetControl->GpuModel(), bodyFrames, weights,
+                    facetTheta, nAz, reflection, shadow, samples, &error))
+                throw std::runtime_error("CUDA analytic aperture kernel failed: " + error);
+        };
+        const auto accumulateFacetControls = [&](const std::vector<double>& reflection,
+                                                  const std::vector<double>& shadow) {
+            ResidentFacetControl::Accumulate(reflection, shadow,
+                facetReflectionCells, facetShadowCells, prefixReflection, prefixShadow, collectPrefix);
+        };
         if(block.residentFull){
+            if (facetControl) {
+                if (!residentFacetControl)
+                    throw std::runtime_error("resident facet control reached an unsupported mode");
+                const auto started = std::chrono::steady_clock::now();
+                std::vector<double> weights(thisChunk), reflection, shadow;
+                for (int i = 0; i < thisChunk; ++i) weights[i] = chunkPrepared[i].sinZenith;
+                // Keep the analytic TLS workspace on the persistent consumer
+                // thread. The producer is idle until this packet is committed.
+                evaluateFacetControls(weights, reflection, shadow, nullptr);
+                accumulateFacetControls(reflection, shadow);
+                const double seconds = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - started).count();
+                controlSeconds += seconds;
+                std::cout << "GPU resident facet control: orientations=" << thisChunk
+                          << " theta=" << facetRows << " phi=" << nAz
+                          << " paired_depth=" << m_pairedDepth << " prefix=" << (collectPrefix ? 1 : 0)
+                          << " analytic_thread=consumer gpu_stages=ordered control_s=" << seconds << std::endl;
+            }
             for(int p=0;p<nAz;++p)for(int t=0;t<=nZen;++t){
                 handlerPO->M.insert(p,t,(*block.residentFull)(p,t));
                 if(collectPrefix)prefixMatrices->insert(p,t,(*block.residentFull)(p,t));
@@ -6688,36 +6861,71 @@ void TracerPOTotal::TraceWeightedOrientations(
         }
         else if (handlerPO->IsGpuEnabled())
         {
+            Arr2D localM(nAz + 1, nZen + 1, 4, 4);
+            localM.ClearArr();
+            Arr2D localM_ns(nAz + 1, nZen + 1, 4, 4);
+            localM_ns.ClearArr();
+            bool usedAnalyticPackOverlap=false;
             // Small physical controls are evaluated by a separate FP64 CUDA
             // aperture kernel. The expensive full coherent field still uses
             // the existing optimized diffraction/batching/multi-device path.
             if(facetControl)
             {
                 const auto controlStarted=std::chrono::steady_clock::now();
-                const auto &poses=bodyFrames;
                 std::vector<double> weights(thisChunk);
                 for(int i=0;i<thisChunk;++i)weights[i]=chunkPrepared[i].sinZenith;
                 std::vector<double> ref,shadow;
                 std::vector<AnalyticFacetAverage::Components> samples;
+                double overlappedControlSeconds=0;
+#ifdef USE_CUDA
+                const auto &poses=bodyFrames;
                 std::string analyticError;
-                if(!EvaluateAnalyticFacetGpu(facetControl->GpuModel(),poses,weights,facetTheta,nAz,
-                    ref,shadow,m_analyticFacetSamples ? &samples : nullptr,&analyticError))
-                    throw std::runtime_error("CUDA analytic aperture kernel failed: "+analyticError);
-                for(size_t cell=0;cell<ref.size();++cell)
-                {facetReflectionCells[cell]+=ref[cell];facetShadowCells[cell]+=shadow[cell];
-                    if(collectPrefix){prefixReflection[cell]+=ref[cell];prefixShadow[cell]+=shadow[cell];}}
+                if(EnvEnabled("MBS_GPU_OVERLAP_ANALYTIC_PACK")&&!m_analyticFacetSamples&&!analyticControl
+                    &&!m_analyticAzimuthGaussian&&!computeNoShadow&&!handlerPO->IsFftEnabled()){
+                    AnalyticFacetGpuPending pending;bool supported=false;
+                    if(!pending.Prepare(facetControl->GpuModel(),poses,weights,facetTheta,nAz,supported,&analyticError))
+                        throw std::runtime_error("CUDA analytic overlap preparation failed: "+analyticError);
+                    const double preflightSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-controlStarted).count();
+                    if(supported){
+                        struct OverlapWork:GpuPackingWork{
+                            AnalyticFacetGpuPending&pending;std::vector<double>&reflection,&shadow;
+                            std::chrono::steady_clock::time_point started;double seconds=0;
+                            OverlapWork(AnalyticFacetGpuPending&p,std::vector<double>&r,std::vector<double>&s):pending(p),reflection(r),shadow(s){}
+                            void BeforePacking()override{
+                                started=std::chrono::steady_clock::now();std::string error;
+                                if(!pending.Submit(&error))throw std::runtime_error("CUDA analytic overlap submit failed: "+error);
+                            }
+                            void AfterPacking()override{
+                                std::string error;
+                                if(!pending.Collect(reflection,shadow,&error))throw std::runtime_error("CUDA analytic overlap collection failed: "+error);
+                                seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+                            }
+                        }work(pending,ref,shadow);
+                        const auto diffractionBegin=std::chrono::steady_clock::now();
+                        if(!handlerPO->TryHandleOrientationsWithPackingWork(chunkPrepared,localM,localM_ns,work,usedAnalyticPackOverlap))
+                            throw std::runtime_error("GPU diffraction failed after analytic packing overlap");
+                        if(usedAnalyticPackOverlap){
+                            diffractionSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-diffractionBegin).count();
+                            overlappedControlSeconds=preflightSeconds+work.seconds;
+                            analyticPackOverlapSeconds+=work.seconds;++analyticPackOverlapChunks;
+                            std::cout<<"Analytic packing overlap: orientations="<<thisChunk<<" theta="<<facetRows
+                                <<" phi="<<nAz<<" single_tile=1 same_cuda_thread=1 shared_wall_s="<<work.seconds<<std::endl;
+                        }
+                    }
+                }
+#endif
+                if(!usedAnalyticPackOverlap)
+                    evaluateFacetControls(weights, ref, shadow, m_analyticFacetSamples ? &samples : nullptr);
+                accumulateFacetControls(ref, shadow);
                 if(m_analyticFacetSamples)
                     for(int i=0;i<thisChunk;++i)for(int t=0;t<facetRows;++t)
                         facetSampleControls[static_cast<size_t>(iStart+i)*facetRows+t]=samples[static_cast<size_t>(i)*facetRows+t];
-                controlSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-controlStarted).count();
+                controlSeconds+=usedAnalyticPackOverlap?overlappedControlSeconds:
+                    std::chrono::duration<double>(std::chrono::steady_clock::now()-controlStarted).count();
             }
-            Arr2D localM(nAz + 1, nZen + 1, 4, 4);
-            localM.ClearArr();
-            Arr2D localM_ns(nAz + 1, nZen + 1, 4, 4);
-            localM_ns.ClearArr();
 
             const auto diffractionStarted=std::chrono::steady_clock::now();
-            for (int gpuStart = 0; gpuStart < thisChunk; )
+            for (int gpuStart = usedAnalyticPackOverlap?thisChunk:0; gpuStart < thisChunk; )
             {
                 int gpuBatchSize = handlerPO->SelectGpuOrientationBatchSize(
                     chunkPrepared, gpuStart, thisChunk - gpuStart);
@@ -6899,10 +7107,13 @@ void TracerPOTotal::TraceWeightedOrientations(
         }else if(m_pairedDepth){
             Arr2D lower(nAz+1,nZen+1,4,4),dummy(nAz+1,nZen+1,4,4);lower.ClearArr();dummy.ClearArr();
             if(handlerPO->IsGpuEnabled()){
+                const auto lowerStarted=std::chrono::steady_clock::now();
                 for(int start=0;start<thisChunk;){const int count=handlerPO->SelectGpuOrientationBatchSize(block.lower,start,thisChunk-start);
                     if(!handlerPO->HandleOrientationsToLocalGpu(block.lower,start,count,lower,dummy))throw std::runtime_error("paired-depth GPU diffraction failed");
                     start+=count;
                     }
+                const double lowerSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-lowerStarted).count();
+                pairedLowerDiffractionSeconds+=lowerSeconds;diffractionSeconds+=lowerSeconds;
             }else{
                 #pragma omp parallel
                 {
@@ -6917,14 +7128,20 @@ void TracerPOTotal::TraceWeightedOrientations(
             }
             for(int p=0;p<nAz;++p)for(int t=0;t<=nZen;++t){pairedMatrices->insert(p,t,lower(p,t));
                 if(collectPrefix)prefixLowerMatrices->insert(p,t,lower(p,t));}
+            const auto accountingStarted=std::chrono::steady_clock::now();
             memoryChunks.Update(block.lower,"Paired depth",m_mpiRank);
+            memoryAccountingSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-accountingStarted).count();
         }
         phase2_total += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - tp2).count();
 
+        const auto accountingStarted=std::chrono::steady_clock::now();
         memoryChunks.Update(chunkPrepared, "Orientation average", m_mpiRank);
+        memoryAccountingSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-accountingStarted).count();
 
+        const auto reportingStarted=std::chrono::steady_clock::now();
         if (m_mpiRank == 0)
             OutputProgress(nOrient, count, iEnd - 1, chunkNumber + 1, timer, -1);
+        progressReportSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-reportingStarted).count();
 
         ++chunkNumber;
     };
@@ -7047,9 +7264,11 @@ void TracerPOTotal::TraceWeightedOrientations(
                         continue;
                     }
                 }
-                if(block){cpuOrientations+=block->count;processBlock(*block);recordAssignment("CPU",*block,cpuThreads);}
+                if(block){cpuOrientations+=block->count;processBlock(*block);recordAssignment("CPU",*block,cpuThreads);
+                    releasePreparedBlock(*block,consumerReleaseSeconds);}
                 else {PreparedBlock gpuBlock=prepareBlock(start,size,true,gpuThreads);
-                    gpuOrientations+=size;processBlock(gpuBlock);recordAssignment("GPU",gpuBlock,gpuThreads);}
+                    gpuOrientations+=size;processBlock(gpuBlock);recordAssignment("GPU",gpuBlock,gpuThreads);
+                    releasePreparedBlock(gpuBlock,consumerReleaseSeconds);}
             }
             shutdown();
         }catch(...){shutdown();throw;}
@@ -7070,7 +7289,9 @@ void TracerPOTotal::TraceWeightedOrientations(
             : "Weighted orientation pipeline: persistent CPU producer overlaps CUDA diffraction; two host chunks") << std::endl;
         std::mutex mutex;std::condition_variable condition;
         bool requested=false,stop=false;int requestStart=0,requestCount=0;
-        std::unique_ptr<PreparedBlock> ready;std::exception_ptr failure;
+        const bool recyclePrepared=EnvEnabled("MBS_GPU_RECYCLE_PREPARED");
+        std::unique_ptr<PreparedBlock> ready,retired;std::exception_ptr failure;
+        if(recyclePrepared)std::cout<<"Prepared block recycling: one retired slot; producer frees before preparing next block; unchanged two-block memory bound"<<std::endl;
         // Keep one producer alive: recreating std::async/OpenMP teams for
         // every chunk spends significant time starting CPU worker threads.
         auto producer=std::async(std::launch::async,[&]()
@@ -7078,14 +7299,19 @@ void TracerPOTotal::TraceWeightedOrientations(
             for(;;)
             {
                 int start,size;
+                std::unique_ptr<PreparedBlock> garbage;
                 {
                     std::unique_lock<std::mutex> lock(mutex);
                     const auto waitStarted=std::chrono::steady_clock::now();
-                    condition.wait(lock,[&](){return requested || stop;});
+                    condition.wait(lock,[&](){return requested || stop || bool(retired);});
                     producerWaitSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-waitStarted).count();
-                    if(stop)return;
-                    start=requestStart;size=requestCount;requested=false;
+                    // Retired replaces a consumed block; it is never a third
+                    // slot. Destruction finishes before any new allocation.
+                    if(retired){garbage=std::move(retired);condition.notify_all();}
+                    else{if(stop)return;
+                        start=requestStart;size=requestCount;requested=false;}
                 }
+                if(garbage){releasePreparedBlock(*garbage,producerReleaseSeconds);continue;}
                 try
                 {
                     PreparedBlock block=prepareBlock(start,size,true,preparationThreads);
@@ -7125,12 +7351,25 @@ void TracerPOTotal::TraceWeightedOrientations(
                     block=std::move(ready);
                 }
                 const bool more=nextStart<myEnd;
-                if(more)
+                const bool orderedFacet = more && orderedResidentFacet;
+                const int nextSize = more ? prefixBoundedChunk(nextStart,memoryChunks.Next(myEnd-nextStart)) : 0;
+                if(more && !orderedFacet)
                 {
-                    const int size=prefixBoundedChunk(nextStart,memoryChunks.Next(myEnd-nextStart));
-                    request(nextStart,size);nextStart+=size;
+                    request(nextStart,nextSize);nextStart+=nextSize;
                 }
                 processBlock(*block);
+                // The eligible route stays ordered even if this packet fell
+                // back to CPU preparation: the next packet may use the GPU.
+                // Finish its controls/diffraction before new trace allocations.
+                if(orderedFacet){request(nextStart,nextSize);nextStart+=nextSize;}
+                if(recyclePrepared){
+                    const auto started=std::chrono::steady_clock::now();
+                    std::unique_lock<std::mutex> lock(mutex);
+                    condition.wait(lock,[&](){return !retired || bool(failure);});
+                    retireWaitSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+                    if(failure)std::rethrow_exception(failure);
+                    retired=std::move(block);condition.notify_all();
+                }else releasePreparedBlock(*block,consumerReleaseSeconds);
                 if(!more)break;
             }
         }
@@ -7141,6 +7380,7 @@ void TracerPOTotal::TraceWeightedOrientations(
     {
         const int size=prefixBoundedChunk(start,memoryChunks.Next(myEnd-start));
         PreparedBlock block=prepareBlock(start,size,true,preparationThreads);processBlock(block);start+=size;
+        releasePreparedBlock(block,consumerReleaseSeconds);
     }
     if(!m_preparedReuseKey.empty()){
         const auto& reuse=PreparedReuse::Cache();
@@ -7390,11 +7630,21 @@ void TracerPOTotal::TraceWeightedOrientations(
                 << "trace_prepare\t" << phase1_total << "\tstage_wall_sum\n"
                 << "diffraction_and_controls\t" << phase2_total << "\tstage_wall_sum\n"
                 << "gpu_diffraction_including_packing\t" << diffractionSeconds << "\tstage_wall_sum\n"
+                << "gpu_diffraction_profile_version\t2\tversion\n"
+                << "gpu_paired_lower_diffraction_including_packing\t" << pairedLowerDiffractionSeconds << "\twall_subset_of_gpu_diffraction\n"
                 << "gpu_resident_trace_kernel\t" << residentTraceKernelSeconds << "\tdevice_elapsed_subset_of_trace_prepare\n"
                 << "analytic_controls\t" << controlSeconds << "\tstage_wall_sum\n"
+                << "analytic_pack_overlap\t" << analyticPackOverlapSeconds << "\tshared_wall_subset_of_analytic_and_gpu_diffraction\n"
+                << "analytic_pack_overlap_chunks\t" << analyticPackOverlapChunks << "\tcount\n"
                 << "processing\t" << processingWall << "\twall\n"
                 << "pipeline_wait_for_prepared\t" << preparedWaitSeconds << "\tconsumer_wall_subset_of_processing\n"
                 << "pipeline_producer_wait\t" << producerWaitSeconds << "\tproducer_wall_subset_of_processing\n"
+                << "parallel_trace_setup\t" << parallelSetupSeconds << "\twall_subset_of_processing\n"
+                << "prepared_memory_accounting\t" << memoryAccountingSeconds << "\tconsumer_wall_subset_of_processing\n"
+                << "prepared_release_consumer\t" << consumerReleaseSeconds << "\tconsumer_wall_subset_of_processing\n"
+                << "prepared_release_producer\t" << producerReleaseSeconds << "\tproducer_wall_subset_of_processing\n"
+                << "prepared_retire_wait\t" << retireWaitSeconds << "\tconsumer_wall_subset_of_processing\n"
+                << "orientation_progress_report\t" << progressReportSeconds << "\tconsumer_wall_subset_of_processing\n"
                 << "pipeline_chunks\t" << chunkNumber << "\tcount\n"
                 << "overlap_saved\t" << std::max(0.,phase1_total+phase2_total-processingWall) << "\twall_estimate\n"
                 << "rotation\t" << rotationCpuSeconds << "\tsummed_cpu_wall\n"

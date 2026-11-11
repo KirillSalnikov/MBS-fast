@@ -56,6 +56,7 @@ bool ScatteringConvex::PrepareExternalBeams(std::vector<Beam>& outBeams)
 }
 
 #ifdef USE_CUDA
+#include "GpuTraceCapacity.h"
 namespace {
 GpuConvexQueue::Vec PackVec(const Point3f& p) { return {p.cx,p.cy,p.cz}; }
 Point3f UnpackVec(const GpuConvexQueue::Vec& p) { return Point3f(p.x,p.y,p.z); }
@@ -73,17 +74,23 @@ bool ScatteringConvex::EncodeGpuBeam(const Beam& beam,GpuConvexQueue::Beam& outp
     // Shadow beams do not initialize the internal ray's front/depth fields.
     output=PackBeam(beam);return true;
 }
-bool ScatteringConvex::PrepareGpuInput(GpuConvexQueue::Input& input,std::vector<Beam>& external) {
+bool ScatteringConvex::CanPrepareGpuInput() const {
     // Track/absorption reconstruction and nonconvex clipping are deliberately
     // excluded from this first prototype. Unsupported cases keep the CPU path.
     const complex ri=m_particle->GetRefractiveIndex();
     if(m_trackIdsRequired||imag(ri)!=0||!(real(ri)>0)||m_traceMaxBeams!=0
-       ||m_nActs<0||m_nActs>18||m_particle->nFacets>GpuConvexQueue::MaxFacets)return false;
+       ||m_nActs<0||m_nActs>(GpuConvexQueue::Capacity::DeepEnabled()?GpuConvexQueue::MaxDepth:GpuConvexQueue::LegacyMaxDepth)
+       ||m_particle->nFacets<1||m_particle->nFacets>GpuConvexQueue::MaxFacets)return false;
     for(int f=0;f<m_particle->nFacets;++f)
         if(m_facets[f].nVertices<3||m_facets[f].nVertices>GpuConvexQueue::MaxVertices)return false;
+    return true;
+}
+bool ScatteringConvex::PrepareGpuInput(GpuConvexQueue::Input& input,std::vector<Beam>& external) {
+    if(!CanPrepareGpuInput())return false;
     if(!PrepareExternalBeams(external))return false;
+    if(m_beamTree.size()>size_t(m_particle->nFacets))return false;
     for(const auto& b:m_beamTree)if(b.id!=0)return false;
-    input.faceCount=m_particle->nFacets;input.seedCount=m_beamTree.size();input.maxDepth=m_nActs;input.ri=real(ri);
+    input.faceCount=m_particle->nFacets;input.seedCount=m_beamTree.size();input.maxDepth=m_nActs;input.ri=real(m_particle->GetRefractiveIndex());
     input.lengthTolerance=m_geometryLengthTolerance;input.areaTolerance=m_geometryAreaTolerance;input.depthTolerance=m_geometryDepthTolerance;
     input.reference[0]=m_traceRefJNorm;input.reference[1]=m_traceRefArea;input.reference[2]=m_traceRefImportance;
     input.cutoff[0]=m_traceCutoffJRel;input.cutoff[1]=m_traceCutoffAreaRel;input.cutoff[2]=m_traceCutoffImportanceRel;

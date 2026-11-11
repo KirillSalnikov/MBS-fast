@@ -1,5 +1,6 @@
 #pragma once
 #include "BoundedCache.h"
+#include "ReadOnlyFile.h"
 #include <algorithm>
 #include <cerrno>
 #include <cstdint>
@@ -18,6 +19,10 @@
 // their original hashes do not change. A task uses at most 256 pack files;
 // completed jobs no longer consume a directory and many inodes apiece.
 // The controller lock is the writer lock. Readers never repair storage.
+// Test-only failpoints are compiled out of normal builds.
+#ifndef MBS_PACK_EVENT
+#define MBS_PACK_EVENT(event, folder) ((void)0)
+#endif
 namespace PackedJobStore {
 inline void Check(bool good,const std::string& message){if(!good)throw std::runtime_error("fullauto pack: "+message);}
 inline uint64_t Digest(const std::string& bytes){uint64_t h=14695981039346656037ULL;for(unsigned char c:bytes){h^=c;h*=1099511628211ULL;}return h;}
@@ -110,7 +115,7 @@ inline std::shared_ptr<const Index> LoadIndex(const std::string& path){
     // Caller holds Global().mutex. Only a few shard indices reside in RAM.
     struct stat stamp{};if(stat(path.c_str(),&stamp)!=0){Check(errno==ENOENT,"cannot stat archive "+path);return {};}
     auto found=Global().indices.Get(path);if(found&&Same(found->stamp,stamp))return found;
-    Descriptor fd(open(path.c_str(),O_RDONLY));Check(fd.fd>=0,"cannot open archive "+path);
+    Descriptor fd(CheckpointRead::Open(path.c_str()));Check(fd.fd>=0,"cannot open archive "+path);
     auto index=std::make_shared<Index>();index->stamp=stamp;index->generation=++Global().generation;
     const auto frontier=ReadFrontier(fd.fd,uint64_t(stamp.st_size));index->frontierSequence=frontier.sequence;
     uint64_t at=DataBegin;const auto size=frontier.end;
@@ -149,14 +154,14 @@ inline bool Locate(const std::string& path,Member& member){
     key.append(reinterpret_cast<const char*>(&index->stamp.st_ino),sizeof(index->stamp.st_ino));
     key.append(reinterpret_cast<const char*>(&index->generation),sizeof(index->generation));key.append(reinterpret_cast<const char*>(&offset),sizeof(offset));
     auto members=Global().members.Get(key);
-    if(!members){Descriptor fd(open(archive.c_str(),O_RDONLY));Check(fd.fd>=0,"cannot open archive");auto loaded=std::make_shared<MemberIndex>();const auto decoded=Members(fd.fd,archive,ReadRecord(fd.fd,name,offset),index->stamp);
+    if(!members){Descriptor fd(CheckpointRead::Open(archive.c_str()));Check(fd.fd>=0,"cannot open archive");auto loaded=std::make_shared<MemberIndex>();const auto decoded=Members(fd.fd,archive,ReadRecord(fd.fd,name,offset),index->stamp);
         size_t size=sizeof(MemberIndex);for(const auto& item:decoded){MemberExtent extent;extent.offset=item.second.offset;extent.size=item.second.size;extent.directory=item.second.directory;if(!extent.directory)extent.hash=HexNumber(item.second.hash);loaded->entries.emplace(item.first,extent);size+=sizeof(MemberExtent)+128+item.first.size();}Global().members.Put(key,loaded,size);members=loaded;}
     const auto item=members->entries.find(part);if(item==members->entries.end())return false;
     member.archive=archive;member.offset=item->second.offset;member.size=item->second.size;member.directory=item->second.directory;member.hash=member.directory?"":Hex(item->second.hash);member.stamp=index->stamp;member.generation=index->generation;return true;
 }
 inline bool Exists(const std::string& path){Member member;return Locate(path,member);}
 inline std::string Read(const Member& member){
-    Check(!member.directory,"cannot read packed directory");Descriptor fd(open(member.archive.c_str(),O_RDONLY));Check(fd.fd>=0,"cannot read packed member");
+    Check(!member.directory,"cannot read packed directory");Descriptor fd(CheckpointRead::Open(member.archive.c_str()));Check(fd.fd>=0,"cannot read packed member");
     struct stat before{},after{};Check(fstat(fd.fd,&before)==0&&Same(before,member.stamp),"archive changed before member read");
     const auto bytes=Bytes(fd.fd,member.offset,size_t(member.size));Check(Hex(Digest(bytes))==member.hash,"packed member checksum mismatch");
     Check(fstat(fd.fd,&after)==0&&Same(before,after),"archive changed during member read");return bytes;
@@ -167,7 +172,7 @@ inline std::vector<std::string> Jobs(const std::string& root){
         auto index=LoadIndex(path.str());if(index)index->jobs.Each([&](const std::string& name,uint64_t){result.push_back(name);});}
     return result;
 }
-struct Source {std::string name,bytes;bool directory=false;struct stat stamp{};};
+struct Source {std::string name,bytes;bool directory=false,generated=false;struct stat stamp{};};
 inline void Collect(const std::string& folder,const std::string& prefix,std::vector<Source>& sources,uint64_t& bytes){
     DIR* directory=opendir((folder+(prefix.empty()?"":"/"+prefix)).c_str());Check(directory,"cannot list job tree");std::vector<std::string> names;
     while(auto* entry=readdir(directory))if(std::string(entry->d_name)!="."&&std::string(entry->d_name)!="..")names.push_back(entry->d_name);closedir(directory);std::sort(names.begin(),names.end());
@@ -175,17 +180,46 @@ inline void Collect(const std::string& folder,const std::string& prefix,std::vec
         Check(lstat(path.c_str(),&source.stamp)==0,"job member disappeared");source.directory=S_ISDIR(source.stamp.st_mode);
         Check(source.directory||S_ISREG(source.stamp.st_mode),"symlink or special file in completed job");
         if(source.directory){sources.push_back(source);Collect(folder,source.name,sources,bytes);}
-        else{Check(source.stamp.st_size>=0,"negative source size");if(uint64_t(source.stamp.st_size)>MaximumRecordBytes-bytes)throw Oversize("job exceeds 64 MiB pack record bound; original retained");Descriptor fd(open(path.c_str(),O_RDONLY|O_NOFOLLOW));Check(fd.fd>=0,"cannot open source member");source.bytes=Bytes(fd.fd,0,size_t(source.stamp.st_size));bytes+=source.bytes.size();struct stat after{};Check(fstat(fd.fd,&after)==0&&Same(source.stamp,after),"source changed while packing");sources.push_back(std::move(source));}
+        else{Check(source.stamp.st_size>=0,"negative source size");if(uint64_t(source.stamp.st_size)>MaximumRecordBytes-bytes)throw Oversize("job exceeds 64 MiB pack record bound; original retained");Descriptor fd(CheckpointRead::Open(path.c_str(),O_NOFOLLOW));Check(fd.fd>=0,"cannot open source member");source.bytes=Bytes(fd.fd,0,size_t(source.stamp.st_size));bytes+=source.bytes.size();struct stat after{};Check(fstat(fd.fd,&after)==0&&Same(source.stamp,after),"source changed while packing");sources.push_back(std::move(source));}
     }
 }
-inline size_t Pack(const std::string& folder){
+// preparedComplete is private serialized metadata. It is never written to the
+// loose tree: only the durable V1 frontier can publish this completion marker.
+using ExpectedMembers=std::map<std::string,std::string>;
+inline size_t PackImpl(const std::string& folder,const std::string* preparedComplete,const ExpectedMembers* expectedMembers){
+    if(preparedComplete){Check(expectedMembers&&!expectedMembers->empty(),"missing prepared member digests");
+        for(const auto& item:*expectedMembers){Check(Relative(item.first)&&item.first!="complete.txt","unsafe prepared member name");
+            Check(Hex(HexNumber(item.second))==item.second,"noncanonical prepared member digest");}}
     std::string root,name,part;Check(Split(folder,root,name,part)&&part.empty(),"not a generated job path");
-    struct stat folderStamp{};if(lstat(folder.c_str(),&folderStamp)!=0){Check(errno==ENOENT,"cannot inspect job directory");return 0;}Check(S_ISDIR(folderStamp.st_mode),"job path is not a real directory");
+    struct stat folderStamp{};const bool folderPresent=lstat(folder.c_str(),&folderStamp)==0;
+    if(!folderPresent){Check(errno==ENOENT,"cannot inspect job directory");if(!preparedComplete)return 0;}
+    else Check(S_ISDIR(folderStamp.st_mode),"job path is not a real directory");
     const auto archive=Shard(root,name);const auto packRoot=CanonicalRoot(root)+"/job_packs";
-    std::vector<Source> sources;uint64_t bytes=0;Collect(folder,"",sources,bytes);
+    std::vector<Source> sources;uint64_t bytes=0;
+    if(preparedComplete){Check(!preparedComplete->empty(),"empty prepared completion");
+        if(preparedComplete->size()>MaximumRecordBytes)throw Oversize("prepared completion exceeds pack bound; private source retained");bytes=preparedComplete->size();}
+    if(folderPresent)Collect(folder,"",sources,bytes);
+    if(preparedComplete){for(const auto& source:sources)Check(source.name!="complete.txt","prepared job already has a loose completion marker");
+        Source marker;marker.name="complete.txt";marker.bytes=*preparedComplete;marker.generated=true;sources.push_back(std::move(marker));}
+    auto verifySources=[&](){
+        if(!folderPresent)return;
+        struct stat named{};Check(lstat(folder.c_str(),&named)==0&&Same(named,folderStamp),"source directory changed while packing");
+        for(const auto& source:sources)if(!source.generated){struct stat now{};
+            Check(lstat((folder+"/"+source.name).c_str(),&now)==0&&Same(now,source.stamp),"source changed while packing");}
+    };
+    MBS_PACK_EVENT("after_collect",folder);
     std::lock_guard<std::mutex> lock(Global().mutex);auto index=LoadIndex(archive);
     bool already=index&&index->jobs.count(name);bool complete=false;for(const auto& source:sources)if(source.name=="complete.txt"&&!source.directory)complete=true;
-    Check(complete||already,"cannot pack incomplete job");
+    Check(complete||already,"cannot pack incomplete job");Check(folderPresent||already,"prepared source directory missing");
+    // The completion text was constructed before Collect. Bind its digests
+    // to the exact collected bytes, including same-size pre-Collect changes.
+    // On interrupted cleanup, already-packed members may no longer be loose;
+    // their archived bytes are checked again below before any cleanup.
+    if(expectedMembers)for(const auto& item:*expectedMembers){
+        const auto found=std::find_if(sources.begin(),sources.end(),[&](const Source& source){return source.name==item.first;});
+        if(found==sources.end())Check(already,"prepared member missing from private source");
+        else Check(!found->directory&&!found->generated&&Hex(Digest(found->bytes))==item.second,"prepared member digest differs from collected bytes");
+    }
     if(!already){
         Check(mkdir(packRoot.c_str(),0755)==0||errno==EEXIST,"cannot create archive directory");
         const bool newShard=!index||index->jobs.size()==0;
@@ -207,20 +241,25 @@ inline size_t Pack(const std::string& folder){
         // frontier, and a torn write would destroy both copies at once.
         MirrorFrontier(fd.fd,index->frontierSequence,index->validEnd);
         Check(ftruncate(fd.fd,off_t(end))==0&&lseek(fd.fd,off_t(end),SEEK_SET)==off_t(end),"cannot repair uncommitted archive tail");
-        Write(fd.fd,header);Write(fd.fd,meta);Write(fd.fd,payload);Write(fd.fd,Fixed("MBS_JOB_COMMIT_V1 "+Hex(Digest(header)),TrailerBytes));Flush(fd.fd);
+        MBS_PACK_EVENT("before_record_write",folder);
+        Write(fd.fd,header);Write(fd.fd,meta);Write(fd.fd,payload);Write(fd.fd,Fixed("MBS_JOB_COMMIT_V1 "+Hex(Digest(header)),TrailerBytes));
+        MBS_PACK_EVENT("before_data_fsync",folder);Flush(fd.fd);MBS_PACK_EVENT("after_data_fsync",folder);
         const uint64_t published=end+HeaderBytes+meta.size()+payload.size()+TrailerBytes;
         Check(Bytes(fd.fd,end,HeaderBytes)==header&&Bytes(fd.fd,end+HeaderBytes,meta.size())==meta&&Bytes(fd.fd,end+HeaderBytes+meta.size(),payload.size())==payload&&Bytes(fd.fd,published-TrailerBytes,TrailerBytes)==Fixed("MBS_JOB_COMMIT_V1 "+Hex(Digest(header)),TrailerBytes),"archive append readback differs");
+        // A private completion must not authenticate a source that changed after
+        // collection. Check before any new frontier can become visible.
+        MBS_PACK_EVENT("before_frontier_write",folder);verifySources();
         const uint64_t sequence=index->frontierSequence+1;Check(sequence>index->frontierSequence,"archive frontier sequence overflow");
         // Alternate two independent filesystem blocks. A torn update keeps the
         // previous frontier; bytes beyond it are uncommitted, regardless of
         // file length or partially persisted headers/trailers.
         const auto watermark=FrontierText(sequence,published);const auto slot=(sequence-1)%2;
-        Check(lseek(fd.fd,off_t(slot*FrontierSlotBytes),SEEK_SET)==off_t(slot*FrontierSlotBytes),"cannot seek archive frontier");Write(fd.fd,watermark);Flush(fd.fd);
+        Check(lseek(fd.fd,off_t(slot*FrontierSlotBytes),SEEK_SET)==off_t(slot*FrontierSlotBytes),"cannot seek archive frontier");Write(fd.fd,watermark);MBS_PACK_EVENT("before_frontier_fsync",folder);Flush(fd.fd);MBS_PACK_EVENT("after_frontier_fsync",folder);
         const auto verifiedFrontier=ReadFrontier(fd.fd,published);Check(verifiedFrontier.sequence==sequence&&verifiedFrontier.end==published,"archive frontier readback differs");
         // Before losing the loose copy, BOTH independently flushed slots must
         // describe the latest prefix. Later corruption of one slot must not
         // roll back a completed job and make a future append truncate it.
-        MirrorFrontier(fd.fd,sequence,published);
+        MBS_PACK_EVENT("before_mirror_fsync",folder);MirrorFrontier(fd.fd,sequence,published);MBS_PACK_EVENT("after_mirror_fsync",folder);
         // This writer owns the controller lock and just verified the exact
         // append. Keep the generation of older members; external stamp changes
         // still rebuild the index and invalidate every cached hash.
@@ -228,35 +267,43 @@ inline size_t Pack(const std::string& folder){
         if(!index)updated->generation=++Global().generation;
         updated->jobs.Insert(name,end);updated->validEnd=published;updated->frontierSequence=sequence;
         Check(fstat(fd.fd,&updated->stamp)==0&&uint64_t(updated->stamp.st_size)==updated->validEnd,"archive append length changed");
-        Descriptor verify(open(archive.c_str(),O_RDONLY));Check(verify.fd>=0&&Bytes(verify.fd,end,HeaderBytes)==header&&Bytes(verify.fd,updated->validEnd-TrailerBytes,TrailerBytes)==Fixed("MBS_JOB_COMMIT_V1 "+Hex(Digest(header)),TrailerBytes),"archive commit readback differs");
+        Descriptor verify(CheckpointRead::Open(archive.c_str()));Check(verify.fd>=0&&Bytes(verify.fd,end,HeaderBytes)==header&&Bytes(verify.fd,updated->validEnd-TrailerBytes,TrailerBytes)==Fixed("MBS_JOB_COMMIT_V1 "+Hex(Digest(header)),TrailerBytes),"archive commit readback differs");
         index=updated;Global().indices.Put(archive,index,sizeof(Index)+index->jobs.Bytes());
     }
     // Read back every stored byte before removing any source. Interrupted
     // removals are idempotent: remaining files are compared to the committed
     // archive. No active/incomplete source is ever considered disposable.
     Descriptor fd(open(archive.c_str(),O_RDWR));Check(fd.fd>=0,"cannot verify archive");uint64_t offset=0;Check(index->jobs.Find(name,offset),"packed job missing");const auto members=Members(fd.fd,archive,ReadRecord(fd.fd,name,offset),index->stamp);
+    if(expectedMembers)for(const auto& item:*expectedMembers){const auto found=members.find(item.first);
+        Check(found!=members.end()&&!found->second.directory&&found->second.hash==item.second,"prepared member differs from archived receipt");
+        const auto saved=Bytes(fd.fd,found->second.offset,size_t(found->second.size));
+        Check(Hex(Digest(saved))==item.second,"prepared archived member checksum mismatch");}
     for(const auto& source:sources){const auto found=members.find(source.name);Check(found!=members.end()&&found->second.directory==source.directory,"source tree changed after archive commit");
         if(!source.directory){const auto saved=Bytes(fd.fd,found->second.offset,size_t(found->second.size));Check(saved==source.bytes&&Hex(Digest(saved))==found->second.hash,"archive readback differs");}
-        struct stat now{};Check(lstat((folder+"/"+source.name).c_str(),&now)==0&&Same(now,source.stamp),"source changed before archive cleanup");}
+        if(!source.generated){struct stat now{};Check(lstat((folder+"/"+source.name).c_str(),&now)==0&&Same(now,source.stamp),"source changed before archive cleanup");}}
     struct stat archiveAfter{};Check(fstat(fd.fd,&archiveAfter)==0&&Same(archiveAfter,index->stamp),"archive changed before source cleanup");
     if(MirrorFrontier(fd.fd,index->frontierSequence,index->validEnd)){
         auto updated=std::const_pointer_cast<Index>(index);Check(fstat(fd.fd,&updated->stamp)==0,"cannot stat mirrored archive");
         Global().indices.Put(archive,updated,sizeof(Index)+updated->jobs.Bytes());
     }
-    size_t removed=0;for(auto at=sources.rbegin();at!=sources.rend();++at){const auto path=folder+"/"+at->name;struct stat current{};Check(lstat(path.c_str(),&current)==0,"source disappeared during cleanup");Check((at->directory?rmdir(path.c_str()):unlink(path.c_str()))==0,"cannot remove verified archived member");if(at->directory||current.st_nlink==1)++removed;}
+    MBS_PACK_EVENT("before_cleanup",folder);verifySources();if(!folderPresent)return 0;
+    size_t removed=0;for(auto at=sources.rbegin();at!=sources.rend();++at){if(at->generated)continue;const auto path=folder+"/"+at->name;struct stat current{};Check(lstat(path.c_str(),&current)==0,"source disappeared during cleanup");Check((at->directory?rmdir(path.c_str()):unlink(path.c_str()))==0,"cannot remove verified archived member");if(at->directory||current.st_nlink==1)++removed;MBS_PACK_EVENT("after_cleanup_member",folder);}
     Check(rmdir(folder.c_str())==0,"cannot remove archived job directory");FlushDirectory(root+"/jobs");return removed+1;
 }
+// Existing completed loose trees keep the original entry point and V1 layout.
+inline size_t Pack(const std::string& folder){return PackImpl(folder,nullptr,nullptr);}
+inline size_t PackPrepared(const std::string& folder,const std::string& complete,const ExpectedMembers& expected){return PackImpl(folder,&complete,&expected);}
 // Explicit export for inspection or a legacy binary. Archives are retained.
 // Never overwrite an existing different file or traverse an in-job symlink.
 inline size_t Extract(const std::string& folder){
     std::string root,name,part;Check(Split(folder,root,name,part)&&part.empty(),"not a generated job path");
     const auto archive=Shard(root,name);std::lock_guard<std::mutex> lock(Global().mutex);auto index=LoadIndex(archive);uint64_t offset=0;Check(index&&index->jobs.Find(name,offset),"packed job absent");
-    Descriptor fd(open(archive.c_str(),O_RDONLY));Check(fd.fd>=0,"cannot export archive");const auto members=Members(fd.fd,archive,ReadRecord(fd.fd,name,offset),index->stamp);
+    Descriptor fd(CheckpointRead::Open(archive.c_str()));Check(fd.fd>=0,"cannot export archive");const auto members=Members(fd.fd,archive,ReadRecord(fd.fd,name,offset),index->stamp);
     auto directory=[](const std::string& path){struct stat st{};if(mkdir(path.c_str(),0755)!=0)Check(errno==EEXIST&&lstat(path.c_str(),&st)==0&&S_ISDIR(st.st_mode),"unsafe existing export directory");};
     directory(root+"/jobs");directory(folder);std::vector<std::string> directories{folder};size_t created=0;
     for(const auto& item:members){const auto path=folder+"/"+item.first;if(item.second.directory){directory(path);directories.push_back(path);continue;}
         const auto bytes=Bytes(fd.fd,item.second.offset,size_t(item.second.size));Check(Hex(Digest(bytes))==item.second.hash,"corrupt archived export member");struct stat old{};
-        if(lstat(path.c_str(),&old)==0){Check(S_ISREG(old.st_mode),"unsafe existing export member");Descriptor previous(open(path.c_str(),O_RDONLY|O_NOFOLLOW));Check(previous.fd>=0&&uint64_t(old.st_size)==item.second.size&&Bytes(previous.fd,0,size_t(old.st_size))==bytes,"existing export member differs");continue;}
+        if(lstat(path.c_str(),&old)==0){Check(S_ISREG(old.st_mode),"unsafe existing export member");Descriptor previous(CheckpointRead::Open(path.c_str(),O_NOFOLLOW));Check(previous.fd>=0&&uint64_t(old.st_size)==item.second.size&&Bytes(previous.fd,0,size_t(old.st_size))==bytes,"existing export member differs");continue;}
         Check(errno==ENOENT,"cannot inspect export path");const auto temporary=path+".unpack.tmp";Descriptor output(open(temporary.c_str(),O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW,0644));Check(output.fd>=0,"cannot create exported member");Write(output.fd,bytes);Flush(output.fd);Check(rename(temporary.c_str(),path.c_str())==0,"cannot publish exported member");++created;
     }
     for(auto at=directories.rbegin();at!=directories.rend();++at)FlushDirectory(*at);FlushDirectory(root+"/jobs");return created;

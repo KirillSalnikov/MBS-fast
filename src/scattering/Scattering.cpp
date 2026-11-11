@@ -1,4 +1,5 @@
 #include "Scattering.h"
+#include "../TraceTreeReserve.h"
 
 #include <float.h>
 #include <assert.h>
@@ -86,16 +87,8 @@ bool Scattering::EnsureBeamTree()
 {
     if (m_beamTree.capacity() == 0)
     {
-        const char *value = std::getenv("MBS_TRACE_TREE_RESERVE");
-        long reserve = 65536;
-        if (value && *value)
-        {
-            char *end = nullptr;
-            long parsed = std::strtol(value, &end, 10);
-            if (end && *end == '\0' && parsed > 0)
-                reserve = parsed;
-        }
-        m_beamTree.reserve((size_t)reserve);
+        const bool convex=!m_particle->IsConcave() && !m_particle->isAggregated;
+        m_beamTree.reserve(TraceTreeReserve::Count(std::getenv("MBS_TRACE_TREE_RESERVE"),convex));
     }
     return true;
 }

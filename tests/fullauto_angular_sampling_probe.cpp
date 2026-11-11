@@ -121,7 +121,9 @@ void ResidualReplay(const std::string& fixture,const std::string& root){
     std::vector<size_t> ids;for(size_t i=0;i<rows;++i)ids.push_back(i);
     const auto samples=Combine(data.levels);const auto stats=Estimate(samples);
     const auto result=CheckAngularSampling(e,state,data,ids,samples,stats);
-    Require(!result.passed&&result.pairs==82&&result.failed==72,"v2 residual pairs incorrectly accepted");
+    // The v4 strong-component cap may reject additional pairs; all failures
+    // of the former v3 weak-component contract must remain rejected.
+    Require(!result.passed&&result.pairs==82&&result.failed>=72,"v2 residual pairs incorrectly accepted");
     Require(result.shapes==160&&result.failedShapes>0,"residual shape noise not checked");
     Close(result.allowance[5],.0005793091420364889,"M22 residual allowance changed");
     Require(data.levels==original&&state.counts==counts,"residual replay modified physical values");
@@ -135,12 +137,48 @@ void ResidualReplay(const std::string& fixture,const std::string& root){
     std::cout<<"PASS measured v2 residual: "<<result.failed<<"/"<<result.pairs<<" pairs and "
         <<result.failedShapes<<"/"<<result.shapes<<" shapes rejected; saved values unchanged\n";
 }
+void M11CompletedReplays(const std::string& fixture,const std::string& root){
+    // Actual combined production replicas, represented as one level for the
+    // acceptance check only. This does not reproduce per-level allocations.
+    std::ifstream in(fixture);size_t cases;
+    Require(bool(in>>cases)&&cases==2,"bad M11 completed fixture header");
+    for(size_t k=0;k<cases;++k){
+        std::string name;Require(bool(in>>name),"missing M11 completed name");
+        ArgPP args;RunConfig config;Engine e(args,config);AdaptiveState state;
+        Init(e,state,root+"/"+Number(k),1);
+        for(double& a:e.theta)Require(bool(in>>a),"missing M11 completed angle");
+        double expected;Require(bool(in>>expected),"missing M11 expected noise");
+        auto data=Quiet(1);
+        for(auto& sample:data.levels[0])for(auto& row:sample)for(double& v:row)
+            Require(bool(in>>v)&&std::isfinite(v),"missing M11 completed replica");
+        const auto original=data.levels;const auto counts=state.counts;
+        const auto samples=Combine(data.levels);const auto stats=Estimate(samples);
+        const double scale=std::min(stats.mean[0][0],std::min(stats.mean[1][0],stats.mean[2][0]));
+        const double w=(e.theta[1]-e.theta[0])/(e.theta[2]-e.theta[0]);
+        std::array<double,8> contrast{};
+        for(size_t s=0;s<8;++s)
+            contrast[s]=-(1-w)*samples[s][0][0]/scale+samples[s][1][0]/scale-w*samples[s][2][0]/scale;
+        const double measured=AngularNoise(contrast);Close(measured,expected,"measured M11 contrast changed");
+        const auto result=Check(e,state,data);
+        Close(result.absoluteCap,.00125,"v4 M11 cap changed");
+        Close(result.allowance[0],.00125,"strong M11 kept old v3 allowance");
+        Require(measured<.01&&measured>result.allowance[0],"real M11 fixture does not separate v3 and v4 caps");
+        Require(!result.passed&&result.failedShapes==1,"visible M11 triple accepted");
+        Require(data.levels==original&&state.counts==counts,"M11 check changed production estimator");
+        SaveAngularSampling(e,result,e.root);
+        const auto report=Read(e.root+"/angular_sampling.json");
+        Require(report.find("\"schema\":4")!=std::string::npos&&report.find("\"angular_sampling_absolute_cap_scaled_M11\":")!=std::string::npos,"v4 cap missing from diagnostics");
+        std::cout<<"PASS measured "<<name<<" M11 noise="<<measured<<" old_cap=.01 new_cap="<<result.allowance[0]<<'\n';
+    }
+    std::string extra;Require(!(in>>extra),"trailing M11 completed fixture");
+}
 }
 int main(int argc,char** argv){try{
-    Require(argc==5,"expected old fixture, private output directory, completed and residual fixtures");
+    Require(argc==6,"expected old fixture, private output directory, completed, residual, and M11 fixtures");
     const std::string root=argv[2];Directory(root);RealReplay(argv[1],root+"/real562");
     CompletedReplays(argv[3],root+"/completed");
     ResidualReplay(argv[4],root+"/residual112");
+    M11CompletedReplays(argv[5],root+"/completed_m11");
     ArgPP args;RunConfig config;size_t tests=0;
     for(int j=0;j<16;++j){
         Engine e(args,config);AdaptiveState state;Init(e,state,root+"/raw"+Number(j));e.ratios=false;
@@ -249,13 +287,30 @@ int main(int argc,char** argv){try{
     {
         Engine e(args,config);AdaptiveState state;Init(e,state,root+"/custom-budget");auto data=Quiet();
         e.interpolation=.001;Close(Check(e,state,data).allowance[5],.001*.04,"strict explicit interpolation budget ignored");
+        Close(Check(e,state,data).allowance[0],.001,"explicit M11 interpolation cap ignored");
         e.interpolation=.1;Close(Check(e,state,data).allowance[5],.01*.04,"loose interpolation consumed full component budget");
+        Close(Check(e,state,data).allowance[0],.00125,"loose interpolation bypassed v4 strong cap");
+        e.eps=.02;e.interpolation=.005;
+        Close(Check(e,state,data).allowance[0],.000625,"M11 cap is not relative to requested accuracy");
+        Close(Check(e,state,data).allowance[5],.005*.02,"weak v3 component allowance unnecessarily tightened");
+        ++tests;
+    }
+    {
+        Engine e(args,config);AdaptiveState state;Init(e,state,root+"/strong-noise-contract");auto data=Quiet();
+        e.ratios=false;
+        std::array<double,8> unit{};for(int s=0;s<8;++s)unit[s]=signs[s];
+        const double baseAmplitude=.001*100/AngularNoise(unit);
+        for(int s=0;s<8;++s)data.levels[1][s][1][0]=baseAmplitude*signs[s];
+        Require(Check(e,state,data).passed,"resolved strong component failed v4 cap");
+        for(int s=0;s<8;++s)data.levels[1][s][1][0]=2*baseAmplitude*signs[s];
+        const auto failed=Check(e,state,data);
+        Require(failed.maximum<.01&&!failed.passed,"v3-acceptable unresolved strong component still accepted");
         ++tests;
     }
     {
         Engine e(args,config);AdaptiveState state;Init(e,state,root+"/migration");state.streak=2;e.independentPassed=true;
         const auto counts=state.counts;const auto previous=state.previous;const auto valid=state.valid;
-        Atomic(root+"/migration/angular_sampling_policy.json","{\"policy\":\"legacy\"}");
+        Atomic(root+"/migration/angular_sampling_policy.json","{\"policy\":\"incoherent-component-shape-noise-v3\"}");
         PrepareAngularSamplingPolicy(e,state,true);
         Require(state.streak==0&&!e.independentPassed&&counts==state.counts&&previous==state.previous&&valid==state.valid,"migration discarded data or retained obsolete pass");
         AdaptiveState restored=state;restored.streak=9;Require(RestoreAdaptive(e,restored)&&restored.counts==counts&&restored.streak==0,"checkpoint migration not restorable");

@@ -14,6 +14,7 @@ OPT_FLAGS ?= -O3 -funroll-loops
 CXXFLAGS ?= $(OPT_FLAGS) $(ARCH_FLAGS) -std=gnu++11 -fopenmp
 CXXFLAGS += -DUSE_MPI -DMBS_GIT_DESCRIBE=\"$(GIT_DESCRIBE)\"
 LDFLAGS ?= -lm -lgomp
+LDFLAGS += -ldl
 DEPFLAGS := -MMD -MP
 
 INCLUDES := -I$(SRC_DIR) -I$(SRC_DIR)/math -I$(SRC_DIR)/handler \

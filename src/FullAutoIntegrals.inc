@@ -47,10 +47,10 @@ struct IntegralReader {
         if(Exists(folder+"/cutoff_sources.tsv")){
             std::istringstream rows(ReadSource(folder+"/cutoff_sources.tsv"));int targetDepth,sign;std::string source;int terms=0;
             while(rows>>targetDepth>>sign>>source)if(targetDepth==depth){
-                Require(sign==1||sign==-1,"invalid cutoff integral sign");
+                Require(sign==((terms==2||terms==4)?-1:1),"invalid cutoff integral sign/order");
                 const auto part=Resolve(source,depth,areaOnly);value.area+=sign*part.area;value.ext+=sign*part.ext;++terms;
             }
-            Require(rows.eof()&&terms==3,"incomplete signed cutoff integral recipe");
+            Require(rows.eof()&&(terms==3||terms==5),"incomplete signed cutoff integral recipe");
         }else if(Exists(path)){
             if(!areaOnly&&depth!=s.depth){const auto revision=folder+"/result/result_depth"+Number(depth)+"_integrals_revision.txt";
                 if(!Exists(revision))throw LegacyPairedIntegral();
@@ -73,9 +73,11 @@ struct IntegralReader {
         active.erase(key);values[key]=value;return value;
     }
 };
+const size_t integralValidationMemoLimit=64*1024*1024;
 struct IntegralProduction {
     std::array<IntegralScalar,8> samples{};std::string selectedSources;
     bool directTargetFallback=false;
+    size_t validationCheckedNodes=0,validationReusedGraphs=0,validationTemporaryMemoBytes=0;
     std::map<std::string,std::string> files;
 };
 // Keep only the largest existing prefix per level while parsing the source
@@ -116,7 +118,12 @@ IntegralProduction IntegralProductionSources(const std::string& sources,const st
 #else
     const int threads=1;(void)requestedThreads;
 #endif
+    // Integral replicas reuse the already verified graph of this adaptive
+    // round. Each worker owns its additions; the parent stays read-only until
+    // every replica and the cross-replica provenance checks have succeeded.
+    ValidationBatch scope("integral aggregate");auto& parent=*activeValidationBatch;
     auto collect=[&](bool directTarget){
+        std::array<std::unique_ptr<ValidationBatch>,8> batches;
         IntegralProduction result;result.directTargetFallback=directTarget;
         std::array<std::map<std::string,std::string>,8> files;
         std::vector<std::array<std::string,8>> selected(plan.levels.size());
@@ -128,6 +135,7 @@ IntegralProduction IntegralProductionSources(const std::string& sources,const st
 #pragma omp parallel for num_threads(threads) schedule(dynamic,1)
 #endif
         for(int i=0;i<8;++i){try{
+            std::unique_ptr<ValidationBatch> batch(new ValidationBatch(parent.scope,true,&parent,integralValidationMemoLimit/8));
             IntegralReader reader;
             for(size_t level=0;level<plan.levels.size();++level){
                 if(directTarget&&level!=0&&level!=plan.levels.size()-1)continue;
@@ -145,6 +153,8 @@ IntegralProduction IntegralProductionSources(const std::string& sources,const st
                 selected[level][i]=selectedRows.str();
             }
             files[i]=std::move(reader.files);
+            activeValidationBatch=batch->previous;batch->previous=nullptr;batch->fallback=nullptr;
+            batches[i]=std::move(batch);
         }catch(...){errors[i]=std::current_exception();}}
         // A real integrity failure must never be hidden by a legacy fallback.
         bool legacy=false;
@@ -155,10 +165,19 @@ IntegralProduction IntegralProductionSources(const std::string& sources,const st
             result.files.insert(entry);
         }
         for(const auto& level:selected)for(const auto& replica:level)result.selectedSources+=replica;
+        // No failed or inconsistent replica may authorize reuse by a later
+        // evaluation, including a failed legacy-extinction attempt.
+        for(const auto& batch:batches){
+            result.validationCheckedNodes+=batch->checked;result.validationReusedGraphs+=batch->reused;
+            result.validationTemporaryMemoBytes+=batch->compounds.Bytes();
+            parent.checked+=batch->checked;parent.reused+=batch->reused;
+            batch->compounds.LeastRecentFirst([&](const std::string& key,std::shared_ptr<const std::string> value){
+                parent.compounds.Put(key,value,sizeof(std::string)+value->capacity());});}
         return result;
     };
     try{return collect(false);}catch(const LegacyPairedIntegral&){return collect(true);}
 }
+
 double FullAutoAngularIntegral(const std::vector<double>& theta,const Matrix& matrix,bool go){
     const size_t bins=theta.size();Require(bins>=2&&matrix.size()==bins+(go?2:0),"integral matrix dimensions differ");
     const double rad=std::acos(-1.)/180;double sum=0;
@@ -214,7 +233,7 @@ void WriteFullAutoIntegrals(Engine& e,const std::string& folder,const Samples& o
     const auto value=ComputeIntegralCharacteristics(e.go?IntegralMethod::GeometricalOptics:IntegralMethod::PhysicalOptics,
         meanArea,angular,meanExt,std::isfinite(meanExt),absorption,quadrature,full);
     const std::string label=final?"fullauto_final":"fullauto_intermediate";
-    WriteIntegralCharacteristicsTsv(folder+"/mueller_fullauto",label,value);
+    Atomic(folder+"/mueller_fullauto_integrals.tsv",FormatIntegralCharacteristicsTsv(value,label));
     std::ostringstream confidence;confidence<<"quantity\tmean\tlower95\tupper95\tinterval_method\n"<<std::setprecision(17);
     auto interval=[&](const std::string& name,const std::array<double,8>& values,const std::array<double,8>* den){
         const auto ci=IntegralConfidence(values,den);confidence<<name<<'\t'<<ci.mean<<'\t'<<ci.lower<<'\t'<<ci.upper<<'\t'<<(den?"paired_Fieller":"Student_t_7df")<<'\n';};
@@ -229,10 +248,15 @@ void WriteFullAutoIntegrals(Engine& e,const std::string& folder,const Samples& o
         if(Exists(path))production.files[path]=FileHash(path);}
     std::ostringstream provenance;for(const auto& entry:production.files)provenance<<entry.first<<'\t'<<entry.second<<'\n';
     Atomic(folder+"/integral_sources.fnv",provenance.str());Atomic(folder+"/integral_estimator_sources.tsv",production.selectedSources);
+    const std::string validationFields=",\"validation_checked_nodes\":"+Number(production.validationCheckedNodes)
+        +",\"validation_reused_compound_graphs\":"+Number(production.validationReusedGraphs)
+        +",\"validation_temporary_memo_bytes\":"+Number(production.validationTemporaryMemoBytes)
+        +",\"validation_temporary_memo_limit_bytes\":"+Number(integralValidationMemoLimit)
+        +",\"validation_counter_scope\":\"successful integral estimator; same-round parent graph shared across private replica readers\"";
     e.Record(folder+"/integral_summary.json","{\"schema\":1,\"final\":"+std::string(final?"true":"false")+",\"method\":"+Quoted(e.go?"GO":"PO")
         +",\"full_angular_coverage\":"+(full?"true":"false")+",\"status\":"+Quoted(IntegralCharacteristicsStatus(value,label))
-        +",\"legacy_paired_extinction_fallback\":"+(production.directTargetFallback?"true":"false")+",\"extinction_sampling\":"+Quoted(production.directTargetFallback?"direct target depth, largest existing production prefix; area from base prefix":"largest existing production prefix per level; multilevel corrections; angular duplicates excluded")+",\"angular_integral_source\":\"production Mueller estimator including interpolation; GO adds integrated poles\",\"confidence_scope\":\"production variability only, no total-integral accuracy certification\",\"fullauto_tolerance_certifies_integrals\":false}");
-    e.Log("integral_summary","{\"folder\":"+Quoted(folder)+",\"final\":"+(final?"true":"false")+",\"status\":"+Quoted(IntegralCharacteristicsStatus(value,label))+",\"assembly_seconds\":"+Number(Seconds()-begun)+",\"source_files\":"+Number(production.files.size())+"}");
+        +",\"legacy_paired_extinction_fallback\":"+(production.directTargetFallback?"true":"false")+",\"extinction_sampling\":"+Quoted(production.directTargetFallback?"direct target depth, largest existing production prefix; area from base prefix":"largest existing production prefix per level; multilevel corrections; angular duplicates excluded")+",\"angular_integral_source\":\"production Mueller estimator including interpolation; GO adds integrated poles\",\"confidence_scope\":\"production variability only, no total-integral accuracy certification\",\"fullauto_tolerance_certifies_integrals\":false"+validationFields+"}");
+    e.Log("integral_summary","{\"folder\":"+Quoted(folder)+",\"final\":"+(final?"true":"false")+",\"status\":"+Quoted(IntegralCharacteristicsStatus(value,label))+",\"assembly_seconds\":"+Number(Seconds()-begun)+",\"source_files\":"+Number(production.files.size())+validationFields+"}");
     if(final)std::cout<<log<<std::flush;
 }
 void HashIntegralProducts(const std::string& root,std::ostringstream& hashes){

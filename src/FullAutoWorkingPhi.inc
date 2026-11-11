@@ -265,11 +265,19 @@ bool TryWorkingPhi(Engine& e,AdaptiveState& state,const std::vector<int>& depths
     return false;
 }
 void HashSchedulingReceipts(const Engine& e,std::ostringstream& hashes){
-    std::vector<std::string> names;DIR* directory=opendir(e.root.c_str());Require(directory,"cannot list scheduling receipts");
-    while(auto* entry=readdir(directory)){const std::string name=entry->d_name;
+    std::vector<std::string> names;
+    auto consider=[&](const std::string& name){
         if(name=="allocation_policy.json"||name=="interpolation_production_mode.json"||name=="interpolation_geometry_budget.csv"
                 ||name=="interpolation_geometry_sources.tsv"||name=="round_work_limit.json"||name=="phi_production_work.json"
                 ||name.compare(0,20,"correction_subround_")==0||name.compare(0,13,"working_phi_n")==0){
-            if(name.size()<4||name.compare(name.size()-4,4,".tmp")!=0)names.push_back(name);}}
-    closedir(directory);std::sort(names.begin(),names.end());for(const auto& name:names)hashes<<name<<' '<<FileHash(e.root+"/"+name)<<'\n';
+            if(name.size()<4||name.compare(name.size()-4,4,".tmp")!=0)names.push_back(name);}};
+    if(MemoryPath(e.root)){
+        for(const auto& path:FullAutoMemoryStore::Active()->List(e.root,false))
+            consider(path.substr(path.find_last_of('/')+1));
+    }else{
+        DIR* directory=opendir(e.root.c_str());Require(directory,"cannot list scheduling receipts");
+        while(auto* entry=readdir(directory))consider(entry->d_name);
+        closedir(directory);
+    }
+    std::sort(names.begin(),names.end());for(const auto& name:names)hashes<<name<<' '<<FileHash(e.root+"/"+name)<<'\n';
 }

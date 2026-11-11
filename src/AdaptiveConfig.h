@@ -27,6 +27,7 @@ struct AdaptiveConvergenceLimits
     double orientationTolerance;
 
     int stablePasses;
+    bool stablePassesExplicit;
     int minPilotOrientations;
     int maxPilotOrientations;
     int maxJointSweeps;

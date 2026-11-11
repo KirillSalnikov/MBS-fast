@@ -166,7 +166,7 @@ python3 tests/audit_fullauto.py PATH_TO_COMPLETED_OUTPUT --dense</pre>
 
 
 <section id="final-checks-off"><h2>Завершение без двух финальных перепроверок</h2>
-<p><code>--fullauto-final-checks off</code> отключает независимое усреднение на новых seed и заключительное сравнение выбранного числа отражений n с n+2. Это действует также при автоматическом выборе n и для метода GO. Значение по умолчанию — <code>on</code>: применяются обычные настройки проверок.</p>
+<p><code>--fullauto-final-checks off</code> отключает независимое усреднение на новых seed и заключительное сравнение выбранного числа отражений n с n+2. Это действует также при автоматическом выборе n и для метода GO. Значение по умолчанию — <code>off</code>. Для расширенного аудита укажите <code>--fullauto-final-checks on</code>. По умолчанию достаточно одного успешного рабочего прохода; повторные проходы задаются явно через <code>--convergence-passes N</code>.</p>
 <pre>mbs-fast --method po --particle 1 446.7 147.1 --ri 1.3116 0 \
   --wavelength-um 0.532 --fullauto 0.02 --fullauto-theta-range 0 25 \
   --fullauto-final-checks off --output result --close</pre>
@@ -348,4 +348,4 @@ python3 tests/audit_fullauto.py PATH_TO_COMPLETED_OUTPUT --dense</pre>
 </table>
 <p>На epyc2 отдельная серия <code>sahara340</code> и её <code>current</code> сохраняются без изменений. Для уточнения фактически работающей версии проверяйте <code>/proc/PID/exe</code>; таблица путей установки сама по себе не означает перевод всех активных процессов.</p>
 </section>
-</body></html>
+<section><h2>Завершение PO/GO: новая политика по умолчанию</h2><p>Один успешный рабочий проход; финальные пересчёты выключены. Для расширенного аудита: <code>--fullauto-final-checks on</code>. Для нескольких успешных проходов: <code>--convergence-passes N</code>. Стартовый подбор глубины и рабочие критерии точности сохраняются. Пропущенный аудит отмечается как невыполненный.</p></section></body></html>

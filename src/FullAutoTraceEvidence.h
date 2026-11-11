@@ -14,21 +14,23 @@ inline std::string OptionalText(const std::string& path){
     // A missing optional log is ordinary; a corrupt packed log is not.
     return CheckedFileCache::Read(path);
 }
-inline bool Executed(const std::string& folder,std::set<std::string>& seen){
+template<class Reader> inline bool ExecutedWithReader(const std::string& folder,std::set<std::string>& seen,Reader reader){
     if(!seen.insert(folder).second)return false;
-    std::istringstream log(OptionalText(folder+"/stdout.log"));std::string line;
+    std::istringstream log(reader(folder+"/stdout.log"));std::string line;
     const std::string marker="GPU convex resident direct: accepted=";
     while(std::getline(log,line)){
         const auto pos=line.find(marker);if(pos==std::string::npos)continue;
         std::istringstream value(line.substr(pos+marker.size()));long long count=0;
         if(value>>count&&count>0)return true;
     }
-    std::istringstream sources(OptionalText(folder+"/angular_sources.tsv"));
+    std::istringstream sources(reader(folder+"/angular_sources.tsv"));
     while(std::getline(sources,line)){
         const auto tab=line.find('\t');if(tab==std::string::npos||!tab)continue;
-        if(Executed(line.substr(0,tab),seen))return true;
+        if(ExecutedWithReader(line.substr(0,tab),seen,reader))return true;
     }
     return false;
 }
+template<class Reader> inline bool ExecutedWithReader(const std::string& folder,Reader reader){std::set<std::string> seen;return ExecutedWithReader(folder,seen,reader);}
+inline bool Executed(const std::string& folder,std::set<std::string>& seen){return ExecutedWithReader(folder,seen,OptionalText);}
 inline bool Executed(const std::string& folder){std::set<std::string> seen;return Executed(folder,seen);}
 }

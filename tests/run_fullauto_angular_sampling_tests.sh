@@ -13,4 +13,5 @@ mapfile -t task_objects < <(rg --files --no-ignore "$task_root/cpu/build/obj" -g
 "$task_output/bin/angular_sampling_probe" \
     "$task_root/tests/data/fullauto_angular_sampling_562.tsv" "$task_output/replay" \
     "$task_root/tests/data/fullauto_angular_sampling_small.tsv" \
-    "$task_root/tests/data/fullauto_angular_sampling_residual112.tsv"
+    "$task_root/tests/data/fullauto_angular_sampling_residual112.tsv" \
+    "$task_root/tests/data/fullauto_angular_sampling_m11_v4.tsv"

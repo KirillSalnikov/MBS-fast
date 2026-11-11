@@ -24,7 +24,10 @@ void WriteOutputGuide(Engine& e,const std::string& folder,size_t fullRows,size_t
         +",\"full_rows\":"+Number(fullRows)+",\"direct_rows\":"+Number(directRows)+",\"support_rows\":"+Number(supportRows)
         +",\"ratio_accuracy_enabled\":"+(e.ratios?"true":"false")
         +",\"interpolation_checks_use_common_prefix\":"+(commonPrefix?"true":"false")
-        +",\"value_source\":{\"direct\":\"direct orientation average\",\"interpolated\":\"local cubic interpolation of support estimates, including guard angles\",\"direct_bin\":\"GO finite solid-angle bin density; poles are separate\"}"
+        +",\"interpolation_policy\":"+Quoted(POOutputInterpolationPolicy(e.go,e.coherent))
+        +",\"value_source\":{\"direct\":\"direct orientation average\",\"interpolated\":"
+        +Quoted(UseLinearPOInterpolation(e.go,e.coherent)?"fixed piecewise-linear interpolation of support estimates, including guard angles":"local cubic interpolation of support estimates, including guard angles")
+        +",\"direct_bin\":\"GO finite solid-angle bin density; poles are separate\"}"
         +",\"point_type\":{\"support\":\"PO interpolation anchor\",\"guard\":\"PO angle with a separate direct interpolation check\",\"interpolated\":\"no direct calculation in this production estimator; may have been evaluated in a pilot or earlier round\",\"finite_bin\":\"GO direct bin, no interpolation\"}"
         +",\"errors\":\"Dimensionless, multiply by 100 for percent of M11 or percentage points of Mij/M11. Statistical columns are pointwise 95% half-width estimates, not bounds on physical error. Empty fields mean not provided or not checked, never zero error.\""
         +",\"interpolation\":\"For the full PO matrix: componentwise guard estimates or the configured allowance at untested angles; the displayed column is their maximum. Common-prefix checks isolate interpolation on matched samples; they do not bound the difference of two DAT files with different local sample counts.\""

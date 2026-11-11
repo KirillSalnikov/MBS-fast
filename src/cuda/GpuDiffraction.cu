@@ -1,5 +1,6 @@
 #include "HandlerPO.h"
 #include "GpuPhaseReduction.cuh"
+#include "GpuUploadBuffer.h"
 #ifdef MBS_GPU_PHASE_DS
 #include "DoubleSingle.cuh"
 #else
@@ -24,6 +25,8 @@ using DsReal = double;
 #include <vector>
 #include <utility>
 #include <future>
+#include <limits>
+#include <stdexcept>
 
 #if defined(MBS_GPU_FLOAT) && !defined(MBS_GPU_FP32)
 #define MBS_GPU_FP32 1
@@ -228,84 +231,28 @@ struct GpuCompactBeam
 using GpuBeam4 = GpuCompactBeam<4>;
 using GpuBeam8 = GpuCompactBeam<8>;
 
-// Registration reuses the existing vector allocation: no second staging copy.
-// Keep the total locked host memory bounded across all three beam layouts.
-struct GpuUploadBudget
+// Keep registration and buffer growth separate from optical packing. The
+// default capacity policy is unchanged; a bounded reserve candidate can be
+// measured with MBS_GPU_UPLOAD_RESERVE_GROWTH=1 before enabling it generally.
+using GpuUploadTimings=MbsGpuUpload::Timings;
+struct GpuUploadBudget:MbsGpuUpload::Budget
 {
-    size_t used = 0, limit = 256ULL << 20;
-    GpuUploadBudget()
-    {
-        if (const char *value = std::getenv("MBS_HOST_MEM_BUDGET_MB"))
-        {
-            char *end = nullptr;
-            const unsigned long long mib = std::strtoull(value, &end, 10);
-            if (value[0] != '-' && end != value && *end == '\0' && mib > 0)
-                limit = size_t(std::min(256ULL, mib / 16)) << 20;
-        }
-    }
-};
-template <typename T> class GpuUploadVector
-{
-    std::vector<T> values;
-    GpuUploadBudget *budget;
-    void *registered = nullptr;
-    size_t lockedBytes = 0;
-    bool registrationFailed = false;
-    void Unregister()
-    {
-        if (!registered) return;
-        cudaHostUnregister(registered);
-        budget->used -= lockedBytes;
-        registered = nullptr;
-        lockedBytes = 0;
-    }
-public:
-    explicit GpuUploadVector(GpuUploadBudget *owner) : budget(owner) {}
-    GpuUploadVector(const GpuUploadVector &) = delete;
-    GpuUploadVector &operator=(const GpuUploadVector &) = delete;
-    ~GpuUploadVector() { Unregister(); }
-    void resize(size_t size)
-    {
-        // A vector must never reallocate while its old allocation is registered.
-        if (size > values.capacity()) Unregister();
-        values.resize(size);
-    }
-    size_t size() const { return values.size(); }
-    bool empty() const { return values.empty(); }
-    T &operator[](size_t i) { return values[i]; }
-    T *data()
-    {
-        const char *mode = std::getenv("MBS_GPU_PINNED_UPLOAD");
+    GpuUploadBudget():MbsGpuUpload::Budget(
 #ifdef MBS_GPU_FP32
-        bool enabled = true;
+        true
 #else
-        bool enabled = false;
+        false
 #endif
-        if (mode) enabled = mode[0] == '1' && mode[1] == '\0';
-        if (!enabled) Unregister();
-        const size_t bytes = values.capacity() * sizeof(T);
-        // Registration has a startup cost; automatic mode targets substantial
-        // transfers. An explicit override can exercise smaller buffers too.
-        const size_t minimum = (mode ? 1ULL : 8ULL) << 20;
-        if (!registered && !registrationFailed && enabled && !values.empty()
-            && bytes >= minimum && bytes <= budget->limit - budget->used)
-        {
-            const cudaError_t result = cudaHostRegister(values.data(), bytes, cudaHostRegisterPortable);
-            if (result == cudaSuccess)
-            {
-                registered = values.data(); lockedBytes = bytes; budget->used += bytes;
-            }
-            else
-            {
-                // WSL/driver restrictions or pinning pressure must not turn a
-                // valid optical calculation into a failed allocation.
-                registrationFailed = true;
-                cudaGetLastError();
-            }
-        }
-        return values.data();
-    }
+    ){}
 };
+struct GpuUploadRegistration
+{
+    static int Register(void* pointer,size_t bytes){return int(cudaHostRegister(pointer,bytes,cudaHostRegisterPortable));}
+    static int Unregister(void* pointer){return int(cudaHostUnregister(pointer));}
+    static const char* Error(int code){return cudaGetErrorString(static_cast<cudaError_t>(code));}
+    static void ClearError(){cudaGetLastError();}
+};
+template<class T>using GpuUploadVector=MbsGpuUpload::Vector<T,GpuUploadRegistration>;
 
 // Direction-independent phased Jones matrix, reused by every angular cell.
 struct GpuPhasedJones
@@ -417,6 +364,13 @@ static thread_local GpuWorkspace g_gpuWorkspace;
 static thread_local bool g_gpuMultiWorker = false;
 static thread_local bool g_gpuFftLowDirect = false;
 static thread_local unsigned long long g_gpuPackCacheToken = 0;
+struct PackingWorkState
+{
+    GpuPackingWork*work;int start,count;
+    bool begun=false,finished=false;
+    PackingWorkState(GpuPackingWork&w,int first,int n):work(&w),start(first),count(n){}
+};
+static thread_local PackingWorkState*g_gpuPackingWork=nullptr;
 
 static inline double prepared_absorption_factor(const PreparedBeam &pb,
                                                 double scale,
@@ -1239,13 +1193,18 @@ __device__ inline bool compute_beam_integral_cached_gpu(const BeamT &b,
     }
 
     GpuReal vc[MaxVertices], vs[MaxVertices];
+#ifdef MBS_GPU_LOCAL_PHASE_EDGES
+    unsigned int preciseVertices = 0;
+#else
     bool precisePhase = false;
+#endif
 #if defined(MBS_GPU_PHASE_REDUCED) || defined(MBS_GPU_PHASE_DS)
     if (!NativePhase)
     {
         // Edge quotients subtract endpoint phasors. For a short phase step,
         // their cancellation can amplify an extra FP32 argument rounding.
-        // Keep the original FP64 phasors for the entire affected polygon.
+        // Keep both endpoints of each short edge in extended phase precision.
+        // Shared vertices use the same phasor on all incident edges.
         // The small-phase moment branch above needs no endpoint phasors.
         const bool useX = absB > absA;
         const int edges = useX ? b.nEdgeX : b.nEdgeY;
@@ -1256,7 +1215,12 @@ __device__ inline bool compute_beam_integral_cached_gpu(const BeamT &b,
             const GpuReal gradient = useX ? A + b.slope_yx[e]*B : B + b.slope_xy[e]*A;
             const GpuReal length = useX ? b.x[en]-b.x[e] : b.y[en]-b.y[e];
             const GpuReal step = gradient * length * (UnitWave ? (GpuReal)1 : waveIndex);
+#ifdef MBS_GPU_LOCAL_PHASE_EDGES
+            if (fabs(step) < (GpuReal)0.125)
+                preciseVertices |= (1u << e) | (1u << en);
+#else
             if (fabs(step) < (GpuReal)0.125) { precisePhase = true; break; }
+#endif
         }
     }
 #endif
@@ -1279,7 +1243,11 @@ __device__ inline bool compute_beam_integral_cached_gpu(const BeamT &b,
             const GpuVertexPhaseReal x = (GpuVertexPhaseReal)b.x[v];
             const GpuVertexPhaseReal y = (GpuVertexPhaseReal)b.y[v];
             gpu_sincos_phase(qx * x + qy * y + commonPhase,
+#ifdef MBS_GPU_LOCAL_PHASE_EDGES
+                             &vs[v], &vc[v], (preciseVertices & (1u << v)) != 0);
+#else
                              &vs[v], &vc[v], precisePhase);
+#endif
         }
     }
 
@@ -3733,7 +3701,7 @@ __global__ void diffraction_grid_mueller_full8_warp_stage_kernel(
         weight, &mOrient[out], lane, mask);
 }
 
-template <bool Split4, bool Fixed34>
+template <bool Split4, bool Fixed34, bool Grid3D = false>
 __global__ void diffraction_grid_mueller_mixed8_kernel(const GpuBeam4 *__restrict__ beams4,
                                                        const int *__restrict__ beamOffsets4,
                                                        const int *__restrict__ beamOffsets4Quad,
@@ -3761,14 +3729,25 @@ __global__ void diffraction_grid_mueller_mixed8_kernel(const GpuBeam4 *__restric
                                                        GpuReal *__restrict__ mFull)
 {
     const int gridCount = nAz * (nZen + 1);
-    const long long total = (long long)nOrient * gridCount;
-    const long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= total) return;
-
-    const int orient = (int)(idx / gridCount);
-    const int grid = (int)(idx - (long long)orient * gridCount);
-    const int p = grid / (nZen + 1);
-    const int t = grid - p * (nZen + 1);
+    int orient, grid, p, t;
+    if (Grid3D)
+    {
+        orient = (int)blockIdx.z;
+        p = (int)blockIdx.y * (int)blockDim.y + (int)threadIdx.y;
+        t = (int)blockIdx.x * (int)blockDim.x + (int)threadIdx.x;
+        if (orient >= nOrient || p >= nAz || t > nZen) return;
+        grid = p * (nZen + 1) + t;
+    }
+    else
+    {
+        const long long total = (long long)nOrient * gridCount;
+        const long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+        if (idx >= total) return;
+        orient = (int)(idx / gridCount);
+        grid = (int)(idx - (long long)orient * gridCount);
+        p = grid / (nZen + 1);
+        t = grid - p * (nZen + 1);
+    }
     const GpuReal cp = cosPhi[p], sp = sinPhi[p];
     const GpuReal sin_t = sinTheta[t], cos_t = cosTheta[t];
     const GpuReal dx = sin_t * cp;
@@ -4919,6 +4898,33 @@ static bool fft_upsample_theta_arr2d_pair(const Arr2D &low,
                                         nThetaFull, dst, &dst2);
 }
 
+bool HandlerPO::TryHandleOrientationsWithPackingWork(const std::vector<PreparedOrientation>&prepared,
+    Arr2D&localM,Arr2D&localM_noshadow,GpuPackingWork&work,bool&used)
+{
+    used=false;
+    if(prepared.empty()||prepared.size()>static_cast<size_t>(std::numeric_limits<int>::max()))return true;
+    const int count=static_cast<int>(prepared.size());
+    if(g_gpuPackingWork||g_gpuMultiWorker||g_gpuFftLowDirect||g_gpuPackCacheToken
+        ||m_sphere.nAzimuth<=0||m_sphere.nZenith<0
+        ||ComputeNoShadow()||IsFftEnabled()||gpu_multi_device_count(count)!=1
+        ||SelectGpuOrientationBatchSize(prepared,0,count)!=count)return true;
+    bool hasBeams=false;
+    // Eligibility only: leave the established whole-orientation CPU fallback
+    // untouched, and never enter it with an outstanding analytic operation.
+    for(const auto&orientation:prepared)for(const auto&beam:orientation.beams){
+        hasBeams=true;
+        if(!beam.edgeData.valid||beam.edgeData.nVertices<=0||beam.edgeData.nVertices>32)return true;
+    }
+    if(!hasBeams)return true;
+    PackingWorkState state(work,0,count);
+    struct Guard{PackingWorkState*previous;explicit Guard(PackingWorkState&s):previous(g_gpuPackingWork){g_gpuPackingWork=&s;}
+        ~Guard(){g_gpuPackingWork=previous;}}guard(state);
+    const bool ok=HandleOrientationsToLocalGpu(prepared,0,count,localM,localM_noshadow);
+    used=state.begun;
+    if(ok&&(!state.begun||!state.finished))throw std::runtime_error("GPU packing hook did not execute exactly once");
+    return ok;
+}
+
 bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientation> &prepared,
                                              Arr2D &localM,
                                              Arr2D &localM_noshadow)
@@ -5844,6 +5850,8 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     const double tStart = timing ? gpu_now_ms() : 0.0;
     double tCount = 0.0, tPack = 0.0, tEnsure = 0.0, tGrid = 0.0;
     double tCopy = 0.0, tKernel = 0.0, tD2h = 0.0, tAdd = 0.0;
+    double tPackLoop=0;
+    const GpuUploadTimings uploadBefore=ws.uploadBudget.timings;
 
     std::vector<int> compactVertexCounts(
         reusePacked ? 0 : (size_t)nOrient * 9, 0);
@@ -6094,6 +6102,12 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         else if (packMixedBeam8)
             hBeamOffsets8[nOrient] = (int)bi8;
 
+        if(g_gpuPackingWork){
+            if(g_gpuPackingWork->begun||g_gpuPackingWork->start!=start||g_gpuPackingWork->count!=nOrient)
+                throw std::runtime_error("GPU packing hook changed batch identity");
+            g_gpuPackingWork->begun=true;g_gpuPackingWork->work->BeforePacking();
+        }
+        const double packLoopStarted=timing ? gpu_now_ms():0;
 #pragma omp parallel for schedule(static) if(nOrient > 1 && nBeams >= 4096 && !g_gpuMultiWorker)
         for (int oi = 0; oi < nOrient; ++oi)
         {
@@ -6171,6 +6185,8 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                 }
             }
         }
+        if(timing)tPackLoop=gpu_now_ms()-packLoopStarted;
+        if(g_gpuPackingWork){g_gpuPackingWork->work->AfterPacking();g_gpuPackingWork->finished=true;}
         if (beamStats)
         {
             std::fprintf(stderr,
@@ -6853,7 +6869,9 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                     if (splitBeam4)
                     {
                         if (fixedBeam34)
-                            diffraction_grid_mueller_mixed8_kernel<true, true><<<diffractionGrid, block>>>(
+                            {
+                                if (useThreadGrid3D)
+                                    diffraction_grid_mueller_mixed8_kernel<true, true, true><<<threadGrid3D, threadBlock3D>>>(
                                 ws.beams4, ws.beamOffsets4, ws.beamOffsets4Quad,
                                 ws.beams8, ws.beamOffsets8,
                                 ws.beams, ws.beamOffsets,
@@ -6864,8 +6882,23 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                                 real(m_complWave), imag(m_complWave),
                                 real(m_invComplWave), imag(m_invComplWave),
                                 m_legacySign ? 1 : 0, ws.m);
+                                else
+                                    diffraction_grid_mueller_mixed8_kernel<true, true><<<diffractionGrid, block>>>(
+                                ws.beams4, ws.beamOffsets4, ws.beamOffsets4Quad,
+                                ws.beams8, ws.beamOffsets8,
+                                ws.beams, ws.beamOffsets,
+                                ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                                ws.vf, ws.weights, nAz, nZen, nOrient,
+                                diffractionWaveIndex, diffractionWi2,
+                                gpu_effective_eps1(m_eps1), m_eps2,
+                                real(m_complWave), imag(m_complWave),
+                                real(m_invComplWave), imag(m_invComplWave),
+                                m_legacySign ? 1 : 0, ws.m);
+                            }
                         else
-                            diffraction_grid_mueller_mixed8_kernel<true, false><<<diffractionGrid, block>>>(
+                            {
+                                if (useThreadGrid3D)
+                                    diffraction_grid_mueller_mixed8_kernel<true, false, true><<<threadGrid3D, threadBlock3D>>>(
                                 ws.beams4, ws.beamOffsets4, nullptr,
                                 ws.beams8, ws.beamOffsets8,
                                 ws.beams, ws.beamOffsets,
@@ -6876,9 +6909,24 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                                 real(m_complWave), imag(m_complWave),
                                 real(m_invComplWave), imag(m_invComplWave),
                                 m_legacySign ? 1 : 0, ws.m);
+                                else
+                                    diffraction_grid_mueller_mixed8_kernel<true, false><<<diffractionGrid, block>>>(
+                                ws.beams4, ws.beamOffsets4, nullptr,
+                                ws.beams8, ws.beamOffsets8,
+                                ws.beams, ws.beamOffsets,
+                                ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                                ws.vf, ws.weights, nAz, nZen, nOrient,
+                                diffractionWaveIndex, diffractionWi2,
+                                gpu_effective_eps1(m_eps1), m_eps2,
+                                real(m_complWave), imag(m_complWave),
+                                real(m_invComplWave), imag(m_invComplWave),
+                                m_legacySign ? 1 : 0, ws.m);
+                            }
                     }
                     else
-                        diffraction_grid_mueller_mixed8_kernel<false, false><<<diffractionGrid, block>>>(
+                        {
+                            if (useThreadGrid3D)
+                                diffraction_grid_mueller_mixed8_kernel<false, false, true><<<threadGrid3D, threadBlock3D>>>(
                             nullptr, nullptr, nullptr,
                             ws.beams8, ws.beamOffsets8,
                             ws.beams, ws.beamOffsets,
@@ -6889,6 +6937,19 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                             real(m_complWave), imag(m_complWave),
                             real(m_invComplWave), imag(m_invComplWave),
                             m_legacySign ? 1 : 0, ws.m);
+                            else
+                                diffraction_grid_mueller_mixed8_kernel<false, false><<<diffractionGrid, block>>>(
+                            nullptr, nullptr, nullptr,
+                            ws.beams8, ws.beamOffsets8,
+                            ws.beams, ws.beamOffsets,
+                            ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                            ws.vf, ws.weights, nAz, nZen, nOrient,
+                            diffractionWaveIndex, diffractionWi2,
+                            gpu_effective_eps1(m_eps1), m_eps2,
+                            real(m_complWave), imag(m_complWave),
+                            real(m_invComplWave), imag(m_invComplWave),
+                            m_legacySign ? 1 : 0, ws.m);
+                        }
                 }
             }
             else if (noVertexCache)
@@ -7019,6 +7080,20 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                      (useWarpGrid3D || useThreadGrid3D) ? "3d" : "flat",
                      block, nOrient, nBeams, nAz, nZen, tCount, tPack, tEnsure,
                      tGrid, tCopy, tKernel, tD2h, tAdd, gpu_now_ms() - tStart, ws.uploadBudget.used);
+        const auto &upload=ws.uploadBudget.timings;
+        const double unregistration=upload.unregisterMs-uploadBefore.unregisterMs;
+        const double resizing=upload.resizeMs-uploadBefore.resizeMs;
+        std::fprintf(stderr,
+            "GPU upload timing orient=%d beams=%zu unregister=%.3fms resize=%.3fms register=%.3fms "
+            "packing_loop=%.3fms pack_layout=%.3fms unregister_calls=%zu resize_calls=%zu growth_calls=%zu "
+            "register_calls=%zu register_failures=%zu reserve_calls=%zu capacity_bytes=%zu pinned_bytes=%zu pinned_limit_bytes=%zu\n",
+            nOrient,nBeams,unregistration,resizing,upload.registerMs-uploadBefore.registerMs,
+            tPackLoop,std::max(0.0,tPack-unregistration-resizing-tPackLoop),
+            upload.unregisterCalls-uploadBefore.unregisterCalls,upload.resizeCalls-uploadBefore.resizeCalls,
+            upload.growthCalls-uploadBefore.growthCalls,upload.registerCalls-uploadBefore.registerCalls,
+            upload.registerFailures-uploadBefore.registerFailures,upload.reserveCalls-uploadBefore.reserveCalls,
+            ws.hBeams.capacity_bytes()+ws.hBeams4.capacity_bytes()+ws.hBeams8.capacity_bytes(),
+            ws.uploadBudget.used,ws.uploadBudget.limit);
     }
 
     return true;

@@ -27,6 +27,20 @@ inline int AllowedPhysicalCores() {
 inline int ThreadCap(int physical,int allowed,int visibleGpus) {
     return std::max(1,std::min(allowed>0?allowed:physical,physical/std::max(1,visibleGpus)));
 }
+inline int AllowedLogicalCores() {
+    cpu_set_t allowed;CPU_ZERO(&allowed);
+    return sched_getaffinity(0,sizeof(allowed),&allowed)==0?CPU_COUNT(&allowed):0;
+}
+// This is a candidate ceiling, not an unconditional SMT allocation. The
+// rolling wall-time comparison below retains the physical-core baseline
+// unless useful production work demonstrates a benefit. Respect affinity
+// and the existing per-GPU share; never assign another card's physical cores.
+inline int PreparationCandidateCap(int physical,int allowedPhysical,int allowedLogical,int visibleGpus) {
+    const int baseline=ThreadCap(physical,allowedPhysical,visibleGpus);
+    if(allowedPhysical<=0||allowedLogical<=allowedPhysical)return baseline;
+    const int siblings=std::min(2,allowedLogical/allowedPhysical);
+    return std::min(allowedLogical,baseline*siblings);
+}
 
 inline size_t Bucket(size_t n) {
     size_t b=1;while(b<n && b<=n/2)b*=2;

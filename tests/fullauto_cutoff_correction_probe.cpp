@@ -3,6 +3,8 @@
 #include "../src/FullAuto.cpp"
 using namespace FullAuto;
 void Setup(Engine& e,const std::string& root,const std::string& binary,bool controls,bool absorbing,bool incoherent=false){
+    if(getenv("TASK_TEST_FAST_CUTOFF"))e.cutoffPolicy="fast";
+    if(getenv("TASK_TEST_STAGED_CUTOFF"))e.cutoffPolicy="staged";
     e.compactIndex=true;
     e.root=root;e.signature="cutoff-correction-regression-v1";Directory(root);Directory(root+"/jobs");e.exe=binary;e.binaryHash=FileHash(binary);
     e.controls=controls;e.depthSharing=true;e.gpus={""};e.seeds.assign(production,production+8);e.workerThreads=1;e.hostBudgetMb=512;
@@ -28,7 +30,14 @@ void Close(double a,double b,const char* message){Require(std::fabs(a-b)<=2e-12*
 int main(int argc,char** argv){try{
     Require(argc==3,"OUTPUT BINARY");ArgPP args;RunConfig config;
     for(int mode:{0,1,2,3}){const bool controls=mode==1||mode==3,incoherent=mode>=2;
-        const std::string root=std::string(argv[1])+"/mode"+Number(mode);Engine e(args,config);Setup(e,root,argv[2],controls,controls,incoherent);e.WarmCache();
+        const std::string root=std::string(argv[1])+"/mode"+Number(mode);Engine e(args,config);Setup(e,root,argv[2],controls,controls,incoherent);
+        e.cutoffPolicy="auto";const std::string balancedHash=e.ExecutionHash();
+        e.cutoffPolicy="fast";Require(e.ExecutionHash()!=balancedHash,"fast cutoff reused balanced execution identity");
+        e.cutoffPolicy="auto";Require(e.ExecutionHash()==balancedHash,"default cutoff identity changed");
+        if(getenv("TASK_TEST_FAST_CUTOFF"))e.cutoffPolicy="fast";
+    if(getenv("TASK_TEST_STAGED_CUTOFF"))e.cutoffPolicy="staged";
+        e.WarmCache();
+        if(e.StagedCutoff()){const auto h=e.ExecutionHash();e.cutoffPolicy="fast";Require(e.ExecutionHash()!=h,"staged reused fast cache");e.cutoffPolicy="staged";}
         if(incoherent){
             // Equal counts must telescope sample-by-sample to the direct
             // highest depth, including correlations across all eight seeds.
@@ -52,13 +61,13 @@ int main(int argc,char** argv){try{
         std::vector<size_t> todo;for(size_t i=0;i<e.pendingJobs.size();++i)todo.push_back(i);e.ExecutePrepared(e.pendingJobs,e.pendingCommands,todo);e.pendingJobs.clear();e.pendingCommands.clear();
         auto corrected=e.DirectStage(512,e.seeds.data(),8,8,e.theta,true,false,512,6);
         for(const auto& j:corrected){Require(j.assembled&&j.pairedDepth==6,"paired correction missing");IntegralReader reader;
-            Require(Read(j.folder+"/cutoff_prefix_recipe.txt")=="embedded-prefix-v1\n","new correction did not save its balanced prefix");
+            Require(Read(e.CutoffPrefixRecipePath(j))=="embedded-prefix-v1\n","new correction did not save its balanced prefix");
             std::istringstream signedRows(Read(j.folder+"/cutoff_sources.tsv"));int sourceDepth,sourceSign;std::string sourceFolder;int prefixViews=0,nativeLegs=0;
             while(signedRows>>sourceDepth>>sourceSign>>sourceFolder)if(sourceDepth==8){const Job source=e.Materialize(*e.folderIndex.at(sourceFolder));
-                if(sourceSign==-1){Require(source.assembled&&source.count==64,"balanced prefix was traced twice");++prefixViews;
-                    const auto replay=Read(source.folder+"/command.args");Require(replay.find("--cutoff-profile\nbalanced\n")!=std::string::npos&&replay.find("--orientation-prefix-output")==std::string::npos,"prefix standalone replay changed its estimator");}
+                if(sourceSign==-1&&source.assembled){Require(source.assembled&&source.count==64,"balanced prefix was traced twice");++prefixViews;
+                    const auto replay=Read(source.folder+"/command.args");Require(replay.find("--cutoff-profile\n"+e.CutoffBaseProfile()+"\n")!=std::string::npos&&replay.find("--orientation-prefix-output")==std::string::npos,"prefix standalone replay changed its estimator");}
                 else {Require(!source.assembled,"unexpected native correction source");++nativeLegs;}}
-            Require(prefixViews==1&&nativeLegs==2,"correction lost its two-leg transaction");
+            Require(prefixViews==1&&nativeLegs==(e.StagedCutoff()?4:2),"correction lost its two-leg transaction");
             for(int depth:{8,6}){const Job target=depth==8?j:e.LowerView(j,6);Matrix expected(3,Mueller{});IntegralScalar integrals;
                 std::istringstream sources(Read(j.folder+"/cutoff_sources.tsv"));int d,sign;std::string folder;
                 while(sources>>d>>sign>>folder)if(d==depth){const auto source=e.Materialize(*e.folderIndex.at(folder));const auto v=reader.Resolve(folder,depth);
@@ -68,6 +77,17 @@ int main(int argc,char** argv){try{
                 for(size_t r=0;r<3;++r)for(int k=0;k<16;++k)Close(target.matrix[r][k],expected[r][k],"signed matrix wrong");
                 const auto actual=reader.Resolve(target.folder,depth);Close(actual.area,integrals.area,"signed projected area wrong");Close(actual.ext,integrals.ext,"signed extinction wrong");
             }
+        }
+        if(e.StagedCutoff()){
+            auto staged=e.DirectStage(4096,e.seeds.data(),1,8,e.theta,true,false,8192,6);
+            const auto& j=staged[0];Matrix sum(e.theta.size(),Mueller{});IntegralReader integral;double ext=0;
+            std::istringstream rows(Read(j.folder+"/cutoff_sources.tsv"));int d,sign;std::string folder;std::vector<int> counts,signs;
+            while(rows>>d>>sign>>folder)if(d==8){const Job part=e.Materialize(*e.folderIndex.at(folder));counts.push_back(part.count);signs.push_back(sign);
+                ext+=sign*integral.Resolve(folder,d).ext;
+                for(size_t r=0;r<sum.size();++r)for(int k=0;k<16;++k)sum[r][k]+=sign*part.matrix[r][k];}
+            Require(counts==std::vector<int>({4096,512,512,64,64})&&signs==std::vector<int>({1,1,-1,1,-1}),"staged count/sign recipe changed");
+            for(size_t r=0;r<sum.size();++r)for(int k=0;k<16;++k)Close(j.matrix[r][k],sum[r][k],"staged 4096 matrix wrong");
+            Close(integral.Resolve(j.folder,8).ext,ext,"staged 4096 integral wrong");
         }
         // A fresh pilot seed must measure the SAME signed estimator as the
         // corrected production, while ordinary holdouts stay direct-off.
@@ -83,7 +103,7 @@ int main(int argc,char** argv){try{
                 while(sources>>d>>sign>>folder){Require(d==8,"wrong pilot depth");const auto part=e.Materialize(*e.folderIndex.at(folder));++terms;
                     Require(part.seed==pilotSeeds[i]&&part.offset==j.offset,"pilot pairing lost");
                     for(size_t r=0;r<3;++r)for(int k=0;k<16;++k)expected[r][k]+=sign*part.matrix[r][k];}
-                Require(terms==3,"pilot correction source count");for(size_t r=0;r<3;++r)for(int k=0;k<16;++k)Close(j.matrix[r][k],expected[r][k],"pilot signed assembly wrong");
+                Require(terms==(e.StagedCutoff()?5:3),"pilot correction source count");for(size_t r=0;r<3;++r)for(int k=0;k<16;++k)Close(j.matrix[r][k],expected[r][k],"pilot signed assembly wrong");
             }}
         Require(!e.phiCutoffPilot&&e.ExecutionHash()==productionHash,"pilot scope changed production cache identity");
         // Mixed small direct-off and large corrected production prefixes.
@@ -119,7 +139,7 @@ int main(int argc,char** argv){try{
         // Rebuild a lost prefix view and parent using only its durable native
         // products. The prefix source is hashed even though no worker ran for it.
         std::istringstream prefixSources(Read(folder+"/cutoff_sources.tsv"));int pd,ps;std::string pf,prefixFolder,balancedFolder;
-        while(prefixSources>>pd>>ps>>pf)if(pd==8){if(ps==-1)prefixFolder=pf;else if(e.folderIndex.at(pf)->count==512)balancedFolder=pf;}
+        while(prefixSources>>pd>>ps>>pf)if(pd==8){if(ps==-1&&e.folderIndex.at(pf)->assembled)prefixFolder=pf;else if(e.folderIndex.at(pf)->count==512)balancedFolder=pf;}
         Require(!prefixFolder.empty()&&!balancedFolder.empty(),"missing embedded prefix provenance");
         const auto nativePrefix=balancedFolder+"/result/result_prefix64.dat",prefixOriginal=Read(nativePrefix);
         Atomic(nativePrefix,prefixOriginal+"corruption\n");bool prefixRejected=false;
@@ -136,6 +156,7 @@ int main(int argc,char** argv){try{
         Require(rejected,"changed signed estimator was accepted");Atomic(folder+"/cutoff_sources.tsv",provenance);
         // An interrupted pre-prefix transaction keeps its original five
         // native legs; never silently reinterpret or discard existing work.
+        if(!e.StagedCutoff()){
         e.collecting=true;e.DirectStage(512,e.seeds.data(),1,8,e.theta,true,false,4096,6);e.collecting=false;
         Require(e.pendingJobs.size()==1,"legacy test queued unexpected jobs");
         const auto legacyIdentity=Hash(e.pendingJobs[0].identity+"\ncutoff-child-v1 512 8 0 1");Directory(root+"/jobs/c"+legacyIdentity);
@@ -143,7 +164,7 @@ int main(int argc,char** argv){try{
         Require(!Exists(legacy.folder+"/cutoff_prefix_recipe.txt"),"interrupted legacy correction changed recipes");
         std::istringstream legacySources(Read(legacy.folder+"/cutoff_sources.tsv"));int ld,ls;std::string lf;int independentBalanced=0;
         while(legacySources>>ld>>ls>>lf){const Job part=e.Materialize(*e.folderIndex.at(lf));if(!part.assembled&&part.pairedDepth==0)++independentBalanced;}
-        Require(independentBalanced==4,"legacy independent-depth children were not preserved");e.pendingJobs.clear();e.pendingCommands.clear();
+        Require(independentBalanced==4,"legacy independent-depth children were not preserved");e.pendingJobs.clear();e.pendingCommands.clear();}
 
 
     }

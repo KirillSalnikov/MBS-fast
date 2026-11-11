@@ -6,6 +6,8 @@ mkdir -p "$task_output"
 task_output="$(cd "$task_output" && pwd)"
 "${CXX:-/usr/bin/g++}" -std=c++11 -O2 "$task_root/tests/test_checked_file_cache.cpp" -o "$task_output/checked_file_cache"
 "$task_output/checked_file_cache"
+"${CXX:-/usr/bin/g++}" -std=c++11 -O2 -pthread "$task_root/tests/test_checked_file_large_text.cpp" -o "$task_output/checked_file_large_text"
+"$task_output/checked_file_large_text"
 bash "$task_root/tests/run_fullauto_integrals_tests.sh" "$task_output/integrals"
 mapfile -t task_objects < <(rg --files --no-ignore "$task_root/cpu/build/obj" -g '*.o' | rg -v '/(main|FullAuto)\.o$')
 "${MPI_CXX:-/usr/bin/mpicxx}" -std=c++11 -O2 -fopenmp -DUSE_MPI \

@@ -1,5 +1,11 @@
 // Published diagnostics only propose an allocation. They never certify a
 // matrix: the ordinary source validation and all accuracy gates run again.
+bool PublishedAccuracyPoliciesCurrent(const Engine& e,const std::string& text){
+    if(!UseLinearPOInterpolation(e.go,e.coherent))return true;
+    const bool interpolation=text.find("\"interpolation_policy\":"+Quoted(POOutputInterpolationPolicy(e.go,e.coherent)))!=std::string::npos;
+    const bool angular=!e.local||text.find("\"angular_sampling_policy\":"+Quoted(AngularSamplingPolicy()))!=std::string::npos;
+    return interpolation&&angular;
+}
 void RetainScheduledPrefixes(Engine& e,AdditionalWork& work,const std::vector<int>& depths,
         const Budgets& wanted,const std::vector<size_t>& ids,Budgets& floor){
     const auto cached=CachedCompletedBudgets(e,depths,floor,ids);
@@ -22,7 +28,7 @@ bool PublishedRoundBudget(Engine& e,const AdaptiveState& state,Budgets& counts,
     folder=text.substr(begin,end-begin);
     // Preserve scheduling hints when a verified checkpoint has moved behind
     // a path alias, but still reject directories outside this result.
-    if(!FullAutoRoundPath::Resolve(e.root,folder,folder))return false;
+    if(!ResolveSavedRound(e.root,folder,folder))return false;
     if(!Exists(folder+"/parameters_accuracy.csv")||!Exists(folder+"/theta_support.csv"))return false;
     if(ReadGrid(folder+"/theta_support.csv")!=Angles(e.theta,state.knots))return false;
     const auto ids=AdaptiveGuards(state.knots,e.theta.size());counts=state.counts;
@@ -46,7 +52,7 @@ bool PublishedRoundBudget(Engine& e,const AdaptiveState& state,Budgets& counts,
         if(!(values>>phi)||phi!=e.PhiForTheta(id)||(values>>extra))return false;
         ++row;
     }
-    passed=text.find("\"numerical_round_passed\":true")!=std::string::npos;
+    passed=PublishedAccuracyPoliciesCurrent(e,text)&&text.find("\"numerical_round_passed\":true")!=std::string::npos;
     return row==ids.size();
 }
 void RevisitPublishedPass(Engine& e,AdaptiveState& state){
@@ -71,7 +77,7 @@ bool PublishedSchedulingBudget(Engine& e,const AdaptiveState& state,Budgets& cou
     const auto begin=at+key.size(),end=text.find('"',begin);
     if(end==std::string::npos)return false;
     folder=text.substr(begin,end-begin);
-    if(!FullAutoRoundPath::Resolve(e.root,folder,folder))return false;
+    if(!ResolveSavedRound(e.root,folder,folder))return false;
     if(!Exists(folder+"/parameters_accuracy.csv"))return false;
     struct Row {std::vector<int> counts;Mueller interval{},ratio{};int phi=0;};std::map<size_t,Row> rows;
     std::istringstream file(Read(folder+"/parameters_accuracy.csv"));std::string line;
@@ -102,9 +108,10 @@ bool PublishedSchedulingBudget(Engine& e,const AdaptiveState& state,Budgets& cou
         const int coldBase=e.args.IsCatched("fullauto_initial")||e.config.adaptive.loadedFromFile?e.initial:std::min(512,e.initial);
         for(size_t l=0;l<counts.size();++l)counts[l][id]=std::min(state.counts[l][id],same?q->second.counts[l]:(l?e.minimum:coldBase));
     }
-    passed=text.find("\"numerical_round_passed\":true")!=std::string::npos;residualPending=false;
+    const bool currentPolicy=PublishedAccuracyPoliciesCurrent(e,text);
+    passed=currentPolicy&&text.find("\"numerical_round_passed\":true")!=std::string::npos;residualPending=false;
     const std::string residualKey="\"interpolation_residual95\":";const auto rp=text.find(residualKey);
-    if(rp!=std::string::npos){std::istringstream value(text.substr(rp+residualKey.size()));double error;
+    if(currentPolicy&&rp!=std::string::npos){std::istringstream value(text.substr(rp+residualKey.size()));double error;
         if(value>>error)residualPending=std::isfinite(error)&&error>e.interpolation;}
     e.Log("resume_scheduling_snapshot","{\"new_or_changed_phi_rows\":"+Number(newRows)+",\"acceptance_from_diagnostics\":false,\"changed_support_allowed_for_scheduling_only\":true}");
     return true;

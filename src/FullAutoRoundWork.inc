@@ -77,11 +77,101 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
         if(!next.profiled||!rest.profiled||(splitSeconds>(1+overheadLimit)*fullSeconds&&!latencyPriority)){preservedSharing=true;break;}
         selected=candidate;active=nextActive;forecast=next;
     }
+    Budgets packingStep=step;
+    bool boundedPrefixStep=false;size_t prefixStepForecasts=0,sharingForecasts=0,sharingCohorts=0;
+    std::ostringstream sharingDecisions;sharingDecisions<<'[';
+    // A whole output/stencil cohort can prescribe 4x (or more) samples. Merely
+    // reducing the number of cohorts leaves even a single angle above the
+    // latency budget. First shorten its growth to one complete dyadic prefix
+    // step, then spend any remaining budget on other complete ranked cohorts.
+    // All eight replicas and every accuracy test are unchanged. Do not touch
+    // the unknown-cost fallback or split a 2x step into non-dyadic samples.
+    if(e.local&&original.profiled&&forecast.profiled&&forecast.seconds>budget&&!rank.empty()){
+        Budgets shorter=step;
+        for(size_t id:ids)for(size_t l=0;l<current.size();++l)
+            shorter[l][id]=std::min(step[l][id],Doubled(e,current[l][id]));
+        if(shorter!=step){
+            auto prefix=[&](size_t count){Budgets candidate=current;
+                for(size_t k=0;k<count;++k)for(size_t id:rank[k].second)
+                    for(size_t l=0;l<current.size();++l)candidate[l][id]=shorter[l][id];
+                return candidate;};
+            auto candidate=prefix(active);auto next=estimate(candidate);++prefixStepForecasts;
+            if(next.profiled&&next.seconds<forecast.seconds){
+                selected=candidate;forecast=next;boundedPrefixStep=true;
+                // Bounded binary search only changes scheduling. Recheck each
+                // proposed width with the real cache/corrected-native forecast;
+                // never infer GPU seconds from angle-orientation counts.
+                size_t low=active,high=rank.size()+1;
+                while(forecast.seconds<=budget&&low+1<high&&prefixStepForecasts<8){
+                    const size_t width=low+(high-low)/2;
+                    candidate=prefix(width);next=estimate(candidate);++prefixStepForecasts;
+                    if(next.profiled&&next.seconds<=budget){
+                        low=width;selected=candidate;forecast=next;
+                    }else high=width;
+                }
+                active=low;
+                packingStep=shorter;
+            }
+        }
+    }
+    // Fill spare capacity for ordinary 2x steps too, not only shortened 4x steps.
+    if(e.local&&original.profiled&&forecast.profiled&&forecast.seconds<=budget&&!rank.empty()){
+        // A costly next-ranked cohort must not hide a compatible
+        // later one. Prefer replacing singleton endpoint padding by
+        // useful rows, then sharing already scheduled Sobol offsets.
+        // The cheap event sweep ranks candidates only; the exact
+        // native/cached-work forecast must still admit every cohort.
+        using Events=std::map<int,std::pair<int,int>>;
+        using SamplingGroup=std::pair<size_t,int>; // level and phi
+        std::set<size_t> tried;
+        for(;forecast.seconds<=budget&&sharingForecasts<8;){
+            std::map<SamplingGroup,Events> baseEvents;
+            for(size_t l=0;l<current.size();++l)for(size_t id:ids)if(selected[l][id]>current[l][id]){
+                auto& events=baseEvents[{l,e.PhiForTheta(id)}];
+                ++events[current[l][id]].first;--events[selected[l][id]].first;}
+            size_t best=rank.size();double bestCost=0,bestShared=0,bestTotal=0,bestFraction=0;
+            for(size_t k=0;k<rank.size();++k){if(tried.count(k))continue;
+                std::map<SamplingGroup,Events> candidateEvents;
+                for(size_t id:rank[k].second)for(size_t l=0;l<current.size();++l){
+                    const int begin=selected[l][id],end=packingStep[l][id];if(end<=begin)continue;
+                    const SamplingGroup key{l,e.PhiForTheta(id)};auto at=candidateEvents.find(key);
+                    if(at==candidateEvents.end())at=candidateEvents.emplace(key,baseEvents[key]).first;
+                    ++at->second[begin].second;--at->second[end].second;
+                }
+                double total=0,shared=0,extra=0;
+                for(const auto& group:candidateEvents){int present=0,added=0,last=0;
+                    for(const auto& point:group.second){const double span=double(point.first)-last;
+                        if(added){total+=span*added;if(present)shared+=span*added;
+                            extra+=span*(std::max(2,present+added)-(present?std::max(2,present):0));}
+                        present+=point.second.first;added+=point.second.second;last=point.first;}
+                }
+                if(!total||!shared)continue;
+                const double cost=extra/total,fraction=shared/total;
+                // Iteration is in decreasing error order: equal
+                // sharing retains the original statistical priority.
+                if(best==rank.size()||cost<bestCost||(cost==bestCost&&fraction>bestFraction)){
+                    best=k;bestCost=cost;bestShared=shared;bestTotal=total;bestFraction=fraction;}
+            }
+            if(best==rank.size())break;tried.insert(best);auto candidate=selected;
+            for(size_t id:rank[best].second)for(size_t l=0;l<current.size();++l)
+                candidate[l][id]=std::max(candidate[l][id],packingStep[l][id]);
+            const auto next=estimate(candidate);const bool admit=next.profiled&&next.seconds<=budget;
+            if(sharingForecasts++)sharingDecisions<<',';
+            sharingDecisions<<"{\"cohort_rank\":"<<best<<",\"error_priority\":"<<Number(rank[best].first)
+                <<",\"shared_orientation_fraction\":"<<Number(bestFraction)
+                <<",\"shared_orientations\":"<<Number(bestShared)<<",\"additional_orientations\":"<<Number(bestTotal)
+                <<",\"added_padded_row_work_ratio\":"<<Number(bestCost)
+                <<",\"forecast_worker_seconds\":"<<(next.profiled?Number(next.seconds):"null")
+                <<",\"accepted\":"<<(admit?"true":"false")<<'}';
+            if(admit){selected=candidate;forecast=next;++active;++sharingCohorts;}
+        }
+    }
+    sharingDecisions<<']';
     const bool accepted=selected!=current&&(original.profiled
         ?forecast.profiled&&forecast.seconds<original.seconds:selected!=wanted);
     if(accepted)proposed=selected;
     size_t growing=0;for(size_t id:ids){bool grows=false;for(size_t l=0;l<current.size();++l)grows=grows||proposed[l][id]>current[l][id];growing+=grows;}
-    e.Record(e.root+"/round_work_limit.json","{\"policy\":\"complete eight-seed prefix and output/residual cohort scheduling v5\",\"applied\":"+std::string(accepted?"true":"false")
+    e.Record(e.root+"/round_work_limit.json","{\"policy\":\"complete eight-seed prefix and output/residual cohort scheduling v7\",\"applied\":"+std::string(accepted?"true":"false")
         +",\"unknown_cost_fallback\":"+(original.profiled?"false":"true")
         +",\"original_forecast_profiled\":"+(original.profiled?"true":"false")
         +",\"selected_forecast_profiled\":"+((accepted?forecast.profiled:original.profiled)?"true":"false")
@@ -91,7 +181,12 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
         +",\"forecast_includes_common_prefix_interpolation\":"+(knots.empty()?"false":"true")+",\"physical_gpus\":"+Number(RoundPhysicalGpus(e))
         +",\"original_worker_seconds\":"+(original.profiled?Number(original.seconds):"null")+",\"selected_worker_seconds\":"+((accepted?forecast.profiled:original.profiled)?Number(accepted?forecast.seconds:original.seconds):"null")
         +",\"advisory_worker_seconds\":"+Number(budget)+",\"selected_growing_rows\":"+Number(growing)+",\"selected_cohorts\":"+Number(active)
-        +",\"shared_trace_efficiency_preserved\":"+(preservedSharing?"true":"false")
+        +",\"bounded_prefix_step_applied\":"+(boundedPrefixStep?"true":"false")+",\"prefix_step_forecasts\":"+Number(prefixStepForecasts)
+        +",\"sharing_backfill_forecasts\":"+Number(sharingForecasts)+",\"sharing_backfill_cohorts\":"+Number(sharingCohorts)
+        +",\"sharing_backfill_admissions\":"+sharingDecisions.str()
+        +",\"shared_trace_efficiency_preserved\":"+(boundedPrefixStep?"null":(preservedSharing?"true":"false"))
+        +",\"partition_overhead_scope\":"+Quoted(boundedPrefixStep?"before_prefix_step":"selected_partition")
+        +",\"final_partition_overhead_fraction\":"+(boundedPrefixStep?"null":Number(partitionOverhead))
         +",\"partition_cost_model\":\"selected plus complementary cached-work forecast\",\"partition_overhead_fraction\":"+Number(partitionOverhead)
         +",\"allowed_partition_overhead_fraction\":"+Number(overheadLimit)
         +",\"within_forecast_budget\":"+((accepted?forecast.profiled:original.profiled)&&(accepted?forecast.seconds:original.seconds)<=budget?"true":"false")

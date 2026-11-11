@@ -35,7 +35,13 @@ void BoundedWork(const std::string& root){
     proposed=original;const std::vector<size_t> support={0,1,2,3,4};
     BoundRoundWork(e,work,current,proposed,{2},ids,stats,{}, {},nullptr,{{.8,support}});
     for(size_t id:support)Require(proposed[0][id]>current[0][id],"worst output stencil starved or split by round limiter");
-    Require(proposed[0][31]==current[0][31],"direct row displaced the larger output error");
+    if(proposed[0][31]>current[0][31]){
+        // A bounded 2x step can leave room for lower-priority rows as well;
+        // they may join only after the whole worst output stencil advances.
+        const auto forecast=work.Forecast(BudgetRequests(e,{2},proposed,ids));
+        Require(forecast.profiled&&forecast.seconds<=1800&&proposed[0][31]<=Doubled(e,current[0][31]),
+            "direct-row backfill exceeded the measured round budget");
+    }
 }
 void SharedGpuResources(const std::string& root){
     ArgPP args;RunConfig config;config.useGpu=true;Engine e(args,config);

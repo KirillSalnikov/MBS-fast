@@ -4,6 +4,9 @@
 #include <functional>
 #include <exception>
 #include "FullAuto.h"
+#include "FullAutoInterpolationPolicy.h"
+#include "FullAutoAngularPilotCost.h"
+#include "FullAutoAngularCohort.h"
 #include "FullAutoTraceEvidence.h"
 #include "ArgPP.h"
 #include "CliOptions.h"
@@ -12,14 +15,20 @@
 #include "cuda/GpuSupport.h"
 #include "RuntimeInfo.h"
 #include "WorkerProtocol.h"
+#include "WorkerMemoryStage.h"
 #include "NativeWorkerCapabilities.h"
 #include "FullAutoAuditPlan.h"
 #include "FullAutoPreparation.h"
 #include "FullAutoScheduling.h"
+#include "FullAutoDepthSelection.h"
+#include "FullAutoThetaPilotPlan.h"
 #include "BoundedCache.h"
 #include "CheckedFileCache.h"
 #include "CheckpointTableReader.h"
 #include "ValidatedGraphCache.h"
+#include "FullAutoValidationRootPlan.h"
+#include "FullAutoMemoryStore.h"
+#include "FullAutoStorageBudget.h"
 #include "HostMemoryReserve.h"
 #include "IntegralCharacteristics.h"
 #include <poll.h>
@@ -34,6 +43,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -78,12 +88,30 @@ std::string Hash(const std::string& s) {
     uint64_t h=14695981039346656037ULL;for(unsigned char c:s){h^=c;h*=1099511628211ULL;}
     std::ostringstream o;o<<std::hex<<h;return o.str();
 }
-std::string Read(const std::string& p) { return CheckedFileCache::Read(p); }
+bool MemoryPath(const std::string& p) {return FullAutoMemoryStore::Active()&&FullAutoMemoryStore::Active()->Owns(p);}
+std::string Read(const std::string& p) { return MemoryPath(p)?FullAutoMemoryStore::Active()->Read(p):CheckedFileCache::Read(p); }
 CheckedFileCache& ValidationFiles(){static thread_local CheckedFileCache files;return files;}
-std::string FileHash(const std::string& path) { return ValidationFiles().Hash(path); }
-std::string ReadValidationText(const std::string& path) { return ValidationFiles().Text(path); }
-std::string ReadVerifiedText(const std::string& path,const std::string& expected) { return ValidationFiles().VerifiedText(path,expected); }
-bool Exists(const std::string& p) { struct stat s;return stat(p.c_str(),&s)==0||PackedJobStore::Exists(p); }
+std::string FileHash(const std::string& path) { if(MemoryPath(path)){std::ostringstream out;out<<std::hex<<FullAutoMemoryStore::Active()->Digest(path);return out.str();}return ValidationFiles().Hash(path); }
+std::string ReadValidationText(const std::string& path) { return MemoryPath(path)?Read(path):ValidationFiles().Text(path); }
+std::string ReadVerifiedText(const std::string& path,const std::string& expected) { if(MemoryPath(path)){Require(FileHash(path)==expected,"memory source digest changed");return Read(path);}return ValidationFiles().VerifiedText(path,expected); }
+bool Exists(const std::string& p) { if(MemoryPath(p))return FullAutoMemoryStore::Active()->Exists(p);struct stat s;return stat(p.c_str(),&s)==0||PackedJobStore::Exists(p); }
+void RequireMutableMemoryPath(const std::string& path){
+    if(!MemoryPath(path))return;const auto canonical=FullAutoMemoryStore::Canonical(path);
+    const auto root=FullAutoMemoryStore::Active()->Root();const auto prefix=root+"/jobs/";
+    Require(canonical!=root&&canonical!=root+"/jobs","cannot mutate the memory job namespace");
+    if(canonical.compare(0,prefix.size(),prefix)!=0)return;
+    const auto end=canonical.find('/',prefix.size());const auto folder=end==std::string::npos?canonical:canonical.substr(0,end);
+    Require(!Exists(folder+"/complete.txt"),"completed in-memory job is immutable: "+folder);
+}
+int RenamePath(const std::string& from,const std::string& to){if(MemoryPath(from)||MemoryPath(to)){Require(MemoryPath(from)&&MemoryPath(to),"cannot move across memory storage boundary");RequireMutableMemoryPath(from);RequireMutableMemoryPath(to);FullAutoMemoryStore::Active()->Rename(from,to);return 0;}return rename(from.c_str(),to.c_str());}
+int RemovePath(const std::string& path){if(MemoryPath(path)){if(!Exists(path)){errno=ENOENT;return -1;}RequireMutableMemoryPath(path);FullAutoMemoryStore::Active()->Remove(path);return 0;}return std::remove(path.c_str());}
+bool ResolveSavedRound(const std::string& root,const std::string& candidate,std::string& resolved){
+    if(!MemoryPath(root))return FullAutoRoundPath::Resolve(root,candidate,resolved);
+    try{const auto path=FullAutoMemoryStore::Canonical(candidate),prefix=root+"/round_snapshots/";
+        if(path.compare(0,prefix.size(),prefix)!=0||!FullAutoMemoryStore::Active()->IsDirectory(path))return false;
+        resolved=path;return true;
+    }catch(const std::exception&){return false;}
+}
 // A deployment may certify another exact binary pair after numerical tests.
 // The receipt is an installation artifact, not inferred from a version label.
 bool VerifiedCompatibleExecutable(const std::string& executable,const std::string& origin,const std::string& current,bool requireDoubleSingle=false){
@@ -128,6 +156,7 @@ std::string ExecutableVersion(const std::string& executable){
     Require(valid&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"cannot verify compatible executable "+executable);return text;
 }
 void Directory(const std::string& p) {
+    if(MemoryPath(p)){FullAutoMemoryStore::Active()->Directory(p);return;}
     if(p.empty() || p=="/" || Exists(p))return;
     size_t slash=p.find_last_of('/');if(slash!=std::string::npos)Directory(p.substr(0,slash));
     Require(mkdir(p.c_str(),0755)==0 || errno==EEXIST,"cannot create "+p);
@@ -155,6 +184,7 @@ struct AtomicFileBatch {
     }
     void AddedDurableLink(const std::string& path){Added(path);durableLinks.insert(path);}
     static void FlushPath(const std::string& path,bool directory){
+        if(MemoryPath(path))return;
         const int fd=open(path.c_str(),O_RDONLY|(directory?O_DIRECTORY:0));
         Require(fd>=0,"cannot open checkpoint for flush "+path);int rc;
         do{rc=fsync(fd);}while(rc<0&&errno==EINTR);close(fd);
@@ -171,6 +201,12 @@ struct AtomicFileBatch {
     }
 };
 void Atomic(const std::string& p,const std::string& text) {
+    if(MemoryPath(p)){
+        auto& store=*FullAutoMemoryStore::Active();
+        if(!store.Exists(p)||FileHash(p)!=Hash(text)||store.Read(p)!=text){RequireMutableMemoryPath(p);store.Write(p,text);}
+        if(activeAtomicFileBatch&&activeAtomicFileBatch->Accepts(p))activeAtomicFileBatch->Added(p);
+        return;
+    }
     if(Exists(p)&&Read(p)==text){
         // A prior interrupted transaction may have left matching but not yet
         // flushed files. Include them in this transaction's durability fence.
@@ -439,7 +475,8 @@ struct Job {
     std::string folder,data,summary,identity,weightHash,executionHash,indexMarkerHash;
     Matrix matrix;std::vector<double> angles,inputAngles;std::vector<std::array<double,5>> controls;
     int preparationThreads=0,dispatchChunk=0;double assemblySeconds=0;
-    double seconds=0,controlRefinement=0,controlSetup=0,traceSeconds=0,diffractionSeconds=0,processingSeconds=-1,preparedWaitSeconds=-1,producerWaitSeconds=-1;pid_t pid=-1;
+    double seconds=0,controlRefinement=0,controlSetup=0,traceSeconds=0,diffractionSeconds=0,processingSeconds=-1,preparedWaitSeconds=-1,producerWaitSeconds=-1;
+    double gpuDiffractionSeconds=-1,analyticControlSeconds=-1;uint64_t pipelineChunks=0;pid_t pid=-1;
     int count=0,depth=0,phi=0,block=0;unsigned seed=0;
     bool pipeline=false,mirrored=false,paired=false,assembled=false,hasControls=false;std::string warp;
     // Phase sums overlap in the producer/consumer pipeline. Only the measured
@@ -452,6 +489,104 @@ struct Job {
             ?std::max(0.,std::min(1.,(traceSeconds+diffractionSeconds-processingSeconds)/smaller)):0.;
     }
 };
+// Kernel timing is an execution experiment, not an orientation estimator.
+// Its requests must be fresh, bounded, and checked on identical orientations.
+namespace KernelCalibration {
+std::string Key(const Kernel& k){return Number(k.pipeline)+" "+Number(k.block)+" "+k.warp;}
+std::vector<Kernel> Candidates(const Kernel& baseline,bool pipeline,bool block,bool warp){
+    std::vector<Kernel> proposals(5);proposals[1].pipeline=proposals[2].pipeline=proposals[3].pipeline=proposals[4].pipeline=true;
+    proposals[2].block=128;proposals[3].block=256;proposals[4].warp="thread";
+    std::vector<Kernel> result{baseline};std::set<std::string> seen{Key(baseline)};
+    for(auto k:proposals){if(pipeline)k.pipeline=baseline.pipeline;if(block)k.block=baseline.block;if(warp)k.warp=baseline.warp;
+        if(seen.insert(Key(k)).second)result.push_back(k);}
+    return result;
+}
+double Error(const Job& candidate,const Job& reference,bool ratios){
+    if(candidate.matrix.size()!=reference.matrix.size()||reference.matrix.empty())return 1e100;
+    double error=0;
+    for(size_t r=0;r<reference.matrix.size();++r){
+        const auto& a=candidate.matrix[r];const auto& b=reference.matrix[r];
+        const double scale=reference.hasControls&&r<reference.controls.size()?reference.controls[r][0]:b[0];
+        if(!(scale>0&&std::isfinite(scale)))return 1e100;
+        if(ratios&&!(a[0]>0&&b[0]>0))return 1e100;
+        for(int j=0;j<16;++j){if(!std::isfinite(a[j])||!std::isfinite(b[j]))return 1e100;
+            error=std::max(error,std::fabs(a[j]-b[j])/scale);
+            if(ratios&&j)error=std::max(error,std::fabs(a[j]/a[0]-b[j]/b[0]));}
+    }return error;
+}
+struct Trial {
+    Kernel kernel;std::vector<double> seconds;double maximumError=0;bool accepted=true;
+    double Score()const{return seconds.empty()?1e100:std::accumulate(seconds.begin(),seconds.end(),0.)/seconds.size();}
+};
+struct Result {
+    Kernel selected;std::vector<Trial> trials;size_t requests=0;double elapsed=0,budget=5,forecastProduction=0,previousSearchEstimate=0;
+    std::string reason="default fallback";
+};
+using Run=std::function<Job(const Kernel&,int,bool)>;
+using Observe=std::function<void(const Kernel&,int,bool,const Job&,double)>;
+Result Select(const Kernel& baseline,const std::vector<Kernel>& candidates,int count,int warmCount,
+        int initial,double tolerance,bool ratios,bool warmCache,const Run& run,const Observe& observe,const std::function<double()>& now){
+    Result result;result.selected=baseline;const double started=now();
+    if(candidates.size()<2){result.reason="all kernel choices explicitly fixed";return result;}
+    // The first small request is the only unforecast bootstrap. A request
+    // already running cannot be preempted; this is a soft launch budget.
+    const auto warm=run(baseline,warmCount,true);++result.requests;
+    observe(baseline,warmCount,true,warm,0);result.elapsed=now()-started;
+    const double warmWall=std::max(result.elapsed,std::max(1e-6,warm.seconds));
+    const double warmProcessing=warm.processingSeconds>0?warm.processingSeconds:warmWall;
+    // CUDA context creation is paid by the bootstrap, not for every future
+    // orientation. Use the measured processing slope only for a forecast;
+    // selection itself always uses the complete, fresh request wall time.
+    double forecast=warmProcessing*double(count)/warmCount+std::min(.01,std::max(0.,warmWall-warmProcessing));
+    result.forecastProduction=warmProcessing*8.*std::max(1,initial)/warmCount;
+    result.budget=std::min(5.,.1*result.forecastProduction);
+    auto fits=[&](double cost){return std::isfinite(cost)&&cost>=0&&now()-started+cost<=result.budget;};
+    if(!fits(forecast)){result.reason="baseline forecast exceeds remaining soft budget";result.elapsed=now()-started;return result;}
+    const auto reference=run(baseline,count,false);++result.requests;observe(baseline,count,false,reference,Error(reference,reference,ratios));
+    forecast=std::max(1e-6,reference.seconds);
+    result.forecastProduction=forecast*8.*std::max(1,initial)/count;
+    result.budget=std::min(5.,.1*result.forecastProduction);
+    result.previousSearchEstimate=forecast*candidates.size();
+    Trial first;first.kernel=baseline;first.seconds.push_back(reference.seconds);first.maximumError=Error(reference,reference,ratios);
+    first.accepted=std::isfinite(reference.seconds)&&reference.seconds>0&&first.maximumError<=tolerance;result.trials.push_back(first);
+    // Warm each new layout, then time its full request. Neither setup nor
+    // output/IPC costs are subtracted from the measured request wall time.
+    for(size_t i=1;i<candidates.size();++i){
+        const double warmForecast=forecast*double(warmCount)/count;
+        if(!fits(warmForecast+forecast))break;
+        const auto pre=run(candidates[i],warmCount,true);++result.requests;observe(candidates[i],warmCount,true,pre,0);
+        const double preProcessing=pre.processingSeconds>0?pre.processingSeconds:pre.seconds;
+        const double nextForecast=preProcessing*double(count)/warmCount+std::min(.01,std::max(0.,pre.seconds-preProcessing));
+        if(!fits(std::max(forecast,nextForecast)))break;
+        const auto job=run(candidates[i],count,false);++result.requests;const double error=Error(job,reference,ratios);
+        observe(candidates[i],count,false,job,error);Trial trial;trial.kernel=candidates[i];trial.maximumError=error;
+        trial.accepted=std::isfinite(job.seconds)&&job.seconds>0&&error<=tolerance;trial.seconds.push_back(job.seconds);result.trials.push_back(trial);
+        if(std::isfinite(job.seconds)&&job.seconds>0)forecast=std::max(forecast,job.seconds);
+    }
+    std::vector<size_t> order;for(size_t i=0;i<result.trials.size();++i)if(result.trials[i].accepted)order.push_back(i);
+    std::stable_sort(order.begin(),order.end(),[&](size_t a,size_t b){return result.trials[a].Score()<result.trials[b].Score();});
+    if(order.size()<2){result.reason="fewer than two numerically valid measured layouts";result.elapsed=now()-started;return result;}
+    order.resize(2);
+    // Repeat the two fastest layouts in reverse order. Both repeats must
+    // finish before either may replace the default; partial timing never wins.
+    const double repeatForecast=(warmCache?2.:1.)*(result.trials[order[0]].Score()+result.trials[order[1]].Score());
+    if(!fits(repeatForecast)){result.reason="top-two repeat exceeds remaining soft budget";result.elapsed=now()-started;return result;}
+    size_t repeated=0;
+    for(auto at=order.rbegin();at!=order.rend();++at){auto& trial=result.trials[*at];if(!fits(trial.Score()))break;
+        if(warmCache){if(!fits(2*trial.Score()))break;const auto pre=run(trial.kernel,count,true);++result.requests;observe(trial.kernel,count,true,pre,0);
+            if(!fits(trial.Score()))break;}
+        const auto job=run(trial.kernel,count,false);++result.requests;const double error=Error(job,reference,ratios);
+        observe(trial.kernel,count,false,job,error);trial.maximumError=std::max(trial.maximumError,error);
+        trial.accepted=trial.accepted&&std::isfinite(job.seconds)&&job.seconds>0&&error<=tolerance;
+        trial.seconds.push_back(job.seconds);++repeated;}
+    if(repeated==2){
+        size_t winner=size_t(-1);for(size_t i:order)if(result.trials[i].accepted&&(winner==size_t(-1)||result.trials[i].Score()<result.trials[winner].Score()))winner=i;
+        if(winner!=size_t(-1)&&result.trials[winner].Score()<result.trials[0].Score()*.97){result.selected=result.trials[winner].kernel;result.reason="validated top-two repeated request wall; at least 3% saving";}
+        else result.reason="repeat did not establish a faster valid layout";
+    }else result.reason="soft budget interrupted top-two repeat; default retained";
+    result.elapsed=now()-started;return result;
+}
+}
 void ReadPhaseTimings(Job& j,const std::string& text){
     std::istringstream profile(text);std::string line;std::getline(profile,line);
     while(std::getline(profile,line)){
@@ -460,6 +595,9 @@ void ReadPhaseTimings(Job& j,const std::string& text){
         row>>clock;
         if(phase=="trace_prepare")j.traceSeconds=seconds;
         if(phase=="diffraction_and_controls")j.diffractionSeconds=seconds;
+        if(phase=="gpu_diffraction_including_packing")j.gpuDiffractionSeconds=seconds;
+        if(phase=="analytic_controls")j.analyticControlSeconds=seconds;
+        if(phase=="pipeline_chunks")j.pipelineChunks=uint64_t(seconds);
         if(phase=="processing"&&clock=="wall")j.processingSeconds=seconds;
         if(phase=="pipeline_wait_for_prepared")j.preparedWaitSeconds=seconds;
         if(phase=="pipeline_producer_wait")j.producerWaitSeconds=seconds;
@@ -480,11 +618,18 @@ struct ValidationBatch {
         :previous(activeValidationBatch),scope(name),fallback(shared){compounds.SetLimit(limit);if(isolated||!previous)activeValidationBatch=this;}
     ~ValidationBatch(){if(activeValidationBatch==this)activeValidationBatch=previous;}
 };
-void ValidateStoredJob(const std::string& folder,std::set<std::string>& visited){
-    if(!visited.insert(folder).second)return;
-    const auto marker=ReadValidationText(folder+"/complete.txt");
+void ValidateStoredJob(const std::string& folder,std::set<std::string>& visited,const std::string& expectedMarkerHash=""){
+    if(!visited.insert(folder).second){
+        if(!expectedMarkerHash.empty())Require(FileHash(folder+"/complete.txt")==expectedMarkerHash,"angular cache source metadata changed");
+        return;
+    }
+    // Authenticate and read the same marker bytes once on a first visit.
+    // Duplicate edges and memo hits still verify each direct source marker.
+    const auto marker=expectedMarkerHash.empty()?ReadValidationText(folder+"/complete.txt")
+        :ReadVerifiedText(folder+"/complete.txt",expectedMarkerHash);
     auto* batch=activeValidationBatch;std::shared_ptr<const std::string> prior;
-    if(batch){++batch->checked;prior=batch->compounds.Get(folder);if(!prior&&batch->fallback)prior=batch->fallback->compounds.Peek(folder);}
+    if(batch){++batch->checked;prior=batch->compounds.Get(folder);
+        for(const auto* ancestor=batch->fallback;!prior&&ancestor;ancestor=ancestor->fallback)prior=ancestor->compounds.Peek(folder);}
     // Compact markers contain the whole sampling grid and diagnostics. Keep
     // their existing integrity digest in the graph memo, not another copy of
     // that grid for every compound node. Direct payloads and source markers
@@ -498,15 +643,32 @@ void ValidateStoredJob(const std::string& folder,std::set<std::string>& visited)
         const auto manifest=ReadVerifiedText(folder+"/integral_outputs.fnv",integralHash);
         std::istringstream rows(manifest);std::string path,hash;while(rows>>path>>hash)Require(FileHash(path)==hash,"worker integral output changed");
     }
-    if(Exists(folder+"/paired_depth.tsv")){const std::string manifest=ReadValidationText(folder+"/paired_depth.tsv");if(!Exists(folder+"/cutoff_sources.tsv"))Require(Hash(manifest)==sourceHash,"paired depth manifest changed");
+    const bool hasPaired=Exists(folder+"/paired_depth.tsv"),hasAngular=Exists(folder+"/angular_sources.tsv");
+    const bool hasCutoff=hasPaired&&Exists(folder+"/cutoff_sources.tsv");
+    // The fifth field authenticates native paired outputs or derived sources.
+    // Balanced paired jobs use the angular digest, not the paired manifest.
+    // Missing manifests must not silently turn a derived job into a leaf.
+    Require(sourceHash.empty()||sourceHash=="none"||hasAngular||(hasPaired&&!hasCutoff),"missing cached source manifest");
+    if(hasPaired){const std::string manifest=ReadValidationText(folder+"/paired_depth.tsv");if(!hasCutoff)Require(Hash(manifest)==sourceHash,"paired depth manifest changed");
         else Require(!integralHash.empty(),"missing corrected depth integrity manifest");
         std::istringstream rows(manifest);std::string path,hash;while(rows>>path>>hash)Require(FileHash(path)==hash,"paired depth matrix changed");}
-    if(Exists(folder+"/angular_sources.tsv")){
+    // In-memory results are authoritative values, produced under this
+    // controller's lock. Restoring a memory snapshot authenticates EVERY
+    // record before exposing it. A derived value therefore does not need to
+    // reread its complete historical source graph on every cache miss.
+    // Its own payload/receipt checks remain above; spill reads verify bytes.
+    if(MemoryPath(folder)){
+        if(hasAngular)Require(FileHash(folder+"/angular_sources.tsv")==sourceHash,"memory source manifest changed");
+        return;
+    }
+    if(hasAngular){
         const std::string sources=ReadVerifiedText(folder+"/angular_sources.tsv",sourceHash);
         std::istringstream rows(sources);std::string row;while(std::getline(rows,row)){
             size_t tab=row.find('\t');Require(tab!=std::string::npos,"invalid angular cache source");
-            const std::string source=row.substr(0,tab);Require(FileHash(source+"/complete.txt")==row.substr(tab+1),"angular cache source metadata changed");
-            if(!verifiedGraph)ValidateStoredJob(source,visited);
+            const std::string source=row.substr(0,tab),expected=row.substr(tab+1);
+            Require(!expected.empty(),"missing angular cache source hash");
+            if(verifiedGraph)Require(FileHash(source+"/complete.txt")==expected,"angular cache source metadata changed");
+            else ValidateStoredJob(source,visited,expected);
         }
         if(batch){if(verifiedGraph)++batch->reused;
             batch->compounds.Put(folder,std::make_shared<std::string>(markerHash),sizeof(std::string)+markerHash.capacity());}
@@ -516,7 +678,7 @@ void ValidateStoredJob(const std::string& folder,std::set<std::string>& visited)
 // are read-only while workers run; each worker owns its traversal and hash cache.
 // Publish no new memo entries until every root succeeds. Matrix accumulation
 // and all checkpoint mutations remain on the controller thread.
-void ValidateStoredRoots(const std::vector<std::string>& roots,int requestedThreads){
+void ValidateStoredRootsPhase(const std::vector<std::string>& roots,int requestedThreads,size_t memoLimitBytes){
     if(roots.empty())return;
     ValidationBatch scope("one independent-root validation");auto& parent=*activeValidationBatch;
 #ifdef _OPENMP
@@ -525,9 +687,9 @@ void ValidateStoredRoots(const std::vector<std::string>& roots,int requestedThre
     const int threads=1;(void)requestedThreads;
 #endif
     if(threads==1){for(const auto& root:roots){std::set<std::string> visited;ValidateStoredJob(root,visited);}return;}
-    // Each seed has a separate result; cap the sum of temporary graph memos at
-    // 64 MiB even when eight roots are handled by four threads.
-    const size_t limit=64*1024*1024/roots.size();
+    // The caller divides the fixed temporary memo budget between staging and
+    // this phase. Independent root workers never mutate their parent's memo.
+    const size_t limit=memoLimitBytes/roots.size();
     std::vector<std::unique_ptr<ValidationBatch>> batches(roots.size());
     std::vector<std::exception_ptr> errors(roots.size());std::vector<std::string> markers(roots.size());
 #ifdef _OPENMP
@@ -552,18 +714,116 @@ void ValidateStoredRoots(const std::vector<std::string>& roots,int requestedThre
     for(size_t k=0;k<roots.size();++k)if(!markers[k].empty())
         parent.compounds.Put(roots[k],std::make_shared<std::string>(markers[k]),sizeof(std::string)+markers[k].capacity());
 }
+// Root planning is an I/O-order hint, never an integrity decision. Read no
+// more than the remaining planning budget and never follow descendant paths.
+// Actual validation below still authenticates every requested root and edge.
+bool ReadValidationPlanManifest(const std::string& path,size_t budget,std::string& text){
+    if(MemoryPath(path)){if(!Exists(path)){text.clear();return true;}text=Read(path);return text.size()<=budget;}
+    text.clear();PackedJobStore::Descriptor fd(CheckpointRead::Open(path.c_str(),O_NONBLOCK));
+    if(fd.fd<0){const int error=errno;try{PackedJobStore::Member member;
+            if(!PackedJobStore::Locate(path,member))return error==ENOENT||error==ENOTDIR;
+            if(member.directory||member.size>budget)return false;
+            text=PackedJobStore::Read(member);return true;
+        }catch(const std::runtime_error&){return false;}}
+    struct stat before{},after{},named{};
+    if(fstat(fd.fd,&before)!=0||!S_ISREG(before.st_mode)||before.st_size<0||uint64_t(before.st_size)>budget)return false;
+    text.resize(size_t(before.st_size));size_t at=0;
+    while(at<text.size()){const auto n=read(fd.fd,&text[at],text.size()-at);
+        if(n<0&&errno==EINTR)continue;
+        if(n<0)return false;
+        if(n==0){text.resize(at);break;}
+        at+=size_t(n);
+    }
+    return fstat(fd.fd,&after)==0&&PackedJobStore::Same(before,after)
+        &&stat(path.c_str(),&named)==0&&PackedJobStore::Same(before,named);
+}
+struct RootValidationStats {
+    size_t roots=0,firstRoots=0,secondRoots=0,manifestBytes=0,edges=0,checked=0,reused=0;
+    size_t waveWidth=0,plannedWaves=0,completedWaves=0,validatedRoots=0;
+    double planningSeconds=0,firstSeconds=0,secondSeconds=0,seconds=0;
+    bool ordered=false,incompletePlan=false,boundedWaves=false;const char* reason="fewer than two roots";
+};
+RootValidationStats ValidateStoredRoots(const std::vector<std::string>& roots,int requestedThreads,
+        const std::function<void(const RootValidationStats&)>& onPlan={},
+        const std::function<void(const RootValidationStats&)>& onProgress={},
+        size_t planningByteLimit=8*1024*1024){
+    RootValidationStats stats;stats.roots=roots.size();if(roots.empty())return stats;
+    const double started=Seconds();
+    if(MemoryPath(roots.front())){for(const auto& root:roots){std::set<std::string> visited;ValidateStoredJob(root,visited);++stats.validatedRoots;}
+        stats.seconds=Seconds()-started;stats.reason="verified in-process values";return stats;}
+    const auto plan=PlanValidationRoots(roots,[&](size_t i,size_t budget,std::string& text){
+        return ReadValidationPlanManifest(roots[i]+"/angular_sources.tsv",budget,text);
+    },512,planningByteLimit);
+    stats.planningSeconds=Seconds()-started;stats.manifestBytes=plan.manifestBytes;stats.edges=plan.edges;
+    stats.firstRoots=plan.first.size();stats.secondRoots=plan.second.size();stats.ordered=plan.Ordered();stats.reason=plan.reason;
+#ifdef _OPENMP
+    const size_t threads=size_t(std::max(1,std::min(4,requestedThreads)));
+#else
+    const size_t threads=1;
+#endif
+    stats.incompletePlan=plan.incomplete;stats.boundedWaves=plan.incomplete&&roots.size()>threads;
+    stats.waveWidth=stats.boundedWaves?threads:0;
+    stats.plannedWaves=stats.boundedWaves?((plan.first.size()+threads-1)/threads
+        +(plan.second.size()+threads-1)/threads):(plan.Ordered()?2:1);
+    if(onPlan)onPlan(stats);
+    ValidationBatch context("one root validation plan");auto& parent=*activeValidationBatch;
+    const auto checked=parent.checked,reused=parent.reused;
+    // Complete independent plans keep their original dynamic scheduling: a
+    // wave barrier must not hold idle workers behind one heavier replica.
+    if(!stats.boundedWaves&&!plan.Ordered()){
+        const double phaseStarted=Seconds();ValidateStoredRootsPhase(roots,requestedThreads,64*1024*1024);
+        stats.firstSeconds=Seconds()-phaseStarted;stats.completedWaves=1;stats.validatedRoots=roots.size();
+        stats.checked=parent.checked-checked;stats.reused=parent.reused-reused;stats.seconds=Seconds()-started;return stats;
+    }
+    // Keep the old 64 MiB temporary memo allowance, but divide private memory
+    // between the ACTIVE wave, not every root in a large fallback plan. Later
+    // waves can borrow completed graphs from staging and the original round.
+    // Neither worker threads nor progress callbacks publish to the parent.
+    ValidationBatch staging("transactional root validation waves",true,&parent,32*1024*1024);
+    std::vector<std::string> rootMarkers(roots.size());
+    for(size_t phase=0;phase<2;++phase){
+        const auto& indices=phase?plan.second:plan.first;const double phaseStarted=Seconds();
+        // A complete ordered plan retains the original two full phases.
+        const size_t width=stats.boundedWaves?threads:std::max(size_t(1),indices.size());
+        for(size_t first=0;first<indices.size();first+=width){
+            const size_t end=std::min(indices.size(),first+width);
+            std::vector<std::string> paths;for(size_t k=first;k<end;++k)paths.push_back(roots[indices[k]]);
+            ValidateStoredRootsPhase(paths,requestedThreads,32*1024*1024);
+            for(size_t k=first;k<end;++k){const size_t index=indices[k];
+                const auto marker=staging.compounds.Peek(roots[index]);if(marker)rootMarkers[index]=*marker;}
+            ++stats.completedWaves;stats.validatedRoots+=paths.size();
+            stats.checked=staging.checked;stats.reused=staging.reused;stats.seconds=Seconds()-started;
+            // This callback runs only on the controller after a whole wave.
+            // An observer/write failure still leaves the parent unchanged.
+            if(onProgress)onProgress(stats);
+        }
+        (phase?stats.secondSeconds:stats.firstSeconds)=Seconds()-phaseStarted;
+    }
+    // Preserve all proven compound roots, including early waves displaced by
+    // later descendants. Every direct root/edge was authenticated above.
+    for(size_t k=0;k<roots.size();++k)if(!rootMarkers[k].empty())
+        staging.compounds.Put(roots[k],std::make_shared<std::string>(rootMarkers[k]),sizeof(std::string)+rootMarkers[k].capacity());
+    parent.checked+=staging.checked;parent.reused+=staging.reused;
+    staging.compounds.LeastRecentFirst([&](const std::string& key,std::shared_ptr<const std::string> value){
+        parent.compounds.Put(key,value,sizeof(std::string)+value->capacity());
+    });
+    stats.checked=parent.checked-checked;stats.reused=parent.reused-reused;stats.seconds=Seconds()-started;return stats;
+}
 struct WorkerService {
-    pid_t pid;int fd;std::string identity;unsigned long long requests=0;
-    WorkerService(pid_t p,int f,const std::string& key):pid(p),fd(f),identity(key){}
+    pid_t pid;int fd;std::string identity,memoryRoot;unsigned long long requests=0;
+    WorkerService(pid_t p,int f,const std::string& key,const std::string& workingRoot=""):pid(p),fd(f),identity(key),memoryRoot(workingRoot){}
     ~WorkerService(){
         close(fd);kill(pid,SIGTERM);int status;while(waitpid(pid,&status,0)<0&&errno==EINTR){}
         for(auto& active:activeWorkers)if(active==pid)active=0;
+        if(memoryRoot.empty())WorkerMemoryStage::CleanupForPid(pid);
+        else WorkerMemoryStage::CleanupForPid(pid,memoryRoot);
     }
 };
 const char* BudgetPolicy();
 struct Engine {
     const ArgPP& args;const RunConfig& config;std::string exe,root,signature,binaryHash,weightFile;
     std::string compatibleBinary,compatibleHash;
+    std::string publicRoot,lastCompactGeneration;double compactPublishedAt=-1;
     bool refinementWindow=false;double refinementLo=0,refinementHi=0,refinementEps=0;
     std::string refinementParent,refinementPolicy,meanReferenceOverride;
     bool legacyProjectedShadowIdentity=false;
@@ -596,7 +856,7 @@ struct Engine {
     bool shortPacketVerifying=false;std::map<std::string,bool> shortPacketChecks;
     std::string angleBatchPilotRecipe;
     bool forbidNativeWork=false; // read-only checkpoint/planning probes only
-    int dispatchThreads=0;
+    int dispatchThreads=0;bool dispatchPipeline=false;
     std::vector<std::string> dispatchGpus;
     const std::vector<std::string>& WorkerGpus()const{return dispatchGpus.empty()?gpus:dispatchGpus;}
     size_t WorkersOnGpu(const std::string& gpu)const{return std::count(WorkerGpus().begin(),WorkerGpus().end(),gpu);}
@@ -637,7 +897,16 @@ struct Engine {
     std::vector<std::string> base,gpus;std::vector<double> theta,weightTheta;
     std::vector<std::array<double,2>> weights;std::vector<unsigned> seeds;
     std::map<std::string,Job> cache;Kernel kernel;int phi=4,target=12,pilot=512,kernelCount=256;
+    std::string kernelTrialNonce;size_t kernelTrialSequence=0;
     BoundedCache<Job> payloads{128*1024*1024};
+    bool memoryMode=false;int checkpointInterval=0;double memoryCheckpointAt=0;
+    std::unique_ptr<FullAutoMemoryStore::Store> memoryStore;
+    std::unique_ptr<FullAutoMemoryStore::Scope> memoryScope;
+    std::map<std::string,double> memoryLogTimes;
+    std::map<std::string,uint64_t> memoryExportedGenerations;
+    std::set<std::string> memoryPublishedGenerations;
+    double memoryPublicAt=-1;size_t memoryCheckpoints=0;
+    size_t memoryAbandonedTemps=0;
     double memoryCheckAt=-1;
     void CheckHostMemory(){
         const double now=Seconds();if(memoryCheckAt>=0&&now-memoryCheckAt<1)return;memoryCheckAt=now;
@@ -682,6 +951,9 @@ struct Engine {
     #include "FullAutoCompactIndex.inc"
     #include "FullAutoSharedSources.inc"
     void CacheJob(const Job& job){
+        // Timing-only matrices never become an estimator source or a saved
+        // scientific job. The private request is removed after it is read.
+        if(!kernelTrialNonce.empty()&&job.folder.compare(0,root.size()+15,root+"/kernel_trials/")==0)return;
         const auto key=SamplingSlot(job.count,job.seed,job.depth,job.offset);
         auto found=cache.find(job.identity);
         if(found!=cache.end()){
@@ -727,19 +999,21 @@ struct Engine {
         }
     }
     int initial=1024,minimum=256,maxCount=67108864,roundLimit=32,startTheta=33;
-    int maxTheta=2147483647,stablePasses=2,minPhi=1,maxPhi=2147483647;
+    int maxTheta=2147483647,stablePasses=1,minPhi=1,maxPhi=2147483647;
     int prepareThreadCap=1;std::map<std::string,FullAutoPreparation::Profile> preparationProfiles;
     int workerThreads=4,workerChunk=0,analyticMeanThreads=1;long long hostBudgetMb=0;
     std::string resourcePolicy="auto",rotationPolicy="auto",cutoffPolicy="auto",selectedCutoff="requested";
+    bool cutoffUpgrade=false;
     bool tuneCutoffs=false,autoGpus=false;int rotationBeta=1,rotationGamma=1;double rotationError=0,cutoffError=0;
     std::vector<std::string> gpuCandidates;
     double eps=.01,interpolation=.0025,statistical=.0075;bool controls=true;
     bool mirror=false;std::string mirrorPolicy="auto";double mirrorError=0;
+    bool symmetryChecks=true;
     std::set<std::string> verifiedMirrorGrids;
     bool angularCache=true,sharedMeans=false;size_t assembledJobs=0,reusedRows=0,newRows=0;
     bool incremental=true;int orientationBlock=65536;size_t savedOrientationBlocks=0;
     std::string controlPolicy="auto";int thetaAuditCount=0;
-    bool local=true,ratios=true,phiRecheck=true,polarControls=true,finalChecks=true,finalAudit=true,physicsAudit=false;
+    bool local=true,ratios=true,phiRecheck=true,polarControls=true,finalChecks=false,finalAudit=false,physicsAudit=false;
     std::vector<std::array<Mueller,2>> polarWeights;
     double lastRatio=0,lastAnalyticError=0,lastCombined=-1,lastIndependentCombined=-1;bool independentPassed=false,independentNeedsSampling=true;
     std::string angularSamplingStatus=",\"angular_sampling_checked\":false";
@@ -750,7 +1024,7 @@ struct Engine {
     int PhiForTheta(size_t id)const{const auto p=thetaPhi.find(id);return p==thetaPhi.end()?phi:p->second;}
     bool depthSharing=true,depthVerified=false;
     bool completedCheckpoint=false;
-    bool autoDepth=false;int depthStart=6,depthMaximum=18;double depthBudget=0,maximumEdge=0,maximumDiameter=0,particleVolume=0;
+    bool autoDepth=false,depthFallback=false;int depthStart=6,depthMaximum=18;double depthBudget=0,maximumEdge=0,maximumDiameter=0,particleVolume=0;
     double estimatedOrientations=0,estimatedBeta=0,estimatedGamma=0,empiricalFinal=0;
     int depthPilot=512;std::string initialModel="empirical",depthOrder="auto";bool startupKernel=false;std::string initialSource="explicit";
     bool collecting=false;bool go=false;std::string workQueuePolicy="auto";
@@ -758,11 +1032,24 @@ struct Engine {
     std::vector<std::vector<std::string>> pendingCommands;
     std::string workerPolicy="auto",tracePolicy="auto";
     std::array<std::unique_ptr<WorkerService>,8> services;
+    // A refused wide resident packet lowers only execution chunk caps for
+    // this controller invocation/resource identity. Never checkpoint it as
+    // an optical or sampling parameter.
+    std::map<std::string,int> gpuChunkRetryCaps;
     std::string localPolicy="auto";
     Engine(const ArgPP& a,const RunConfig& c):args(a),config(c){}
     void Log(const std::string& event,const std::string& payload){
+        if(memoryMode){
+            const bool noisy=event=="worker_start"||event=="worker_complete"||event=="worker_cache_reuse"
+                ||event=="cutoff_correction_start"||event=="cutoff_correction_complete"
+                ||event=="worker_dispatch_summary"||event=="prefix_assembly_profile"||event=="work_queue_lookahead"
+                ||(event=="parameter_snapshot"&&(payload.find("orientation_progress.json")!=std::string::npos
+                    ||payload.find("execution_progress.json")!=std::string::npos));
+            if(noisy){const auto previous=memoryLogTimes.find(event);const double now=Seconds();
+                if(previous!=memoryLogTimes.end()&&now-previous->second<10)return;memoryLogTimes[event]=now;}
+        }
         if(!journal.is_open()){
-            const std::string path=root+"/fullauto_history.jsonl";
+            const std::string path=root+(publicRoot.empty()?"/fullauto_history.jsonl":"/run.log");
             if(Exists(path)){std::ifstream previous(path.c_str(),std::ios::binary);previous.seekg(0,std::ios::end);
                 if(previous.tellg()>0){previous.seekg(-1,std::ios::end);char last;previous.get(last);if(last!='\n'){std::ofstream repair(path.c_str(),std::ios::app);repair<<'\n';}}}
             journal.open(path.c_str(),std::ios::app);Require(bool(journal),"cannot open adaptive history");
@@ -776,10 +1063,21 @@ struct Engine {
         Atomic(path,text);const auto slash=path.find_last_of('/');const std::string name=path.substr(slash==std::string::npos?0:slash+1);
         const bool json=name.size()>5&&name.substr(name.size()-5)==".json";
         Log("parameter_snapshot","{\"file\":"+Quoted(name)+",\"value\":"+(json?text:Quoted(text))+"}");
+        if(memoryMode&&name=="execution_progress.json")ExportMemoryObservation(path,text);
+        ExportMemoryPublic(name=="intermediate_current.json"||name=="final_parameters.json");
+        ExportCompactResults(name=="intermediate_current.json"||name=="final_parameters.json");
     }
+    #include "FullAutoMemoryRuntime.inc"
+    #include "FullAutoResultLayout.inc"
     #include "FullAutoExecutionProgress.inc"
+    std::string DepthAccuracyFields()const{
+        return ",\"depth_selection_fallback\":"+std::string(depthFallback?"true":"false")
+            +",\"depth_accuracy_scope\":"+Quoted(depthFallback?"unverified at requested maximum":autoDepth?"automatic finite-depth pilot":"explicit fixed depth")
+            +",\"accuracy_conditional_on_fixed_depth\":"+std::string(depthFallback?"true":"false");
+    }
     std::string Parameters(const std::string& state)const{
         std::ostringstream out;out<<"{\"configuration_fnv1a64\":"<<Quoted(signature)<<",\"binary_fnv1a64\":"<<Quoted(binaryHash)
+            <<DepthAccuracyFields()<<",\"working_storage\":"<<MemoryStorageReport()
             <<",\"compatible_origin_binary_fnv1a64\":"<<Quoted(compatibleHash)
             <<RefinementFields()<<",\"requested_options\":"<<requestedOptions<<",\"effective_worker_base\":[";
         for(size_t i=0;i<base.size();++i)out<<(i?",":"")<<Quoted(base[i]);
@@ -793,7 +1091,7 @@ struct Engine {
         for(size_t i=0;i<gpus.size();++i)out<<(i?",":"")<<Quoted(gpus[i]);
         out<<"],\"dispatch_gpus\":[";for(size_t i=0;i<WorkerGpus().size();++i)out<<(i?",":"")<<Quoted(WorkerGpus()[i]);
         out<<"],\"active_worker_slots\":"<<std::min(WorkerGpus().size(),size_t(8))<<",\"resource_policy\":"<<Quoted(resourcePolicy)<<",\"rotation_policy\":"<<Quoted(rotationPolicy)<<",\"cutoff_policy\":"<<Quoted(cutoffPolicy)
-            <<",\"mirror_policy\":"<<Quoted(mirrorPolicy)<<",\"controls_policy\":"<<Quoted(controlPolicy)<<",\"local_policy\":"<<Quoted(localPolicy)
+            <<",\"symmetry_numerical_checks\":"<<(symmetryChecks?"true":"false")<<",\"mirror_policy\":"<<Quoted(mirrorPolicy)<<",\"controls_policy\":"<<Quoted(controlPolicy)<<",\"local_policy\":"<<Quoted(localPolicy)
             <<",\"work_queue_policy\":"<<Quoted(workQueuePolicy)<<",\"angular_cache\":"<<(angularCache?"true":"false")<<",\"incremental\":"<<(incremental?"true":"false")
             <<",\"coherent\":"<<(coherent?"true":"false")<<",\"depth_sharing\":"<<(depthSharing?"true":"false")<<",\"ratio_accuracy\":"<<(ratios?"true":"false")
             <<",\"phi_recheck\":"<<(phiRecheck?"true":"false")<<",\"polarization_controls\":"<<(polarControls?"true":"false")
@@ -804,10 +1102,15 @@ struct Engine {
     int Int(const std::string& key,int fallback){return args.IsCatched(key)?args.GetIntValue(key):fallback;}
     bool On(const char* key,bool fallback=true){return args.IsCatched(key)?args.GetStringValue(key)=="on":fallback;}
     bool PhysicalAuditEnabled()const{return finalChecks&&(physicsAudit||autoDepth);}
+    bool ConfiguredFinalChecks(){
+        // Explicit master policy wins. An explicit positive audit request is
+        // itself an opt-in; never silently ignore it because of the new default.
+        if(args.IsCatched("fullauto_final_checks"))return On("fullauto_final_checks",false);
+        return (args.IsCatched("fullauto_final_audit")&&On("fullauto_final_audit",false))
+            ||(args.IsCatched("fullauto_physics_audit")&&On("fullauto_physics_audit",false));
+    }
     int RequiredProductionPasses() const {
-        // Disabling final rechecks must not silently leave an extra production
-        // pass. Explicit CLI/config requests retain their original priority.
-        const int count=(!finalChecks&&!args.IsCatched("convergence_passes")&&!config.adaptive.loadedFromFile)
+        const int count=(!args.IsCatched("convergence_passes")&&!config.adaptive.stablePassesExplicit)
             ?1:config.adaptive.stablePasses;
         Require(count>=1&&count<=8,"convergence passes must be in [1,8]");return count;
     }
@@ -821,7 +1124,7 @@ struct Engine {
             +",\"independent_audit_enabled\":"+(finalAudit?"true":"false")
             +",\"final_physics_audit_enabled\":"+(PhysicalAuditEnabled()?"true":"false")
             +",\"required_production_passes\":"+Number(stablePasses)
-            +",\"production_passes_explicit\":"+((args.IsCatched("convergence_passes")||config.adaptive.loadedFromFile)?"true":"false")
+            +",\"production_passes_explicit\":"+((args.IsCatched("convergence_passes")||config.adaptive.stablePassesExplicit)?"true":"false")
             +",\"production_convergence_retained\":true,\"startup_depth_selection_retained\":true,\"skipped_checks_are_unverified\":true}");
     }
     void Init(int argc,const char* argv[],double edge=0,double diameter=0,double volume=0) {
@@ -832,6 +1135,9 @@ struct Engine {
         shortPacketPolicy=args.IsCatched("fullauto_short_packets")?args.GetStringValue("fullauto_short_packets"):"auto";
         angularAuditPolicy=args.IsCatched("fullauto_audit_angular")?args.GetStringValue("fullauto_audit_angular"):"auto";
         dispatchThreads=Int("fullauto_dispatch_threads",0);
+        dispatchPipeline=args.IsCatched("fullauto_dispatch_pipeline");
+        if(dispatchPipeline)Require(config.useGpu&&!go&&args.GetStringValue("fullauto_dispatch_pipeline")=="on"&&args.IsCatched("fullauto_resume_compatible"),
+            "dispatch pipeline override requires CUDA PO, on, and certified compatible resume");
         Require(!dispatchThreads||(config.useGpu&&!go&&dispatchThreads>0),"dispatch threads require CUDA physical optics and a positive count");
         Require(!dispatchThreads||args.IsCatched("fullauto_resume_compatible")||(!args.IsCatched("threads")&&!args.IsCatched("po_prepare_threads")&&!args.IsCatched("analytic_mean_threads")),
             "dispatch threads override saved explicit pools only with --fullauto-resume-compatible; otherwise conflicting thread flags");
@@ -842,6 +1148,7 @@ struct Engine {
         root=args.IsCatched("o")?args.GetStringValue("o"):"fullauto_result";
         Require(root.find('%')==std::string::npos,"output placeholders are not supported; use an explicit directory");Directory(root);
         char* full=realpath(root.c_str(),nullptr);Require(full!=nullptr,"cannot resolve output directory");root=full;free(full);
+        ConfigureResultLayout();
         eps=args.GetDoubleValue("fullauto");interpolation=eps*.25;statistical=eps-interpolation;
         if(args.IsCatched("fullauto_refine_window")){
             refinementWindow=true;refinementLo=args.GetDoubleValue("fullauto_refine_window",0);
@@ -851,7 +1158,7 @@ struct Engine {
             Require(std::isfinite(refinementEps)&&refinementEps>0&&refinementEps<1,"refinement tolerance must be a fraction in (0,1)");
         }
         localPolicy=args.IsCatched("fullauto_local")?args.GetStringValue("fullauto_local"):"auto";local=localPolicy!="off";ratios=On("fullauto_ratios");phiRecheck=On("fullauto_phi_recheck");
-        polarControls=On("fullauto_polar_controls");finalChecks=On("fullauto_final_checks");finalAudit=finalChecks&&On("fullauto_final_audit");physicsAudit=On("fullauto_physics_audit",false);
+        polarControls=On("fullauto_polar_controls");finalChecks=ConfiguredFinalChecks();finalAudit=finalChecks&&On("fullauto_final_audit");physicsAudit=On("fullauto_physics_audit",false);
         if(go&&args.IsCatched("cutoff_profile")&&args.GetStringValue("cutoff_profile")=="balanced")physicsAudit=true;
         coherent=!go&&!args.IsCatched("incoh");depthSharing=!go&&On("fullauto_depth_share");
         fixedPhi=args.IsCatched("nphi")?args.GetIntValue("nphi"):(args.IsCatched("grid")?args.GetIntValue("grid",args.GetArgNumber("grid")-2):0);
@@ -870,8 +1177,18 @@ struct Engine {
         resourcePolicy=args.IsCatched("fullauto_resources")?args.GetStringValue("fullauto_resources"):"auto";
         rotationPolicy=args.IsCatched("fullauto_rotation")?args.GetStringValue("fullauto_rotation"):"auto";
         cutoffPolicy=args.IsCatched("fullauto_cutoffs")?args.GetStringValue("fullauto_cutoffs"):"auto";
+        cutoffUpgrade=args.IsCatched("fullauto_cutoff_upgrade");
+        if(cutoffUpgrade){
+            Require(args.GetStringValue("fullauto_cutoff_upgrade")=="staged"&&cutoffPolicy=="auto"&&!go,
+                "cutoff upgrade requires PO, original auto policy, and target staged");
+            Require(args.IsCatched("fullauto_resume_compatible"),"cutoff upgrade requires certified compatible resume");
+            for(const char* key:{"r","cutoff_profile","beam_cutoff","beam_cutoff_j","beam_cutoff_area","beam_cutoff_importance","trace_cutoff","trace_cutoff_j","trace_cutoff_area","trace_cutoff_importance"})
+                Require(!args.IsCatched(key),"cutoff upgrade cannot override explicit native cutoffs");
+        }
         workerChunk=Int("chunk",0);
         mirrorPolicy=args.IsCatched("mirror_gamma")?"on":(args.IsCatched("fullauto_mirror")?args.GetStringValue("fullauto_mirror"):"auto");
+        symmetryChecks=!args.IsCatched("fullauto_symmetry_checks")||args.GetStringValue("fullauto_symmetry_checks")!="off";
+        Require(symmetryChecks||(!go&&args.IsCatched("sym")),"manual symmetry requires PO and explicit --symmetry");
         pilot=Int("fullauto_pilot",512);kernelCount=Int("fullauto_kernel",256);initial=Int("fullauto_initial",1024);
         thetaAuditCount=Int("fullauto_theta_audit",(!args.IsCatched("grid")&&!args.IsCatched("tgrid"))?std::min(pilot,256):0);
         Require(thetaAuditCount>=0&&thetaAuditCount<=2147483646,"invalid theta audit count");
@@ -1025,7 +1342,7 @@ struct Engine {
         // Reserve the selected GPUs' share of host cores for its independent
         // theta rows. Small GPU-pilot thread tuning must not shrink this pool.
         const int physical=std::max(1,QueryRuntimeResourceSnapshot().physicalCores);
-        prepareThreadCap=config.useGpu?FullAutoPreparation::ThreadCap(physical,FullAutoPreparation::AllowedPhysicalCores(),VisibleGpuDeviceCount()):1;
+        prepareThreadCap=config.useGpu?FullAutoPreparation::PreparationCandidateCap(physical,FullAutoPreparation::AllowedPhysicalCores(),FullAutoPreparation::AllowedLogicalCores(),VisibleGpuDeviceCount()):1;
         const int share=config.useGpu?std::max(1,physical*int(gpus.size())/VisibleGpuDeviceCount())
                                      :std::max(1,physical/int(gpus.size()));
         analyticMeanThreads=Int("analytic_mean_threads",config.threads>0?config.threads:std::min(32,share));
@@ -1048,15 +1365,28 @@ struct Engine {
                 "compatible resume requires identical CUDA architecture, precision, phase math, compiler, OpenMP and MPI profiles");
         }
         std::ostringstream fingerprint;fingerprint<<(compatibleHash.empty()?binaryHash:compatibleHash)<<'\n';
+        const bool fingerprintMemory=MemoryPath(root)||Exists(root+"/memory_storage_v1.txt")
+            ||((!args.IsCatched("fullauto_storage")||args.GetStringValue("fullauto_storage")!="legacy")
+                &&((args.IsCatched("fullauto_storage")&&args.GetStringValue("fullauto_storage")=="memory")
+                    ||(!Exists(root+"/configuration.txt")&&!refinementWindow)));
         for(int i=1;i<argc;++i){
             std::string option=argv[i];while(!option.empty()&&option[0]=='-')option.erase(0,1);
-            if(argv[i][0]=='-' && (option=="fullauto-resume-compatible"||option=="fullauto_resume_compatible"||option=="fullauto-dispatch-gpus"||option=="fullauto_dispatch_gpus"||option=="fullauto-dispatch-threads"||option=="fullauto_dispatch_threads"||option=="fullauto-final-checks"||option=="fullauto_final_checks")){++i;continue;}
+            // Verification policy only: the actual symmetry domain remains
+            // in the fingerprint and the saved estimator is not rewritten.
+            if(argv[i][0]=='-'&&(option=="fullauto-symmetry-checks"||option=="fullauto_symmetry_checks")){++i;continue;}
+            if(argv[i][0]=='-'&&(option=="fullauto-storage"||option=="fullauto_storage"||option=="fullauto-checkpoint-seconds"||option=="fullauto_checkpoint_seconds"||option=="fullauto-memory-mib"||option=="fullauto_memory_mib")){++i;continue;}
+            if(argv[i][0]=='-'&&option=="checkpoint"&&fingerprintMemory)continue;
+            if(argv[i][0]=='-' && (option=="fullauto-dispatch-pipeline"||option=="fullauto_dispatch_pipeline"||option=="fullauto-cutoff-upgrade"||option=="fullauto_cutoff_upgrade"||option=="fullauto-resume-compatible"||option=="fullauto_resume_compatible"||option=="fullauto-dispatch-gpus"||option=="fullauto_dispatch_gpus"||option=="fullauto-dispatch-threads"||option=="fullauto_dispatch_threads"||option=="fullauto-final-checks"||option=="fullauto_final_checks")){++i;continue;}
             if(argv[i][0]=='-'&&(option=="fullauto-refine-window"||option=="fullauto_refine_window")){i+=3;continue;}
             fingerprint<<argv[i]<<'\n';
         }
         // Canonical reconstruction avoids shell quoting and option aliases.
         std::set<std::string> seen;for(const auto& spec:GetCliOptionSpecs())if(args.IsCatched(spec.key)&&seen.insert(spec.key).second){
             if(spec.key=="pf"||spec.key=="tgrid"||spec.key=="adaptive_config")fingerprint<<FileHash(args.GetStringValue(spec.key))<<'\n';
+            if(fingerprintMemory&&spec.key=="pf"){
+                const auto sidecar=args.GetStringValue(spec.key)+".visibility";
+                fingerprint<<"particle_visibility="<<(Exists(sidecar)?FileHash(sidecar):"absent")<<'\n';
+            }
             if(drop.count(spec.key)||spec.key.compare(0,9,"fullauto_")==0)continue;
             base.push_back("--"+spec.canonical);for(unsigned i=0;i<args.GetArgNumber(spec.key);++i)base.push_back(args.GetStringValue(spec.key,i));}
         // File headers can declare an unverified fundamental domain. Use
@@ -1116,7 +1446,7 @@ struct Engine {
     void State(const std::string& status,int round,const std::vector<int>& counts,size_t nodes,double ci,double ie,int streak) {
         SetExecutionPhase(status,round);
         std::ostringstream s;s<<std::setprecision(17)<<"{\n\"status\":"<<Quoted(status)<<",\"configuration_fnv1a64\":"<<Quoted(signature)
-            <<RefinementFields()<<",\"resident_matrix_cache_bytes\":"<<payloads.Bytes()<<",\"resident_matrix_cache_limit_bytes\":"<<payloads.Limit()
+            <<DepthAccuracyFields()<<RefinementFields()<<",\"resident_matrix_cache_bytes\":"<<payloads.Bytes()<<",\"resident_matrix_cache_limit_bytes\":"<<payloads.Limit()
             <<",\"resident_matrix_cache_evictions\":"<<payloads.evictions<<",\"cached_job_metadata_count\":"<<cache.size()
             <<",\"method\":"<<Quoted(go?"go":"po")<<",\"cpu_workers\":"<<(config.useGpu?0:gpus.size())<<",\"controller_pid\":"<<getpid()<<",\"round\":"<<round<<",\"counts_per_seed\":[";
         for(size_t i=0;i<counts.size();++i)s<<(i?",":"")<<counts[i];
@@ -1124,16 +1454,16 @@ struct Engine {
         for(size_t i=0;i<seeds.size();++i)s<<(i?",":"")<<seeds[i];
         s<<"],\"phi\":"<<phi<<",\"phi_scope\":"<<Quoted(thetaPhi.empty()?"uniform":"default with per-theta exceptions")<<",\"retained_phi_theta_rows\":"<<thetaPhi.size()<<",\"target_depth\":"<<target<<",\"requested_theta\":"<<theta.size()<<",\"evaluated_theta\":"<<nodes
             <<",\"automatic_depth\":"<<(autoDepth?"true":"false")<<",\"depth_budget\":"<<depthBudget<<",\"statistical_budget\":"<<statistical<<",\"error_budget_policy\":"<<Quoted(go?"fixed-go":BudgetPolicy())<<",\"interpolation_budget\":"<<interpolation<<",\"max_pointwise95_scaled_M11\":"<<ci
-            <<",\"combined_error95\":"<<(lastCombined>=0?Number(lastCombined):"null")<<",\"independent_combined_error95\":"<<(lastIndependentCombined>=0?Number(lastIndependentCombined):"null")<<",\"max_guard_residual95_scaled_M11\":"<<ie<<",\"pass_streak\":"<<streak<<",\"pipeline\":"<<(kernel.pipeline?"true":"false")
+            <<",\"combined_error95\":"<<(lastCombined>=0?Number(lastCombined):"null")<<",\"independent_combined_error95\":"<<(lastIndependentCombined>=0?Number(lastIndependentCombined):"null")<<",\"max_guard_residual95_scaled_M11\":"<<ie<<",\"pass_streak\":"<<streak<<",\"pipeline\":"<<((kernel.pipeline||dispatchPipeline)?"true":"false")<<",\"saved_pipeline\":"<<(kernel.pipeline?"true":"false")<<",\"dispatch_pipeline\":"<<(dispatchPipeline?"true":"false")
             <<",\"block\":"<<kernel.block<<",\"warp\":"<<Quoted(kernel.warp)
-            <<",\"mirror_gamma\":"<<(mirror?"true":"false")<<",\"mirror_policy\":"<<Quoted(mirrorPolicy)
+            <<",\"symmetry_numerical_checks\":"<<(symmetryChecks?"true":"false")<<",\"mirror_gamma\":"<<(mirror?"true":"false")<<",\"mirror_policy\":"<<Quoted(mirrorPolicy)
             <<",\"analytic_controls\":"<<(controls?"true":"false")<<",\"analytic_control_policy\":"<<Quoted(controlPolicy)<<",\"shared_analytic_reference\":"<<(sharedMeans?"true":"false")<<",\"angular_cache\":"<<(angularCache?"true":"false")<<",\"work_queue\":"<<(QueueEnabled()?"true":"false")<<",\"work_queue_policy\":"<<Quoted(workQueuePolicy)<<",\"assembled_jobs_this_invocation\":"<<assembledJobs<<",\"reused_angular_rows_this_invocation\":"<<reusedRows<<",\"computed_new_angular_rows_this_invocation\":"<<newRows
             <<",\"mirror_budget\":"<<(mirror?eps/256:0)<<",\"max_mirror_residual95_scaled_M11\":"<<mirrorError
-            <<",\"final_checks\":"<<(finalChecks?"true":"false")<<",\"final_physics_audit\":"<<(PhysicalAuditEnabled()?"true":"false")<<",\"prepare_thread_cap\":"<<prepareThreadCap<<",\"accuracy_scope\":\"production\",\"adaptive_schema\":2,\"local_orientations\":"<<(local?"true":"false")<<",\"ratio_accuracy\":"<<(ratios?"true":"false")<<",\"max_pointwise_ratio95\":"<<lastRatio<<",\"independent_final_validation\":"<<(independentPassed?"true":"false")<<",\"saved_orientation_blocks_this_invocation\":"<<savedOrientationBlocks
+            <<",\"final_checks\":"<<(finalChecks?"true":"false")<<",\"final_physics_audit\":"<<(PhysicalAuditEnabled()?"true":"false")<<",\"prepare_thread_cap\":"<<prepareThreadCap<<",\"accuracy_scope\":"<<Quoted(depthFallback?"production at fixed depth; depth adequacy unverified":"production")<<",\"adaptive_schema\":2,\"local_orientations\":"<<(local?"true":"false")<<",\"ratio_accuracy\":"<<(ratios?"true":"false")<<",\"max_pointwise_ratio95\":"<<lastRatio<<",\"independent_final_validation\":"<<(independentPassed?"true":"false")<<",\"saved_orientation_blocks_this_invocation\":"<<savedOrientationBlocks
             <<",\"analytic_mean_budget\":"<<(controls?eps/64:0)<<",\"max_estimated_analytic_mean_error_scaled_M11\":"<<lastAnalyticError
             <<",\"execution_budget\":"<<((resourcePolicy=="auto"||config.useGpu)?eps/1024:0)<<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"effective_analytic_mean_threads\":"<<(dispatchThreads?dispatchThreads:analyticMeanThreads)<<",\"angular_audit_policy\":"<<Quoted(angularAuditPolicy)<<",\"short_packet_policy\":"<<Quoted(shortPacketPolicy)<<",\"dispatch_threads\":"<<dispatchThreads<<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
             <<",\"rotation_beta_factor\":"<<rotationBeta<<",\"rotation_gamma_factor\":"<<rotationGamma<<",\"rotation_budget\":"<<((rotationBeta>1||rotationGamma>1)?eps/256:0)
-            <<",\"cutoff_estimator\":"<<Quoted(balancedCorrection?"balanced_with_paired_off_correction":"direct")<<",\"cutoff_correction_fraction\":"<<(balancedCorrection?.125:0)<<",\"selected_cutoff\":"<<Quoted(selectedCutoff)<<",\"cutoff_budget\":"<<(selectedCutoff!="requested"&&selectedCutoff!="off"?eps/8:0)<<",\"max_cutoff_residual95\":"<<cutoffError
+            <<",\"cutoff_estimator\":"<<Quoted(balancedCorrection?CutoffEstimator():"direct")<<",\"cutoff_correction_fraction\":"<<(balancedCorrection?.125:0)<<",\"cutoff_off_correction_nominal_fraction\":"<<(balancedCorrection?(StagedCutoff()?1./64:.125):0)<<",\"cutoff_correction_minimum_count\":64"<<",\"selected_cutoff\":"<<Quoted(selectedCutoff)<<",\"cutoff_budget\":"<<(selectedCutoff!="requested"&&selectedCutoff!="off"?eps/8:0)<<",\"max_cutoff_residual95\":"<<cutoffError
             <<angularSamplingStatus<<",\"coherent\":"<<(coherent?"true":"false")<<",\"fixed_phi\":"<<fixedPhi<<",\"scope\":\"eight-seed pointwise intervals; interpolation guards on requested grid; mirror paired pilot when enabled; current target physics; final audit policy is reported separately; no global simultaneous confidence claim\"}\n";
         Record(root+"/fullauto_status.json",s.str());
         if(status=="converged")Record(root+"/final_parameters.json",Parameters(s.str()));
@@ -1142,6 +1472,7 @@ struct Engine {
         else if(status=="validating")std::cout<<" production_ci="<<ci<<" production_interpolation="<<ie<<" production_passes="<<streak<<'/'<<stablePasses<<" independent_audit=pending";
         else std::cout<<" ci="<<ci<<" interpolation="<<ie<<" streak="<<streak;
         if(!go&&status!="evaluating"&&lastCombined>=0)std::cout<<" combined_error="<<lastCombined<<" target="<<eps;
+        if(depthFallback)std::cout<<" depth_accuracy=unverified fixed_n="<<target;
         std::cout<<std::endl;
     }
     void LoadDiagnostics(Job& j,bool loadControls) const {
@@ -1204,6 +1535,10 @@ struct Engine {
         std::vector<std::string> folders,cacheRoots{root};
         if(!refinementParent.empty()){IndexRefinementLocalJobs();cacheRoots.push_back(refinementParent);}
         for(const auto& cacheRoot:cacheRoots){
+            if(MemoryPath(cacheRoot)){
+                for(const auto& folder:memoryStore->List(cacheRoot+"/jobs",false))if(memoryStore->IsDirectory(folder)&&!folderIndex.count(folder))folders.push_back(folder);
+                continue;
+            }
             std::set<std::string> discovered;
             DIR* directory=opendir((cacheRoot+"/jobs").c_str());if(!directory)continue;
             while(auto* entry=readdir(directory)){if(entry->d_name[0]!='.'){
@@ -1358,7 +1693,8 @@ struct Engine {
             if(kernel.pipeline)command.push_back("--orientation-pipeline");
             if(!wf.empty()){command.push_back("--analytic-control-weights");command.push_back(wf);}
             std::ostringstream identity;identity<<signature<<ExecutionHash()<<'\n'<<kernel.block<<'\n'<<kernel.warp<<'\n';for(const auto& v:command)identity<<v<<'\n';if(!wf.empty())identity<<Read(wf);
-            Job j;SetSampling(j,n,seedSet[s],depth,x,pairedMirror);j.offset=offset;j.pairedDepth=pairedDepth;j.weightHash=Hash(wf.empty()?"":Read(wf));j.identity=Hash(identity.str());j.folder=root+"/jobs/j"+j.identity;j.data=j.folder+"/result/result.dat";j.summary=j.folder+"/result/result_analytic_facets.tsv";Directory(j.folder);
+            if(!kernelTrialNonce.empty())identity<<"\nfresh kernel timing request "<<kernelTrialNonce<<'\n';
+            Job j;SetSampling(j,n,seedSet[s],depth,x,pairedMirror);j.offset=offset;j.pairedDepth=pairedDepth;j.weightHash=Hash(wf.empty()?"":Read(wf));j.identity=Hash(identity.str());j.folder=root+(kernelTrialNonce.empty()?"/jobs/j":"/kernel_trials/t")+j.identity;j.data=j.folder+"/result/result.dat";j.summary=j.folder+"/result/result_analytic_facets.tsv";Directory(j.folder);
             auto correctAngles=[&](const Job& job){Require(job.angles.size()==x.size(),"wrong theta count");for(size_t r=0;r<x.size();++r)Require(std::fabs(job.angles[r]-x[r])<1e-10,"worker theta grid differs");};
             if(cache.count(j.identity)){result[s]=Materialize(cache.at(j.identity));correctAngles(result[s]);continue;}
             const std::string meta=j.folder+"/complete.txt";
@@ -1367,7 +1703,7 @@ struct Engine {
                 {std::set<std::string> visited;ValidateStoredJob(j.folder,visited);}j=Load(j);correctAngles(j);CacheJob(j);result[s]=j;Log("worker_cache_reuse","{\"folder\":"+Quoted(j.folder)+",\"verified_from_disk\":true}");continue;}
             if(Exists(j.folder+"/worker.pid"))Require(!WorkerAlive(j.folder+"/worker.pid"),"an incomplete cached worker is still running; avoid duplicate launch");
             if(Exists(j.folder+"/result")){std::string saved=j.folder+"/result_incomplete_"+std::to_string(getpid())+"_"+std::to_string(s);
-                Require(rename((j.folder+"/result").c_str(),saved.c_str())==0,"cannot preserve incomplete worker output");}
+                Require(RenamePath(j.folder+"/result",saved)==0,"cannot preserve incomplete worker output");}
             if(preparationThreads){j.preparationThreads=preparationThreads;command.push_back("--po-prepare-threads");command.push_back(Number(preparationThreads));}
             command.push_back("--output");command.push_back(j.folder+"/result");commands[s]=command;result[s]=j;todo.push_back(s);
         }
@@ -1411,7 +1747,7 @@ struct Engine {
             if(Exists(j.folder+"/complete.txt")){std::set<std::string> seen;ValidateStoredJob(j.folder,seen);j=Load(j);CacheJob(j);return j;}
             Directory(j.folder);
             if(Exists(j.folder+"/worker.pid"))Require(!WorkerAlive(j.folder+"/worker.pid"),"short packet pilot still running");
-            if(Exists(j.folder+"/result"))Require(rename((j.folder+"/result").c_str(),(j.folder+"/result_incomplete_"+Number(getpid())).c_str())==0,"cannot preserve pilot partial output");
+            if(Exists(j.folder+"/result"))Require(RenamePath(j.folder+"/result",j.folder+"/result_incomplete_"+Number(getpid()))==0,"cannot preserve pilot partial output");
             auto command=actualCommand;
             auto remove=[&](const std::string& name){for(size_t i=0;i+1<command.size();)if(command[i]==name)command.erase(command.begin()+i,command.begin()+i+2);else ++i;};
             for(size_t i=0;i+2<command.size();++i)if(command[i]=="--sobol-seed"){command[i+1]="2048";command[i+2]=Number(seed);}
@@ -1463,6 +1799,7 @@ struct Engine {
         if(selected){command.push_back("--po-prepare-threads");command.push_back(Number(selected));}
     }
     void ApplyDispatchThreads(Job& job,std::vector<std::string>& command)const{
+        if(dispatchPipeline&&std::find(command.begin(),command.end(),"--orientation-pipeline")==command.end())command.push_back("--orientation-pipeline");
         if(!dispatchThreads)return;
         // Placement-only override, after saved native identities are formed.
         // Per-orientation accumulation threads and ordering remain unchanged.
@@ -1513,7 +1850,7 @@ struct Engine {
                 int status=0;pid_t waited;do{waited=waitpid(-1,&status,0);}while(waited<0&&errno==EINTR);
                 Require(waited>0,"cannot reap worker");
                 size_t slot=0;while(slot<slots&&activeWorkers[slot]!=waited)++slot;Require(slot<slots,"unknown worker PID");
-                size_t s=size_t(slotSeed[slot]);Job& j=result[s];NativeReturned(j);j.pid=-1;activeWorkers[slot]=0;slotSeed[slot]=-1;j.seconds=Seconds()-begun[s];std::remove((j.folder+"/worker.pid").c_str());
+                size_t s=size_t(slotSeed[slot]);Job& j=result[s];NativeReturned(j);j.pid=-1;activeWorkers[slot]=0;slotSeed[slot]=-1;j.seconds=Seconds()-begun[s];RemovePath(j.folder+"/worker.pid");
                 Require(WIFEXITED(status)&&WEXITSTATUS(status)==0,"worker failed; see "+j.folder+"/stdout.log");
                 if(next<todo.size())launch(slot,todo[next++]);
                 const double commitBegin=Seconds();CompleteNative(j);NativeCommitted(j,Seconds()-commitBegin);++completed;if(onComplete)onComplete(s);
@@ -1597,7 +1934,7 @@ struct Engine {
                 if(more&&pendingJobs.size()<=120){const double start=Seconds();more=prepareOne();aheadSeconds+=Seconds()-start;++pumps;}
             });
             double seconds=0;for(const auto& job:jobs)seconds+=job.seconds;
-            std::ofstream log((root+"/work_queue.tsv").c_str(),std::ios::app);
+            std::ofstream log;if(!memoryMode)log.open((root+"/work_queue.tsv").c_str(),std::ios::app);
             log<<todo.size()<<'\t'<<WorkerGpus().size()<<'\t'<<Number(Seconds()-begin)<<'\t'<<Number(seconds)<<'\n';
             Log("work_queue_lookahead","{\"completed_jobs\":"+Number(todo.size())+",\"prepared_next_jobs\":"+Number(pendingJobs.size())
                 +",\"preparation_pumps\":"+Number(pumps)+",\"lookahead_cpu_seconds\":"+Number(aheadSeconds)+",\"max_pending_jobs\":128}");
@@ -1619,11 +1956,11 @@ struct Engine {
         const auto resident=cache.find(identity);if(resident!=cache.end())return materialize?Materialize(resident->second):resident->second;
         Job job=source;job.depth=depth;job.pairedDepth=0;job.assembled=true;job.identity=Hash(signature+"\npaired view\n"+source.identity+" "+Number(depth));job.folder=root+"/jobs/d"+job.identity;
         job.data=job.folder+"/result/result.dat";job.summary=job.folder+"/result/result_analytic_facets.tsv";job.matrix.clear();job.controls.clear();job.angles.clear();job.seconds=source.seconds*.5;
-        if(!Exists(job.folder+"/complete.txt")){Directory(job.folder+"/result");const auto name=source.folder+"/result/result_depth"+Number(depth);
+        if(!Exists(job.folder+"/complete.txt")){DerivedFileBatch outputFiles(job.folder,PrepareDerivedPublication(),false);Directory(job.folder+"/result");const auto name=source.folder+"/result/result_depth"+Number(depth);
             Atomic(job.data,Read(name+".dat"));if(controls)Atomic(job.summary,Read(name+"_analytic_facets.tsv"));Atomic(job.folder+"/command.args",Replay(job,job.inputAngles));
             Atomic(job.folder+"/stdout.log","Validated paired-depth view; standalone replay recipe.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");
             const std::string sources=source.folder+"\t"+FileHash(source.folder+"/complete.txt")+"\n";Atomic(job.folder+"/angular_sources.tsv",sources);
-            PublishComplete(job,job.identity+" "+Number(job.seconds)+" "+FileHash(job.data)+" "+(controls?FileHash(job.summary):"none")+" "+Hash(sources)+"\n");}
+            PublishDerivedComplete(job,job.identity+" "+Number(job.seconds)+" "+FileHash(job.data)+" "+(controls?FileHash(job.summary):"none")+" "+Hash(sources)+"\n",outputFiles);}
         std::set<std::string> visited;ValidateStoredJob(job.folder,visited);job=Load(job);CacheJob(job);return job;
     }
     std::vector<Job> AssemblePairParts(const std::vector<std::vector<Job>>& parts,int n,const std::vector<double>& x,const std::string& tag){
@@ -1637,10 +1974,10 @@ struct Engine {
             job.identity=Hash(key.str());
             const auto existing=cache.find(job.identity);if(existing!=cache.end()){result[s]=Materialize(existing->second);continue;}
             job.folder=root+"/jobs/q"+job.identity;job.data=job.folder+"/result/result.dat";job.summary=job.folder+"/result/result_analytic_facets.tsv";Directory(job.folder+"/result");
-            if(!Exists(job.folder+"/complete.txt")){WriteMatrix(job.data,x,job.matrix);if(controls){std::ostringstream summary;summary<<std::setprecision(17)<<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n";
+            if(!Exists(job.folder+"/complete.txt")){DerivedFileBatch outputFiles(job.folder,PrepareDerivedPublication(),false);WriteMatrix(job.data,x,job.matrix);if(controls){std::ostringstream summary;summary<<std::setprecision(17)<<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n";
                     for(size_t r=0;r<x.size();++r){const auto& c=job.controls[r];const auto& b=coefficients[r];summary<<x[r];for(double v:c)summary<<'\t'<<v;summary<<'\t'<<c[0]-b[0]*c[3]-b[1]*c[4]<<'\t'<<job.matrix[r][0]<<'\t'<<job.controlRefinement<<'\t'<<job.controlSetup<<'\t'<<b[0]<<'\t'<<b[1]<<'\n';}Atomic(job.summary,summary.str());}
                 Atomic(job.folder+"/command.args",Replay(job,x));Atomic(job.folder+"/stdout.log","Exact paired Sobol-prefix assembly.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");Atomic(job.folder+"/angular_sources.tsv",dependencies.str());
-                PublishComplete(job,job.identity+" "+Number(job.seconds)+" "+FileHash(job.data)+" "+(controls?FileHash(job.summary):"none")+" "+Hash(dependencies.str())+"\n");}
+                PublishDerivedComplete(job,job.identity+" "+Number(job.seconds)+" "+FileHash(job.data)+" "+(controls?FileHash(job.summary):"none")+" "+Hash(dependencies.str())+"\n",outputFiles);}
             std::set<std::string> visited;ValidateStoredJob(job.folder,visited);job.matrix.clear();job.controls.clear();job.angles.clear();job=Load(job);CacheJob(job);result[s]=job;
         }return result;
     }
@@ -1760,9 +2097,28 @@ struct Engine {
         if(roots.size()<2)return;
         CheckHostMemory();const double started=Seconds();
         Log("parallel_source_validation_start","{\"kind\":"+Quoted(kind)+",\"roots\":"+Number(roots.size())+",\"threads\":"+Number(std::min(threads,int(roots.size())))+",\"count_per_seed\":"+Number(count)+",\"compound_roots\":"+(compound?"true":"false")+"}");
-        ValidateStoredRoots(roots,threads);
+        const auto validation=ValidateStoredRoots(roots,threads,[&](const RootValidationStats& plan){
+            Log("parallel_source_validation_plan","{\"kind\":"+Quoted(kind)+",\"roots_total\":"+Number(plan.roots)
+                +",\"maximal_first\":"+Number(plan.firstRoots)+",\"covered_second\":"+Number(plan.secondRoots)
+                +",\"ordered\":"+(plan.ordered?"true":"false")+",\"reason\":"+Quoted(plan.reason)
+                +",\"incomplete_plan\":"+(plan.incompletePlan?"true":"false")+",\"bounded_waves\":"+(plan.boundedWaves?"true":"false")
+                +",\"planning_seconds\":"+Number(plan.planningSeconds)+",\"planning_manifest_bytes\":"+Number(plan.manifestBytes)
+                +",\"root_edges\":"+Number(plan.edges)+",\"max_roots_per_wave\":"+Number(plan.waveWidth)
+                +",\"planned_waves\":"+Number(plan.plannedWaves)+",\"temporary_graph_memo_limit_bytes\":67108864}");
+        },[&](const RootValidationStats& progress){
+            Log("parallel_source_validation_progress","{\"kind\":"+Quoted(kind)+",\"validated_roots\":"+Number(progress.validatedRoots)
+                +",\"roots_total\":"+Number(progress.roots)+",\"completed_waves\":"+Number(progress.completedWaves)
+                +",\"planned_waves\":"+Number(progress.plannedWaves)+",\"checked_nodes\":"+Number(progress.checked)
+                +",\"reused_compound_graphs\":"+Number(progress.reused)+",\"seconds\":"+Number(progress.seconds)
+                +",\"parent_memo_published\":false,\"accuracy_recomputed\":false}");
+        });
         Log("parallel_source_validation","{\"kind\":"+Quoted(kind)+",\"roots\":"+Number(roots.size())+",\"threads\":"+Number(std::min(threads,int(roots.size())))
-            +",\"seconds\":"+Number(Seconds()-started)+",\"temporary_graph_memo_limit_bytes\":67108864,\"thread_hash_cache_limit_bytes\":33554432,\"all_selected_source_checks_preserved\":true}");
+            +",\"seconds\":"+Number(Seconds()-started)+",\"maximal_first\":"+Number(validation.firstRoots)+",\"covered_second\":"+Number(validation.secondRoots)
+            +",\"checked_nodes\":"+Number(validation.checked)+",\"reused_compound_graphs\":"+Number(validation.reused)
+            +",\"planning_seconds\":"+Number(validation.planningSeconds)+",\"first_phase_seconds\":"+Number(validation.firstSeconds)
+            +",\"second_phase_seconds\":"+Number(validation.secondSeconds)
+            +",\"validated_roots\":"+Number(validation.validatedRoots)+",\"completed_waves\":"+Number(validation.completedWaves)
+            +",\"temporary_graph_memo_limit_bytes\":67108864,\"thread_hash_cache_limit_bytes\":33554432,\"all_selected_source_checks_preserved\":true}");
     }
     std::vector<Job> PrefixStage(int n,unsigned const* seedSet,size_t ns,int depth,const std::vector<double>& x,bool weighted=true,bool paired=false){
         bool production=weighted&&!paired;
@@ -1826,7 +2182,7 @@ struct Engine {
             // A partial eight-seed prefix must never rewrite already complete
             // source payloads, especially when they belong to a frozen parent.
             if(completed[s]){j=Materialize(cache.at(j.identity));continue;}
-            AtomicFileBatch outputFiles(j.folder);
+            DerivedFileBatch outputFiles(j.folder,PrepareDerivedPublication());
             Directory(j.folder+"/result");WriteMatrix(j.data,x,j.matrix);
             if(controls){std::ostringstream f;f<<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n"<<std::setprecision(17);
                 for(size_t r=0;r<x.size();++r){const auto& c=j.controls[r];const auto& b=coefficients[r];f<<x[r];for(double v:c)f<<'\t'<<v;
@@ -1848,8 +2204,7 @@ struct Engine {
             }else provenance=sources[s].str();
             WriteSharedSources(j.folder+"/angular_sources.tsv",provenance);
             Atomic(j.folder+"/orientation_reuse.json","{\"kind\":\"exact_sobol_prefix\",\"count\":"+Number(n)+",\"block\":"+Number(orientationBlock)+",\"seconds_scope\":\"represented full native work, including reused blocks\"}\n");
-            outputFiles.Commit();
-            PublishComplete(j,j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+" "+Hash(provenance)+"\n");
+            PublishDerivedComplete(j,j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+" "+Hash(provenance)+"\n",outputFiles);
             j.matrix.clear();j.controls.clear();j.angles.clear();j=Load(j);CacheJob(j);
         }
         indexWrites.Commit();
@@ -1953,7 +2308,7 @@ struct Engine {
             for(const std::string& source:sources){ValidateStoredJob(source,visited);dependencies<<source<<'\t'<<FileHash(source+"/complete.txt")<<'\n';
                 const auto cached=folderIndex.find(source);if(cached!=folderIndex.end())j.seconds+=cached->second->seconds;}
             Require(j.seconds>0,"missing angular source cost");const double representedSeconds=j.seconds;
-            AtomicFileBatch outputFiles(j.folder);
+            DerivedFileBatch outputFiles(j.folder,PrepareDerivedPublication());
             j.seconds=ForecastFullGridCost(n,seedSet[s],depth,x.size(),j.controlSetup,j.seconds);Directory(j.folder+"/result");WriteMatrix(j.data,x,j.matrix);
             if(controls){std::ostringstream table;table<<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n"<<std::setprecision(17);
                 for(size_t r=0;r<x.size();++r){const auto& c=j.controls[r];const auto& b=coefficients[r];table<<x[r];for(double v:c)table<<'\t'<<v;
@@ -1972,8 +2327,7 @@ struct Engine {
             j.assemblySeconds=Seconds()-assemblyStarted;
             std::ostringstream provenance;provenance<<"{\"controller_assembly_seconds\":"<<Number(j.assemblySeconds)<<",\"kind\":\"angular_assembly\",\"requested_rows\":"<<x.size()<<",\"reused_rows\":"<<reused<<",\"new_worker_rows\":"<<missing.size()<<",\"cost_scope\":\"full-grid forecast from matching native jobs; not assembly wall time\",\"represented_native_seconds\":"<<Number(representedSeconds)<<",\"forecast_full_grid_seconds\":"<<Number(j.seconds)<<",\"M11_rebased_to_authoritative_full_grid_means\":"<<(controls?"true":"false")<<"}\n";
             Atomic(j.folder+"/angular_reuse.json",provenance.str());
-            outputFiles.Commit();
-            PublishComplete(j,j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+" "+Hash(dependencies.str())+"\n");
+            PublishDerivedComplete(j,j.identity+" "+Number(j.seconds)+" "+FileHash(j.data)+" "+(controls?FileHash(j.summary):"none")+" "+Hash(dependencies.str())+"\n",outputFiles);
             j.matrix.clear();j.controls.clear();j.angles.clear();j=Load(j);CacheJob(j);++assembledJobs;reusedRows+=reused;newRows+=missing.size();
             std::cout<<"fullauto angular cache: seed="<<seedSet[s]<<" N="<<n<<" depth="<<depth<<" reused="<<reused<<" new="<<missing.size()<<std::endl;
         }
@@ -2046,6 +2400,7 @@ struct Engine {
     }
     void PrepareMirror(const std::vector<double>& x){
         if(mirrorPolicy=="off")return;
+        if(!symmetryChecks){SetMirror(true);RecordManualSymmetry();return;}
         SetMirror(true);unsigned seed=3001;
         try{Stage(16,&seed,1,std::max(1,target-4),x,false);}
         catch(const std::exception& error){
@@ -2070,7 +2425,13 @@ struct Engine {
         }
         return Hash(context.str());
     }
+    void RecordManualSymmetry(){
+        Record(root+"/symmetry_checks_policy.json","{\"policy\":\"explicit-user-symmetry-v1\",\"numerical_pilots\":false,\"rotation_beta_factor\":"+Number(rotationBeta)
+            +",\"rotation_gamma_factor\":"+Number(rotationGamma)+",\"mirror_enabled\":"+(mirror?"true":"false")
+            +",\"symmetry_error_verified\":false,\"saved_estimator_preserved\":true,\"scope\":\"user-supplied geometric symmetry; no numerical symmetry accuracy claim\"}");
+    }
     bool VerifyMirror(const std::vector<double>& x){
+        if(!symmetryChecks){RecordManualSymmetry();return true;}
         if(!mirror)return true;
         const std::string key=MirrorVerificationKey(x);
         if(verifiedMirrorGrids.count(key))return true;
@@ -2107,21 +2468,30 @@ struct Engine {
             Require(!args.IsCatched("fullauto_theta_audit"),"explicit dense theta pilot exceeds explicit theta limit");
             Record(root+"/dense_theta_pilot.json","{\"enabled\":false,\"reason\":\"explicit theta limit\"}\n");return knots;
         }
-        std::cout<<"fullauto: independent dense theta pilot N="<<thetaAuditCount<<" rows="<<theta.size()<<std::endl;
-        auto jobs=DirectStage(thetaAuditCount,angularValidation,8,target,theta);Samples data=Data(jobs);Matrix reference=Mean(data);
-        // A finite control-variate pilot is a signed estimator. A negative
-        // corrected mean does not make the underlying physical M11 negative.
-        // Scale interpolation checks by native positive M11 from the SAME
-        // independent jobs; retain the corrected matrices in the residual.
-        if(controls)for(size_t row=0;row<reference.size();++row){
-            double raw=0;for(const auto& job:jobs)raw+=job.controls.at(row)[0]/8;
-            reference[row][0]=raw;
+        const int plannedCount=FullAutoThetaPilotPlan::Count(thetaAuditCount,theta.size(),phi,args.IsCatched("fullauto_theta_audit")||args.IsCatched("fullauto_pilot")||config.adaptive.loadedFromFile);
+        int actualCount=plannedCount;std::vector<Job> jobs;Samples data;Matrix reference;
+        for(;;){
+            std::cout<<"fullauto: independent dense theta pilot N="<<actualCount<<" rows="<<theta.size()<<std::endl;
+            jobs=DirectStage(actualCount,angularValidation,8,target,theta);data=Data(jobs);reference=Mean(data);
+            // A finite control-variate pilot is a signed estimator. A negative
+            // corrected mean does not make the underlying physical M11 negative.
+            // Scale interpolation checks by native positive M11 from the SAME
+            // independent jobs; retain the corrected matrices in the residual.
+            if(controls)for(size_t row=0;row<reference.size();++row){
+                double raw=0;for(const auto& job:jobs)raw+=job.controls.at(row)[0]/8;
+                reference[row][0]=raw;
+            }
+            bool positive=true;for(const auto& row:reference)positive=positive&&row[0]>0;
+            if(positive)break;
+            if(actualCount>=thetaAuditCount)throw std::runtime_error("mean M11 must be positive in theta pilot");
+            actualCount=std::min(thetaAuditCount,actualCount*2);
         }
-        for(const auto& r:reference)Require(r[0]>0,"mean M11 must be positive in theta pilot");
+        Log("dense_theta_pilot_work_budget","{\"requested_count_per_seed\":"+Number(thetaAuditCount)+",\"planned_count_per_seed\":"+Number(plannedCount)+",\"actual_count_per_seed\":"+Number(actualCount)+",\"theta_rows\":"+Number(theta.size())+",\"phi\":"+Number(phi)+",\"all_requested_angles_retained\":true,\"production_accuracy_accepted\":false}");
         double maximum=0;int refinements=0;
         for(;;){Samples support(8),predicted(8);std::vector<double> kx;
             for(size_t k:knots){kx.push_back(theta[k]);for(int seed=0;seed<8;++seed)support[seed].push_back(data[seed][k]);}
-            for(int seed=0;seed<8;++seed)predicted[seed]=CubicInterpolate(kx,support[seed],theta);
+            for(int seed=0;seed<8;++seed)predicted[seed]=UseLinearPOInterpolation(go,coherent)
+                ?PiecewiseLinearInterpolate(kx,support[seed],theta):CubicInterpolate(kx,support[seed],theta);
             Samples delta=Subtract(predicted,data);Matrix mean=Mean(delta),variance=Variance(delta);std::vector<double> errors(theta.size());maximum=0;
             for(size_t r=0;r<theta.size();++r)for(int j=0;j<16;++j){double v=(std::fabs(mean[r][j])+t95*std::sqrt(variance[r][j]/8))/reference[r][0];errors[r]=std::max(errors[r],v);maximum=std::max(maximum,v);}
             std::ostringstream step;step<<"{\"iteration\":"<<refinements<<",\"max_residual95_scaled_M11\":"<<Number(maximum)<<",\"budget\":"<<Number(interpolation*.5)<<",\"support_indices\":[";
@@ -2133,27 +2503,79 @@ struct Engine {
                 if(errors[worst]>interpolation*.5)next.insert(worst);}
             Require(next.size()>knots.size(),"theta audit cannot refine support");knots.assign(next.begin(),next.end());++refinements;
         }
-        std::ostringstream report;report<<"{\"count_per_seed\":"<<thetaAuditCount<<",\"reference_rows\":"<<theta.size()<<",\"support_rows\":"<<knots.size()<<",\"refinements\":"<<refinements<<",\"max_paired_residual95_scaled_M11\":"<<Number(maximum)<<",\"pilot_budget\":"<<Number(interpolation*.5)<<",\"independent_production_seeds\":true}\n";
+        std::ostringstream report;report<<"{\"count_per_seed\":"<<actualCount<<",\"requested_count_per_seed\":"<<thetaAuditCount<<",\"reference_rows\":"<<theta.size()<<",\"support_rows\":"<<knots.size()<<",\"refinements\":"<<refinements<<",\"max_paired_residual95_scaled_M11\":"<<Number(maximum)<<",\"pilot_budget\":"<<Number(interpolation*.5)<<",\"independent_production_seeds\":true}\n";
         Record(root+"/dense_theta_pilot.json",report.str());
         Log("theta_pilot_normalization","{\"native_M11\":"+std::string(controls?"true":"false")+",\"signed_control_residuals_retained\":"+(controls?"true":"false")+"}");return knots;
     }
     #include "FullAutoTuning.inc"
+    void RemoveKernelTrial(const std::string& folder){
+        const auto prefix=root+"/kernel_trials/t";
+        Require(folder.compare(0,prefix.size(),prefix)==0&&folder.size()>prefix.size()
+            &&folder.find('/',prefix.size())==std::string::npos,"kernel timing escaped private output");
+        if(memoryMode)memoryStore->Remove(folder,true);else WorkerMemoryStage::RemoveTree(folder);
+    }
+    struct KernelCalibrationScope {
+        Engine& e;std::vector<std::string> base;std::string resource;int checkpoint;bool pack,verifying,keepKernel=false;Kernel baseline;
+        explicit KernelCalibrationScope(Engine& engine):e(engine),base(e.base),resource(e.resourcePolicy),checkpoint(e.checkpointInterval),pack(e.packJobs),verifying(e.shortPacketVerifying),baseline(e.kernel){
+            Require(e.kernelTrialNonce.empty(),"nested kernel calibration");
+            if(!e.args.IsCatched("trace_cache_mb")){const auto flag=CliCanonicalFlag("trace_cache_mb");e.RemoveOption(flag);e.base.push_back(flag);e.base.push_back("0");}
+            e.resourcePolicy="off";e.shortPacketVerifying=true;e.packJobs=false;e.checkpointInterval=0;
+        }
+        ~KernelCalibrationScope(){e.base.swap(base);e.resourcePolicy=resource;e.checkpointInterval=checkpoint;e.packJobs=pack;e.shortPacketVerifying=verifying;e.kernelTrialNonce.clear();if(!keepKernel)e.kernel=baseline;}
+    };
+    void CalibrateKernel(const std::vector<double>& x){
+        const Kernel baseline=kernel;const auto candidates=KernelCalibration::Candidates(baseline,fixedPipeline,fixedBlock,fixedWarp);
+        const bool explicitCache=args.IsCatched("trace_cache_mb");
+        // The default production workload prepares new orientations. Cached
+        // beams from the preceding layout must not make its neighbour win.
+        // An explicit user cache remains untouched and selects warm-cache work.
+        const bool warmCache=explicitCache&&args.GetIntValue("trace_cache_mb")>0;
+        // Do not let a CPU-thread or chunk tuner change resources between
+        // kernel trials. Explicit threads/chunks and the production policy
+        // are restored unchanged by the scope guard.
+        KernelCalibrationScope restore(*this);
+        unsigned seed=4001;while(std::find(seeds.begin(),seeds.end(),seed)!=seeds.end())++seed;
+        const std::string session=Number(getpid())+" "+Number(Seconds())+" "+Number(++kernelTrialSequence);
+        size_t serial=0;std::ostringstream samples;samples<<'[';bool first=true;
+        auto run=[&](const Kernel& choice,int count,bool warmup){
+            kernel=choice;kernelTrialNonce=Hash(session+" "+Number(++serial));
+            // DirectStage bypasses angular/prefix assembly. The fresh nonce
+            // changes only the private timing destination, never seed/grid.
+            Job job;std::string folder;
+            try{job=DirectStage(count,&seed,1,target,x,false)[0];folder=job.folder;}
+            catch(...){
+                if(memoryMode){for(const auto& path:memoryStore->List(root+"/kernel_trials",false)){
+                    if(memoryStore->Exists(path+"/stdout.log"))Record(root+"/kernel_calibration_error.log",Read(path+"/stdout.log"));
+                    memoryStore->Remove(path,true);}}
+                kernel=baseline;throw;}
+            RemoveKernelTrial(folder);
+            (void)warmup;return job;
+        };
+        auto observe=[&](const Kernel& k,int count,bool warmup,const Job& job,double error){
+            const std::string detail="{\"pipeline\":"+std::string(k.pipeline?"true":"false")+",\"block\":"+Number(k.block)+",\"warp\":"+Quoted(k.warp)
+                +",\"seconds\":"+Number(job.seconds)+",\"processing_seconds\":"+Number(job.processingSeconds)
+                +",\"trace_seconds\":"+Number(job.traceSeconds)+",\"diffraction_seconds\":"+Number(job.diffractionSeconds)
+                +",\"analytic_setup_seconds\":"+Number(job.controlSetup)+",\"count\":"+Number(count)+",\"seed\":"+Number(seed)
+                +",\"warmup\":"+(warmup?"true":"false")+",\"fresh_timing_identity\":"+Quoted(job.identity)
+                +",\"trace_cache_explicit\":"+(explicitCache?"true":"false")+",\"trace_cache_mib\":"+Number(explicitCache?args.GetIntValue("trace_cache_mb"):0)
+                +",\"all16_and_ratios_difference_scaled_M11\":"+Number(error)+",\"budget\":"+Number(eps/1024)
+                +",\"numerically_accepted\":"+(!warmup&&error<=eps/1024?"true":"false")
+                +",\"fixed_pipeline\":"+(fixedPipeline?"true":"false")+",\"fixed_block\":"+(fixedBlock?"true":"false")+",\"fixed_warp\":"+(fixedWarp?"true":"false")+"}";
+            Log(warmup?"kernel_warmup":"kernel_candidate",detail);samples<<(first?"":",")<<detail;first=false;
+        };
+        const auto result=KernelCalibration::Select(baseline,candidates,kernelCount,warmCache?kernelCount:std::min(16,kernelCount),initial,eps/1024,ratios,warmCache,run,observe,Seconds);
+        kernel=result.selected;restore.keepKernel=true;samples<<']';std::ostringstream report;
+        report<<"{\"policy\":\"fresh-bounded-top-two-v1\",\"requests\":"<<result.requests<<",\"elapsed_seconds\":"<<Number(result.elapsed)
+            <<",\"soft_launch_budget_seconds\":"<<Number(result.budget)<<",\"inflight_preemptible\":false,\"maximum_requests\":"<<(warmCache?14:12)
+            <<",\"forecast_minimum_production_seconds\":"<<Number(result.forecastProduction)<<",\"previous_five_probe_warm_estimate_seconds\":"<<Number(result.previousSearchEstimate)
+            <<",\"selected_pipeline\":"<<(kernel.pipeline?"true":"false")<<",\"selected_block\":"<<kernel.block<<",\"selected_warp\":"<<Quoted(kernel.warp)
+            <<",\"reason\":"<<Quoted(result.reason)<<",\"score\":\"mean of fresh request wall; setup and output included\",\"trace_objective\":"<<Quoted(warmCache?"explicit prepared cache warmed for each timed request":"new orientations; automatic prepared cache disabled only inside calibration")
+            <<",\"production_options_restored\":true,\"trial_matrices_retained\":false,\"samples\":"<<samples.str()<<"}";
+        Record(root+"/kernel_calibration.json",report.str());Log("kernel_selection",report.str());
+    }
     void Calibrate(const std::vector<double>& x,bool working=false,bool kernelOnly=false) {
-        const int previousPhi=phi;weightTheta=x;weights.clear();polarWeights.clear();phi=fixedPhi?fixedPhi:std::max(minPhi,std::min(maxPhi,4));Matrix ref;double fastest=std::numeric_limits<double>::max();Kernel winner=kernel;
-        if(config.useGpu&&!working&&!startupKernel){std::vector<Kernel> candidates(5);candidates[1].pipeline=candidates[2].pipeline=candidates[3].pipeline=candidates[4].pipeline=true;candidates[2].block=128;candidates[3].block=256;candidates[4].warp="thread";
-            for(auto k:candidates){
-                if(fixedPipeline&&!k.pipeline)continue;
-                if(fixedBlock)k.block=kernel.block;
-                if(fixedWarp)k.warp=kernel.warp;
-                kernel=k;unsigned seed=4001;auto jobs=Stage(kernelCount,&seed,1,target,x,false);if(ref.empty())ref=jobs[0].matrix;
-                Matrix scale=ref;if(controls)for(size_t r=0;r<scale.size();++r)scale[r][0]=jobs[0].controls[r][0];
-                double error=Difference(jobs[0].matrix,ref,scale);
-                Log("kernel_candidate","{\"pipeline\":"+std::string(k.pipeline?"true":"false")+",\"block\":"+Number(k.block)+",\"warp\":"+Quoted(k.warp)
-                    +",\"seconds\":"+Number(jobs[0].seconds)+",\"all16_difference_scaled_M11\":"+Number(error)+",\"budget\":"+Number(eps/1024)
-                    +",\"numerically_accepted\":"+(error<=eps/1024?"true":"false")+",\"fixed_pipeline\":"+(fixedPipeline?"true":"false")+",\"fixed_block\":"+(fixedBlock?"true":"false")+",\"fixed_warp\":"+(fixedWarp?"true":"false")+"}");
-                const double native=std::max(1e-6,jobs[0].seconds-jobs[0].controlSetup);
-                if(error<=eps/1024&&native<fastest){fastest=native;winner=k;}}
-            Require(fastest<std::numeric_limits<double>::max(),"no validated GPU kernel");kernel=winner;}
+        const int previousPhi=phi;weightTheta=x;weights.clear();polarWeights.clear();phi=fixedPhi?fixedPhi:std::max(minPhi,std::min(maxPhi,4));
+        if(config.useGpu&&!working&&!startupKernel)CalibrateKernel(x);
         if(kernelOnly){Log("startup_kernel_only","{\"phi\":"+Number(phi)+",\"full_phi_search_deferred\":true}");return;}
         double best=std::numeric_limits<double>::max();bool bestResolved=false;int chosen=4;std::vector<std::array<double,2>> selected;
         std::vector<std::array<Mueller,2>> selectedPolar;std::vector<int> phiCandidates;
@@ -2218,18 +2640,49 @@ struct Engine {
             // If every bounded pilot is inconclusive, use a documented raw
             // matrix scheduling proxy. Never rank all candidates by 1e100.
             const double schedulingError=resolved?uncertainty:(FullAutoScheduling::Resolved(stats.maxInterval)?stats.maxInterval:1e25);
-            const double multiplier=std::max(double(initial)/calibrationCount,std::pow(schedulingError/statistical,2));
+            const double pointwiseMultiplier=std::max(double(initial)/calibrationCount,std::pow(schedulingError/statistical,2));
+            // The final incoherent decision also resolves angular contrasts.
+            // Rank the already computed pilots against that same contract;
+            // this forecast never requests additional pilots or accepts a
+            // production result. Coherent/GO and explicit global sampling
+            // retain their existing cost objective.
+            const bool angularCostEnabled=!go&&!coherent&&local;
+            const auto angularCost=angularCostEnabled
+                ?FullAutoAngularPilotCost::Evaluate(adjusted,stats,x,eps,interpolation,ratios,t95)
+                :FullAutoAngularPilotCost::Result{};
+            const bool candidateResolved=resolved&&(!angularCostEnabled||angularCost.resolved);
+            const double angularMultiplier=!angularCostEnabled?0.:
+                angularCost.resolved?angularCost.maximumRatio*angularCost.maximumRatio:
+                std::max(1.,double(maxCount)/calibrationCount);
+            const double multiplier=std::max(pointwiseMultiplier,angularMultiplier);
             // Cache construction/lock waiting happens once, not N/pilot
             // times. Do not make the first cold phi/kernel candidate lose
             // solely because it prepared authoritative analytic rows.
             const double score=seconds*multiplier+setup;
+            const std::string angularDetails=",\"angular_pilot_finite\":"+std::string(angularCost.finite?"true":"false")
+                +",\"angular_max_noise95_scaled_M11\":"+Number(angularCostEnabled?angularCost.maximumNoise95:0.)
+                +",\"angular_worst_element\":"+Number(angularCost.worstElement)
+                +",\"angular_worst_normalized\":"+(angularCost.worstNormalized?"true":"false")
+                +",\"angular_worst_span\":"+Number(angularCost.worstSpan)
+                +",\"angular_worst_indices\":["+Number(angularCost.worstLeft)+","+Number(angularCost.worstCenter)+","+Number(angularCost.worstRight)+"]"
+                +",\"angular_fallback_reason\":"+Quoted(angularCost.reason);
             Log("phi_candidate","{\"phi\":"+Number(phi)+",\"validation_seconds\":"+Number(seconds)+",\"projected_seconds\":"+Number(score)
                 +",\"analytic_setup_once_seconds\":"+Number(setup)+",\"statistical95_scaled_M11\":"+Number(stats.maxInterval)+",\"ratio95\":"+Number(stats.maxRatioInterval)+",\"pilot_count\":"+Number(calibrationCount)+",\"interval_resolved\":"+(resolved?"true":"false")
-                +",\"depth\":"+Number(depth)+",\"theta_rows\":"+Number(x.size())+",\"fixed_phi\":"+Number(fixedPhi)+",\"working_recheck\":"+(working?"true":"false")+"}");
+                +",\"depth\":"+Number(depth)+",\"theta_rows\":"+Number(x.size())+",\"fixed_phi\":"+Number(fixedPhi)+",\"working_recheck\":"+(working?"true":"false")
+                +",\"angular_cost_enabled\":"+(angularCostEnabled?"true":"false")
+                +",\"angular_pilot_resolved\":"+(angularCost.resolved?"true":"false")
+                +",\"angular_noise_allowance_ratio\":"+Number(angularCostEnabled?angularCost.maximumRatio:0.)
+                +",\"pointwise_multiplier\":"+Number(pointwiseMultiplier)+",\"angular_multiplier\":"+Number(angularMultiplier)
+                +",\"candidate_resolved\":"+(candidateResolved?"true":"false")
+                +angularDetails+",\"angular_extra_optical_jobs\":0,\"accuracy_accepted\":false}");
             candidatesJson<<(first?"":",")<<"{\"phi\":"<<phi<<",\"native_seconds\":"<<Number(seconds)<<",\"analytic_setup_once_seconds\":"<<Number(setup)<<",\"score\":"<<Number(score)<<",\"validation95\":"<<Number(stats.maxInterval)<<",\"ratio95\":"<<Number(stats.maxRatioInterval)<<",\"count_per_seed\":"<<calibrationCount<<",\"interval_resolved\":"<<(resolved?"true":"false")<<",\"accepted_control_rows\":[";
             for(int j=0;j<16;++j)candidatesJson<<(j?",":"")<<accepted[j];
-            candidatesJson<<"]}";first=false;
-            if((resolved&&!bestResolved)||(resolved==bestResolved&&score<best)){best=score;bestResolved=resolved;chosen=phi;selected=fitted;selectedPolar=fittedPolar;}
+            candidatesJson<<"],\"angular_cost_enabled\":"<<(angularCostEnabled?"true":"false")
+                <<",\"angular_pilot_resolved\":"<<(angularCost.resolved?"true":"false")
+                <<",\"angular_noise_allowance_ratio\":"<<Number(angularCostEnabled?angularCost.maximumRatio:0.)
+                <<",\"pointwise_multiplier\":"<<Number(pointwiseMultiplier)<<",\"angular_multiplier\":"<<Number(angularMultiplier)
+                <<",\"candidate_resolved\":"<<(candidateResolved?"true":"false")<<angularDetails<<",\"angular_extra_optical_jobs\":0}";first=false;
+            if((candidateResolved&&!bestResolved)||(candidateResolved==bestResolved&&score<best)){best=score;bestResolved=candidateResolved;chosen=phi;selected=fitted;selectedPolar=fittedPolar;}
             break;
             }
         }
@@ -2238,7 +2691,7 @@ struct Engine {
         for(size_t r=0;r<x.size();++r){polar<<x[r];for(int j=0;j<16;++j)polar<<' '<<(j?selectedPolar[r][0][j]:selected[r][0])<<' '<<(j?selectedPolar[r][1][j]:selected[r][1]);polar<<'\n';}
         Record(root+"/polarization_weights.tsv",polar.str());const std::string weightPath=WriteWeights(x);
         std::ostringstream c;c<<"{\"selected_phi\":"<<phi<<",\"block\":"<<kernel.block<<",\"pipeline\":"<<(kernel.pipeline?"true":"false")<<",\"warp\":"<<Quoted(kernel.warp)<<",\"pilot_count\":"<<pilot<<",\"score\":"<<Number(best)<<",\"weights\":"<<Quoted(weightPath)<<",\"phi_candidates\":"<<candidatesJson.str()
-          <<",\"selection_resolved\":"<<(bestResolved?"true":"false")<<",\"score_model\":\"bounded ratio pilot; raw-matrix proxy only if all candidates unresolved\",\"calibration_depth\":"<<depth<<",\"calibration_theta\":"<<x.size()<<",\"working_grid_recheck\":"<<(working?"true":"false")<<",\"score_includes_ratios\":"<<(ratios?"true":"false")<<",\"polarization_controls\":"<<(polarControls?"true":"false")
+          <<",\"selection_resolved\":"<<(bestResolved?"true":"false")<<",\"score_model\":"<<Quoted(!go&&!coherent&&local?"bounded pointwise and angular-noise pilot; finite scheduling proxy for unresolved candidates":"bounded ratio pilot; raw-matrix proxy only if all candidates unresolved")<<",\"calibration_depth\":"<<depth<<",\"calibration_theta\":"<<x.size()<<",\"working_grid_recheck\":"<<(working?"true":"false")<<",\"score_includes_ratios\":"<<(ratios?"true":"false")<<",\"polarization_controls\":"<<(polarControls?"true":"false")
           <<",\"control_training_required\":"<<(controls?"true":"false")<<",\"training_scrambles_per_phi\":"<<(controls?8:0)
           <<",\"validation_scrambles_per_phi\":8,\"independent_training_validation\":true,\"mirror_gamma\":"<<(mirror?"true":"false")<<",\"mirror_policy\":"<<Quoted(mirrorPolicy)<<"}";
         Record(root+"/calibration.json",c.str());
@@ -2270,6 +2723,7 @@ int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],do
     Lock lock(controller->root+"/controller.lock");
     std::unique_ptr<Lock> refinementLock;
     if(controller->refinementWindow){PrepareRefinementWindow(*controller);refinementLock.reset(new Lock(controller->root+"/controller.lock"));}
+    controller->ConfigureMemoryStorage();
     const std::string identity=controller->root+"/configuration.txt";
     controller->ConfigureIndex(!Exists(identity));
     if(Exists(identity))Require(Read(identity)==controller->signature+"\n","resume inputs/binary/environment changed; choose a new output directory");else Atomic(identity,controller->signature+"\n");
@@ -2329,16 +2783,28 @@ int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],do
         e.Record(e.root+"/explicit_options.json",e.requestedOptions);e.Record(e.root+"/fullauto_parameters.json",e.Parameters("{}"));
         WriteGrid(e.root+"/requested_theta.csv",e.theta);Directory(e.root+"/jobs");
         try {
-            PrepareDepthStartup(e);if(!SelectAutomaticDepth(e))return 4;e.Record(e.root+"/fullauto_parameters.json",e.Parameters("{}"));
+            PrepareDepthStartup(e);if(!SelectAutomaticDepth(e)){e.FinishMemoryRun();return 4;}e.Record(e.root+"/fullauto_parameters.json",e.Parameters("{}"));
             const int result=e.go?RunGO(e):RunAdaptive(e);
-            if(!PromoteAutomaticDepth(e,result))return result;
+            if(!PromoteAutomaticDepth(e,result)){e.FinishMemoryRun();return result;}
         }catch(...) {
+            const auto failure=std::current_exception();
+            try{
             if(Exists(e.root+"/fullauto_status.json")){std::string text=Read(e.root+"/fullauto_status.json");const size_t key=text.find("\"status\":\"");
                 if(key!=std::string::npos){const size_t begin=key+10,end=text.find('"',begin);text.replace(begin,end-begin,"failed");Atomic(e.root+"/fullauto_status.json",text);}}
             else e.State("failed",0,{},0,0,0,0);
-            throw;
+            e.FinishMemoryRun();
+            }catch(const std::exception& saving){std::cerr<<"fullauto: failed-state publication was not completed: "<<saving.what()<<'\n';}
+            std::rethrow_exception(failure);
         }
+        const bool wasMemory=e.memoryMode;const int interval=e.checkpointInterval;const double checkpointAt=e.memoryCheckpointAt;
+        const size_t checkpointCount=e.memoryCheckpoints;
+        auto workingStore=std::move(e.memoryStore);auto workingScope=std::move(e.memoryScope);
+        auto workingGpuChunkCaps=std::move(e.gpuChunkRetryCaps);
         controller.reset(new Engine(args,config));controller->Init(argc,argv,maximumEdge,maximumDiameter,volume);
+        controller->gpuChunkRetryCaps=std::move(workingGpuChunkCaps);
+        if(wasMemory){controller->memoryMode=true;controller->checkpointInterval=interval;controller->memoryCheckpointAt=checkpointAt;
+            controller->memoryCheckpoints=checkpointCount;controller->memoryStore=std::move(workingStore);controller->memoryScope=std::move(workingScope);
+            controller->ConfigureIndex(false);}
         if(controller->refinementWindow)PrepareRefinementWindow(*controller);
     }
 }

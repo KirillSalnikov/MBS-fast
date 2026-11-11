@@ -8,6 +8,9 @@
 #include <algorithm>
 #include <limits>
 #include <sstream>
+#include <chrono>
+#include <cstdlib>
+#include <thread>
 
 namespace
 {
@@ -105,6 +108,26 @@ __global__ void sum_kernel(const double*r,const double*s,const double*weights,in
     for(int i=0;i<orientations;++i){size_t j=static_cast<size_t>(i)*cells+cell;a+=weights[i]*r[j];b+=weights[i]*s[j];}
     sumR[cell]=a;sumS[cell]=b;
 }
+// Preserve the former CPU order: increasing angular cell, i.e. increasing
+// azimuth for each theta. One thread owns each orientation/theta accumulator,
+// including across tiles, so neither atomics nor a parallel reduction tree
+// changes cancellation or rounding. Explicit operations prohibit FMA changes.
+__global__ void sample_rows_kernel(const double*r,const double*s,int orientations,
+    int rows,int phi,int firstCell,int tileCells,double*sampleR,double*sampleS)
+{
+    const size_t index=static_cast<size_t>(blockIdx.x)*blockDim.x+threadIdx.x;
+    if(index>=static_cast<size_t>(orientations)*rows)return;
+    const int pose=index/rows,row=index%rows;
+    int delta=row-firstCell%rows;if(delta<0)delta+=rows;
+    size_t cell=static_cast<size_t>(firstCell)+delta;
+    double a=sampleR[index],b=sampleS[index];
+    for(;cell<static_cast<size_t>(firstCell)+tileCells;cell+=rows){
+        const size_t j=static_cast<size_t>(pose)*tileCells+cell-firstCell;
+        a=__dadd_rn(a,__ddiv_rn(r[j],static_cast<double>(phi)));
+        b=__dadd_rn(b,__ddiv_rn(s[j],static_cast<double>(phi)));
+    }
+    sampleR[index]=a;sampleS[index]=b;
+}
 __device__ double scaled_i0(double x)
 {
     x=fabs(x);double term=1,sum=1;
@@ -139,9 +162,10 @@ template<class T>struct Memory
 {
     T*pointer=nullptr;
     size_t capacity=0;
+    size_t allocations=0,releases=0;
     cudaError_t status=cudaSuccess;
     ~Memory(){if(pointer)cudaFree(pointer);}
-    void Release(){if(pointer)cudaFree(pointer);pointer=nullptr;capacity=0;}
+    void Release(){if(pointer){cudaFree(pointer);++releases;}pointer=nullptr;capacity=0;}
     bool Allocate(size_t count)
     {
         status=cudaSuccess;
@@ -149,18 +173,25 @@ template<class T>struct Memory
         Release();
         status=cudaMalloc(reinterpret_cast<void**>(&pointer),count*sizeof(T));
         if(status!=cudaSuccess)return false;
-        capacity=count;return true;
+        ++allocations;capacity=count;return true;
     }
     bool Load(const T*data,size_t count)
     {return Allocate(count) && (!count || (status=cudaMemcpy(pointer,data,count*sizeof(T),cudaMemcpyHostToDevice))==cudaSuccess);}
 };
 struct FacetWorkspace
 {
+    bool pending=false;
     Memory<AnalyticGpuPatch>patch;
     Memory<double>xy,angles,frames,weights,reflection,shadow,sumReflection,sumShadow;
+    Memory<double>sampleReflection,sampleShadow;
     std::vector<AnalyticGpuPatch>hostPatches;
     std::vector<double>hostXY,hostTheta;
     size_t reportedCount=0,reportedCells=0,reportedTile=0;
+    bool reportedGpuSamples=false;
+    size_t Allocations()const{return patch.allocations+xy.allocations+angles.allocations+frames.allocations+weights.allocations
+        +reflection.allocations+shadow.allocations+sumReflection.allocations+sumShadow.allocations+sampleReflection.allocations+sampleShadow.allocations;}
+    size_t Releases()const{return patch.releases+xy.releases+angles.releases+frames.releases+weights.releases
+        +reflection.releases+shadow.releases+sumReflection.releases+sumShadow.releases+sampleReflection.releases+sampleShadow.releases;}
     bool Bind(const AnalyticGpuModel &model,const std::vector<double> &theta)
     {
         const bool same=hostPatches.size()==model.patches.size()
@@ -179,15 +210,98 @@ struct FacetWorkspace
         return true;
     }
 };
+bool enabled(const char*name){const char*value=std::getenv(name);return value && std::strcmp(value,"1")==0;}
+struct FacetProfile
+{
+    typedef std::chrono::steady_clock Clock;
+    bool active=enabled("MBS_CUDA_ANALYTIC_PROFILE");
+    cudaEvent_t events[5]={};
+    double controlsMs=0,sumMs=0,samplesMs=0,copyMs=0,hostSamplesMs=0;
+    size_t downloadedBytes=0,tiles=0;
+    Clock::time_point started=Clock::now();
+    FacetProfile(){if(active)for(auto &event:events)if(cudaEventCreate(&event)!=cudaSuccess){active=false;break;}}
+    ~FacetProfile(){for(auto event:events)if(event)cudaEventDestroy(event);}
+    void Mark(int i){if(active && cudaEventRecord(events[i])!=cudaSuccess)active=false;}
+    void EndTile(){if(!active)return;
+        if(cudaEventSynchronize(events[4])!=cudaSuccess){active=false;return;}
+        double*values[]={&controlsMs,&sumMs,&samplesMs,&copyMs};
+        for(int i=0;i<4;++i){float ms=0;if(cudaEventElapsedTime(&ms,events[i],events[i+1])!=cudaSuccess){active=false;return;}*values[i]+=ms;}
+        ++tiles;
+    }
+    void EndCopy(){if(!active)return;
+        if(cudaEventSynchronize(events[4])!=cudaSuccess){active=false;return;}
+        float ms=0;if(cudaEventElapsedTime(&ms,events[3],events[4])!=cudaSuccess){active=false;return;}copyMs+=ms;
+    }
+    void Print(size_t count,size_t rows,int phi,bool gpuSamples,size_t allocations,size_t releases,size_t bytes)const{
+        if(!active)return;
+        std::printf("CUDA analytic profile: orientations=%zu theta=%zu phi=%d sample_reducer=%s tiles=%zu "
+            "controls_ms=%.6f weighted_sum_ms=%.6f sample_sum_ms=%.6f copy_ms=%.6f host_samples_ms=%.6f "
+            "wall_ms=%.6f d2h_bytes=%zu allocations=%zu releases=%zu scratch_bytes=%zu\n",count,rows,phi,
+            gpuSamples ? "gpu":"cpu",tiles,controlsMs,sumMs,samplesMs,copyMs,hostSamplesMs,
+            std::chrono::duration<double,std::milli>(Clock::now()-started).count(),downloadedBytes,allocations,releases,bytes);
+    }
+};
+
+// Shared launch sequence: synchronous evaluation and the overlap experiment
+// execute exactly the same kernels, arguments and orientation reduction.
+cudaError_t LaunchFacetTile(FacetWorkspace&cache,const AnalyticGpuModel&model,
+    size_t rows,int phi,size_t count,size_t first,size_t length,
+    FacetProfile*profile,const char*&operation)
+{
+    const size_t elements=count*length;
+    if(profile)profile->Mark(0);
+    controls_kernel<<<(elements+127)/128,128>>>(cache.patch.pointer,model.patches.size(),cache.xy.pointer,
+        cache.frames.pointer,cache.angles.pointer,rows,phi,count,first,length,model.indexReal,model.indexImag,
+        model.wave,model.circleRadius,model.shadowMode,cache.reflection.pointer,cache.shadow.pointer);
+    operation="launch analytic controls";cudaError_t status=cudaGetLastError();
+    if(status!=cudaSuccess)return status;
+    if(profile)profile->Mark(1);
+    sum_kernel<<<(length+127)/128,128>>>(cache.reflection.pointer,cache.shadow.pointer,cache.weights.pointer,
+        count,length,cache.sumReflection.pointer,cache.sumShadow.pointer);
+    operation="launch analytic sum";status=cudaGetLastError();
+    if(status==cudaSuccess&&profile)profile->Mark(2);
+    return status;
+}
 }
 
-bool EvaluateAnalyticFacetGpu(const AnalyticGpuModel &model,
+struct AnalyticFacetGpuPending::State
+{
+    FacetWorkspace*workspace=nullptr;
+    AnalyticGpuModel model;
+    size_t rows=0,count=0,cells=0;
+    int phi=0,device=0;
+    std::thread::id owner=std::this_thread::get_id();
+    cudaEvent_t done=nullptr;
+    bool held=false,submitted=false,recorded=false,collected=false;
+    std::vector<double>reflection,shadow;
+    bool Check(std::string*error)const{
+        int current=-1;
+        if(owner!=std::this_thread::get_id()||cudaGetDevice(&current)!=cudaSuccess||current!=device){
+            if(error)*error="analytic pending operation changed host thread/device";return false;}
+        return true;
+    }
+    void Release(){if(held){workspace->pending=false;held=false;}}
+    ~State(){
+        // Destruction cannot report a failed ownership check to its caller.
+        // Never release a live workspace from another thread/device.
+        if(held&&!Check(nullptr))std::terminate();
+        if(submitted&&!collected){
+            // A launch error may precede recording the completion event.
+            if(recorded)cudaEventSynchronize(done);else cudaStreamSynchronize(0);
+        }
+        Release();if(done)cudaEventDestroy(done);
+    }
+};
+
+static bool EvaluateAnalyticFacetGpuImpl(const AnalyticGpuModel &model,
     const std::vector<std::array<AnalyticBackscatter::Vec,3>>&poses,
     const std::vector<double>&weights,const std::vector<double>&theta,int phi,
     std::vector<double>&reflected,std::vector<double>&shadow,
-    std::vector<AnalyticFacetAverage::Components>*samples,std::string*error)
+    std::vector<AnalyticFacetAverage::Components>*samples,std::string*error,
+    AnalyticFacetGpuPending::State*pending=nullptr)
 {
     if(error)error->clear();
+    FacetProfile profile;
     const auto invalid=[&](const char*message){if(error)*error=message;return false;};
     if(poses.size()!=weights.size() || poses.empty() || theta.empty() || phi<1)
         return invalid("invalid orientation, weight or angular array size");
@@ -229,14 +343,16 @@ bool EvaluateAnalyticFacetGpu(const AnalyticGpuModel &model,
     static thread_local std::map<int,std::unique_ptr<FacetWorkspace>> workspaces;
     auto &entry=workspaces[device];if(!entry)entry.reset(new FacetWorkspace);
     auto &cache=*entry;
+    if(cache.pending)return invalid("analytic workspace already has a pending operation");
+    const size_t allocationsBefore=cache.Allocations(),releasesBefore=cache.Releases();
     if(!cache.Bind(model,theta)){
         if(cache.patch.status!=cudaSuccess)return failure("upload facet patches",cache.patch.status);
         if(cache.xy.status!=cudaSuccess)return failure("upload facet vertices",cache.xy.status);
         return failure("upload theta",cache.angles.status);
     }
-    auto &patch=cache.patch;auto &xy=cache.xy;auto &angles=cache.angles;
     auto &frames=cache.frames;auto &w=cache.weights;auto &r=cache.reflection;auto &s=cache.shadow;
     auto &sr=cache.sumReflection;auto &ss=cache.sumShadow;
+    auto &samplesR=cache.sampleReflection;auto &samplesS=cache.sampleShadow;
     if(!frames.Load(packed.data(),packed.size()))return failure("upload source frames",frames.status,packed.size()*sizeof(double));
     if(!w.Load(weights.data(),count))return failure("upload orientation weights",w.status,count*sizeof(double));
 
@@ -248,53 +364,158 @@ bool EvaluateAnalyticFacetGpu(const AnalyticGpuModel &model,
     size_t free=0,totalMemory=0;
     status=cudaMemGetInfo(&free,&totalMemory);
     if(status!=cudaSuccess)return failure("cudaMemGetInfo",status);
-    const size_t retained=(r.capacity+s.capacity+sr.capacity+ss.capacity)*sizeof(double);
+    const auto scratchBytes=[&](){return (r.capacity+s.capacity+sr.capacity+ss.capacity+samplesR.capacity+samplesS.capacity)*sizeof(double);};
+    const size_t retained=scratchBytes();
     const size_t bytesPerCell=2*(count+1)*sizeof(double);
     const size_t budget=std::min<size_t>(128*1024*1024,(free+retained)/2);
-    size_t tile=std::min(cells,std::max<size_t>(1,budget/bytesPerCell));
-    const auto releaseScratch=[&](){r.Release();s.Release();sr.Release();ss.Release();};
-    if(retained>budget || r.capacity>count*tile || s.capacity>count*tile || sr.capacity>tile || ss.capacity>tile)releaseScratch();
+    // Keep the sample accumulator inside the same 128 MiB scratch budget.
+    // Very large N*theta grids retain the bounded reference CPU path instead
+    // of allocating an unbounded GPU accumulator. Its arithmetic is identical.
+    const size_t sampleBytes=count*rows*2*sizeof(double);
+    const bool gpuSamples=samples && !enabled("MBS_CUDA_ANALYTIC_CPU_SAMPLES") && sampleBytes<=budget/2;
+    const size_t sampleElements=gpuSamples ? count*rows:0;
+    size_t tile=std::min(cells,std::max<size_t>(1,(budget-(gpuSamples ? sampleBytes:0))/bytesPerCell));
+#ifdef MBS_ANALYTIC_GPU_TEST_TILE_CELLS
+    tile=std::min<size_t>(tile,MBS_ANALYTIC_GPU_TEST_TILE_CELLS);
+#endif
+    const auto releaseScratch=[&](){r.Release();s.Release();sr.Release();ss.Release();samplesR.Release();samplesS.Release();};
+    const std::array<size_t,6>capacities={{r.capacity,s.capacity,sr.capacity,ss.capacity,samplesR.capacity,samplesS.capacity}};
+    tile=AnalyticGpuWorkspace::ReuseTile(budget,capacities,count,tile,sampleElements);
+    const std::array<size_t,6>requested={{count*tile,count*tile,tile,tile,sampleElements,sampleElements}};
+    if(!AnalyticGpuWorkspace::CanRetain(budget,capacities,requested))releaseScratch();
     for(;;){
-        if(r.Allocate(count*tile) && s.Allocate(count*tile) && sr.Allocate(tile) && ss.Allocate(tile))break;
-        status=r.status!=cudaSuccess ? r.status:s.status!=cudaSuccess ? s.status:sr.status!=cudaSuccess ? sr.status:ss.status;
+        if(r.Allocate(count*tile) && s.Allocate(count*tile) && sr.Allocate(tile) && ss.Allocate(tile)
+            && samplesR.Allocate(sampleElements) && samplesS.Allocate(sampleElements))break;
+        status=r.status!=cudaSuccess ? r.status:s.status!=cudaSuccess ? s.status:sr.status!=cudaSuccess ? sr.status:
+            ss.status!=cudaSuccess ? ss.status:samplesR.status!=cudaSuccess ? samplesR.status:samplesS.status;
         if(status!=cudaErrorMemoryAllocation || tile==1)return failure("allocate analytic tile",status,bytesPerCell*tile);
         // Only allocation failure permits retry. Never hide a kernel error.
         releaseScratch();cudaGetLastError();tile=std::max<size_t>(1,tile/2);
     }
-    if(cache.reportedCount!=count || cache.reportedCells!=cells || cache.reportedTile!=tile){
-        std::printf("CUDA analytic workspace: orientations=%zu theta=%zu phi=%d tile_cells=%zu/%zu scratch_bytes=%zu\n",
-            count,rows,phi,tile,cells,(r.capacity+s.capacity+sr.capacity+ss.capacity)*sizeof(double));
-        cache.reportedCount=count;cache.reportedCells=cells;cache.reportedTile=tile;
+    if(cache.reportedCount!=count || cache.reportedCells!=cells || cache.reportedTile!=tile || cache.reportedGpuSamples!=gpuSamples){
+        std::printf("CUDA analytic workspace: orientations=%zu theta=%zu phi=%d tile_cells=%zu/%zu scratch_bytes=%zu sample_reducer=%s\n",
+            count,rows,phi,tile,cells,scratchBytes(),gpuSamples ? "gpu":"cpu");
+        cache.reportedCount=count;cache.reportedCells=cells;cache.reportedTile=tile;cache.reportedGpuSamples=gpuSamples;
     }
     reflected.resize(cells);shadow.resize(cells);
+    if(pending){
+        // Preserve the existing tile/capacity choice. A non-single-tile case
+        // remains on the established synchronous path, before any kernel.
+        if(samples||tile!=cells)return true;
+        status=cudaEventCreateWithFlags(&pending->done,cudaEventDisableTiming);
+        if(status!=cudaSuccess)return failure("create analytic completion event",status);
+        pending->workspace=&cache;pending->model=model;
+        pending->rows=rows;pending->count=count;pending->cells=cells;pending->phi=phi;pending->device=device;
+        pending->reflection.swap(reflected);pending->shadow.swap(shadow);
+        cache.pending=true;pending->held=true;
+        return true;
+    }
     std::vector<double>hr,hs;
     if(samples){
         samples->assign(count*rows,AnalyticFacetAverage::Components{0,0});
-        hr.resize(count*tile);hs.resize(count*tile);
+        hr.resize(gpuSamples ? count*rows:count*tile);hs.resize(hr.size());
+        if(gpuSamples){
+            status=cudaMemset(samplesR.pointer,0,sampleElements*sizeof(double));
+            if(status!=cudaSuccess)return failure("clear reflected sample rows",status);
+            status=cudaMemset(samplesS.pointer,0,sampleElements*sizeof(double));
+            if(status!=cudaSuccess)return failure("clear shadow sample rows",status);
+        }
     }
     for(size_t first=0;first<cells;first+=tile){
         const size_t length=std::min(tile,cells-first),elements=count*length;
-        controls_kernel<<<(elements+127)/128,128>>>(patch.pointer,model.patches.size(),xy.pointer,frames.pointer,angles.pointer,
-            rows,phi,count,first,length,model.indexReal,model.indexImag,model.wave,model.circleRadius,model.shadowMode,r.pointer,s.pointer);
-        status=cudaGetLastError();if(status!=cudaSuccess)return failure("launch analytic controls",status);
-        sum_kernel<<<(length+127)/128,128>>>(r.pointer,s.pointer,w.pointer,count,length,sr.pointer,ss.pointer);
-        status=cudaGetLastError();if(status!=cudaSuccess)return failure("launch analytic sum",status);
+        const char*operation=nullptr;
+        status=LaunchFacetTile(cache,model,rows,phi,count,first,length,&profile,operation);
+        if(status!=cudaSuccess)return failure(operation,status);
+        if(gpuSamples){
+            sample_rows_kernel<<<(sampleElements+127)/128,128>>>(r.pointer,s.pointer,count,rows,phi,first,length,samplesR.pointer,samplesS.pointer);
+            status=cudaGetLastError();if(status!=cudaSuccess)return failure("launch analytic sample reduction",status);
+        }
+        profile.Mark(3);
         status=cudaMemcpy(reflected.data()+first,sr.pointer,length*sizeof(double),cudaMemcpyDeviceToHost);
         if(status!=cudaSuccess)return failure("copy reflected tile",status);
         status=cudaMemcpy(shadow.data()+first,ss.pointer,length*sizeof(double),cudaMemcpyDeviceToHost);
         if(status!=cudaSuccess)return failure("copy shadow tile",status);
-        if(samples){
+        profile.downloadedBytes+=2*length*sizeof(double);
+        if(samples && !gpuSamples){
             status=cudaMemcpy(hr.data(),r.pointer,elements*sizeof(double),cudaMemcpyDeviceToHost);
             if(status!=cudaSuccess)return failure("copy reflected orientation samples",status);
             status=cudaMemcpy(hs.data(),s.pointer,elements*sizeof(double),cudaMemcpyDeviceToHost);
             if(status!=cudaSuccess)return failure("copy shadow orientation samples",status);
+            profile.downloadedBytes+=2*elements*sizeof(double);
+        }
+        profile.Mark(4);profile.EndTile();
+        if(samples && !gpuSamples){
+            const auto start=FacetProfile::Clock::now();
             for(size_t i=0;i<count;++i)for(size_t cell=0;cell<length;++cell){
                 const size_t j=i*length+cell,t=(first+cell)%rows;
                 (*samples)[i*rows+t].reflection+=hr[j]/phi;(*samples)[i*rows+t].shadow+=hs[j]/phi;
             }
+            profile.hostSamplesMs+=std::chrono::duration<double,std::milli>(FacetProfile::Clock::now()-start).count();
         }
     }
+    if(gpuSamples){
+        profile.Mark(3);
+        status=cudaMemcpy(hr.data(),samplesR.pointer,sampleElements*sizeof(double),cudaMemcpyDeviceToHost);
+        if(status!=cudaSuccess)return failure("copy reflected sample rows",status);
+        status=cudaMemcpy(hs.data(),samplesS.pointer,sampleElements*sizeof(double),cudaMemcpyDeviceToHost);
+        if(status!=cudaSuccess)return failure("copy shadow sample rows",status);
+        profile.downloadedBytes+=sampleBytes;
+        profile.Mark(4);profile.EndCopy();
+        const auto start=FacetProfile::Clock::now();
+        for(size_t i=0;i<sampleElements;++i){(*samples)[i].reflection=hr[i];(*samples)[i].shadow=hs[i];}
+        profile.hostSamplesMs+=std::chrono::duration<double,std::milli>(FacetProfile::Clock::now()-start).count();
+    }
+    profile.Print(count,rows,phi,gpuSamples,cache.Allocations()-allocationsBefore,cache.Releases()-releasesBefore,scratchBytes());
     return true;
+}
+
+bool EvaluateAnalyticFacetGpu(const AnalyticGpuModel&model,
+    const std::vector<std::array<AnalyticBackscatter::Vec,3>>&frames,
+    const std::vector<double>&weights,const std::vector<double>&theta,int phi,
+    std::vector<double>&reflection,std::vector<double>&shadow,
+    std::vector<AnalyticFacetAverage::Components>*samples,std::string*error)
+{
+    return EvaluateAnalyticFacetGpuImpl(model,frames,weights,theta,phi,reflection,shadow,samples,error);
+}
+
+AnalyticFacetGpuPending::AnalyticFacetGpuPending()=default;
+AnalyticFacetGpuPending::~AnalyticFacetGpuPending()=default;
+bool AnalyticFacetGpuPending::Prepare(const AnalyticGpuModel&model,
+    const std::vector<std::array<AnalyticBackscatter::Vec,3>>&frames,
+    const std::vector<double>&weights,const std::vector<double>&theta,int phi,
+    bool&supported,std::string*error)
+{
+    supported=false;
+    if(state){if(error)*error="analytic pending operation was already prepared";return false;}
+    state.reset(new State);std::vector<double>reflection,shadow;
+    if(!EvaluateAnalyticFacetGpuImpl(model,frames,weights,theta,phi,reflection,shadow,nullptr,error,state.get()))return false;
+    supported=state->held;return true;
+}
+bool AnalyticFacetGpuPending::Submit(std::string*error)
+{
+    if(error)error->clear();
+    if(!state||!state->held||state->submitted){if(error)*error="invalid analytic submit state";return false;}
+    if(!state->Check(error))return false;
+    state->submitted=true;const char*operation=nullptr;
+    cudaError_t status=LaunchFacetTile(*state->workspace,state->model,state->rows,state->phi,
+        state->count,0,state->cells,nullptr,operation);
+    if(status==cudaSuccess){operation="record analytic completion event";status=cudaEventRecord(state->done);state->recorded=status==cudaSuccess;}
+    if(status!=cudaSuccess){if(error)*error=std::string(operation)+": "+cudaGetErrorString(status);return false;}
+    return true;
+}
+bool AnalyticFacetGpuPending::Collect(std::vector<double>&reflection,std::vector<double>&shadow,std::string*error)
+{
+    if(error)error->clear();
+    if(!state||!state->held||!state->recorded||state->collected){if(error)*error="invalid analytic collect state";return false;}
+    if(!state->Check(error))return false;
+    cudaError_t status=cudaEventSynchronize(state->done);
+    if(status==cudaSuccess)status=cudaMemcpy(state->reflection.data(),state->workspace->sumReflection.pointer,
+        state->cells*sizeof(double),cudaMemcpyDeviceToHost);
+    if(status==cudaSuccess)status=cudaMemcpy(state->shadow.data(),state->workspace->sumShadow.pointer,
+        state->cells*sizeof(double),cudaMemcpyDeviceToHost);
+    if(status!=cudaSuccess){if(error)*error=std::string("collect analytic controls: ")+cudaGetErrorString(status);return false;}
+    reflection.swap(state->reflection);shadow.swap(state->shadow);
+    state->collected=true;state->Release();return true;
 }
 
 bool EvaluateAnalyticAzimuthGaussianGpu(

@@ -272,6 +272,17 @@ struct PreparedOrientation
     double extinctionOt = 0.0;
 };
 
+#ifdef USE_CUDA
+// Same-thread hooks surround only the existing pure CPU packing loop. CUDA
+// uploads, allocation and registration stay outside that interval.
+struct GpuPackingWork
+{
+    virtual ~GpuPackingWork() = default;
+    virtual void BeforePacking() = 0;
+    virtual void AfterPacking() = 0;
+};
+#endif
+
 class HandlerPO : public Handler
 {
 public:
@@ -302,6 +313,10 @@ public:
                       PreparedOrientation &out);
     double ComputeForwardExtinctionOt(const PreparedOrientation &prepared) const;
 #ifdef USE_CUDA
+    // Native-request boundary only, before producers start. Frees capacity
+    // retained by the opt-in bounded resident path; legacy TLS is untouched.
+    // Failed frees remain tracked and return false to the caller.
+    static bool ReleaseIdleBoundedResidentGpuCache();
     bool CanHandleResidentConvexGpu() const;
     bool HandleResidentConvexGpu(const GpuConvexQueue::Input* inputs,
         const GpuConvexQueue::Output* beams,size_t beamCount,
@@ -339,6 +354,12 @@ public:
                                       Arr2D &localM_noshadow,
                                       double scale = 1.0,
                                       double waveIndex = 0.0);
+#ifdef USE_CUDA
+    // Unsupported returns true with used=false and leaves accumulators intact.
+    // Once used=true, a failure is fatal: callers must not repeat the batch.
+    bool TryHandleOrientationsWithPackingWork(const std::vector<PreparedOrientation>&prepared,
+        Arr2D&localM,Arr2D&localM_noshadow,GpuPackingWork&work,bool&used);
+#endif
     bool HandleOrientationsToLocalGpuOnDevice(
                                       const std::vector<PreparedOrientation> &prepared,
                                       int start,

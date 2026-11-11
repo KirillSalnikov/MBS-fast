@@ -7,6 +7,7 @@
 std::map<std::string,std::string> sharedSourcePaths;
 size_t sharedSourceLinks=0,sharedSourceBytes=0,sharedSourceCreates=0;
 void WriteSharedSources(const std::string& path,const std::string& text){
+    if(MemoryPath(path)){Atomic(path,text);return;}
     // Small lists do not repay the extra lookup. Native jobs
     // and files outside an unfinished derived transaction use the old path.
     if(text.size()<4096||!activeAtomicFileBatch||!activeAtomicFileBatch->Accepts(path)){
@@ -33,7 +34,7 @@ void WriteSharedSources(const std::string& path,const std::string& text){
         activeAtomicFileBatch->AddedDurableLink(path);return;
     }
     const auto temporary=path+".link.tmp";
-    Require(unlink(temporary.c_str())==0||errno==ENOENT,"cannot remove unfinished source link");
+    Require(RemovePath(temporary)==0||errno==ENOENT,"cannot remove unfinished source link");
     if(link(shared.c_str(),temporary.c_str())!=0){
         const int error=errno;
         // Filesystems without hard links retain the fully durable old layout.
@@ -41,7 +42,7 @@ void WriteSharedSources(const std::string& path,const std::string& text){
                 "cannot link shared source manifest "+path);
         Atomic(path,text);return;
     }
-    Require(rename(temporary.c_str(),path.c_str())==0,"cannot publish shared source link");
+    Require(RenamePath(temporary,path)==0,"cannot publish shared source link");
     activeAtomicFileBatch->AddedDurableLink(path);
     ++sharedSourceLinks;sharedSourceBytes+=text.size();
 }

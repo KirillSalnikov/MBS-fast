@@ -7,6 +7,7 @@ std::set<std::string> unpackedOversizeJobs;
 int indexImportFd=-1;size_t indexImportPendingBytes=0;
 size_t indexJournalFlushes=0;
 void BeginIndexImport(){
+    if(memoryMode)return;
     Require(indexImportFd<0,"nested job index import");
     if(compactIndex){indexImportFd=open((root+"/completed_jobs.journal").c_str(),O_WRONLY|O_CREAT|O_APPEND,0644);
         Require(indexImportFd>=0,"cannot open imported job index");indexImportPendingBytes=0;}
@@ -49,6 +50,7 @@ bool ParseSampling(const std::string& text,const std::string& folder,Job& j,bool
     return true;
 }
 void ConfigureIndex(bool fresh){
+    if(memoryMode){compactIndex=true;packJobs=false;return;}
     const char* packed=getenv("MBS_FULLAUTO_PACK_JOBS");
     if(packed&&*packed)Require(std::string(packed)=="0"||std::string(packed)=="1","MBS_FULLAUTO_PACK_JOBS must be 0 or 1");
     const auto packedPolicy=root+"/job_pack_format.txt";
@@ -95,13 +97,109 @@ void ReadCompactDiagnostics(const std::string& marker,const std::string& index,J
     const auto diagnostics=marker.substr(end+1);Require(Hash(diagnostics)==hash,"compact diagnostics changed");
     ParseDiagnostics(diagnostics,j);
 }
-void PublishComplete(const Job& j,const std::string& metadata){
-    if(!compactIndex){Atomic(j.folder+"/complete.txt",metadata);return;}
+std::string CompletionText(const Job& j,const std::string& metadata)const{
+    if(!compactIndex)return metadata;
     const auto index=SamplingText(j),diagnostics=DiagnosticText(j);
-    Atomic(j.folder+"/complete.txt",metadata+"MBS_SAMPLING_V1 "+Hash(index)+" "+Number(index.size())+"\n"+index
-        +"MBS_DIAGNOSTICS_V1 "+Hash(diagnostics)+"\n"+diagnostics);
+    return metadata+"MBS_SAMPLING_V1 "+Hash(index)+" "+Number(index.size())+"\n"+index
+        +"MBS_DIAGNOSTICS_V1 "+Hash(diagnostics)+"\n"+diagnostics;
 }
+void PublishComplete(const Job& j,const std::string& metadata){
+    Atomic(j.folder+"/complete.txt",CompletionText(j,metadata));
+}
+// Oversize is the only packed-publication fallback. Deferred launch/manifests
+// and native output must all be durable before a loose marker is published.
+// This walks only the single current private job, never prior checkpoints.
+void FlushNativePrivateTree(const std::string& path)const{
+    struct stat before{},after{},named{};
+    Require(lstat(path.c_str(),&before)==0,"cannot inspect private native checkpoint "+path);
+    const bool directory=S_ISDIR(before.st_mode);
+    Require(directory||S_ISREG(before.st_mode),"unsafe private native checkpoint member "+path);
+    PackedJobStore::Descriptor fd(open(path.c_str(),O_RDONLY|O_NOFOLLOW|(directory?O_DIRECTORY:0)));
+    Require(fd.fd>=0&&fstat(fd.fd,&after)==0&&PackedJobStore::Same(before,after),"private native checkpoint changed before flush "+path);
+    if(directory){
+        DIR* dir=fdopendir(dup(fd.fd));Require(dir,"cannot list private native checkpoint "+path);
+        std::vector<std::string> names;errno=0;
+        while(auto* entry=readdir(dir))if(std::string(entry->d_name)!="."&&std::string(entry->d_name)!="..")names.push_back(entry->d_name);
+        const int error=errno;closedir(dir);Require(error==0,"cannot enumerate private native checkpoint "+path);
+        std::sort(names.begin(),names.end());for(const auto& name:names)FlushNativePrivateTree(path+"/"+name);
+    }
+    PackedJobStore::Flush(fd.fd);
+    Require(fstat(fd.fd,&after)==0&&lstat(path.c_str(),&named)==0&&PackedJobStore::Same(before,after)&&PackedJobStore::Same(before,named),"private native checkpoint changed during flush "+path);
+}
+void PublishPreparedComplete(const Job& j,const std::string& metadata,const PackedJobStore::ExpectedMembers& expected){
+    if(!packJobs){PublishComplete(j,metadata);return;}
+    const auto marker=CompletionText(j,metadata);
+    try{packedInodesReleased+=PackedJobStore::PackPrepared(j.folder,marker,expected);return;}
+    catch(const PackedJobStore::Oversize& error){
+        unpackedOversizeJobs.insert(j.identity);
+        Log("checkpoint_pack_oversize_retained","{\"folder\":"+Quoted(j.folder)+",\"message\":"+Quoted(error.what())+",\"original_preserved\":true}");
+    }
+    auto verifyExpected=[&](){for(const auto& member:expected){
+        Require(PackedJobStore::Relative(member.first)&&member.first!="complete.txt","unsafe native expected member");
+        Require(FileHash(j.folder+"/"+member.first)==member.second,"native receipt changed before durable fallback");}};
+    verifyExpected();FlushNativePrivateTree(j.folder);
+    PackedJobStore::FlushDirectory(j.folder.substr(0,j.folder.find_last_of('/')));verifyExpected();
+    Require(!Exists(j.folder+"/complete.txt"),"native fallback would overwrite completed job");
+    const auto temporary=j.folder+"/complete.txt.tmp";
+    PackedJobStore::Descriptor file(open(temporary.c_str(),O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW,0644));
+    Require(file.fd>=0,"cannot create native fallback completion");PackedJobStore::Write(file.fd,marker);PackedJobStore::Flush(file.fd);
+    Require(rename(temporary.c_str(),(j.folder+"/complete.txt").c_str())==0,"cannot publish native fallback completion");
+    PackedJobStore::FlushDirectory(j.folder);
+}
+
+// Derived data is private until publication. Preserve the legacy raw batching
+// exactly; noncompact jobs still publish loose files before Load writes their
+// separate sampling index. Compact packed jobs can commit their private bytes
+// directly to the same durable V1 frontier used by native blocks.
+struct DerivedFileBatch {
+    bool prepared;std::unique_ptr<AtomicFileBatch> files;
+    DerivedFileBatch(const std::string& folder,bool prepare,bool legacyBatch=true):prepared(prepare){
+        if(prepared||legacyBatch)files.reset(new AtomicFileBatch(folder));
+    }
+    void Finish(){if(files&&!prepared)files->Commit();files.reset();}
+};
+bool PrepareDerivedPublication()const{return packJobs&&compactIndex;}
+void PublishNativeComplete(const Job& j,const std::string& metadata,const PackedJobStore::ExpectedMembers& expected){
+    PublishPreparedComplete(j,metadata,expected);
+}
+void PublishDerivedComplete(const Job& j,const std::string& metadata,DerivedFileBatch& batch){
+    if(!batch.prepared){batch.Finish();PublishComplete(j,metadata);return;}
+    Require(PrepareDerivedPublication()&&batch.files&&batch.files.get()==activeAtomicFileBatch,
+            "derived publication lost private staging scope");
+    PackedJobStore::ExpectedMembers expected;
+    auto remember=[&](const std::string& path,const std::string& digest){
+        Require(path.compare(0,j.folder.size()+1,j.folder+"/")==0,"derived receipt member outside job");
+        const auto name=path.substr(j.folder.size()+1);const auto inserted=expected.emplace(name,digest);
+        if(!inserted.second&&inserted.first->second!=digest)
+            Require(false,"derived receipt differs from private member "+path
+                +" (receipt="+inserted.first->second+", member="+digest+")");};
+    // These are the hashes already serialized by the caller, not a fresh
+    // receipt after a mutation. Binding them catches changes before Collect.
+    std::istringstream receipt(metadata);std::string identity,seconds,dataHash,summaryHash,sourcesHash,integrityHash,extra;
+    Require(bool(receipt>>identity>>seconds>>dataHash>>summaryHash>>sourcesHash)&&identity==j.identity,
+            "invalid derived completion receipt");
+    remember(j.data,dataHash);if(summaryHash!="none")remember(j.summary,summaryHash);
+    remember(j.folder+"/angular_sources.tsv",sourcesHash);
+    if(receipt>>integrityHash){Require(!(receipt>>extra),"extra derived completion fields");
+        remember(j.folder+"/integral_outputs.fnv",integrityHash);}
+    // Bind every staged local product, including command/diagnostic text and
+    // hard-linked provenance. External source graphs retain their old hashes
+    // and their complete dependency validation before use.
+    for(const auto& path:batch.files->files)remember(path,FileHash(path));
+    auto rememberManifest=[&](const std::string& name){
+        const auto found=expected.find(name);Require(found!=expected.end(),"unbound derived integrity manifest");
+        const auto text=ReadVerifiedText(j.folder+"/"+name,found->second);std::istringstream rows(text);std::string line;
+        while(std::getline(rows,line)){const auto split=line.find_last_of(' ');
+            Require(split!=std::string::npos,"invalid derived integrity manifest");
+            remember(line.substr(0,split),line.substr(split+1));}
+    };
+    if(!integrityHash.empty())rememberManifest("integral_outputs.fnv");
+    if(expected.count("paired_depth.tsv"))rememberManifest("paired_depth.tsv");
+    batch.Finish();PublishPreparedComplete(j,metadata,expected);
+}
+
 void AppendIndex(const Job& j){
+    if(memoryMode)return;
     if(!compactIndex||restoringIndex)return;
     const auto local=root+"/jobs/",parent=refinementParent+"/jobs/";
     const bool inLocal=j.folder.compare(0,local.size(),local)==0;
@@ -121,6 +219,7 @@ void AppendIndex(const Job& j){
     else{const bool okay=fsync(fd)==0;close(fd);Require(okay,"job index journal flush failed");++indexJournalFlushes;}
 }
 size_t RestoreIndexJournal(){
+    if(memoryMode){indexJournalRestored=true;return 0;}
     if(!compactIndex||indexJournalRestored)return 0;
     const auto path=root+"/completed_jobs.journal";std::ifstream in(path.c_str(),std::ios::binary);
     if(!in){Require(!Exists(path),"cannot read job index journal");indexJournalRestored=true;return 0;}

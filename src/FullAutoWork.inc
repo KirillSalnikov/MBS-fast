@@ -42,6 +42,11 @@ class AdditionalWork {
     }
     void CorrectedCost(WorkForecast& result,int count,int depth,int paired,size_t rows)const{
         const int m=std::max(64,count/8);
+        if(e.StagedCutoff()){const int k=std::max(64,count/64);
+            NativeCost(result,count,depth,paired,rows,1);NativeCost(result,m,depth,paired,rows,1);
+            NativeCost(result,m,depth,paired,rows,3);NativeCost(result,k,depth,paired,rows,2);
+            if(k!=m)NativeCost(result,k,depth,paired,rows,3);return;
+        }
         // Conservatively charge all three legs, including B_m when a verified
         // embedded prefix could save it. No native pilot or filesystem scan
         // is allowed inside a metadata-only forecast. Legacy paired parents
@@ -117,10 +122,10 @@ class AdditionalWork {
 public:
     AdditionalWork(Engine& engine,const unsigned* seedSet,bool ignoreSaved=false,bool productionProfilesOnly=false,bool uniform=false,size_t coverageLimit=8*1024*1024):e(engine),ignoreCoverage(ignoreSaved),productionOnly(productionProfilesOnly),uniformPhi(uniform),coverageBudget(new CoverageBudget(coverageLimit)){
         std::copy(seedSet,seedSet+8,seeds.begin());const auto recipe=e.ExecutionHash();
-        const auto balancedRecipe=Hash(recipe+" balanced-child-v1"),offRecipe=Hash(recipe+" off-child-v1");
+        const auto balancedRecipe=Hash(recipe+(e.StagedCutoff()?" staged-fast-child-v1":" balanced-child-v1")),offRecipe=Hash(recipe+" off-child-v1");
         for(const auto& item:e.cache){const Job& j=item.second;
             if(productionProfilesOnly&&std::find(e.seeds.begin(),e.seeds.end(),j.seed)==e.seeds.end())continue;
-            const int role=j.executionHash==recipe?0:j.executionHash==balancedRecipe?1:j.executionHash==offRecipe?2:-1;
+            const int role=j.executionHash==recipe?0:j.executionHash==balancedRecipe?1:j.executionHash==offRecipe?2:j.executionHash==Hash(recipe+" staged-balanced-child-v1")?3:-1;
             if(j.assembled||j.paired||j.count<=0||j.inputAngles.empty()||role<0||j.phi!=e.phi
                 ||j.block!=e.kernel.block||j.pipeline!=e.kernel.pipeline||j.warp!=e.kernel.warp||j.mirrored!=e.mirror||j.hasControls!=e.controls)continue;
             if(j.seconds<=0||!std::isfinite(j.seconds))continue;

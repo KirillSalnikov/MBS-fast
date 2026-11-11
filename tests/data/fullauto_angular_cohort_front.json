@@ -1,0 +1,30 @@
+{
+  "source_snapshot": "/home/user/BEM-CUDA/artifacts/incoherent_fix_trial_20261106/cpu_fullauto/candidate_phi_incoherent/result/round_snapshots/round5_f148a4dcfca2bb98",
+  "source_files": {
+    "parameters_accuracy.csv": "379a096fb513ae4945e734bfcae3d41ee3476a44ad320feb33585ddf2cc642c2",
+    "angular_sampling.csv": "2ddaff7c7a390eb7d21b3b70779454c4cdb6136980ad439e731360f683544459"
+  },
+  "fixture_sha256": "8e00ff7fe808de0bd9534983bfd4ec98c61b176b6a47618a98f4575e267cc516",
+  "actual_worst_pair": {
+    "theta_left_deg": "151.875",
+    "theta_right_deg": "152.1875",
+    "noise95": "0.0016740222004619461",
+    "allowance": "0.00125",
+    "passed": "0",
+    "element": "M44",
+    "normalized_ratio": "0",
+    "N_left_level0": "2048",
+    "N_right_level0": "1024",
+    "next_left_level0": "2048",
+    "next_right_level0": "2048",
+    "N_left_level1": "1024",
+    "N_right_level1": "1024",
+    "next_left_level1": "1024",
+    "next_right_level1": "1024",
+    "N_left_level2": "1024",
+    "N_right_level2": "1024",
+    "next_left_level2": "1024",
+    "next_right_level2": "1024"
+  },
+  "purpose": "Actual33-point candidate2 round5 prefix allocations and failing boundary. This is a planning fixture, not a replacement optical sample."
+}

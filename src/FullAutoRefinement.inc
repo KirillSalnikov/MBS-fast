@@ -13,7 +13,7 @@ std::vector<Samples> WeightedLevels(const AdaptiveData& data,const std::vector<s
         for(size_t l=0;l<result.size();++l)for(int s=0;s<8;++s)for(int j=0;j<16;++j)result[l][s][0][j]+=w.second*data.levels[l][s][row][j];}return result;
 }
 std::vector<std::pair<size_t,double>> QueryWeights(const Engine& e,const std::vector<size_t>& knots,double q){
-    auto weights=LocalCubicWeights(Angles(e.theta,knots),q);for(auto& w:weights)w.first=knots[w.first];return weights;
+    auto weights=POOutputWeights(e.go,e.coherent,Angles(e.theta,knots),q);for(auto& w:weights)w.first=knots[w.first];return weights;
 }
 int Doubled(const Engine& e,int n){return n>e.maxCount/2?e.maxCount:2*n;}
 // All support nodes of one selected level grow together. This preserves the

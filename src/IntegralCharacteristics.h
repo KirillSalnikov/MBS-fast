@@ -56,6 +56,10 @@ std::string FormatIntegralCharacteristicsLog(
     const IntegralCharacteristics &values,
     const std::string &label);
 
+std::string FormatIntegralCharacteristicsTsv(
+    const IntegralCharacteristics &values,
+    const std::string &label);
+
 void WriteIntegralCharacteristicsTsv(
     const std::string &destName,
     const std::string &label,

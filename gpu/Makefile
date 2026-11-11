@@ -15,6 +15,7 @@ USE_MPI ?= 0
 GPU_PRECISION ?= double
 GPU_FAST_MATH ?= 0
 GPU_PHASE_TRIG ?= precise
+GPU_PHASE_EDGES ?= polygon
 GPU_LTO ?= 1
 
 ifeq ($(filter float fp32 double fp64,$(GPU_PRECISION)),)
@@ -66,6 +67,17 @@ GPU_PHASE_SUFFIX := _ds
 else
 GPU_PHASE_DEFINES :=
 GPU_PHASE_SUFFIX :=
+endif
+
+ifeq ($(filter polygon local,$(GPU_PHASE_EDGES)),)
+$(error GPU_PHASE_EDGES must be polygon or local)
+endif
+ifeq ($(GPU_PHASE_EDGES),local)
+ifneq ($(GPU_PHASE_TRIG),double_single)
+$(error GPU_PHASE_EDGES=local is experimental and requires GPU_PHASE_TRIG=double_single)
+endif
+GPU_PHASE_DEFINES += -DMBS_GPU_LOCAL_PHASE_EDGES
+GPU_PHASE_SUFFIX := $(GPU_PHASE_SUFFIX)_local_edges
 endif
 
 FAST_SUFFIX := $(if $(filter 1,$(GPU_FAST_MATH)),_fast,)
@@ -157,6 +169,7 @@ $(TARGET): $(OBJECTS)
 	@echo "CUDA_HOST_CXX: $(CUDA_HOST_CXX)"
 	@echo "GPU_PRECISION: $(GPU_PRECISION_LABEL) ($(GPU_PRECISION_CANON) storage)"
 	@echo "GPU_PHASE_TRIG: $(GPU_PHASE_TRIG)"
+	@echo "GPU_PHASE_EDGES: $(GPU_PHASE_EDGES)"
 	@echo "GPU_FAST_MATH: $(GPU_FAST_MATH)"
 	@echo "GPU_LTO: $(GPU_LTO)"
 	@echo "USE_MPI: $(USE_MPI)"

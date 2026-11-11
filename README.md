@@ -202,3 +202,10 @@ and the exact MBS-fast tag or commit. [GPLv3 license](LICENSE).
 для RTX 5080 — `GPU_ARCH=120`. Она использует две FP32 в чувствительных
 частях дифракционного ядра и сохраняет FP64 в трассировке.
 [Команды, измеренная точность и восстановление fullauto](docs/DOUBLE_SINGLE.md).
+
+## Staged pruning and checkpoint upgrades
+
+PO supports `--fullauto-cutoffs staged --orientation-pipeline`. The paired
+fast/balanced/unpruned correction retains the unpruned expectation. See
+[the staged pruning guide](docs/STAGED_CUTOFF_RU.md) for measured timings,
+accuracy limits, and certified continuation of existing checkpoints.

@@ -1,5 +1,9 @@
 // Included only by FullAuto.cpp: native adaptive scheduling and durable state.
 namespace {
+const char* AngularSamplingPolicy();
+std::string OutputDecisionPolicyIdentity(const Engine& e){
+    return std::string(AngularSamplingPolicy())+"\n"+POOutputInterpolationPolicy(e.go,e.coherent);
+}
 using Budgets=std::vector<std::vector<int>>;
 struct AdaptiveData {std::vector<Samples> levels;std::vector<std::vector<double>> costs;std::vector<double> analytic;std::string sources;};
 std::vector<int> AdaptiveDepths(const Engine& e){
@@ -151,7 +155,7 @@ std::vector<int> AllocateRow(const Engine& e,const AdaptiveData& data,const Budg
 struct AdaptiveState {int round=0,streak=0,interpolationPhi=0;unsigned auditSerial=0;std::vector<size_t> knots;Budgets counts,interpolationCounts;Matrix previous;std::vector<bool> valid,coarse;};
 #include "FullAutoResidualBudget.inc"
 std::string SaveRoundDiagnostics(Engine& e,const AdaptiveState& state,const AdaptiveData& stage,const Statistics& stats,const std::vector<size_t>& ids,const std::vector<double>& errors,const std::vector<double>& x){
-    const std::string folder=e.root+"/round_snapshots/round"+Number(state.round)+"_"+Hash(stage.sources);
+    const std::string folder=e.root+"/round_snapshots/round"+Number(state.round)+"_"+Hash(stage.sources+"\n"+OutputDecisionPolicyIdentity(e));
     Directory(folder);ResidualBudgetFile(e,state,ids,folder);WriteMatrix(folder+"/mueller_evaluated.dat",x,stats.mean);WriteGrid(folder+"/theta_support.csv",Angles(e.theta,state.knots));
     Atomic(folder+"/stage_sources.tsv",stage.sources);
     std::ostringstream table;table<<"theta_deg,is_support,interpolation_residual95,previous_available,half_prefix_stable";
@@ -171,7 +175,7 @@ std::string SaveRoundDiagnostics(Engine& e,const AdaptiveState& state,const Adap
 }
 const char* BudgetPolicy();
 void UpdatePassStreak(Engine& e,AdaptiveState& state,bool passed,const AdaptiveData& data,const std::string& snapshot){
-    const std::string key=Hash(e.ExecutionHash()+data.sources+Number(e.statistical)+" "+Number(e.interpolation)+" "+BudgetPolicy()+" all-level-paired-prefix-v1 "+Number(passed));
+    const std::string key=Hash(e.ExecutionHash()+data.sources+Number(e.statistical)+" "+Number(e.interpolation)+" "+BudgetPolicy()+" "+OutputDecisionPolicyIdentity(e)+" all-level-paired-prefix-v1 "+Number(passed));
     const std::string path=e.root+"/production_validation_receipt.tsv";bool reused=false;int result=std::min(state.streak,e.stablePasses);
     if(Exists(path)){const auto text=Read(path);const auto end=text.find('\n');Require(end!=std::string::npos&&Hash(text.substr(end+1))==text.substr(0,end),"production validation receipt changed");
         std::istringstream in(text.substr(end+1));std::string signature,savedKey,extra;int count;bool savedPass;
@@ -182,7 +186,10 @@ void UpdatePassStreak(Engine& e,AdaptiveState& state,bool passed,const AdaptiveD
         // matching saved estimator must not count again after an upgrade.
         const auto old=CompactJson(Read(e.root+"/intermediate_current.json"));
         reused=old.find("\"snapshot_folder\":"+Quoted(snapshot))!=std::string::npos
-            &&old.find("\"numerical_round_passed\":true")!=std::string::npos;
+            &&old.find("\"numerical_round_passed\":true")!=std::string::npos
+            &&(!UseLinearPOInterpolation(e.go,e.coherent)||
+                (old.find("\"interpolation_policy\":"+Quoted(POOutputInterpolationPolicy(e.go,e.coherent)))!=std::string::npos
+                 &&old.find("\"angular_sampling_policy\":"+Quoted(AngularSamplingPolicy()))!=std::string::npos));
     }
     if(!passed)result=0;else if(!reused)result=std::min(e.stablePasses,result+1);
     state.streak=result;std::ostringstream payload;payload<<e.signature<<' '<<key<<' '<<result<<' '<<passed<<'\n';Atomic(path,Hash(payload.str())+"\n"+payload.str());
@@ -217,8 +224,14 @@ void SaveAdaptive(Engine& e,const AdaptiveState& state,const std::string& phase=
             }history<<']';
             }
     history<<"],\"phi_by_theta\":[";bool firstPhi=true;for(const auto& row:e.thetaPhi){history<<(firstPhi?"":",")<<"["<<row.first<<","<<row.second<<"]";firstPhi=false;}history<<"]}";e.Log("allocation_checkpoint",history.str());
+    e.MaybeMemoryCheckpoint();
 }
-bool RestoreAdaptive(Engine& e,AdaptiveState& state,bool warmCache=true){
+// An already committed refinement can reconstruct its frozen parent metadata
+// without walking unrelated parent native graphs. Published file hashes remain
+// mandatory; ordinary restores retain full dependency validation by default.
+enum class CompletedRestoreValidation { FullDependencies, PublishedFilesOnly };
+bool RestoreAdaptive(Engine& e,AdaptiveState& state,bool warmCache=true,
+        CompletedRestoreValidation completedValidation=CompletedRestoreValidation::FullDependencies){
     const std::string path=e.root+"/adaptive_checkpoint.tsv";if(!Exists(path))return false;
     const std::string text=Read(path);const size_t newline=text.find('\n');std::istringstream header(text.substr(0,newline));int version;std::string hash;Require(bool(header>>version>>hash)&&(version>=2&&version<=6),"unsupported checkpoint schema");
     const std::string payload=text.substr(newline+1);Require(Hash(payload)==hash,"controller checkpoint changed");std::istringstream file(payload);std::string signature,phase;
@@ -249,9 +262,11 @@ bool RestoreAdaptive(Engine& e,AdaptiveState& state,bool warmCache=true){
     Require(!(file>>extra),"extra checkpoint fields");
     if(phase=="converged"&&Exists(e.root+"/final_outputs.fnv")){std::istringstream hashes(Read(e.root+"/final_outputs.fnv"));std::string path,digest;
         while(hashes>>path>>digest)Require(Hash(Read(e.root+"/"+path))==digest,"completed output changed");
-        ValidateIntegralSources(e.root);
-        std::set<std::string> visited;std::istringstream sources(Read(e.root+"/final_stage_sources.tsv"));size_t level;int sign,n;unsigned seed;
-        while(sources>>level>>sign>>n>>seed>>path)ValidateStoredJob(path,visited);
+        if(completedValidation==CompletedRestoreValidation::FullDependencies){
+            ValidateIntegralSources(e.root);
+            std::set<std::string> visited;std::istringstream sources(Read(e.root+"/final_stage_sources.tsv"));size_t level;int sign,n;unsigned seed;
+            while(sources>>level>>sign>>n>>seed>>path)ValidateStoredJob(path,visited);
+        }
         e.completedCheckpoint=true;
     }else if(warmCache)e.WarmCache();return true;
 }
@@ -282,7 +297,7 @@ InterpolationResult InterpolateBudget(const Engine& e,const std::vector<size_t>&
         const AdaptiveData* stage=nullptr,const Budgets* counts=nullptr){
     InterpolationResult result;result.output.resize(8);result.errors.resize(evaluated.size());result.matrixErrors.resize(evaluated.size());result.ratioErrors.resize(evaluated.size());Samples predicted(8);const auto x=Angles(e.theta,evaluated),sx=Angles(e.theta,knots);const auto support=Support(samples,evaluated,knots);
     InitInterpolationNoise(result,evaluated.size());
-    for(int s=0;s<8;++s){predicted[s]=LocalCubicInterpolate(sx,support[s],x);result.output[s]=LocalCubicInterpolate(sx,support[s],e.theta);}
+    for(int s=0;s<8;++s){predicted[s]=POOutputInterpolate(e.go,e.coherent,sx,support[s],x);result.output[s]=POOutputInterpolate(e.go,e.coherent,sx,support[s],e.theta);}
     const auto delta=Subtract(predicted,samples);const auto mean=Mean(delta),variance=Variance(delta),reference=Mean(samples),prediction=Mean(predicted);
     for(size_t r=0;r<evaluated.size();++r){Require(reference[r][0]>0,"nonpositive interpolation reference");for(int j=0;j<16;++j){result.matrixErrors[r][j]=(std::fabs(mean[r][j])+t95*std::sqrt(variance[r][j]/8))/reference[r][0];result.errors[r]=std::max(result.errors[r],result.matrixErrors[r][j]);
             ObserveInterpolationNoise(e,result,r,j,false,result.matrixErrors[r][j],std::fabs(mean[r][j])/reference[r][0],t95*std::sqrt(variance[r][j]/8)/reference[r][0]);}
@@ -341,15 +356,16 @@ InterpolationResult CommonPrefixInterpolationImpl(Engine& e,const AdaptiveState&
         const Samples data=Combine(stage.levels);const Matrix reference=Mean(data);const auto x=Angles(e.theta,ids);
         for(size_t interval:group.second.intervals){const size_t left=std::min(interval?interval-1:0,state.knots.size()-width),right=std::min(interval,state.knots.size()-width);
             std::vector<double> knots;std::vector<size_t> supportIds;Samples supports(8);for(size_t k=left;k<right+width;++k){const size_t row=std::lower_bound(ids.begin(),ids.end(),state.knots[k])-ids.begin();knots.push_back(e.theta[state.knots[k]]);supportIds.push_back(state.knots[k]);for(int s=0;s<8;++s)supports[s].push_back(data[s][row]);}
-            // Use the globally selected endpoint derivatives: their local
-            // four-node windows are entirely contained in this stencil.
+            // The coherent endpoint derivative windows are entirely inside
+            // this stencil. Incoherent PO uses the same two endpoint weights
+            // as the global piecewise-linear output, independently of values.
             // Stencils validates sorted, unique evaluated indices. Include
             // both endpoints as before: shared knots belong to both adjacent
             // intervals, in the same order, without rescanning all angles.
             const auto first=std::lower_bound(evaluated.begin(),evaluated.end(),state.knots[interval]);
             const auto last=std::upper_bound(first,evaluated.end(),state.knots[interval+1]);
             std::vector<double> query;std::vector<size_t> rows,positions;for(auto at=first;at!=last;++at){query.push_back(e.theta[*at]);rows.push_back(std::lower_bound(ids.begin(),ids.end(),*at)-ids.begin());positions.push_back(at-evaluated.begin());}
-            Samples predicted(8);for(int s=0;s<8;++s)predicted[s]=LocalCubicInterpolate(knots,supports[s],query);const Matrix pm=Mean(predicted);
+            Samples predicted(8);for(int s=0;s<8;++s)predicted[s]=POOutputInterpolate(e.go,e.coherent,knots,supports[s],query);const Matrix pm=Mean(predicted);
             for(size_t r=0;r<rows.size();++r){double error=0;const auto& ref=reference[rows[r]];
                 if(!(ref[0]>0)&&!state.interpolationCounts.empty()){
                     // A short control-variate prefix can have a nonpositive
@@ -370,7 +386,7 @@ InterpolationResult CommonPrefixInterpolationImpl(Engine& e,const AdaptiveState&
                     if(e.ratios&&j&&pm[r][0]>0){const double a=pm[r][j]/pm[r][0],b=ref[j]/ref[0];double v=0;for(int s=0;s<8;++s){const double influence=(predicted[s][r][j]-a*predicted[s][r][0])/pm[r][0]-(data[s][rows[r]][j]-b*data[s][rows[r]][0])/ref[0];v+=influence*influence/7;}const double ratio=std::fabs(a-b)+t95*std::sqrt(v/8);result.ratioErrors[positions[r]][j]=std::max(result.ratioErrors[positions[r]][j],ratio);error=std::max(error,ratio);
                         ObserveInterpolationNoise(e,result,positions[r],j,true,ratio,std::fabs(a-b),t95*std::sqrt(v/8),!state.interpolationCounts.empty());}}
                 if(result.growth[positions[r]].upper>std::max(previousWorst,e.interpolation)){
-                    auto weights=LocalCubicWeights(knots,query[r]);for(auto& w:weights)w.first=supportIds[w.first];
+                    auto weights=POOutputWeights(e.go,e.coherent,knots,query[r]);for(auto& w:weights)w.first=supportIds[w.first];
                     PlanInterpolationNoise(e,result.growth[positions[r]],stage,ns,ids,weights,evaluated[positions[r]],pm[r],ref);}
                 result.errors[positions[r]]=std::max(result.errors[positions[r]],error);}
         }
@@ -468,7 +484,7 @@ std::array<unsigned,8> ReserveAuditSeeds(Engine& e,AdaptiveState& state){
 }
 std::string AuditInputFingerprint(const Engine& e,const AdaptiveState& state,const AdaptiveData& production,const std::vector<size_t>& ids){
     std::ostringstream out;out<<e.signature<<'\n'<<e.ExecutionHash()<<'\n'<<state.round<<' '<<e.local<<' '<<e.initial<<' '<<e.minimum<<' '<<e.orientationBlock
-        <<' '<<Number(e.statistical)<<' '<<Number(e.interpolation)<<' '<<BudgetPolicy()<<'\n'<<production.sources;
+        <<' '<<Number(e.statistical)<<' '<<Number(e.interpolation)<<' '<<BudgetPolicy()<<'\n'<<OutputDecisionPolicyIdentity(e)<<'\n'<<production.sources;
     for(size_t k:state.knots)out<<k<<' ';
     out<<'\n';
     for(size_t id:ids){out<<id;for(const auto& level:state.counts)out<<' '<<level[id];out<<'\n';}
@@ -685,6 +701,31 @@ bool PhysicsAudit(Engine& e,const AdaptiveState& state,const std::vector<size_t>
 #include "FullAutoLevelStability.inc"
 #include "FullAutoResumeRound.inc"
 #include "FullAutoPositiveSampling.inc"
+bool PublishedInterpolationCompatible(const Engine& e){
+    if(!UseLinearPOInterpolation(e.go,e.coherent))return true;
+    const auto path=e.root+"/intermediate_current.json";
+    return Exists(path)&&CompactJson(Read(path)).find("\"interpolation_policy\":"+Quoted(POOutputInterpolationPolicy(e.go,e.coherent)))!=std::string::npos;
+}
+bool PrepareOutputInterpolationPolicy(Engine& e,AdaptiveState& state,bool resumed){
+    const auto path=e.root+"/interpolation_output_policy.json";
+    const bool exists=Exists(path);
+    const bool changed=resumed&&(UseLinearPOInterpolation(e.go,e.coherent)||exists)
+        &&(!exists||CompactJson(Read(path)).find("\"policy\":"+Quoted(POOutputInterpolationPolicy(e.go,e.coherent)))==std::string::npos);
+    if(changed){
+        // Commit the reset before publishing the new policy. On another
+        // interruption an old snapshot still cannot restore its old pass:
+        // PublishedInterpolationCompatible checks the snapshot itself too.
+        state.streak=0;e.independentPassed=false;SaveAdaptive(e,state);
+        e.Log("interpolation_policy_changed","{\"policy\":"+Quoted(POOutputInterpolationPolicy(e.go,e.coherent))
+            +",\"pass_streak_reset\":true,\"native_blocks_retained\":true,\"output_gates_require_recheck\":true}");
+    }
+    e.Record(path,"{\"policy\":"+Quoted(POOutputInterpolationPolicy(e.go,e.coherent))
+        +",\"fixed_linear_operator\":true,\"same_weights_all_replicas_and_elements\":true,\"mean_commutes\":true"
+        +",\"nonnegative_endpoint_weights\":"+(UseLinearPOInterpolation(e.go,e.coherent)?"true":"false")
+        +",\"new_within_interval_extrema\":"+(UseLinearPOInterpolation(e.go,e.coherent)?"false":"null")
+        +",\"scope\":\"production output, paired interpolation residuals and independent angular control; direct support means unchanged\"}");
+    return changed;
+}
 int RunAdaptive(Engine& e){
     const auto depths=AdaptiveDepths(e);
     AdaptiveState state;state.counts=Budgets(depths.size(),std::vector<int>(e.theta.size(),e.minimum));state.counts[0].assign(e.theta.size(),e.initial);
@@ -718,7 +759,11 @@ int RunAdaptive(Engine& e){
     PreparePointwisePolicy(e,state,resumed);
     PreparePrefixStabilityPolicy(e,state,resumed);
     PrepareAngularSamplingPolicy(e,state,resumed);
-    if(resumed){RevisitPublishedPass(e,state);BoundResumedRound(e,state,depths);}
+    const bool interpolationChanged=PrepareOutputInterpolationPolicy(e,state,resumed);
+    if(resumed){
+        if(!interpolationChanged&&PublishedInterpolationCompatible(e))RevisitPublishedPass(e,state);
+        BoundResumedRound(e,state,depths);
+    }
     e.Record(e.root+"/interpolation_refinement_policy.json",
         "{\"policy\":\"noise before angular refinement\",\"decision_scope\":\"production scheduling only\","
         "\"noise_first_when\":\"separate residual: lower95<=tolerance; legacy: mean<=tolerance or mean<=noise95\","
@@ -813,6 +858,7 @@ int RunAdaptive(Engine& e){
         Atomic(e.root+"/angular_sampling.json",Read(roundSnapshot+"/angular_sampling.json"));
         Atomic(e.root+"/angular_sampling.csv",angularSampling.table);
         Atomic(e.root+"/angular_shape.csv",angularSampling.shapeTable);
+        Atomic(e.root+"/angular_cohorts.csv",angularSampling.cohortTable);
         WriteInterpolationNoise(e,interp,ids,roundSnapshot);
         Atomic(roundSnapshot+"/level_prefix_stability.csv",prefixCheck.table);
         Atomic(roundSnapshot+"/level_prefix_sources.tsv",prefixCheck.sources);
@@ -820,7 +866,8 @@ int RunAdaptive(Engine& e){
         for(const char* name:{"cached_prefix_consistency.csv","cached_prefix_consistency_sources.tsv"})
             Atomic(roundSnapshot+"/"+name,Read(e.root+"/"+name));
         if(positive){Atomic(roundSnapshot+"/pointwise_budget.csv",Read(e.root+"/pointwise_budget_production.csv"));WriteFullAutoIntegrals(e,roundSnapshot,interp.output,stage.sources,false);
-            WritePOOutputAnnotations(e,roundSnapshot,state.knots,ids,stats,output,interp,common);}
+            WritePOOutputAnnotations(e,roundSnapshot,state.knots,ids,stats,output,interp,common);
+            if(!e.publicRoot.empty())WriteMatrix(roundSnapshot+"/mueller_fullauto.dat",e.theta,output.mean);}
         e.Log("round_decision","{\"round\":"+Number(state.round)+",\"statistics_pass\":"+(budget.directPass?"true":"false")
             +",\"output_statistics_pass\":"+(budget.outputPass?"true":"false")+AngularSamplingFields(angularSampling)+",\"interpolation_pass\":"+(interp.maximum<=e.interpolation?"true":"false")
             +",\"stability_pass\":"+(change<=NumericalBudget(e)?"true":"false")+",\"half_prefix_pass\":"+(coarse?"true":"false")+",\"previous_available\":"+(previous?"true":"false")
@@ -828,7 +875,7 @@ int RunAdaptive(Engine& e){
             +",\"output_positive_M11\":"+(positive?"true":"false")+",\"statistical95\":"+Number(StatisticalError(e,stats))+",\"output_statistical95\":"+Number(outputCI)
             +",\"error_budget_policy\":"+Quoted(BudgetPolicy())+",\"combined_direct95\":"+Number(positive?budget.direct:1e100)+",\"combined_output95\":"+Number(positive?budget.output:1e100)+",\"stability_budget\":"+Number(NumericalBudget(e))+",\"interpolation_residual95\":"+Number(interp.maximum)+",\"change_scaled_M11\":"+Number(change)+",\"statistical_budget\":"+Number(e.statistical)+",\"interpolation_budget\":"+Number(e.interpolation)+"}");
         UpdatePassStreak(e,state,pass,stage,roundSnapshot);lastCI=std::max(stats.maxInterval,positive?output.maxInterval:1e100);lastInterpolation=interp.maximum;e.lastRatio=std::max(stats.maxRatioInterval,positive?output.maxRatioInterval:1e100);
-        e.Record(e.root+"/intermediate_current.json","{\"converged\":false"+e.RefinementFields()+",\"round\":"+Number(state.round)+",\"snapshot_folder\":"+Quoted(roundSnapshot)
+        e.Record(e.root+"/intermediate_current.json","{\"converged\":false"+e.RefinementFields()+",\"interpolation_policy\":"+Quoted(POOutputInterpolationPolicy(e.go,e.coherent))+",\"round\":"+Number(state.round)+",\"snapshot_folder\":"+Quoted(roundSnapshot)
             +",\"matrix\":"+Quoted(roundSnapshot+"/mueller_evaluated.dat")+",\"accuracy_and_parameters\":"+Quoted(roundSnapshot+"/parameters_accuracy.csv")
             +",\"integrals\":"+(positive?Quoted(roundSnapshot+"/mueller_fullauto_integrals.tsv"):"null")+AngularSamplingFields(angularSampling)
             +",\"prefix_stability_policy\":"+Quoted(PrefixStabilityPolicy())+",\"all_level_prefix_pass\":"+(prefixCheck.passed?"true":"false")
@@ -852,10 +899,10 @@ int RunAdaptive(Engine& e){
                 Atomic(e.root+"/all_mueller_confidence.csv",accuracy.str());Atomic(e.root+"/normalized_mueller_confidence.csv",ratio.str());Atomic(e.root+"/theta_validation.csv",guards.str());
                 WritePOOutputAnnotations(e,e.root,state.knots,ids,stats,output,interp,common);
                 const bool physics=PhysicsAudit(e,state,ids,stats.mean);
-                e.Record(e.root+"/precision_contract.json","{\"output_cache_policy\":"+Quoted(OutputCachePolicy())+AngularSamplingFields(angularSampling)+",\"prefix_stability_policy\":"+Quoted(PrefixStabilityPolicy())+e.RefinementFields()+",\"all_level_and_joint_prefix_pass\":true,\"final_checks\":"+std::string(e.finalChecks?"true":"false")+",\"independent_audit_enabled\":"+std::string(e.finalAudit?"true":"false")+",\"error_budget_policy\":"+Quoted(BudgetPolicy())+",\"fixed_error_reserve\":"+Number(FixedBudgetReserve(e))+",\"statistics\":\"eight-scramble pointwise Student-t estimates\",\"normalized_ratios\":\"paired-covariance Fieller intervals for ratios of means\",\"interpolation_budget\":"+Number(e.interpolation)+",\"execution_budget\":"+Number((e.resourcePolicy=="auto"||e.config.useGpu)?e.eps/1024:0)+",\"rotation_budget\":"+Number((e.rotationBeta>1||e.rotationGamma>1)?e.eps/256:0)+",\"cutoff_budget\":"+Number(e.selectedCutoff!="requested"&&e.selectedCutoff!="off"?e.eps/8:0)+",\"selected_cutoff\":"+Quoted(e.selectedCutoff)+",\"automatic_cutoff_audit\":"+std::string(e.tuneCutoffs&&e.selectedCutoff!="off"?"true":"false")+",\"physical_depth\":"+Number(e.target)+",\"physical_accuracy_audited\":"+std::string(e.PhysicalAuditEnabled()?"true":"false")+",\"automatic_depth\":"+std::string(e.autoDepth?"true":"false")+",\"depth_budget\":"+Number(e.depthBudget)+",\"analytic_mean_error\":\"reported internal refinement, not an absolute bound\",\"global_simultaneous_confidence\":false}");
+                e.Record(e.root+"/precision_contract.json","{\"output_cache_policy\":"+Quoted(OutputCachePolicy())+e.DepthAccuracyFields()+",\"interpolation_policy\":"+Quoted(POOutputInterpolationPolicy(e.go,e.coherent))+AngularSamplingFields(angularSampling)+",\"prefix_stability_policy\":"+Quoted(PrefixStabilityPolicy())+e.RefinementFields()+",\"all_level_and_joint_prefix_pass\":true,\"final_checks\":"+std::string(e.finalChecks?"true":"false")+",\"independent_audit_enabled\":"+std::string(e.finalAudit?"true":"false")+",\"error_budget_policy\":"+Quoted(BudgetPolicy())+",\"fixed_error_reserve\":"+Number(FixedBudgetReserve(e))+",\"statistics\":\"eight-scramble pointwise Student-t estimates\",\"normalized_ratios\":\"paired-covariance Fieller intervals for ratios of means\",\"interpolation_budget\":"+Number(e.interpolation)+",\"execution_budget\":"+Number((e.resourcePolicy=="auto"||e.config.useGpu)?e.eps/1024:0)+",\"rotation_budget\":"+Number((e.rotationBeta>1||e.rotationGamma>1)?e.eps/256:0)+",\"cutoff_budget\":"+Number(e.selectedCutoff!="requested"&&e.selectedCutoff!="off"?e.eps/8:0)+",\"selected_cutoff\":"+Quoted(e.selectedCutoff)+",\"automatic_cutoff_audit\":"+std::string(e.tuneCutoffs&&e.selectedCutoff!="off"?"true":"false")+",\"physical_depth\":"+Number(e.target)+",\"physical_accuracy_audited\":"+std::string(e.PhysicalAuditEnabled()?"true":"false")+",\"automatic_depth\":"+std::string(e.autoDepth?"true":"false")+",\"depth_budget\":"+Number(e.depthBudget)+",\"analytic_mean_error\":\"reported internal refinement, not an absolute bound\",\"global_simultaneous_confidence\":false}");
                 if(!physics){SaveAdaptive(e,state,"physics_validation_failed");e.State("physics_validation_failed",state.round,PeakBudgets(state.counts),ids.size(),lastCI,lastInterpolation,state.streak);return 4;}
                 WriteFullAutoIntegrals(e,e.root,interp.output,stage.sources,true);
-                std::ostringstream finalHashes;for(const char* path:{"controller_command.json","angular_sampling_policy.json","angular_sampling.json","angular_sampling.csv","angular_shape.csv","final_checks_policy.json","prefix_stability_policy.json","level_prefix_stability.csv","level_prefix_sources.tsv","joint_prefix_stability.csv","cached_prefix_consistency.csv","cached_prefix_consistency_sources.tsv","output_cache_policy.json","error_budget_policy.json","pointwise_budget_production.csv","mueller_fullauto.dat","mueller_evaluated.dat","all_mueller_confidence.csv","normalized_mueller_confidence.csv","theta_support.csv","theta_evaluated.csv","orientation_budget.csv","final_stage_sources.tsv","independent_final_validation.json","precision_contract.json","physics_validation.json","execution_tuning.tsv","resource_calibration.json","rotation_verification.json","cutoff_calibration.json","automatic_cutoff_validation.json"})finalHashes<<path<<' '<<Hash(Read(e.root+"/"+path))<<'\n';if(e.finalAudit)finalHashes<<"independent_orientation_budget.csv "<<Hash(Read(e.root+"/independent_orientation_budget.csv"))<<'\n';if(e.finalAudit){const auto name="pointwise_budget_independent_serial"+Number(state.auditSerial-1)+".csv";finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';}if(e.finalAudit)for(const char* name:{"angular_audit_plan.json","angular_audit_training.csv","angular_audit_budget.csv","angular_audit_groups.json","angular_audit_support.csv","angular_audit_sources.tsv","production_validation_receipt.tsv","independent_audit_plan.json","independent_audit_cost_gate.json","independent_audit_reservation.tsv","independent_final_sources.tsv","independent_theta.csv","interpolation_validation_mode.json","interpolation_validation_sources.tsv","interpolation_validation_budgets.csv"})if(Exists(e.root+"/"+name))finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';if(e.autoDepth)for(const char* name:{"automatic_depth.tsv","depth_selection.json"})finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';if(Exists(e.root+"/depth_startup.tsv"))for(const char* name:{"depth_startup.tsv","depth_startup.json"})finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';HashMatrixAnnotations(e.root,finalHashes);finalHashes<<"theta_validation.csv "<<FileHash(e.root+"/theta_validation.csv")<<'\n';HashIntegralProducts(e.root,finalHashes);HashSchedulingReceipts(e,finalHashes);if(e.refinementWindow)for(const char* path:{"refinement_window_policy.json","refinement_window_import_complete.json","analytic_reference_theta.csv"})finalHashes<<path<<' '<<Hash(Read(e.root+"/"+path))<<'\n';Atomic(e.root+"/final_outputs.fnv",finalHashes.str());
+                std::ostringstream finalHashes;for(const char* path:{"controller_command.json","interpolation_output_policy.json","angular_sampling_policy.json","angular_sampling.json","angular_sampling.csv","angular_shape.csv","angular_cohorts.csv","final_checks_policy.json","prefix_stability_policy.json","level_prefix_stability.csv","level_prefix_sources.tsv","joint_prefix_stability.csv","cached_prefix_consistency.csv","cached_prefix_consistency_sources.tsv","output_cache_policy.json","error_budget_policy.json","pointwise_budget_production.csv","mueller_fullauto.dat","mueller_evaluated.dat","all_mueller_confidence.csv","normalized_mueller_confidence.csv","theta_support.csv","theta_evaluated.csv","orientation_budget.csv","final_stage_sources.tsv","independent_final_validation.json","precision_contract.json","physics_validation.json","execution_tuning.tsv","resource_calibration.json","rotation_verification.json","cutoff_calibration.json","automatic_cutoff_validation.json"})finalHashes<<path<<' '<<Hash(Read(e.root+"/"+path))<<'\n';if(e.finalAudit)finalHashes<<"independent_orientation_budget.csv "<<Hash(Read(e.root+"/independent_orientation_budget.csv"))<<'\n';if(e.finalAudit){const auto name="pointwise_budget_independent_serial"+Number(state.auditSerial-1)+".csv";finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';}if(e.finalAudit)for(const char* name:{"angular_audit_plan.json","angular_audit_training.csv","angular_audit_budget.csv","angular_audit_groups.json","angular_audit_support.csv","angular_audit_sources.tsv","production_validation_receipt.tsv","independent_audit_plan.json","independent_audit_cost_gate.json","independent_audit_reservation.tsv","independent_final_sources.tsv","independent_theta.csv","interpolation_validation_mode.json","interpolation_validation_sources.tsv","interpolation_validation_budgets.csv"})if(Exists(e.root+"/"+name))finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';if(e.autoDepth)for(const char* name:{"automatic_depth.tsv","depth_selection.json"})finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';if(Exists(e.root+"/depth_startup.tsv"))for(const char* name:{"depth_startup.tsv","depth_startup.json"})finalHashes<<name<<' '<<Hash(Read(e.root+"/"+name))<<'\n';HashMatrixAnnotations(e.root,finalHashes);finalHashes<<"theta_validation.csv "<<FileHash(e.root+"/theta_validation.csv")<<'\n';HashIntegralProducts(e.root,finalHashes);HashSchedulingReceipts(e,finalHashes);if(e.refinementWindow)for(const char* path:{"refinement_window_policy.json","refinement_window_import_complete.json","analytic_reference_theta.csv"})finalHashes<<path<<' '<<Hash(Read(e.root+"/"+path))<<'\n';Atomic(e.root+"/final_outputs.fnv",finalHashes.str());
                 SaveAdaptive(e,state,"converged");e.State("converged",state.round,PeakBudgets(state.counts),ids.size(),lastCI,lastInterpolation,state.streak);return 0;
             }
             state.streak=0;std::fill(state.valid.begin(),state.valid.end(),false);SaveAdaptive(e,state);continue;

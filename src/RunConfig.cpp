@@ -870,6 +870,22 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
             Fail(CliCanonicalFlag(spec.key)+" is incompatible with --fullauto.","remove this option or run the corresponding standalone mode; fullauto must not silently ignore it.");
         if(config.useFft)
             Fail("--fullauto requires a direct solver.","remove FFT.");
+        if(args.IsCatched("fullauto_layout")){
+            const auto layout=args.GetStringValue("fullauto_layout");
+            if(layout!="compact"&&layout!="legacy")Fail("fullauto-layout expects compact or legacy.","choose a supported result layout.");
+            if(layout=="compact"&&args.IsCatched("fullauto_refine_window"))Fail("compact layout does not support refinement import yet.","keep legacy layout for existing angular refinement windows.");
+        }
+        if(args.IsCatched("fullauto_storage")){
+            const auto storage=args.GetStringValue("fullauto_storage");
+            if(storage!="memory"&&storage!="legacy")
+                Fail("--fullauto-storage expects memory or legacy.","choose the memory working store or legacy per-block recovery files.");
+            if(storage=="legacy"&&(args.IsCatched("fullauto_checkpoint_seconds")||args.IsCatched("fullauto_memory_mib")))
+                Fail("memory-store settings are unused with --fullauto-storage legacy.","remove fullauto-checkpoint-seconds/fullauto-memory-mib or select memory storage in a new output directory.");
+        }
+        if(args.IsCatched("fullauto_checkpoint_seconds"))
+            RequireNonnegativeInt(args,"fullauto_checkpoint_seconds");
+        if(args.IsCatched("fullauto_memory_mib"))
+            RequirePositiveInt(args,"fullauto_memory_mib");
         if(args.IsCatched("fullauto_initial_model")){
             const auto mode=args.GetStringValue("fullauto_initial_model");if(mode!="empirical"&&mode!="xi")Fail("fullauto-initial-model expects empirical or xi.","choose a supported model.");
         }
@@ -1149,6 +1165,16 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
         if (count>std::numeric_limits<int>::max()/2)
             Fail("--haar-mirror-audit doubles the count beyond signed32bit.","reduce N.");
     }
+    if (args.IsCatched("fullauto_symmetry_checks"))
+    {
+        const std::string value=args.GetStringValue("fullauto_symmetry_checks");
+        if (value!="on" && value!="off")
+            Fail("--fullauto-symmetry-checks expects on or off.","choose on or off.");
+        if (!args.IsCatched("fullauto") || config.method!=RunMethod::PhysicalOptics
+            || (value=="off" && !args.IsCatched("sym")))
+            Fail("--fullauto-symmetry-checks requires PO fullauto; off also requires explicit --symmetry.",
+                 "specify known rotational factors with --symmetry BETA GAMMA.");
+    }
     if (args.IsCatched("fullauto_mirror"))
     {
         const std::string value=args.GetStringValue("fullauto_mirror");
@@ -1199,7 +1225,8 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
     }
     for(const char* key:{"fullauto_resources","fullauto_rotation","fullauto_cutoffs"})if(args.IsCatched(key)){
         const std::string value=args.GetStringValue(key);
-        if(value!="auto"&&value!="off")Fail(std::string("--")+key+" expects auto or off.","choose auto or off.");
+        const bool fastCutoff=std::string(key)=="fullauto_cutoffs"&&(value=="fast"||value=="staged")&&config.method==RunMethod::PhysicalOptics;
+        if(value!="auto"&&value!="off"&&!fastCutoff)Fail(std::string("--")+key+" has an invalid policy.","choose auto/off; PO fullauto-cutoffs also accepts fast/staged.");
     }
     if(args.IsCatched("fullauto_short_packets")){
         const std::string value=args.GetStringValue("fullauto_short_packets");
@@ -1334,11 +1361,11 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
             || args.IsCatched("adaptive_reflections")))
         Fail("--auto/--autofull already include the requested individual adaptive search.",
              "remove the redundant --auto-theta-grid/--auto-phi/--adaptive-phi/--adaptive-reflections modifier.");
-    if (args.IsCatched("checkpoint"))
+    if (args.IsCatched("checkpoint") && !args.IsCatched("fullauto"))
     {
         const bool supported = mode == OrientationMode::File
             || mode == OrientationMode::DiffractionGrid
-            || mode == OrientationMode::EulerGrid || args.IsCatched("fullauto");
+            || mode == OrientationMode::EulerGrid;
         if (config.method != RunMethod::PhysicalOptics || !supported)
             Fail("--checkpoint is not implemented for the selected orientation mode.",
                  "remove it or use PO with --orientation-file, --diffraction-grid, or --euler-grid.");

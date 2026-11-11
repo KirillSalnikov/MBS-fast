@@ -212,6 +212,7 @@ AdaptiveConvergenceLimits::AdaptiveConvergenceLimits()
       reflectionTolerance(0.0),
       orientationTolerance(0.0),
       stablePasses(2),
+      stablePassesExplicit(false),
       minPilotOrientations(32),
       maxPilotOrientations(2048),
       maxJointSweeps(4),
@@ -281,6 +282,7 @@ AdaptiveConvergenceLimits LoadAdaptiveConvergenceConfig(
         const auto intField = IntFields().find(key);
         if (intField != IntFields().end())
         {
+            if(key=="controller.stable_passes")limits.stablePassesExplicit=true;
             limits.*(intField->second) = ParseInteger(
                 value, path, lineNumber, key);
             continue;

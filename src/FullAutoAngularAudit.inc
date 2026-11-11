@@ -1,6 +1,7 @@
 // A frozen, production-trained control variate in theta. Every audit replica
 // uses fresh Owen seeds: I(mean_N F(knots)) + mean_n(F(theta)-I(F(knots))).
-// I is the existing linear local cubic interpolator. All covariance is kept by
+// I is the selected fixed linear output operator (piecewise linear for
+// incoherent PO, local cubic for coherent PO). All covariance is kept by
 // assembling eight complete replicas before Estimate/Fieller, never by adding
 // separately reported confidence intervals or interpolating ratios.
 struct AngularAuditPlan {
@@ -47,7 +48,7 @@ AngularAuditPlan PlanAngularAudit(Engine& e,const AdaptiveState& state,const std
             std::vector<double> ci(depths.size(),0);double bias=0;
             std::vector<Samples> deltas(depths.size(),Samples(8,Matrix(query.size())));
             for(size_t l=0;l<depths.size();++l)for(int s=0;s<8;++s){Matrix support;for(size_t r:supportRows)support.push_back(data.levels[l][s][r]);
-                const auto predicted=LocalCubicInterpolate(knots,support,query);
+                const auto predicted=POOutputInterpolate(e.go,e.coherent,knots,support,query);
                 for(size_t r=0;r<query.size();++r)for(int j=0;j<16;++j)deltas[l][s][r][j]=data.levels[l][s][queryRows[r]][j]-predicted[r][j];}
             for(size_t r=0;r<query.size();++r){const size_t source=std::lower_bound(productionIds.begin(),productionIds.end(),rows[queryRows[r]])-productionIds.begin();
                 const auto& reference=productionMean[source];Require(reference[0]>0,"nonpositive production angular-control scale");
@@ -72,7 +73,7 @@ AngularAuditPlan PlanAngularAudit(Engine& e,const AdaptiveState& state,const std
             }++plan.intervals;
         }
     }
-    std::ostringstream frozen;frozen<<"angular-residual-v1\n"<<production.sources<<Number(fraction)<<'\n';
+    std::ostringstream frozen;frozen<<"angular-residual-v1\n"<<OutputDecisionPolicyIdentity(e)<<'\n'<<production.sources<<Number(fraction)<<'\n';
     for(size_t id:ids){frozen<<id;for(size_t l=0;l<depths.size();++l)frozen<<' '<<plan.anchors[l][id]<<' '<<plan.residuals[l][id];frozen<<'\n';}
     plan.identity=Hash(frozen.str());
     AdditionalWork work(e,e.seeds.data(),true,true);
@@ -93,6 +94,7 @@ AngularAuditPlan PlanAngularAudit(Engine& e,const AdaptiveState& state,const std
     for(size_t id:ids){budget<<Number(e.theta[id])<<','<<std::binary_search(state.knots.begin(),state.knots.end(),id);for(size_t l=0;l<depths.size();++l)budget<<','<<plan.anchors[l][id]<<','<<plan.residuals[l][id];budget<<'\n';}
     e.Record(e.root+"/angular_audit_budget.csv",budget.str());
     e.Record(e.root+"/angular_audit_plan.json","{\"schema\":1,\"strategy\":\"independent anchors plus common-orientation angular residual\",\"allocation_fnv1a64\":"+Quoted(plan.identity)
+        +",\"interpolation_policy\":"+Quoted(POOutputInterpolationPolicy(e.go,e.coherent))
         +",\"enabled\":"+(plan.enabled?"true":"false")+",\"support_theta\":"+Number(state.knots.size())+",\"checked_theta\":"+Number(ids.size())
         +",\"predicted_point_worker_seconds\":"+Number(point.seconds)+",\"predicted_control_worker_seconds\":"+Number(controlled.seconds)
         +",\"profiled\":"+(point.profiled&&controlled.profiled?"true":"false")+",\"training\":\"production replicas only; frozen before holdout\",\"acceptance_gates_unchanged\":true}");
@@ -120,7 +122,7 @@ AdaptiveData EvaluateAngularAudit(Engine& e,const std::vector<int>& depths,const
     AdaptiveData result;result.levels.resize(depths.size());result.costs.assign(depths.size(),std::vector<double>(ids.size()));result.analytic.assign(ids.size(),0);
     const auto x=Angles(e.theta,ids),sx=Angles(e.theta,knots);std::ostringstream sources,roles;sources<<anchors.sources;
     {std::istringstream records(anchors.sources);std::string line;while(std::getline(records,line))roles<<"anchor -1 "<<line<<'\n';}
-    for(size_t l=0;l<depths.size();++l){result.levels[l].resize(8);for(int s=0;s<8;++s)result.levels[l][s]=LocalCubicInterpolate(sx,anchors.levels[l][s],x);}
+    for(size_t l=0;l<depths.size();++l){result.levels[l].resize(8);for(int s=0;s<8;++s)result.levels[l][s]=POOutputInterpolate(e.go,e.coherent,sx,anchors.levels[l][s],x);}
     const size_t width=std::min(size_t(4),knots.size());std::vector<bool> assigned(ids.size(),false);
     for(size_t r=0;r<ids.size();++r)assigned[r]=std::binary_search(knots.begin(),knots.end(),ids[r]);
     size_t completedGroups=0;
@@ -139,7 +141,7 @@ AdaptiveData EvaluateAngularAudit(Engine& e,const std::vector<int>& depths,const
             for(size_t r=0;r<ids.size();++r)if(ids[r]>knots[interval]&&ids[r]<knots[interval+1]){
                 Require(!assigned[r],"angular residual added twice");assigned[r]=true;positions.push_back(r);rawRows.push_back(std::lower_bound(rows.begin(),rows.end(),ids[r])-rows.begin());query.push_back(e.theta[ids[r]]);}
             for(size_t l=0;l<depths.size();++l)for(int s=0;s<8;++s){Matrix supportsM;for(size_t r:supports)supportsM.push_back(data.levels[l][s][r]);
-                const auto predicted=LocalCubicInterpolate(supportX,supportsM,query);
+                const auto predicted=POOutputInterpolate(e.go,e.coherent,supportX,supportsM,query);
                 for(size_t r=0;r<query.size();++r)for(int j=0;j<16;++j)result.levels[l][s][positions[r]][j]+=data.levels[l][s][rawRows[r]][j]-predicted[r][j];}
         }
     }

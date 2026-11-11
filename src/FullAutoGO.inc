@@ -72,6 +72,7 @@ void GoOutputs(Engine& e,const std::string& folder,const GoStatistics& result,in
 void GoCheckpoint(Engine& e,int round,int count,int streak){
     const std::string payload=e.signature+" "+Number(round)+" "+Number(count)+" "+Number(streak)+"\n";
     Atomic(e.root+"/go_checkpoint.tsv",Hash(payload)+"\n"+payload);e.Log("allocation_checkpoint","{\"method\":\"go\",\"round\":"+Number(round)+",\"count_per_seed\":"+Number(count)+",\"pass_streak\":"+Number(streak)+"}");
+    e.MaybeMemoryCheckpoint();
 }
 int RunGO(Engine& e){
     if(Exists(e.root+"/final_outputs.fnv")){
@@ -83,7 +84,7 @@ int RunGO(Engine& e){
         e.Record(e.root+"/fullauto_status.json",parameters.substr(at+key.size(),parameters.size()-at-key.size()-1));
         std::cout<<"fullauto GO: completed outputs verified; no calculation repeated"<<std::endl;return 0;
     }
-    e.Record(e.root+"/precision_contract.json","{\"method\":\"go\",\"final_checks\":"+std::string(e.finalChecks?"true":"false")+",\"independent_audit_enabled\":"+std::string(e.finalAudit?"true":"false")+",\"physical_accuracy_audited\":"+std::string(e.PhysicalAuditEnabled()?"true":"false")+",\"angular_model\":\"fixed finite solid-angle bins; no interpolation\",\"alpha\":\"analytic scattering-plane and pole averaging; two-dimensional Haar Sobol\",\"statistics\":\"eight independent scrambles; pointwise Student and Fieller estimates\",\"statistical_budget\":"+Number(e.statistical)+",\"depth_budget\":"+Number(e.depthBudget)+",\"interpolation_budget\":0,\"zero_finite_bins\":\"require further sampling\",\"zero_poles\":\"reported as zero observed, not certified absence\",\"physical_depth\":"+Number(e.target)+",\"global_simultaneous_confidence\":false}");
+    e.Record(e.root+"/precision_contract.json","{\"method\":\"go\""+e.DepthAccuracyFields()+",\"final_checks\":"+std::string(e.finalChecks?"true":"false")+",\"independent_audit_enabled\":"+std::string(e.finalAudit?"true":"false")+",\"physical_accuracy_audited\":"+std::string(e.PhysicalAuditEnabled()?"true":"false")+",\"angular_model\":\"fixed finite solid-angle bins; no interpolation\",\"alpha\":\"analytic scattering-plane and pole averaging; two-dimensional Haar Sobol\",\"statistics\":\"eight independent scrambles; pointwise Student and Fieller estimates\",\"statistical_budget\":"+Number(e.statistical)+",\"depth_budget\":"+Number(e.depthBudget)+",\"interpolation_budget\":0,\"zero_finite_bins\":\"require further sampling\",\"zero_poles\":\"reported as zero observed, not certified absence\",\"physical_depth\":"+Number(e.target)+",\"global_simultaneous_confidence\":false}");
     int round=0,count=e.initial,streak=0;
     if(Exists(e.root+"/go_checkpoint.tsv")){
         const auto text=Read(e.root+"/go_checkpoint.tsv");const auto line=text.find('\n');const auto payload=text.substr(line+1);

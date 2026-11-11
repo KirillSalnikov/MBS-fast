@@ -1,0 +1,64 @@
+[
+  {
+    "name": "column_112.2",
+    "source_job": "list3_column_L112.2_D73.7_w0.532_theta150_160_incoherent__angular_quality_v2",
+    "source_seeds": [
+      11,
+      23,
+      37,
+      53,
+      71,
+      89,
+      107,
+      131
+    ],
+    "source_sha256": {
+      "production_evaluated_seed89.dat": "b93aedfcde168e410eef1378791c836d0e94cf8c859bc3a85ca45ab3e8940a74",
+      "production_evaluated_seed23.dat": "93907ea4c6b145ff5cbf752005b833d861c847f0fe5ff78cc3bd4ed10e47515e",
+      "production_evaluated_seed71.dat": "6488f9621bde390be4f02ccbf34e42b3a7e49e31f5aebe192c7c6de4833025ba",
+      "production_evaluated_seed53.dat": "89c66969afbf54bcfb4ccaaf5d2cb373114e0a812f7746fc280812ba8a755f34",
+      "production_evaluated_seed11.dat": "431ff25c4054558187c6451b521c353da5f110ccb696ea1ee248278e3fbb3e7b",
+      "production_evaluated_seed37.dat": "c805d3ee8afe9fb5173f453e02c26d885c628568977bb4f4bf7945734825c74b",
+      "production_evaluated_seed131.dat": "b3eebccc0e0bc31e0b680cc4fc919863a63c71553566f97d18409a3af2323677",
+      "production_evaluated_seed107.dat": "19b590e35b367c538e8218cf2044150f8daeb4e392788011bfa28ce15ae36863"
+    },
+    "angles": [
+      152.6241134751773,
+      152.70921985815602,
+      152.80851063829786
+    ],
+    "M11_noise95_scaled_min_M11": 0.0023957149683354823,
+    "explanation": "Actual combined production estimator replicas; one-level representation checks acceptance only, not the original multilevel allocation."
+  },
+  {
+    "name": "column_125.9",
+    "source_job": "list3_column_L125.9_D78.1_w0.532_theta150_160_incoherent__angular_quality_v2",
+    "source_seeds": [
+      11,
+      23,
+      37,
+      53,
+      71,
+      89,
+      107,
+      131
+    ],
+    "source_sha256": {
+      "production_evaluated_seed89.dat": "cf3457ed8d09018a4bd918b7a1a6c220e7d657787070d7ad8526e97df349a0ef",
+      "production_evaluated_seed23.dat": "ebd1cd03410acfc290ff7dec05381fb10d5a4dd8a12c1554ce21fbc5f30607df",
+      "production_evaluated_seed71.dat": "8b9242ee17680402d7810fa9adf6b8490937790de4208f05d63cbc8a37632ba7",
+      "production_evaluated_seed53.dat": "da5733c73da01beefe3deba2cc4d9832cb772a318462964a7dbd29ac5635199e",
+      "production_evaluated_seed11.dat": "06a7d0bb2af7e7d828b7ab8f10d161fc7e3323bcc8df906a96ca0f87b35bce67",
+      "production_evaluated_seed37.dat": "112308e0951df5bf4877d4a58119b0767a517e77e3183461ba98b4cd41bdf410",
+      "production_evaluated_seed131.dat": "d52b75b137f1ed2fd138da80936f50f5f9c9651e8cb894dcdeb47de67cec2299",
+      "production_evaluated_seed107.dat": "cd52a29f071ea242a891b2576a4c3b26e740a2400a83ed2b703ca93a0e6c1712"
+    },
+    "angles": [
+      150.11568123393317,
+      150.20565552699227,
+      150.30848329048843
+    ],
+    "M11_noise95_scaled_min_M11": 0.006897264247103416,
+    "explanation": "Actual combined production estimator replicas; one-level representation checks acceptance only, not the original multilevel allocation."
+  }
+]

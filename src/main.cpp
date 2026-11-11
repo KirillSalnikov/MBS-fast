@@ -51,11 +51,17 @@
 #include "RunConfig.h"
 #include "FullAuto.h"
 #include "WorkerProtocol.h"
+#include "WorkerMemoryStage.h"
 #include "HostMemoryReserve.h"
+#include "PersistentWorkerMemory.h"
 #if defined(__GLIBC__)
 #include <malloc.h>
 #endif
 #include "PreparedReuse.h"
+#include "TraceCachePolicy.h"
+#ifdef USE_CUDA
+#include "cuda/GpuTraceCapacity.h"
+#endif
 #include <sys/prctl.h>
 #include <map>
 #include <csignal>
@@ -1698,13 +1704,9 @@ static std::string PreparedRecipe(const ArgPP& args,bool memoryProfile=false){
         key<<spec.key.size()<<':'<<spec.key;
         // The memory model may cross Sobol blocks; cached beams must not.
         if(memoryProfile&&spec.key=="sobol_seed")continue;
-        for(unsigned i=0;i<args.GetArgNumber(spec.key);++i){const auto value=args.GetStringValue(spec.key,i);key<<value.size()<<':'<<value;}
         if(spec.key=="pf"){
-            std::ifstream f(args.GetStringValue(spec.key),std::ios::binary);const std::string text((std::istreambuf_iterator<char>(f)),std::istreambuf_iterator<char>());
-            key<<text.size()<<':'<<text;
-            std::ifstream side(args.GetStringValue(spec.key)+".visibility",std::ios::binary);
-            const std::string visibility((std::istreambuf_iterator<char>(side)),std::istreambuf_iterator<char>());key<<visibility.size()<<':'<<visibility;
-        }
+            WorkerMemoryStage::AppendPreparedParticleIdentity(key,args.GetStringValue(spec.key));
+        }else for(unsigned i=0;i<args.GetArgNumber(spec.key);++i){const auto value=args.GetStringValue(spec.key,i);key<<value.size()<<':'<<value;}
     }
     key<<FormatRuntimeEnvironmentReport(QueryRuntimeEnvironmentSnapshot());return key.str();
 }
@@ -1783,12 +1785,25 @@ int RunCalculation(int argc, const char* argv[])
         ConfigureOpenMPThreads(config.threads);
     }
 
-    long long cacheMb=args.IsCatched("trace_cache_mb")?args.GetIntValue("trace_cache_mb"):(persistentWorker?256:0);
-    const auto resources=QueryRuntimeMemorySnapshot();cacheMb=std::min(cacheMb,std::max(0LL,resources.ramAvailableKb/1024/32));
-    if(const char* budget=getenv("MBS_HOST_MEM_BUDGET_MB"))cacheMb=std::min(cacheMb,std::max(0LL,std::atoll(budget)/16));
-    PreparedReuse::Configure(size_t(cacheMb)*1024*1024);
+    const bool explicitCache = args.IsCatched("trace_cache_mb");
+    const auto resources = QueryRuntimeMemorySnapshot();
+    const char* hostBudget = std::getenv("MBS_HOST_MEM_BUDGET_MB");
+    bool traceBufferPool = false;
 #ifdef USE_CUDA
-    GpuConvexQueue::SetCacheLimit(size_t(cacheMb)*1024*1024);
+    traceBufferPool = GpuConvexQueue::Capacity::BufferPoolEnabled();
+#endif
+    const auto cacheLimits = TraceCachePolicy::Resolve(
+        persistentWorker, explicitCache, explicitCache ? args.GetIntValue("trace_cache_mb") : 0,
+        resources.ramAvailableKb, hostBudget != nullptr, hostBudget ? std::atoll(hostBudget) : 0,
+        traceBufferPool);
+    const long long cacheMb = cacheLimits.hostMiB;
+    PreparedReuse::Configure(size_t(cacheMb) * 1024 * 1024);
+#ifdef USE_CUDA
+    GpuConvexQueue::SetCacheLimit(size_t(cacheLimits.gpuRawMiB) * 1024 * 1024);
+    std::cout << "Trace caches: host_prepared_MiB=" << cacheMb
+              << " gpu_raw_MiB=" << cacheLimits.gpuRawMiB
+              << " explicit_limit=" << (explicitCache ? 1 : 0)
+              << " trace_buffer_pool=" << (traceBufferPool ? 1 : 0) << std::endl;
 #endif
     const bool useGpu = config.useGpu;
     const bool useFft = config.useFft;
@@ -2983,7 +2998,11 @@ int RunCalculation(int argc, const char* argv[])
             tracer->m_profilePhases=args.IsCatched("profile_phases");
             tracer->m_prepareThreads=args.IsCatched("po_prepare_threads")?args.GetIntValue("po_prepare_threads"):0;
             if(cacheMb>0)tracer->SetPreparedReuseKey(PreparedRecipe(args));
-            if(persistentWorker)tracer->SetPreparedMemoryKey(PreparedRecipe(args,true));
+            bool needsPreparedMemoryKey=persistentWorker;
+#ifdef USE_CUDA
+            needsPreparedMemoryKey=needsPreparedMemoryKey||GpuConvexQueue::Capacity::HintEnabled();
+#endif
+            if(needsPreparedMemoryKey)tracer->SetPreparedMemoryKey(PreparedRecipe(args,true));
             tracer->m_scattering->m_wave = wave;
             ApplyTraceCutoffOptions(args, tracer->m_scattering, useGpu);
             tracer->shadowOff = args.IsCatched("shadow_off");
@@ -3778,6 +3797,11 @@ int RunCalculation(int argc, const char* argv[])
     }
 
     }
+    catch (const GpuChunkRetry::Required &ex)
+    {
+        std::cerr << "ERROR: calculation failed: " << ex.what() << std::endl;
+        return GpuChunkRetry::ExitStatus(persistentWorker);
+    }
     catch (const HostMemoryReserve::BudgetExhausted &ex)
     {
         std::cerr << "ERROR: calculation failed: " << ex.what() << std::endl;
@@ -3864,8 +3888,42 @@ static int RunWorkerService(int fd,const char* executable) {
     const auto coutFlags=std::cout.flags(),cerrFlags=std::cerr.flags();
     const auto coutPrecision=std::cout.precision(),cerrPrecision=std::cerr.precision();
     unsigned long long serial=0;
+    PersistentWorkerMemory::TrimPolicy trimPolicy;
     std::vector<std::string> request;
     while(WorkerProtocol::Receive(fd,request)&&!request.empty()) {
+        const bool streamRequest=request.front()==WorkerProtocol::MemoryStreamRequestTag();
+        const bool memoryRequest=streamRequest||request.front()==WorkerProtocol::MemoryRequestTag();
+        std::unique_ptr<WorkerMemoryStage::Request> memoryStage;
+        std::string memoryRoot,memoryLog;
+        if(memoryRequest){
+            try{
+                WorkerMemoryStage::Require(request.size()>=(streamRequest?7u:6u),"incomplete memory request");
+                memoryRoot=request[1];uint64_t outputBytes=0;
+                if(streamRequest){size_t used=0;outputBytes=std::stoull(request[2],&used);
+                    WorkerMemoryStage::Require(used==request[2].size()&&outputBytes>0&&outputBytes<=WorkerProtocol::MaximumStreamBytes,"invalid output estimate");}
+                request.erase(request.begin(),request.begin()+(streamRequest?3:2));
+                if(request[0].compare(0,memoryRoot.size()+1,memoryRoot+"/")==0)memoryLog=request[0].substr(memoryRoot.size()+1);
+                if(streamRequest){
+                    const bool received=WorkerProtocol::ReceiveStreamFiles(fd,
+                        [&](const WorkerProtocol::StreamFile& file,const WorkerProtocol::StreamReader& reader){memoryStage->WriteStream(file,reader);},
+                        [&](uint64_t inputs,uint32_t){memoryStage.reset(new WorkerMemoryStage::Request(memoryRoot,inputs,outputBytes,true));});
+                    WorkerMemoryStage::Require(received,"invalid or truncated memory input stream");
+                }else{
+                    std::vector<WorkerProtocol::File> inputs;WorkerMemoryStage::Require(WorkerProtocol::ReceiveFiles(fd,inputs),"invalid memory inputs");
+                    memoryStage.reset(new WorkerMemoryStage::Request(memoryRoot,inputs));
+                }
+                memoryStage->PrepareLog(request[0]);
+                bool outputFound=false;
+                for(size_t i=3;i<request.size();++i)if(request[i]=="--output"||request[i]=="-o"){
+                    WorkerMemoryStage::Require(i+1<request.size()&&memoryStage->Contains(request[i+1]),"output path is outside logical root");outputFound=true;}
+                WorkerMemoryStage::Require(outputFound,"memory request must specify output");
+                for(auto& word:request){memoryStage->PreparePath(word);word=memoryStage->Rewrite(word);}
+            }catch(const std::exception& error){
+                std::vector<WorkerProtocol::File> diagnostic;
+                if(WorkerProtocol::RelativeFilePath(memoryLog))diagnostic.push_back({memoryLog,std::string("ERROR: ")+error.what()+"\n"});
+                if(streamRequest)WorkerProtocol::ReplyMemoryStreamSmall(fd,125,diagnostic);else WorkerProtocol::ReplyMemory(fd,125,diagnostic);break;
+            }
+        }
         if(request.size()<4){WorkerProtocol::Reply(fd,125);break;}
         std::vector<std::string> names;
         for(char** e=environ;*e;++e){std::string name(*e);name=name.substr(0,name.find('='));
@@ -3877,25 +3935,60 @@ static int RunWorkerService(int fd,const char* executable) {
         else setenv("MBS_GPU_WARP_BEAMS",request[2]=="warp"?"1":"0",1);
         std::cout.flush();std::cerr.flush();fflush(nullptr);
         int log=open(request[0].c_str(),O_WRONLY|O_CREAT|O_TRUNC,0644);
-        if(log<0||dup2(log,1)<0||dup2(log,2)<0){if(log>=0)close(log);WorkerProtocol::Reply(fd,125);break;}close(log);
+        if(log<0||dup2(log,1)<0||dup2(log,2)<0){if(log>=0)close(log);if(streamRequest)WorkerProtocol::ReplyMemoryStreamSmall(fd,125,{});else if(memoryRequest)WorkerProtocol::ReplyMemory(fd,125,{});else WorkerProtocol::Reply(fd,125);break;}close(log);
         std::cout.clear();std::cerr.clear();std::cout.flags(coutFlags);std::cerr.flags(cerrFlags);
         std::cout.precision(coutPrecision);std::cerr.precision(cerrPrecision);
         std::cout<<"Persistent worker: pid="<<getpid()<<" request="<<++serial<<std::endl;
+        if(streamRequest)std::cout<<"Worker memory staging: backend="<<memoryStage->Backend()<<" declared_bytes="<<memoryStage->Budget()<<std::endl;
         std::vector<const char*> args{executable};for(size_t i=3;i<request.size();++i)args.push_back(request[i].c_str());
         args.push_back(nullptr);
-        const int rc=RunCalculation(int(args.size()-1),args.data());
+        int rc=0;
+        {WorkerMemoryStage::IdentityScope identity(memoryStage.get());rc=RunCalculation(int(args.size()-1),args.data());}
 #if defined(__GLIBC__)
-        // Physics objects have been destroyed. Return freed per-thread arenas
-        // to the OS before the next request checks RSS against its RAM budget.
-        const auto retained=QueryRuntimeMemorySnapshot().processRssKb;
-        if(retained>256LL*1024){
+        // Physics objects have been destroyed. Keep a bounded amount of
+        // reusable arena memory between short requests. Pressure still forces
+        // immediate cleanup before the next request checks its RAM budget.
+        const auto memory=QueryRuntimeMemorySnapshot();
+        const auto trimStarted=std::chrono::steady_clock::now();
+        const double trimNow=std::chrono::duration<double>(trimStarted.time_since_epoch()).count();
+        const char* trimReason=trimPolicy.Decide(memory,trimNow,
+            PersistentWorkerMemory::ProcessBudgetKb(),HostMemoryReserve::ReserveKb(memory.ramTotalKb));
+        if(trimReason){
             malloc_trim(0);
-            std::cout<<"Persistent worker memory: rss_before_trim_kib="<<retained
-                <<" rss_after_trim_kib="<<QueryRuntimeMemorySnapshot().processRssKb<<std::endl;
+            const auto after=QueryRuntimeMemorySnapshot();
+            const double trimSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-trimStarted).count();
+            trimPolicy.Trimmed(trimNow,after.processRssKb);
+            std::cout<<"Persistent worker memory: rss_before_trim_kib="<<memory.processRssKb
+                <<" rss_after_trim_kib="<<after.processRssKb<<" trim_reason="<<trimReason
+                <<" trim_seconds="<<trimSeconds<<std::endl;
         }
 #endif
         std::cout.flush();std::cerr.flush();fflush(nullptr);
-        if(!WorkerProtocol::Reply(fd,rc)||rc!=0)break; // Never reuse a failed CUDA/physics state.
+        if(memoryRequest){
+            // Close the two references to stdout.log before unlinking the RAM
+            // tree. Otherwise an idle persistent worker would retain its pages.
+            const int quiet=open("/dev/null",O_WRONLY|O_CLOEXEC);
+            if(quiet>=0){dup2(quiet,1);dup2(quiet,2);close(quiet);}
+            if(streamRequest){
+                std::vector<WorkerProtocol::StreamFile> files;
+                try{files=memoryStage->CollectStream();}
+                catch(const std::exception& error){
+                    std::vector<WorkerProtocol::File> diagnostic;
+                    if(WorkerProtocol::RelativeFilePath(memoryLog))diagnostic.push_back({memoryLog,std::string("ERROR: ")+error.what()+"\n"});
+                    memoryStage.reset();WorkerProtocol::ReplyMemoryStreamSmall(fd,125,diagnostic);break;
+                }
+                bool sent=false;
+                try{sent=WorkerProtocol::ReplyMemoryStream(fd,rc,files,[&](const WorkerProtocol::StreamFile& file,const WorkerProtocol::StreamWriter& writer){memoryStage->StreamFile(file.path,writer);});}
+                catch(const std::exception&){sent=false;} // A partial frame cannot receive a second status/diagnostic frame.
+                memoryStage.reset();if(!sent||rc!=0)break;continue;
+            }
+            int replyCode=rc;std::vector<WorkerProtocol::File> files;
+            try{files=memoryStage->Collect();}
+            catch(const std::exception& error){replyCode=125;
+                if(WorkerProtocol::RelativeFilePath(memoryLog))files.push_back({memoryLog,std::string("ERROR: ")+error.what()+"\n"});}
+            memoryStage.reset();
+            if(!WorkerProtocol::ReplyMemory(fd,replyCode,files)||replyCode!=0)break;
+        }else if(!WorkerProtocol::Reply(fd,rc)||rc!=0)break; // Never reuse a failed CUDA/physics state.
     }
     close(fd);persistentWorker=false;return FinishWithCode(0);
 }

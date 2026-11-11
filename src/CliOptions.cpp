@@ -223,7 +223,15 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
         {"autofull", "autofull", 1, "EPS", "Orientation",
          "Legacy joint convergence of reflection depth, phi, theta, and Sobol orientations to EPS."},
         {"fullauto", "fullauto", 1, "EPS", "Orientation",
-         "Self-contained adaptive controller with explicit-setting priority. PO uses Haar/MLMC and interpolation; GO uses CPU, fixed solid-angle bins and analytic alpha. Eight scrambles and durable recovery."},
+         "Self-contained adaptive controller with explicit-setting priority. PO uses Haar/MLMC and interpolation; GO uses CPU, fixed solid-angle bins and analytic alpha. Eight scrambles; optional periodic checkpoints."},
+        {"fullauto_layout", "fullauto-layout", 1, "MODE", "Output",
+         "Result directory layout: legacy (default) or compact. Compact places controller state in work/ and publishes config.json, status.json and atomic latest -> results/. Use a new directory; same command resumes it."},
+        {"fullauto_storage", "fullauto-storage", 1, "MODE", "Output",
+         "Fullauto working storage: memory (default for new runs) or legacy (durable per-block files). Existing legacy outputs automatically retain legacy storage; conversion requires a new output directory."},
+        {"fullauto_checkpoint_seconds", "fullauto-checkpoint-seconds", 1, "SECONDS", "Output",
+         "Fullauto memory-mode recovery snapshot interval, nonnegative integer. Default 0 disables recovery snapshots; --checkpoint supplies 300 unless this interval is explicit."},
+        {"fullauto_memory_mib", "fullauto-memory-mib", 1, "MIB", "Output",
+         "Positive RAM budget for fullauto working-file storage, default 512 MiB per controller. Overflow uses temporary block storage; this is not a recovery checkpoint or the total process RAM limit."},
         {"go_fullauto_worker", "go-fullauto-worker", 0, "", "Output",
          "Internal GO controller product: full-precision finite bins and separate full Mueller delta matrices.", true},
         {"fullauto_initial_model", "fullauto-initial-model", 1, "MODE", "Orientation",
@@ -272,14 +280,20 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
          "Benchmark host threads/chunks and estimate saved block size: auto (default), off. Explicit settings win."},
         {"fullauto_rotation", "fullauto-rotation-symmetry", 1, "MODE", "Orientation",
          "Verify fixed-axis body rotations and paired all-Mueller equivalence: auto (default), off. Explicit --symmetry wins."},
+        {"fullauto_dispatch_pipeline", "fullauto-dispatch-pipeline", 1, "on", "Orientation",
+         "Certified resume execution override: pipeline new native requests without changing saved sampling identities. Requires numerical compatibility of the execution profiles."},
+        {"fullauto_cutoff_upgrade", "fullauto-cutoff-upgrade", 1, "staged", "Orientation",
+         "Certified resume only: retain completed auto-policy unpruned-target blocks and use staged correction for missing blocks. Requires fullauto-resume-compatible."},
         {"fullauto_cutoffs", "fullauto-cutoffs", 1, "MODE", "Orientation",
-         "Coherent PO: balanced beams with matched off-minus-balanced correction, auto (default) or off; no preset search. Explicit cutoffs win. GO accepts explicit off/balanced with its own audit."},
+         "PO: auto (default balanced base), fast (stronger base), staged (fast/balanced/off), or off. Auto/fast/staged retain matched unpruned-minus-base correction; eight-seed errors include its variance. Explicit cutoffs win. GO requires off here."},
         {"verified_rotation", "verified-rotation-symmetry", 0, "", "Orientation",
          "Worker: detect facet-preserving rotations about body z and half turn about x; never trust file symmetry metadata."},
         {"haar_rotation_audit", "haar-rotation-audit", 1, "AXIS", "Orientation",
          "Worker: explicitly trace equivalent body-rotation partners, gamma or beta, for paired validation."},
         {"fullauto_mirror", "fullauto-mirror", 1, "MODE", "Orientation",
          "Fullauto mirror reduction: auto, on, off. PO verifies geometry and a paired pilot (default auto). GO defaults off; explicit on/auto supports nonabsorbing built-in types 1/10 with parity reconstruction, auto falls back otherwise. --mirror-gamma implies on."},
+        {"fullauto_symmetry_checks", "fullauto-symmetry-checks", 1, "MODE", "Orientation",
+         "PO fullauto symmetry pilots: on (default), off (user asserts known symmetry; requires explicit --symmetry). Off skips controller mirror pilots, preserves saved orientation domains on resume and does not certify their error."},
         {"fullauto_angular_cache", "fullauto-angular-cache", 1, "MODE", "Orientation",
          "Reuse identical per-seed angular rows when fullauto refines theta: on (default) or off. Recompute only missing angles and rebase M11 to full-grid analytic means."},
         {"fullauto_controls", "fullauto-analytic-controls", 1, "MODE", "Orientation",
@@ -290,7 +304,7 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
         {"fullauto_resume_compatible", "fullauto-resume-compatible", 1, "OLD_BINARY", "Orientation",
          "Resume an existing 8ae9e85, 89f83a3 or 336ef78 result after verified native-kernel compatible controller fixes. Requires the original binary, identical build profile, inputs and environment."},
         {"fullauto_workers", "fullauto-workers", 1, "MODE", "Orientation",
-         "Worker lifetime: auto (persistent CUDA workers), persistent, process. Each completed block remains checkpointed; explicit process restores per-job exec."},
+         "Worker lifetime: auto, persistent, process. Memory storage uses result transport between processes; explicit process requests a fresh worker for each job. Recovery follows the storage/checkpoint policy."},
         {"fullauto_trace", "fullauto-trace-backend", 1, "MODE", "Orientation",
          "PO tracing: auto (validate and time CPU/resident/hybrid), cpu, resident, hybrid. Explicit choice is preserved; unsupported modes retain CPU preparation."},
         {"po_prepare_threads", "po-prepare-threads", 1, "N", "Orientation",
@@ -302,9 +316,9 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
         {"fullauto_work_queue", "fullauto-work-queue", 1, "MODE", "Orientation",
          "Dispatch independent orientation blocks, angle groups and levels in one worker queue: auto (default; CUDA, including one GPU, or multiple CPU workers), on, off. Sampling and tolerances are unchanged."},
         {"fullauto_incremental", "fullauto-incremental", 1, "MODE", "Orientation",
-         "Reuse exact Owen-Sobol prefixes and checkpoint completed orientation blocks: on (default), off."},
+         "Reuse exact Owen-Sobol prefixes and retain completed orientation blocks in the working store: on (default), off. Recovery snapshots are configured separately."},
         {"fullauto_orientation_block", "fullauto-orientation-block", 1, "N", "Orientation",
-         "Maximum saved orientation block per production seed; positive power of two, default 65536."},
+         "Maximum working orientation block per production seed; positive power of two, default 65536."},
         {"fullauto_local", "fullauto-local-orientations", 1, "MODE", "Orientation",
          "Per-theta multilevel Sobol budgets: auto (default, cost-gated), on (force local), off (global reference)."},
         {"fullauto_ratios", "fullauto-ratio-accuracy", 1, "MODE", "Orientation",
@@ -314,11 +328,11 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
         {"fullauto_polar_controls", "fullauto-polarization-controls", 1, "MODE", "Orientation",
          "Frozen scalar analytic control variates for all Mueller entries, retained only after independent variance validation: on (default), off."},
         {"fullauto_final_audit", "fullauto-final-audit", 1, "MODE", "Orientation",
-         "Independent final seed validation of the frozen estimator and interpolation: on (default), off."},
+         "Independent final seed validation: on explicitly enables final checks unless the master is explicitly off. With final-checks on this audit defaults to on; otherwise no final audit."},
         {"fullauto_final_checks", "fullauto-final-checks", 1, "MODE", "Orientation",
-         "Final verification policy: on (default) retains configured audits; off skips independent seeds and final depth+2/cutoff physics audits, including automatic-depth final verification. Production convergence and startup depth selection remain active. May change on an unfinished checkpoint; skipped checks are reported as unverified."},
+         "Final verification policy: off (default) stops after one successful production pass, unless convergence-passes is explicit. On enables configured independent/depth+2/cutoff audits. Startup depth selection and production convergence remain active. Skipped checks are reported as unverified."},
         {"fullauto_physics_audit", "fullauto-physics-audit", 1, "MODE", "Orientation",
-         "Compare target depth with depth+2 and requested cutoffs with off on representative angles: on, off (default). Does not replace requested physics."},
+         "Compare target depth with depth+2 and requested cutoffs with off: off (default); explicit on enables final checks unless the master is explicitly off. Does not replace requested physics."},
         {"fullauto_depth_share", "fullauto-depth-sharing", 1, "MODE", "Orientation",
          "Share convex beam tracing for paired depths after an all-Mueller equivalence probe: on (default), off. Unsupported geometry uses independent traces."},
         {"orientation_prefix_output", "orientation-prefix-output", 1, "M", "Orientation",
@@ -383,7 +397,7 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
          "Hard upper limit for adaptive N_phi/N_alpha; rounded down to a multiple of six; default 2400.",
          false, {"max-alpha-points"}},
         {"convergence_passes", "convergence-passes", 1, "N", "Scattering grid",
-         "Required pass streak for adaptive orientation, phi, reflection, and Euler searches; default 2. Theta uses interval-error refinement instead."},
+         "Required pass streak: fullauto defaults to 1; other adaptive orientation/phi/reflection/Euler modes default to 2. Explicit N overrides the default. Theta uses interval-error refinement instead."},
         {"filter", "backscatter-filter-deg", 1, "ANGLE", "Scattering grid",
          "Restrict output to a backscattering cone with ANGLE in degrees."},
         {"point", "backscatter-point", 0, "", "Scattering grid",
@@ -483,7 +497,7 @@ const std::vector<CliOptionSpec> &GetCliOptionSpecs()
         {"save_betas", "save-betas", 0, "", "Output",
          "Write intermediate Mueller results for each beta ring."},
         {"checkpoint", "checkpoint", 0, "", "Output",
-         "Enable checkpoint save/resume for supported long orientation runs."},
+         "Fullauto: enable periodic recovery snapshots (300 s unless fullauto-checkpoint-seconds is explicit). Other supported orientation runs retain native checkpoint save/resume."},
         {"jones", "jones-output", 0, "", "Output",
          "Write Jones matrices where the selected PO mode supports them."},
         {"shadow_off", "no-shadow-beam", 0, "", "Output",
@@ -537,13 +551,13 @@ std::string CliCanonicalFlag(const std::string &keyOrAlias)
 
 const char *FullAutoOptionPolicy(const std::string &key)
 {
-    static const std::set<std::string> controller={"fullauto","fullauto_refine_window","fullauto_resume_compatible","fullauto_initial_model","fullauto_depth_pilot","fullauto_depth_order","fullauto_depth_search","fullauto_depth_start","fullauto_depth_max","fullauto_cpu_workers","fullauto_pilot","fullauto_kernel","fullauto_initial","fullauto_correction","fullauto_rounds","fullauto_theta_range","fullauto_theta_audit","fullauto_theta_start","fullauto_gpus","fullauto_dispatch_gpus","fullauto_dispatch_threads","fullauto_audit_angular","fullauto_short_packets","fullauto_resources","fullauto_rotation","fullauto_cutoffs","fullauto_mirror","fullauto_angular_cache","fullauto_controls","fullauto_workers","fullauto_trace","fullauto_work_queue","fullauto_incremental","fullauto_orientation_block","fullauto_local","fullauto_ratios","fullauto_phi_recheck","fullauto_polar_controls","fullauto_final_audit","fullauto_final_checks","fullauto_physics_audit","fullauto_depth_share"};
+    static const std::set<std::string> controller={"fullauto","checkpoint","fullauto_layout","fullauto_storage","fullauto_checkpoint_seconds","fullauto_memory_mib","fullauto_refine_window","fullauto_resume_compatible","fullauto_initial_model","fullauto_depth_pilot","fullauto_depth_order","fullauto_depth_search","fullauto_depth_start","fullauto_depth_max","fullauto_cpu_workers","fullauto_pilot","fullauto_kernel","fullauto_initial","fullauto_correction","fullauto_rounds","fullauto_theta_range","fullauto_theta_audit","fullauto_theta_start","fullauto_gpus","fullauto_dispatch_gpus","fullauto_dispatch_threads","fullauto_dispatch_pipeline","fullauto_audit_angular","fullauto_short_packets","fullauto_resources","fullauto_rotation","fullauto_cutoffs","fullauto_cutoff_upgrade","fullauto_mirror","fullauto_symmetry_checks","fullauto_angular_cache","fullauto_controls","fullauto_workers","fullauto_trace","fullauto_work_queue","fullauto_incremental","fullauto_orientation_block","fullauto_local","fullauto_ratios","fullauto_phi_recheck","fullauto_polar_controls","fullauto_final_audit","fullauto_final_checks","fullauto_physics_audit","fullauto_depth_share"};
     if(controller.count(key))return "controller";
     static const std::set<std::string> fixed={"trace_cache_mb","po_prepare_threads","po_trace_backend","method","po","go","incoh","karczewski","legacy_sign","p","pf","rs","k_eq","ri","w","n","abs","abs_points","sym","geometry","forced_nonconvex","forced_convex","r","haar_alpha","analytic_facet_average","analytic_shadow_control","analytic_mean_cache","analytic_mean_threads","mirror_gamma","grid","tgrid","nphi","backend","gpu","cpu","threads","chunk","orientation_pipeline","gpu_trace","no_gpu_trace","trace_prefilter","no_trace_prefilter","trace_prefilter_margin","trace_prefilter_stats","cutoff_profile","beam_cutoff","beam_cutoff_j","beam_cutoff_area","beam_cutoff_importance","trace_cutoff","trace_cutoff_j","trace_cutoff_area","trace_cutoff_importance","trace_max_beams","trace_limit_retries","trace_retry_factor","o","close","log","no_text_reports","shadow_off","po_shadow_model","full_only","save_geometry","ot_phase_avg","ot_phase_shift","ot_ping","allow_experimental_environment","owen_seeds"};
     static const std::set<std::string> limits={"maxorient","max_theta_points","max_phi_points","convergence_passes","adaptive_config"};
     if(fixed.count(key))return "fixed";
     if(limits.count(key))return "limit";
-    if(key=="checkpoint"||key=="profile_phases")return "native equivalent";
+    if(key=="profile_phases")return "native equivalent";
     if(key=="help"||key=="help-debug"||key=="version")return "help";
     return "unsupported";
 }

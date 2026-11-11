@@ -97,7 +97,15 @@ void PrepareRefinementWindow(Engine& e){
     AdaptiveState original;original.counts=Budgets(depths.size(),std::vector<int>(parentTheta.size(),e.minimum));
     original.counts[0].assign(parentTheta.size(),e.initial);original.previous=Matrix(parentTheta.size());
     original.valid.assign(parentTheta.size(),false);original.coarse.assign(parentTheta.size(),false);
-    Require(RestoreAdaptive(e,original,false),"parent adaptive state is unavailable");
+    // This is only a tentative shortcut: the exact frozen policy, import
+    // commit marker and complete child metadata are checked below before any
+    // continuation can run. An absent/incomplete import keeps the full path.
+    const bool committedChildMetadata=Exists(child+"/refinement_window_policy.json")
+        &&Exists(child+"/refinement_window_import_complete.json")&&Exists(child+"/adaptive_checkpoint.tsv");
+    Require(RestoreAdaptive(e,original,false,committedChildMetadata
+        ?CompletedRestoreValidation::PublishedFilesOnly:CompletedRestoreValidation::FullDependencies),
+        "parent adaptive state is unavailable");
+    const bool parentPublishedVerified=e.completedCheckpoint;
     e.completedCheckpoint=false;
     Require(!e.controls||e.sharedMeans,"scoped continuation requires authoritative shared analytic means when controls are enabled");
     const auto meanSource=e.requestedMeanCache.empty()?parent+"/means_shared.cache":e.requestedMeanCache;
@@ -136,6 +144,21 @@ void PrepareRefinementWindow(Engine& e){
         Require(Read(child+"/configuration.txt")==e.signature+"\n"&&ReadGrid(child+"/requested_theta.csv")==e.theta,
             "refinement output grid or sampling identity changed");
         Require(ReadGrid(e.meanReferenceOverride)==reference,"refinement analytic reference grid changed");
+        // Validate the full child checkpoint schema/FNV without changing this
+        // engine's recipe. RunAdaptive will restore it normally and authenticate
+        // every actually consumed child/parent native dependency before use.
+        Engine metadata(e.args,e.config);metadata.root=child;metadata.signature=e.signature;
+        metadata.theta=e.theta;metadata.maxCount=e.maxCount;metadata.minPhi=e.minPhi;
+        metadata.maxPhi=e.maxPhi;metadata.fixedPhi=e.fixedPhi;
+        AdaptiveState saved;saved.counts=Budgets(projected.counts.size(),std::vector<int>(e.theta.size(),e.minimum));
+        saved.previous=Matrix(e.theta.size());saved.valid.assign(e.theta.size(),false);saved.coarse.assign(e.theta.size(),false);
+        Require(RestoreAdaptive(metadata,saved,false,CompletedRestoreValidation::PublishedFilesOnly),
+            "committed refinement child adaptive state is unavailable");
+        Require(FileHash(parent+"/adaptive_checkpoint.tsv")==checkpointHash
+            &&FileHash(parent+"/execution_tuning.tsv")==tuningHash,"parent metadata changed during refinement resume");
+        e.Log("refinement_parent_validation", "{\"policy\":\"committed-child-metadata-v1\",\"parent_published_hashes_checked\":"+std::string(parentPublishedVerified?"true":"false")
+            +",\"unused_parent_dependency_walk_skipped\":"+std::string(committedChildMetadata&&parentPublishedVerified?"true":"false")
+            +",\"child_checkpoint_metadata_checked\":true,\"used_native_dependencies_require_validation\":true}");
         return;
     }
     // This commit marker is written only after all projections and local metadata

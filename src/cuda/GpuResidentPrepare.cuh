@@ -3,6 +3,9 @@
 #include "GpuConvexQueueMath.cuh"
 #include <climits>
 #include <map>
+#include <atomic>
+#include <mutex>
+#include "GpuResidentPoolPolicy.h"
 #include "geometry/Intersection.h"
 namespace {
 struct ResidentSummary {
@@ -136,12 +139,141 @@ struct ResidentPool {
     ~ResidentPool(){int previous=0;cudaGetDevice(&previous);cudaSetDevice(device);
         for(const auto& slot:slots)cudaFree(slot.pointer);cudaSetDevice(previous);}
 };
+struct ResidentCudaMemory {
+    static bool Check(cudaError_t status,const char* operation){
+        if(status==cudaSuccess)return true;
+        std::fprintf(stderr,"GPU bounded resident cache: %s: %s\n",operation,cudaGetErrorString(status));return false;
+    }
+    bool Allocate(void** pointer,size_t bytes){return Check(cudaMalloc(pointer,bytes),"allocate");}
+    bool Free(void* pointer){return Check(cudaFree(pointer),"free");}
+};
+struct BoundedResidentStore {
+    std::mutex mutex;GpuResidentPoolPolicy::Storage storage;int device=-1;
+    bool Clear(){
+        if(device<0&&!storage.poisoned)return true;
+        int caller=-1;
+        if(!ResidentCudaMemory::Check(cudaGetDevice(&caller),"get cleanup device")){storage.poisoned=true;return false;}
+        const bool change=device>=0&&device!=caller;
+        if(change&&!ResidentCudaMemory::Check(cudaSetDevice(device),"set cleanup device")){storage.poisoned=true;return false;}
+        ResidentCudaMemory memory;const bool cleared=storage.Clear(memory);
+        const bool restored=!change||ResidentCudaMemory::Check(cudaSetDevice(caller),"restore cleanup device");
+        if(!restored)storage.poisoned=true;
+        if(cleared&&restored)device=-1;
+        return cleared&&restored;
+    }
+    ~BoundedResidentStore(){if(device>=0)Clear();}
+};
+static BoundedResidentStore& BoundedResidentCache(){static BoundedResidentStore cache;return cache;}
+static std::atomic<bool>& BoundedResidentUsed(){static std::atomic<bool> used(false);return used;}
+static bool ReleaseIdleBoundedResidentCache(){
+    // Do not initialize CUDA when this process has never used this pool.
+    if(!BoundedResidentUsed().load())return true;
+    auto& cache=BoundedResidentCache();std::lock_guard<std::mutex> guard(cache.mutex);
+    size_t bytes=0;GpuResidentPoolPolicy::Sum(cache.storage.Capacities(),bytes);
+    if(!cache.Clear())return false;
+    if(bytes)std::fprintf(stderr,"GPU bounded resident cache: idle_release_MiB=%.3f reason=request_boundary\n",bytes/1048576.);
+    return true;
+}
+
+// One capacity-only cache per process, leased on one CUDA device at a time.
+// Current callers hold RawCache's mutex: lock order is RawCache -> this mutex.
+class BoundedResidentAllocations {
+    BoundedResidentStore& cache;
+    std::unique_lock<std::mutex> lock;
+    GpuResidentPoolPolicy::Sizes requested;
+    GpuResidentPoolPolicy::Plan plan;
+    size_t next=0,allocationsBefore=0,releasesBefore=0,reusesBefore=0;
+    bool ready=false,finished=false;
+public:
+    explicit BoundedResidentAllocations(const GpuResidentPoolPolicy::Sizes& sizes)
+        :cache(BoundedResidentCache()),lock(cache.mutex),requested(sizes){
+        BoundedResidentUsed().store(true);
+        int device=-1;
+        if(!ResidentCudaMemory::Check(cudaGetDevice(&device),"get lease device"))return;
+        if((cache.storage.poisoned||(cache.device>=0&&cache.device!=device))&&!cache.Clear())return;
+        cache.device=device;
+        size_t free=0,total=0;
+        if(!ResidentCudaMemory::Check(cudaMemGetInfo(&free,&total),"query lease budget"))return;
+        if(!GpuResidentPoolPolicy::MakePlan(requested,cache.storage.Capacities(),free,gpu_memory_fraction(),plan))return;
+        allocationsBefore=cache.storage.allocations;releasesBefore=cache.storage.releases;reusesBefore=cache.storage.reuses;
+        ResidentCudaMemory memory;
+        if(!plan.cache){
+            // Large valid requests still execute, but retain no peak storage.
+            if(!cache.Clear())return;
+            cache.device=device;plan.capacities=requested;
+        }
+        if(!cache.storage.Apply(plan,memory))return;
+        ready=true;
+    }
+    template<typename T>bool make(T*& pointer,size_t count,bool zero){
+        pointer=nullptr;size_t bytes=0;
+        if(!ready||finished||next>=requested.size()
+           ||!GpuResidentPoolPolicy::Multiply(std::max(size_t(1),count),sizeof(T),bytes)
+           ||bytes!=requested[next])return false;
+        ResidentCudaMemory memory;void* address=nullptr;
+        if(!cache.storage.Get(next,plan.capacities[next],memory,address))return false;
+        ++next;pointer=static_cast<T*>(address);
+        return !zero||ResidentCudaMemory::Check(cudaMemset(pointer,0,count*sizeof(T)),"clear resident buffer");
+    }
+    bool Finish(){
+        if(!ready||finished)return false;
+        if(!ResidentCudaMemory::Check(cudaStreamSynchronize(0),"finish resident work"))return false;
+        size_t free=0,total=0;GpuResidentPoolPolicy::Plan now;
+        if(!ResidentCudaMemory::Check(cudaMemGetInfo(&free,&total),"query completed budget")
+           ||!GpuResidentPoolPolicy::MakePlan(requested,cache.storage.Capacities(),free,gpu_memory_fraction(),now))return false;
+        size_t owned=0;if(!GpuResidentPoolPolicy::Sum(cache.storage.Capacities(),owned))return false;
+        // This check runs before publishing the host matrix. Buffers are idle.
+        if(!plan.cache||free<512ULL*1024*1024||owned>now.budget){if(!cache.Clear())return false;owned=0;}
+        finished=true;
+        std::fprintf(stderr,"GPU bounded resident cache: allocations=%zu releases=%zu reused=%zu retained_MiB=%.3f cap_MiB=%.3f request_MiB=%.3f mode=%s\n",
+            cache.storage.allocations-allocationsBefore,cache.storage.releases-releasesBefore,cache.storage.reuses-reusesBefore,
+            owned/1048576.,now.budget/1048576.,plan.requestedBytes/1048576.,plan.cache?"retained":"ephemeral_oversize");
+        return true;
+    }
+    size_t cachedBytes()const{size_t bytes=0;return GpuResidentPoolPolicy::Sum(cache.storage.Capacities(),bytes)?bytes:0;}
+    ~BoundedResidentAllocations(){
+        if(finished)return;
+        // A failed allocation/kernel/copy or host exception never publishes a
+        // reusable lease. Keep failed frees tracked and poison further reuse.
+        ResidentCudaMemory::Check(cudaStreamSynchronize(0),"drain abandoned resident work");
+        cache.Clear();
+    }
+};
+
+static bool ResidentRequestSizes(size_t beams,size_t orientations,size_t azimuth,size_t zenith,
+                                 bool noShadow,GpuResidentPoolPolicy::Sizes& sizes){
+    size_t cells=0,matrix=0,vectors=0,maxima=0,offsets=0;
+    if(!GpuResidentPoolPolicy::Multiply(azimuth,zenith,cells)
+       ||!GpuResidentPoolPolicy::Multiply(cells,16,matrix)
+       ||!GpuResidentPoolPolicy::Multiply(cells,3,vectors)
+       ||!GpuResidentPoolPolicy::Multiply(orientations,3,maxima)
+       ||!GpuResidentPoolPolicy::Add(orientations,1,offsets))return false;
+    const size_t counts[]={beams,orientations,offsets,1,maxima,orientations,orientations,
+                           zenith,zenith,azimuth,azimuth,vectors,matrix,noShadow?matrix:0};
+    const size_t widths[]={sizeof(GpuBeam),sizeof(int),sizeof(int),sizeof(int),sizeof(double),sizeof(ResidentSummary),
+                          sizeof(GpuReal),sizeof(GpuReal),sizeof(GpuReal),sizeof(GpuReal),sizeof(GpuReal),sizeof(GpuReal),sizeof(GpuReal),sizeof(GpuReal)};
+    for(size_t i=0;i<sizes.size();++i){
+        if(i==13&&!noShadow){sizes[i]=0;continue;}
+        if(!GpuResidentPoolPolicy::Multiply(std::max(size_t(1),counts[i]),widths[i],sizes[i]))return false;
+    }
+    return true;
+}
 struct ResidentAllocations {
     std::vector<void*> pointers;
     ResidentPool* pool=nullptr;size_t next=0;
-    ResidentAllocations(){
+    std::unique_ptr<BoundedResidentAllocations> bounded;
+    explicit ResidentAllocations(const GpuResidentPoolPolicy::Sizes& sizes){
         const char* enabled=std::getenv("MBS_GPU_RESIDENT_REUSE");
         const char* hybrid=std::getenv("MBS_GPU_TRACE_HYBRID");
+        const char* experiment=std::getenv("MBS_GPU_RESIDENT_BOUNDED_REUSE");
+        const bool explicitOff=enabled&&enabled[0]=='0'&&enabled[1]=='\0';
+        if(experiment&&experiment[0]=='1'&&experiment[1]=='\0'&&!explicitOff){
+            bounded.reset(new BoundedResidentAllocations(sizes));return;
+        }
+        if(BoundedResidentUsed().load()){
+            auto& cache=BoundedResidentCache();std::lock_guard<std::mutex> guard(cache.mutex);
+            if(!cache.Clear())throw std::runtime_error("cannot release disabled bounded resident cache");
+        }
         const bool reuse=enabled?(enabled[0]=='1'&&enabled[1]=='\0')
             :(hybrid&&hybrid[0]=='1'&&hybrid[1]=='\0');
         if(reuse){
@@ -150,8 +282,9 @@ struct ResidentAllocations {
             auto& item=pools[device];if(!item)item.reset(new ResidentPool(device));pool=item.get();
         }
     }
-    ~ResidentAllocations(){cudaStreamSynchronize(0);for(void* p:pointers)cudaFree(p);}
+    ~ResidentAllocations(){if(!bounded){cudaStreamSynchronize(0);for(void* p:pointers)cudaFree(p);}}
     template<typename T> bool make(T*& p,size_t n,bool zero=false){
+        if(bounded)return bounded->make(p,n,zero);
         p=nullptr;const size_t bytes=std::max(size_t(1),n)*sizeof(T);
         if(pool){
             if(next==pool->slots.size())pool->slots.emplace_back();
@@ -169,7 +302,8 @@ struct ResidentAllocations {
         }
         return !zero||cudaMemset(p,0,n*sizeof(T))==cudaSuccess;
     }
-    size_t cachedBytes() const {size_t n=0;if(pool)for(const auto& slot:pool->slots)n+=slot.bytes;return n;}
+    bool Finish(){return !bounded||bounded->Finish();}
+    size_t cachedBytes() const {if(bounded)return bounded->cachedBytes();size_t n=0;if(pool)for(const auto& slot:pool->slots)n+=slot.bytes;return n;}
 };
 // The resident geometry has sparse per-orientation slots after pruning. Use
 // kept[] rather than the next raw offset, and sum Mueller matrices beam by
@@ -205,6 +339,8 @@ __global__ void residentIncoherent(const GpuBeam* beams,const int* offsets,const
 }
 } // namespace
 
+bool HandlerPO::ReleaseIdleBoundedResidentGpuCache(){return ReleaseIdleBoundedResidentCache();}
+
 bool HandlerPO::CanHandleResidentConvexGpu() const {
     // Geometry, clipping and Fresnel coefficients stay in FP64 in both builds.
     // Only the prepared diffraction storage follows the selected precision;
@@ -223,7 +359,9 @@ bool HandlerPO::HandleResidentConvexGpu(const GpuConvexQueue::Input* inputs,
     const size_t gridCount=size_t(nAz)*(nZen+1),mCount=gridCount*16;
     if(!count||!gridCount)return false;
     const auto start=std::chrono::steady_clock::now();
-    ResidentAllocations alloc;
+    GpuResidentPoolPolicy::Sizes requested={};
+    if(!ResidentRequestSizes(beamCount,weights.size(),nAz,size_t(nZen)+1,ComputeNoShadow(),requested))return false;
+    ResidentAllocations alloc(requested);
     GpuBeam* prepared=nullptr;int *kept=nullptr,*offsets=nullptr,*invalid=nullptr;
     double* maxima=nullptr;ResidentSummary* summary=nullptr;
     GpuReal *w=nullptr,*st=nullptr,*ct=nullptr,*sp=nullptr,*cp=nullptr,*vf=nullptr,*matrix=nullptr,*matrixNS=nullptr;
@@ -285,6 +423,7 @@ bool HandlerPO::HandleResidentConvexGpu(const GpuConvexQueue::Input* inputs,
     for(auto v:hm)if(!std::isfinite(v))return false;
     for(auto v:hns)if(!std::isfinite(v))return false;
     for(auto s:hs)if(!std::isfinite(s.energy)||!std::isfinite(s.extinction))return false;
+    if(!alloc.Finish())return false;
     // Commit only after every kernel, copy and finite-value check succeeded.
     energies.resize(count);extinction.resize(count);unsigned long long candidates=0,rejected=0;
     for(int i=0;i<count;++i){const auto& s=hs[i];energies[i]=s.energy;extinction[i]=s.extinction;

@@ -1,0 +1,38 @@
+{
+  "source": "CPU baseline fullauto L5um,D3.284313725490196um,lambda.532,m1.3116,theta150-160",
+  "source_commit": "e5c1a08cc2bd3b1562af79eba99de5b7f758138b plus archived baseline worktree",
+  "source_tar_sha256": "968508691d5724c5a03056f6fa45f3db9fb818ef6ffa702a468f85438566c02e",
+  "training_seeds": [
+    1009,
+    1013,
+    1019,
+    1021,
+    1031,
+    1033,
+    1039,
+    1049
+  ],
+  "validation_seeds": [
+    2003,
+    2011,
+    2017,
+    2027,
+    2029,
+    2039,
+    2053,
+    2063
+  ],
+  "meaning": "Actual saved independent validation estimates after reproducing native training/control selection; no new optical jobs. Baseline accepted-control row counts and pointwise/Fieller intervals exactly reproduced before exporting. These combined replicas test scheduling only, not multilevel allocation.",
+  "source_analysis_sha256": "a8c96ba3d17cd985f0c8148e75ad4c719a87a3c430c4f2a431a5f15e366655e9",
+  "fixture_sha256": "3a4ee3c9914249abd5bf36f9978feec0c18788176fea59b55f722b835e5b6df1",
+  "cases": 7,
+  "replicas": 8,
+  "theta_rows": 33,
+  "calibration_depth": 4,
+  "physical_depth": 8,
+  "epsilon": 0.04,
+  "interpolation": 0.01,
+  "old_selected_phi": 8,
+  "angular_cost_selected_phi": 32,
+  "new_optical_jobs": 0
+}

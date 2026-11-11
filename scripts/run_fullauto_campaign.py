@@ -9,10 +9,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import time
-from fullauto_storage import check_job_storage, record_runtime, StorageBlocked
+from fullauto_storage import check_job_storage_confirmed, record_runtime, read_runtime_record, StorageBlocked
+
+STORAGE_CHECK_INTERVAL_SECONDS = 30
+STORAGE_STOP_GRACE_SECONDS = 30
 
 
 def write_json(path, value):
@@ -53,6 +57,58 @@ def publish_storage_block(root, statuses, current, health, save_on_disk):
         pass
 
 
+def storage_hold_reason(previous, identifier, runtime_record):
+    """Only an explicit pending_resume transition releases a storage hold."""
+    if previous.get('status') == 'storage_blocked':
+        return previous.get('storage', {}).get('reason', 'Stored storage hold')
+    if (runtime_record and runtime_record.get('status') == 'storage_blocked'
+            and runtime_record.get('current_job') == identifier):
+        blocked_at = runtime_record.get('updated_unix', 0)
+        requested = previous.get('storage_resume_requested_unix', 0)
+        explicit = (previous.get('status') == 'pending_resume'
+                    and requested > blocked_at)
+        if not explicit:
+            return runtime_record.get('storage', {}).get('reason', 'Runtime storage hold')
+    return None
+
+
+def stop_for_storage(active):
+    """Stop only this runner's owned group or its identity-verified adopted PID."""
+    if not active:
+        return dict(action='no active calculation')
+    process = active.get('process')
+    if process is not None:
+        if process.poll() is not None:
+            return dict(action='owned calculation already exited', returncode=process.returncode)
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            code = process.wait(timeout=STORAGE_STOP_GRACE_SECONDS)
+            return dict(action='terminated owned calculation group', pid=process.pid, returncode=code)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            return dict(action='killed owned calculation group after grace', pid=process.pid,
+                        returncode=process.wait(timeout=5))
+    token = active['adopted']
+    def same_process():
+        info = process_info(token['pid'])
+        if not info or info['state'] == 'Z':
+            return False
+        if info['start_ticks'] != token['start_ticks'] or info['argv'] != token['argv']:
+            raise RuntimeError('Adopted process identity changed during storage stop')
+        return True
+    if same_process():
+        os.kill(token['pid'], signal.SIGTERM)
+        deadline = time.monotonic() + STORAGE_STOP_GRACE_SECONDS
+        while same_process() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if same_process():
+            os.kill(token['pid'], signal.SIGKILL)
+    return dict(action='stopped verified adopted controller', pid=token['pid'])
+
+
 def main():
     manifest_path = Path(sys.argv[1]).resolve()
     root = manifest_path.parent
@@ -63,6 +119,7 @@ def main():
     infrastructure = {k: manifest[k] for k in ['lane', 'gpus', 'environment']}
     state_file = root / 'campaign_status.json'
     statuses = json.loads(state_file.read_text()).get('jobs', {}) if state_file.exists() else {}
+    runtime_record = read_runtime_record(root)
     receipt_path = root / 'campaign_handoff.json'
     handoff = json.loads(receipt_path.read_text()) if receipt_path.exists() else None
     started = time.time()
@@ -71,24 +128,33 @@ def main():
         raise RuntimeError('Invalid queue poll interval')
 
     last_storage_check = [0.0]
+    active = [None]
 
     def storage_health(current=None):
         job = next((j for j in manifest['jobs'] if j['id'] == current), None)
-        return check_job_storage(root, job.get('output') if job else None)
+        return check_job_storage_confirmed(root, job.get('output') if job else None)
+
+    def block_storage(current, health):
+        publish_storage_block(root, statuses, current, health, save_on_disk)
+        try:
+            stop = stop_for_storage(active[0])
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+            stop = dict(action='storage stop needs attention', error=str(error))
+        if current in statuses:
+            statuses[current]['storage_stop'] = stop
+        publish_storage_block(root, statuses, current, health, save_on_disk)
+        raise StorageBlocked(health['reason'])
 
     def save(state, current=None):
-        if time.time() - last_storage_check[0] >= 30:
+        if time.monotonic() - last_storage_check[0] >= STORAGE_CHECK_INTERVAL_SECONDS:
             health = storage_health(current)
-            last_storage_check[0] = time.time()
+            last_storage_check[0] = time.monotonic()
             if not health['ready']:
-                publish_storage_block(root, statuses, current, health, save_on_disk)
-                raise StorageBlocked(health['reason'])
+                block_storage(current, health)
         try:
             return save_on_disk(state, current)
         except OSError as error:
-            publish_storage_block(root, statuses, current,
-                                  dict(ready=False, errno=error.errno, reason=str(error)), save_on_disk)
-            raise
+            block_storage(current, dict(ready=False, errno=error.errno, reason=str(error)))
 
     def save_on_disk(state, current=None):
         write_json(state_file, {'schema': 2, 'status': state,
@@ -112,16 +178,19 @@ def main():
                      statuses.get(j['id'], {}).get('handoff_recovery'))), None)
         if job is None:
             break
+        hold = storage_hold_reason(statuses.get(job['id'], {}), job['id'], runtime_record)
+        if hold is not None:
+            print('HOLD {}: storage remains blocked; set pending_resume after repair: {}'.format(
+                  job['id'], hold), flush=True)
+            return
         if statuses.get(job['id'], {}).get('status') == 'failed':
             save('needs_attention', job['id'])
             print('HOLD {}: failed calculation awaits an explicit resume'.format(job['id']), flush=True)
             return
         health = storage_health(job['id'])
+        last_storage_check[0] = time.monotonic()
         if not health['ready']:
-            publish_storage_block(root, statuses, job['id'], health, save_on_disk)
-            print('WAIT storage: ' + health['reason'], flush=True)
-            time.sleep(30)
-            continue
+            block_storage(job['id'], health)
         record_runtime(root, dict(status='storage_ready', current_job=job['id'], storage=health))
         identifier = job['id']
         previous = statuses.get(identifier, {})
@@ -183,6 +252,7 @@ def main():
                 del environment[key]
         environment.update(manifest['environment'])
         if adopting:
+            active[0] = dict(adopted=token)
             statuses[identifier] = dict(previous, status='running', adopted_running_process=True)
             save('running', identifier)
             write_json(root / 'campaign_handoff_verified.json',
@@ -197,6 +267,7 @@ def main():
                 save('running', identifier)
                 info = process_info(pid)
             returncode = None  # We are not its parent; do not invent an exit code.
+            active[0] = None
         else:
             output.parent.mkdir(parents=True, exist_ok=True)
             attempt_history = list(previous.get('attempt_history', []))
@@ -208,13 +279,16 @@ def main():
                                         attempt_history=attempt_history)
             for obsolete in ('pid', 'returncode', 'finished_unix', 'adaptive_state',
                              'adopted_running_process', 'exit_confirmation', 'recovery_error',
-                             'storage', 'storage_blocked_unix'):
+                             'storage', 'storage_blocked_unix', 'storage_stop',
+                             'storage_resume_requested_unix'):
                 statuses[identifier].pop(obsolete, None)
             save('running', identifier)
             print('START {} binary={}'.format(identifier, binary), flush=True)
             with (root / (identifier + '.console.log')).open('a') as log:
                 log.write('\nCAMPAIGN ATTEMPT {} {}\n'.format(statuses[identifier]['attempt'], begin));log.flush()
-                process = subprocess.Popen(command, env=environment, stdout=log, stderr=subprocess.STDOUT)
+                process = subprocess.Popen(command, env=environment, stdout=log, stderr=subprocess.STDOUT,
+                                           start_new_session=True)
+                active[0] = dict(process=process)
                 statuses[identifier]['pid'] = process.pid
                 save('running', identifier)
                 while process.poll() is None:
@@ -222,6 +296,7 @@ def main():
                     statuses[identifier]['elapsed_seconds'] = prior_seconds + time.time() - begin
                     save('running', identifier)
             returncode = process.returncode
+            active[0] = None
         state = {}
         state_path = output / 'fullauto_status.json'
         if state_path.exists():
@@ -253,4 +328,9 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except StorageBlocked as error:
+        # A persistent hold is not a crash. Restart=on-failure must not replay
+        # the same expensive checkpoint as soon as stopping releases reserves.
+        print('HOLD storage: {}; explicit pending_resume is required after repair'.format(error), flush=True)

@@ -2936,6 +2936,14 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                         fast_sincos(allPhases[base + j],
                                     allVs[base + j], allVc[base + j]);
                 }
+                // A common unit-modulus phase cancels in every Mueller
+                // element of a single beam. Keep it only for coherent sums.
+                if (!isCoh)
+                {
+                    std::fill(dirDpr, dirDpr + nZen + 1, 1.0);
+                    std::fill(dirDpi, dirDpi + nZen + 1, 0.0);
+                }
+                else
                 {
                     for (int j = 0; j <= nZen; ++j)
                         dpPhases[j] = -m_waveIndex*(sinTheta[j]*tc.dp_sin + cosTheta[j]*tc.dp_cos);
@@ -2968,7 +2976,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                             edgeData.slope_yx, edgeData.edge_valid_x,
                             edgeData.slope_xy, edgeData.edge_valid_y,
                             m_eps1, real(m_complWave), imag(m_complWave),
-                            fresnelReal, fresnelImag))
+                            fresnelReal, fresnelImag, !m_hasAbsorption))
                     {
                         fresnelReady[j] = fresnelReady[j + 1] = 1;
                         fresnelReady[j + 2] = fresnelReady[j + 3] = 1;

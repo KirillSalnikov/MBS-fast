@@ -1,5 +1,6 @@
 #pragma once
 #include <list>
+#include <limits>
 #include <map>
 #include <memory>
 #include <string>
@@ -16,6 +17,14 @@ template<class T> class BoundedCache {
     std::list<std::string> recent;
     size_t used=0,maximum;
 public:
+    static size_t RetainedBytes(const std::string& key,size_t bytes){
+        // One charge definition also lets composed caches reserve their shared
+        // budget before inserting a value. Saturate impossible size overflows.
+        const size_t maximumSize=std::numeric_limits<size_t>::max(),fixed=sizeof(Entry)+192;
+        if(key.size()>(maximumSize-fixed)/2)return maximumSize;
+        const size_t overhead=2*key.size()+fixed;
+        return bytes>maximumSize-overhead?maximumSize:bytes+overhead;
+    }
     size_t hits=0,misses=0,evictions=0;
     explicit BoundedCache(size_t bytes):maximum(bytes){}
     size_t Bytes()const{return used;}
@@ -42,9 +51,8 @@ public:
     void Put(const std::string& key,std::shared_ptr<const T> value,size_t bytes){
         Erase(key);
         // Account for two owned keys and the containers as well as the value.
-        const size_t overhead=2*key.size()+sizeof(Entry)+192;
-        if(bytes>maximum||overhead>maximum-bytes)return;
-        bytes+=overhead;
+        bytes=RetainedBytes(key,bytes);
+        if(bytes==std::numeric_limits<size_t>::max()||bytes>maximum)return;
         while(used>maximum-bytes&&!recent.empty()){Erase(recent.back());++evictions;}
         recent.push_front(key);entries.emplace(key,Entry{value,bytes,recent.begin()});used+=bytes;
     }

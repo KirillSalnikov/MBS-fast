@@ -264,18 +264,11 @@ std::string FormatIntegralCharacteristicsLog(
     return log.str();
 }
 
-void WriteIntegralCharacteristicsTsv(
-    const std::string &destName,
-    const std::string &label,
-    const IntegralCharacteristics &values)
+std::string FormatIntegralCharacteristicsTsv(
+    const IntegralCharacteristics &values,
+    const std::string &label)
 {
-    const std::string path = destName + "_integrals.tsv";
-    std::ofstream out(path.c_str(), std::ios::out);
-    if (!out.is_open())
-        throw std::runtime_error(
-            "cannot open integral-characteristics output '" + path
-            + "'.\n  Fix: verify output permissions and free disk space.");
-
+    std::ostringstream out;
     out << "method\tlabel\tstatus"
         << "\tCext\tCsca\tCabs\tQext\tQsca\tQabs"
         << "\tCsca_error_estimate_rel\tfull_angular_coverage\tangular_scattering_integral\tprojected_area\tpartial_integral_error_estimate_rel\n";
@@ -299,6 +292,21 @@ void WriteIntegralCharacteristicsTsv(
     if(values.hasCScaErrorEstimate && !values.fullAngularCoverage)out<<values.cScaErrorEstimateRel;
     else out<<"nan";
     out<<'\n';
+    return out.str();
+}
+
+void WriteIntegralCharacteristicsTsv(
+    const std::string &destName,
+    const std::string &label,
+    const IntegralCharacteristics &values)
+{
+    const std::string path = destName + "_integrals.tsv";
+    std::ofstream out(path.c_str(), std::ios::out);
+    if (!out.is_open())
+        throw std::runtime_error(
+            "cannot open integral-characteristics output '" + path
+            + "'.\n  Fix: verify output permissions and free disk space.");
+    out << FormatIntegralCharacteristicsTsv(values,label);
     out.close();
     if (!out)
         throw std::runtime_error(

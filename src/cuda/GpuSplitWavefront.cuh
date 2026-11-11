@@ -11,7 +11,7 @@ struct OpticalView {
     Cx j[4];
     double path,front;
     int count,facet,depth;
-    unsigned char track[20];
+    unsigned char track[TrackCapacity];
 };
 __device__ __forceinline__ void storeBeam(Beam& dest,const OpticalView& source) {
     dest.count=source.count;dest.facet=source.facet;dest.depth=source.depth;
@@ -22,7 +22,7 @@ __device__ __forceinline__ void storeBeam(Beam& dest,const OpticalView& source) 
     for(int d=0;d<=source.depth;++d)dest.track[d]=source.track[d];
 }
 __device__ __forceinline__ void addNonzeroStatus(Status* states,int orientation,const Status& s) {
-    if(s.failure)atomicExch(&states[orientation].failure,s.failure);
+    if(s.failure)addFailure(&states[orientation].failure,s.failure);
     if(s.count)atomicAdd(&states[orientation].count,s.count);
     if(s.evaluated)atomicAdd(&states[orientation].evaluated,s.evaluated);
     if(s.rejected)atomicAdd(&states[orientation].rejected,s.rejected);
@@ -59,7 +59,7 @@ template<int lanes> __global__ void clipLevel(const Input* inputs,const QueueIte
             for(int d=0;d<=beam.depth;++d)dest.track[d]=beam.track[d];
             for(int v=0;v<result.count;++v)dest.vertices[v]=result.vertices[v];
         }
-        for(int step=lanes/2;step;step/=2)status.failure=max(status.failure,__shfl_down_sync(mask,status.failure,step,lanes));
+        for(int step=lanes/2;step;step/=2)status.failure=CombineFailure(status.failure,__shfl_down_sync(mask,status.failure,step,lanes));
         status.evaluated=warpSum<lanes>(status.evaluated,mask);
         if(lane==0)addNonzeroStatus(states,orientation,status);
     }

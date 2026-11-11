@@ -271,7 +271,8 @@ inline void add_stable_edge_quotient(double phaseReal,
 
 // Vectorized regular edge integral for four theta directions.  The caller
 // keeps the small-phase and near-singular cases on the scalar stable path.
-inline bool diffract_theta_4_regular(
+template<int Axis>
+inline bool diffract_theta_4_regular_impl(
     const double *allVc, const double *allVs, int thetaBase,
     int thetaStride, int nv,
     const double *aValues, const double *bValues,
@@ -289,13 +290,13 @@ inline bool diffract_theta_4_regular(
     const __m256d b = _mm256_loadu_pd(bValues + thetaBase);
     const __m256d absA = _mm256_andnot_pd(signMask, a);
     const __m256d absB = _mm256_andnot_pd(signMask, b);
-    const __m256d useX = _mm256_cmp_pd(absB, absA, _CMP_GT_OQ);
+    const __m256d useX = Axis == 1 ? allBits : (Axis == 0 ? zero : _mm256_cmp_pd(absB, absA, _CMP_GT_OQ));
     __m256d sumReal = zero;
     __m256d sumImag = zero;
 
     for (int edge = 0; edge < nv; ++edge)
     {
-        if (!validX[edge] && !validY[edge])
+        if (Axis == 1 ? !validX[edge] : (Axis == 0 ? !validY[edge] : (!validX[edge] && !validY[edge])))
             continue;
 
         const int next = (edge + 1 < nv) ? edge + 1 : 0;
@@ -307,7 +308,7 @@ inline bool diffract_theta_4_regular(
             denominatorY, denominatorX, useX);
 
         __m256d validMask;
-        if (validX[edge] && validY[edge])
+        if (Axis != -1 || (validX[edge] && validY[edge]))
             validMask = allBits;
         else if (validX[edge])
             validMask = useX;
@@ -350,6 +351,25 @@ inline bool diffract_theta_4_regular(
     _mm256_storeu_pd(outImag + thetaBase, _mm256_add_pd(
         _mm256_mul_pd(cwReal, sumImag), _mm256_mul_pd(cwImag, sumReal)));
     return true;
+}
+
+inline bool diffract_theta_4_regular(
+    const double *allVc, const double *allVs, int thetaBase,
+    int thetaStride, int nv,
+    const double *aValues, const double *bValues,
+    const double *slopeYx, const bool *validX,
+    const double *slopeXy, const bool *validY,
+    double eps, double complWaveReal, double complWaveImag,
+    double *outReal, double *outImag, bool specializeAxes = true)
+{
+    if (!specializeAxes) return diffract_theta_4_regular_impl<-1>(allVc, allVs, thetaBase, thetaStride, nv, aValues, bValues, slopeYx, validX, slopeXy, validY, eps, complWaveReal, complWaveImag, outReal, outImag);
+    const __m256d sign = _mm256_set1_pd(-0.0);
+    const int axis = _mm256_movemask_pd(_mm256_cmp_pd(
+        _mm256_andnot_pd(sign, _mm256_loadu_pd(bValues + thetaBase)),
+        _mm256_andnot_pd(sign, _mm256_loadu_pd(aValues + thetaBase)), _CMP_GT_OQ));
+    if (axis == 15) return diffract_theta_4_regular_impl<1>(allVc, allVs, thetaBase, thetaStride, nv, aValues, bValues, slopeYx, validX, slopeXy, validY, eps, complWaveReal, complWaveImag, outReal, outImag);
+    if (axis == 0) return diffract_theta_4_regular_impl<0>(allVc, allVs, thetaBase, thetaStride, nv, aValues, bValues, slopeYx, validX, slopeXy, validY, eps, complWaveReal, complWaveImag, outReal, outImag);
+    return diffract_theta_4_regular_impl<-1>(allVc, allVs, thetaBase, thetaStride, nv, aValues, bValues, slopeYx, validX, slopeXy, validY, eps, complWaveReal, complWaveImag, outReal, outImag);
 }
 
 inline bool all_not_nan_4(const double *values)

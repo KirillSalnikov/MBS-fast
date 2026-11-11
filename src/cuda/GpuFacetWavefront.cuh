@@ -22,7 +22,7 @@ template<int lanes> __global__ void traceFacets(const Input* inputs,const QueueI
         if(!active)continue;
         for(int f=lane;f<in.faceCount&&!status.failure;f+=lanes)
             traceFacet(in,beam,orientation,f,next,nextSize,queueCapacity,output,total,capacity,status);
-        for(int step=lanes/2;step;step/=2)status.failure=max(status.failure,__shfl_down_sync(mask,status.failure,step,lanes));
+        for(int step=lanes/2;step;step/=2)status.failure=CombineFailure(status.failure,__shfl_down_sync(mask,status.failure,step,lanes));
         status.count=warpSum<lanes>(status.count,mask);
         status.evaluated=warpSum<lanes>(status.evaluated,mask);status.rejected=warpSum<lanes>(status.rejected,mask);
         status.rejectedJones=warpSum<lanes>(status.rejectedJones,mask);status.rejectedArea=warpSum<lanes>(status.rejectedArea,mask);
