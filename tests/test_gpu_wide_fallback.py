@@ -19,7 +19,10 @@ start = source.index('    auto prepareBlock = ')
 cpu = source.index('        // std::async workers do not inherit', start)
 before_cpu = source[start:cpu]
 guard_start = before_cpu.index('        if(wideResident && allowResident')
-guard = before_cpu[guard_start:]
+# CPU scheduling setup was added between this guard and the old extraction
+# boundary. Compile only the actual guard, retaining the placement assertions.
+guard_end = before_cpu.index('CPU preparation refused");', guard_start) + len('CPU preparation refused");')
+guard = before_cpu[guard_start:guard_end]
 
 # These GPU failures all continue to this single guard, before construction of
 # local CPU tracing/handler state and before checking CPU prepared-beam caches.
