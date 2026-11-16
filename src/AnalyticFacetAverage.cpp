@@ -282,11 +282,35 @@ struct Basis
         return Green(step,std::move(values),std::move(derivatives));
     }
 };
-double EdgeMean(const std::vector<double>&px,const std::vector<double>&py,double Q,int nodes,
-                const std::function<double(double)>&value,const std::function<double(double)>&same)
+// Geometry-only quadrature distances, shared by all theta rows of this pass.
+// A bounded cache is optional; uncached edge pairs retain the original loop.
+struct EdgeDistances {
+    std::vector<std::vector<double>> distance;
+    EdgeDistances(const std::vector<double>&px,const std::vector<double>&py,
+                  const std::vector<double>&x,size_t& available){
+        const size_t m=px.size(),nodes=x.size();
+        const size_t metadata=m*m*sizeof(std::vector<double>);
+        if(metadata>available)return;
+        distance.resize(m*m);available-=metadata;
+        const size_t bytes=nodes*nodes*sizeof(double);
+        for(size_t i=0;i<m;++i){const size_t in=(i+1)%m;const double ex=px[in]-px[i],ey=py[in]-py[i];
+            for(size_t j=i+1;j<m;++j){const size_t jn=(j+1)%m;const double fx=px[jn]-px[j],fy=py[jn]-py[j];
+                if(ex*fx+ey*fy==0||bytes>available)continue;
+                auto& d=distance[i*m+j];d.resize(nodes*nodes);available-=bytes;
+                for(size_t a=0;a<nodes;++a)for(size_t b=0;b<nodes;++b){
+                    const double dx=px[i]+x[a]*ex-px[j]-x[b]*fx,dy=py[i]+x[a]*ey-py[j]-x[b]*fy;
+                    d[a*nodes+b]=std::hypot(dx,dy);
+                }
+            }
+        }
+    }
+};
+template<class Value,class Same>
+double EdgeMean(const std::vector<double>&px,const std::vector<double>&py,double Q,
+                const std::vector<double>&x,const std::vector<double>&w,const EdgeDistances&cache,
+                const Value&value,const Same&same)
 {
-    std::vector<double>x,w;Gauss(nodes,x,w);
-    for(int i=0;i<nodes;++i){x[i]=(x[i]+1)/2;w[i]/=2;}
+    const int nodes=int(x.size());
     double result=0;size_t m=px.size();
     for(size_t i=0;i<m;++i)
     {
@@ -297,6 +321,11 @@ double EdgeMean(const std::vector<double>&px,const std::vector<double>&py,double
             double dot=ex*fx+ey*fy;if(dot==0)continue;
             double integral=0;
             if(i==j)integral=same(Q*std::hypot(ex,ey));
+            else if(!cache.distance.empty()&&!cache.distance[i*m+j].empty()){
+                const auto& d=cache.distance[i*m+j];
+                for(int a=0;a<nodes;++a)for(int b=0;b<nodes;++b)
+                    integral+=w[a]*w[b]*value(Q*d[size_t(a)*nodes+b]);
+            }
             else for(int a=0;a<nodes;++a)for(int b=0;b<nodes;++b)
             {
                 double dx=px[i]+x[a]*ex-px[j]-x[b]*fx,dy=py[i]+x[a]*ey-py[j]-x[b]*fy;
@@ -596,6 +625,13 @@ void Control::PrepareMeans(const std::vector<double>&theta)
         int degree=pass==0 ? 128:(pass==1 ? 192:320),nodes=pass==0 ? 64:(pass==1 ? 128:(pass==2 ? 192:(pass==3 ? 384:768)));
         double step=pass==0 ? .06:(pass==1 ? .03:.015);
         Moments moments(index,degree);Basis basis(degree,maxQ*maxDiameter+step*4,step);
+        std::vector<double> edgeX,edgeW;Gauss(nodes,edgeX,edgeW);
+        for(int i=0;i<nodes;++i){edgeX[i]=(edgeX[i]+1)/2;edgeW[i]/=2;}
+        size_t edgeBudget=64*size_t(1024)*1024;
+        std::vector<EdgeDistances> edgeGeometry;edgeGeometry.reserve(representatives.size());
+        for(size_t g=0;g<representatives.size();++g){const Patch& p=patches[representatives[g]];
+            edgeGeometry.emplace_back(p.x,p.y,edgeX,edgeBudget);}
+
         double worst=0;
         std::vector<std::exception_ptr> errors(theta.size());
 #ifdef _OPENMP
@@ -613,7 +649,7 @@ void Control::PrepareMeans(const std::vector<double>&theta)
                 for(size_t g=0;g<representatives.size();++g)
                 {
                     const Patch &p=patches[representatives[g]];
-                    reflection+=multiplicity[g]*EdgeMean(p.x,p.y,Q,nodes,[&green](double z){return green.Value(z);},[&green](double z){return green.Same(z);})/(wave*wave);
+                    reflection+=multiplicity[g]*EdgeMean(p.x,p.y,Q,edgeX,edgeW,edgeGeometry[g],[&green](double z){return green.Value(z);},[&green](double z){return green.Same(z);})/(wave*wave);
                 }
             }
             if(shadowMode!="off")
@@ -626,7 +662,7 @@ void Control::PrepareMeans(const std::vector<double>&theta)
                     for(size_t g=0;g<representatives.size();++g)
                     {
                         const Patch &p=patches[representatives[g]];
-                        shadow+=multiplicity[g]*c2*c2*EdgeMean(p.x,p.y,qs,nodes,ShadowGreen,ShadowSame)/(wave*wave);
+                        shadow+=multiplicity[g]*c2*c2*EdgeMean(p.x,p.y,qs,edgeX,edgeW,edgeGeometry[g],ShadowGreen,ShadowSame)/(wave*wave);
                     }
                 }
             }
