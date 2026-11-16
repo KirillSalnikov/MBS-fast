@@ -203,8 +203,11 @@ void ExportMemoryPublic(bool force=false){
         }
         exports.push_back({root+"/intermediate_current.json",root+"/intermediate_current.json"});
     }
-    for(const auto& path:memoryStore->List(root,false))if(!memoryStore->IsDirectory(path)){
+    for(const auto& entry:memoryStore->ChildFiles(root)){
+        const auto& path=entry.first;
         const auto name=path.substr(root.size()+1);if(name=="intermediate_current.json"||!MemoryPublicFile(name))continue;
+        const auto old=memoryExportedGenerations.find(path);
+        if(old!=memoryExportedGenerations.end()&&old->second==entry.second)continue;
         exports.push_back({path,path});
     }
     // Explicit geometry exports may be nested below the output directory.
@@ -215,7 +218,8 @@ void ExportMemoryPublic(bool force=false){
     for(const auto& file:exports){
         const uint64_t generation=memoryStore->Generation(file.second);
         const auto old=memoryExportedGenerations.find(file.first);
-        if(file.first!=root+"/intermediate_current.json"&&old!=memoryExportedGenerations.end()&&old->second==generation)continue;
+        if(old!=memoryExportedGenerations.end()&&old->second==generation
+            &&(file.first!=root+"/intermediate_current.json"||publishedFolder.empty()||publishedFolder==previousFolder))continue;
         const auto bytes=file.first==root+"/intermediate_current.json"?intermediate:Read(file.second);
         {PhysicalStorageScope disk;Directory(file.first.substr(0,file.first.find_last_of('/')));Atomic(file.first,bytes);
             if(file.first==root+"/intermediate_current.json")AtomicFileBatch::FlushPath(root,true);}

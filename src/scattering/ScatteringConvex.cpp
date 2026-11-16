@@ -131,7 +131,8 @@ bool ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
         m_beamTree.pop_back();
         m_treeSize = (int)m_beamTree.size();
 
-        if (IsTerminalAct(beam))
+        // Queued convex beams have already passed cutoff at their child depth.
+        if (beam.nActs >= m_nActs)
         {
             continue;
         }
@@ -156,8 +157,8 @@ bool ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
 
             inBeam.id = RecomputeTrackId(beam.id, id);
             inBeam.locations = beam.locations;
-            if (!IsTracePruned(inBeam)
-                && !PushBeamToTree(inBeam, id, beam.nActs+1, Location::In))
+            // PushBeamToTree sets child depth before checking cutoff.
+            if (!PushBeamToTree(inBeam, id, beam.nActs+1, Location::In))
                 return false;
         }
     }
@@ -203,7 +204,22 @@ bool ScatteringConvex::SplitSecondaryBeams(Beam &incidentBeam, int facetID,
 
     if (!splitting.IsNormalIncidence())
     {	// regular incidence
-        Beam incBeam = incidentBeam;
+        // Only Jones and its transverse basis change for this interface.
+        // Keep the aperture/track/path in place rather than copying a Beam.
+        // Each trace owns incidentBeam; restore even when a child allocation
+        // throws, so the next candidate facet always sees the original basis.
+        struct RestorePolarization {
+            Beam& beam;
+            Matrix2x2c matrix;
+            Point3f basis;
+            explicit RestorePolarization(Beam& value)
+                : beam(value), matrix(value.J), basis(value.polarizationBasis) {}
+            ~RestorePolarization() {
+                beam.J=matrix;
+                beam.polarizationBasis=basis;
+            }
+        } restore(incidentBeam);
+        Beam& incBeam = incidentBeam;
 
         ComputePolarisationParams(incidentBeam.direction, normal, incBeam);
 

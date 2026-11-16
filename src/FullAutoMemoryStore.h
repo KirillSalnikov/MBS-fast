@@ -116,7 +116,9 @@ class Store {
     std::string Relative(const std::string& path)const{return path==root?"":path.substr(root=="/"?0:root.size());}
     std::string Absolute(const std::string& relative)const{return relative.empty()?root:(root=="/"?relative:root+relative);}
     uint64_t Next(){Require(epoch<UINT64_MAX,"generation overflow");return ++epoch;}
-    size_t CatalogCache()const{return std::min<size_t>(limit/8,1024*1024);}
+    // Millions of virtual job paths otherwise thrash a 1 MiB SQLite cache.
+    // This reservation is charged to the existing store limit, not extra RAM.
+    size_t CatalogCache()const{return std::min<size_t>(limit/8,64*1024*1024);}
     size_t CatalogReservation()const{return CatalogCache()+256*1024;}
     static FullAutoMemoryCatalog::Row Row(const Entry& e){FullAutoMemoryCatalog::Row row;row.directory=e.directory;row.size=e.size;row.digest=e.digest;
         // The catalog may index a payload still owned by a resident Entry.
@@ -171,7 +173,7 @@ class Store {
     void MigrateCatalog(){
         if(catalog)return;
         Require(limit>=1024*1024,"metadata exceeds working-memory limit; use at least 1 MiB for metadata spill");
-        std::unique_ptr<FullAutoMemoryCatalog::Catalog> staged(new FullAutoMemoryCatalog::Catalog(spillDirectory,CatalogCache()));
+        std::unique_ptr<FullAutoMemoryCatalog::Catalog> staged(new FullAutoMemoryCatalog::Catalog(spillDirectory,CatalogCache(),root));
         for(auto& item:entries){if(!item.second.directory)SaveSpill(item.second);staged->Put(item.first,Row(item.second));}
         entries.clear();recent.clear();residentBytes=0;metadataBytes=CatalogReservation();catalog.swap(staged);
     }
@@ -218,7 +220,7 @@ class Store {
         if(catalog){
             while(!recent.empty())EvictOne();
             Descriptor replacement(NewSpill());uint64_t end=0;char buffer[65536];
-            std::unique_ptr<FullAutoMemoryCatalog::Catalog> next(new FullAutoMemoryCatalog::Catalog(spillDirectory,CatalogCache()));
+            std::unique_ptr<FullAutoMemoryCatalog::Catalog> next(new FullAutoMemoryCatalog::Catalog(spillDirectory,CatalogCache(),root));
             catalog->All([&](const std::string& path,FullAutoMemoryCatalog::Row row){
                 if(!row.directory){Require(row.offset<=spillEnd&&row.size<=spillEnd-row.offset,"invalid compacted catalog range");uint64_t done=0,digest=UINT64_C(14695981039346656037);const auto oldOffset=row.offset;row.offset=end;
                     while(done<row.size){const auto n=size_t(std::min<uint64_t>(sizeof(buffer),row.size-done));ReadAt(spill,oldOffset+done,buffer,n);digest=HashBytes(buffer,n,digest);WriteAll(replacement.fd,buffer,n);done+=n;spillReads+=n;spillWrites+=n;}
@@ -433,6 +435,19 @@ public:
         if(catalog){catalog->Children(key,recursive,[&](const std::string& name,const FullAutoMemoryCatalog::Row&){result.push_back(name);});return result;}
         for(auto it=entries.lower_bound(prefix);it!=entries.end()&&it->first.compare(0,prefix.size(),prefix)==0;++it)
             if(it->first!=key&&(recursive||it->first.find('/',prefix.size())==std::string::npos))result.push_back(it->first);
+        return result;
+    }
+    // Read names and generations together; publication must not issue two
+    // additional indexed lookups for every unchanged root-level file.
+    std::vector<std::pair<std::string,uint64_t>> ChildFiles(const std::string& path)const{
+        std::lock_guard<std::recursive_mutex> guard(mutex);RequireHealthy();const auto key=Key(path);
+        std::vector<std::pair<std::string,uint64_t>> result;
+        if(catalog){catalog->Children(key,false,[&](const std::string& name,const FullAutoMemoryCatalog::Row& row){
+            if(!row.directory)result.emplace_back(name,row.generation);});return result;}
+        const auto prefix=key=="/"?key:key+"/";
+        for(auto it=entries.lower_bound(prefix);it!=entries.end()&&it->first.compare(0,prefix.size(),prefix)==0;++it)
+            if(!it->second.directory&&it->first.find('/',prefix.size())==std::string::npos)
+                result.emplace_back(it->first,it->second.generation);
         return result;
     }
     Statistics Stats()const{

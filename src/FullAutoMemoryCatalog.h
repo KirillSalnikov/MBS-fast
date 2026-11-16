@@ -57,8 +57,20 @@ public:
 inline Api& Library(){static Api library;return library;}
 struct Row {bool directory=false;uint64_t size=0,digest=UINT64_C(14695981039346656037),offset=0,generation=0;};
 class Catalog {
-    Api& api;sqlite3* db=nullptr;std::string path;int backing=-1;bool healthy=true;
+    Api& api;sqlite3* db=nullptr;std::string path;const std::string keyPrefix;int backing=-1;bool healthy=true;
     sqlite3_stmt *lookup=nullptr,*put=nullptr,*remove=nullptr;
+    // The catalog is disposable. Store its keys relative to the owned root,
+    // while every public API and durable checkpoint still uses full paths.
+    std::string EncodePath(const std::string& name)const {
+        if(keyPrefix.empty())return name;
+        Require(name==keyPrefix||(name.size()>keyPrefix.size()&&name.compare(0,keyPrefix.size(),keyPrefix)==0&&name[keyPrefix.size()]=='/'),"path outside catalog root");
+        return name.substr(keyPrefix.size());
+    }
+    std::string DecodePath(const std::string& name)const {
+        Require(keyPrefix.empty()?(!name.empty()&&name[0]=='/'):(name.empty()||name[0]=='/'),"invalid relative catalog key");
+        Require(keyPrefix.size()+name.size()<=4096,"catalog path too long");
+        return keyPrefix+name;
+    }
     void Check(int code,const char* operation)const{Require(code==0,std::string(operation)+": "+(db?api.errmsg(db):"cannot open database"));}
     void Execute(const std::string& sql){char* error=nullptr;const int code=api.exec(db,sql.c_str(),nullptr,nullptr,&error);std::string message=error?error:"";if(error)api.free(error);Require(code==0,"SQL operation failed: "+message);}
     sqlite3_stmt* Prepare(const char* sql){sqlite3_stmt* statement=nullptr;Check(api.prepare_v2(db,sql,-1,&statement,nullptr),"prepare");return statement;}
@@ -71,7 +83,7 @@ class Catalog {
     void Reset(sqlite3_stmt* statement)const{api.reset(statement);api.clear_bindings(statement);}
     struct Statement {Api& api;sqlite3_stmt* value;Statement(Api& a,sqlite3_stmt* s):api(a),value(s){}~Statement(){api.finalize(value);}};
 public:
-    Catalog(const std::string& directory,size_t cacheBytes):api(Library()){
+    Catalog(const std::string& directory,size_t cacheBytes,const std::string& ownedRoot=""):api(Library()),keyPrefix(ownedRoot=="/"?"":ownedRoot){
         std::string name=directory+"/mbs-fullauto-catalog-"+std::to_string(getpid())+"-XXXXXX";std::vector<char> buffer(name.begin(),name.end());buffer.push_back('\0');
         const int fd=mkstemp(buffer.data());Require(fd>=0,"cannot create temporary index");close(fd);path=buffer.data();
         try{
@@ -92,23 +104,26 @@ public:
     ~Catalog(){if(lookup)api.finalize(lookup);if(put)api.finalize(put);if(remove)api.finalize(remove);if(db)api.close_v2(db);if(backing>=0)::close(backing);if(!path.empty())unlink(path.c_str());}
     Catalog(const Catalog&)=delete;Catalog& operator=(const Catalog&)=delete;
     bool Get(const std::string& key,Row& row)const{
-        Reset(lookup);Text(lookup,1,key);const int result=api.step(lookup);if(result==100){row=Decode(lookup,0);Reset(lookup);return true;}
+        Reset(lookup);Text(lookup,1,EncodePath(key));const int result=api.step(lookup);if(result==100){row=Decode(lookup,0);Reset(lookup);return true;}
         Reset(lookup);Require(result==101,"catalog lookup failed");return false;
     }
-    void Put(const std::string& key,const Row& row){try{MBS_MEMORY_CATALOG_EVENT("before_put",key);Reset(put);Text(put,1,key);Text(put,2,Parent(key));Number(put,3,row.directory?1:0);Number(put,4,row.size);Number(put,5,row.digest);Number(put,6,row.offset);Number(put,7,row.generation);
+    // Encoded children always start with slash; the root itself is empty.
+    // A non-path sentinel keeps the root outside its own children index.
+    void Put(const std::string& key,const Row& row){try{MBS_MEMORY_CATALOG_EVENT("before_put",key);Reset(put);Text(put,1,EncodePath(key));Text(put,2,!keyPrefix.empty()&&key==keyPrefix?std::string(1,'\1'):EncodePath(Parent(key)));Number(put,3,row.directory?1:0);Number(put,4,row.size);Number(put,5,row.digest);Number(put,6,row.offset);Number(put,7,row.generation);
         const int result=api.step(put);Reset(put);Require(result==101,std::string("catalog write failed: ")+api.errmsg(db));}catch(...){healthy=false;throw;}}
-    void Erase(const std::string& key){try{MBS_MEMORY_CATALOG_EVENT("before_erase",key);Reset(remove);Text(remove,1,key);const int result=api.step(remove);Reset(remove);Require(result==101,"catalog erase failed");}catch(...){healthy=false;throw;}}
+    void Erase(const std::string& key){try{MBS_MEMORY_CATALOG_EVENT("before_erase",key);Reset(remove);Text(remove,1,EncodePath(key));const int result=api.step(remove);Reset(remove);Require(result==101,"catalog erase failed");}catch(...){healthy=false;throw;}}
     bool Healthy()const{return healthy;}
     template<class Visitor> void All(Visitor visitor)const{Statement statement(api,const_cast<Catalog*>(this)->Prepare("SELECT path,dir,size,digest,off,generation FROM records ORDER BY path"));Visit(statement.value,visitor);}
     template<class Visitor> void Children(const std::string& parent,bool recursive,Visitor visitor)const{
         Statement statement(api,const_cast<Catalog*>(this)->Prepare(recursive?"SELECT path,dir,size,digest,off,generation FROM records WHERE path>=?1 AND path<?2 AND path<>?3 ORDER BY path":"SELECT path,dir,size,digest,off,generation FROM records WHERE parent=?1 AND path<>?2 ORDER BY path"));
-        if(recursive){const auto prefix=parent=="/"?parent:parent+"/";std::string upper=prefix;++upper.back();Text(statement.value,1,prefix);Text(statement.value,2,upper);Text(statement.value,3,parent);}
-        else{Text(statement.value,1,parent);Text(statement.value,2,parent);}
+        const auto encoded=EncodePath(parent);
+        if(recursive){const auto prefix=encoded=="/"?encoded:encoded+"/";std::string upper=prefix;++upper.back();Text(statement.value,1,prefix);Text(statement.value,2,upper);Text(statement.value,3,encoded);}
+        else{Text(statement.value,1,encoded);Text(statement.value,2,encoded);}
         Visit(statement.value,visitor);
     }
     template<class Visitor> void Visit(sqlite3_stmt* statement,Visitor visitor)const{
-        int result;while((result=api.step(statement))==100){const auto bytes=api.column_bytes(statement,0);const auto text=api.column_text(statement,0);Require(bytes>=1&&bytes<=4096&&text,"invalid stored path");
-            const std::string key(reinterpret_cast<const char*>(text),size_t(bytes));Require(key.find('\0')==std::string::npos,"invalid stored path bytes");visitor(key,Decode(statement,1));}
+        int result;while((result=api.step(statement))==100){const auto bytes=api.column_bytes(statement,0);const auto text=api.column_text(statement,0);Require(bytes>=0&&bytes<=4096&&text,"invalid stored path");
+            const std::string key(reinterpret_cast<const char*>(text),size_t(bytes));Require(key.find('\0')==std::string::npos,"invalid stored path bytes");visitor(DecodePath(key),Decode(statement,1));}
         Require(result==101,"catalog scan failed");
     }
     uint64_t DiskBytes()const{struct stat st{};return backing>=0&&fstat(backing,&st)==0?uint64_t(st.st_size):0;}

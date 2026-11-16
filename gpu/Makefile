@@ -188,7 +188,7 @@ $(OBJDIR)/%.o: $(ROOT)/%.cc
 
 $(OBJDIR)/%.o: $(ROOT)/%.cu
 	@mkdir -p $(dir $@)
-	$(NVCC) $(NVCCFLAGS) -DUSE_CUDA -I$(CUDA_PATH)/include $(INCLUDES) -c $< -o $@
+	$(NVCC) $(NVCCFLAGS) $(DEPFLAGS) -MF $(@:.o=.d) -MT $@ -DUSE_CUDA -I$(CUDA_PATH)/include $(INCLUDES) -c $< -o $@
 
 # Convex clipping must retain the CPU predicate operation order. Do not
 # inherit approximate division/trigonometry from an optional fast PO build.

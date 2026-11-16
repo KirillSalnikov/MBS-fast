@@ -93,6 +93,21 @@ Job CutoffPrefixView(const Job& source,int count){
 // prepared chunk. Spend one quarter of the existing execution reserve on an
 // independent, cached numerical check of the FINAL corrected estimator.
 std::map<std::string,bool> cutoffPrefixChecks;
+std::string CutoffPrefixValidationKey(const Job& job)const{
+    std::ostringstream profile;profile<<"cutoff-prefix-v2 "<<binaryHash<<' '<<job.executionHash<<' '<<std::min(job.count,1024)
+        <<' '<<job.depth<<' '<<job.pairedDepth<<' '<<job.phi<<' '<<job.block<<' '<<job.warp<<' '<<job.pipeline
+        <<' '<<dispatchPipeline<<' '<<job.mirrored<<' '<<job.hasControls<<' '<<workerChunk<<' '<<Number(eps)
+        <<' '<<FullAutoPreparation::Bucket(job.inputAngles.size())<<' '<<int(job.inputAngles.front()/15)<<' '<<int(job.inputAngles.back()/15);
+    for(const auto& row:weights)for(double value:row)profile<<' '<<Number(value);
+    for(const auto& row:polarWeights)for(const auto& component:row)for(double value:component)profile<<' '<<Number(value);
+    // Exact angles and the independent scramble selection are inputs to the
+    // verification. Production N above the pilot cap is not an input.
+    profile<<" angles "<<job.inputAngles.size();
+    for(double angle:job.inputAngles)profile<<' '<<Number(angle);
+    profile<<" seeds "<<seeds.size();
+    for(unsigned seed:seeds)profile<<' '<<seed;
+    return Hash(profile.str());
+}
 bool VerifyCutoffPrefix(const Job& job,const std::vector<std::string>& actualCommand){
     if(!NativeWorkerCapabilities::OrientationPrefixOutput())return false;
 #ifndef MBS_GPU_FP32
@@ -100,26 +115,32 @@ bool VerifyCutoffPrefix(const Job& job,const std::vector<std::string>& actualCom
 #else
     if(!config.useGpu)return true;
     const int n=std::min(job.count,1024),m=std::max(64,n/8);
-    std::ostringstream profile;profile<<"cutoff-prefix-v1 "<<binaryHash<<' '<<job.executionHash<<' '<<job.count
-        <<' '<<job.depth<<' '<<job.pairedDepth<<' '<<job.phi<<' '<<job.block<<' '<<job.warp<<' '<<job.pipeline
-        <<' '<<dispatchPipeline<<' '<<job.mirrored<<' '<<job.hasControls<<' '<<workerChunk<<' '<<Number(eps)
-        <<' '<<FullAutoPreparation::Bucket(job.inputAngles.size())<<' '<<int(job.inputAngles.front()/15)<<' '<<int(job.inputAngles.back()/15);
-    for(const auto& row:weights)for(double value:row)profile<<' '<<Number(value);
-    for(const auto& row:polarWeights)for(const auto& component:row)for(double value:component)profile<<' '<<Number(value);
-    const auto key=Hash(profile.str()),path=root+"/cutoff_prefix_validation_"+key+".json";
+    const auto key=CutoffPrefixValidationKey(job),path=root+"/cutoff_prefix_validation_"+key+".json";
     const auto known=cutoffPrefixChecks.find(key);if(known!=cutoffPrefixChecks.end())return known->second;
     if(Exists(path)){const auto saved=CompactJson(Read(path));const bool passed=saved.find("\"passed\":true")!=std::string::npos;
         cutoffPrefixChecks[key]=passed;return passed;}
     const bool oldCollecting=collecting,oldCorrecting=correctionExecuting,oldVerifying=shortPacketVerifying;
     collecting=false;correctionExecuting=true;shortPacketVerifying=true;
     double error=0,baselineSeconds=0,candidateSeconds=0;size_t comparisons=0;const double started=Seconds();
-    auto pilot=[&](unsigned seed,const std::string& role,int count,bool balanced,bool embedded){
+    // Prepare independent pilots together so the existing bounded dispatcher
+    // can keep all assigned workers busy. The estimator and comparisons below
+    // still use exactly the same two scrambles and four jobs per scramble.
+    std::vector<Job> pilotJobs;
+    std::vector<std::vector<std::string>> pilotCommands;
+    std::vector<size_t> pilotLaunch;
+    auto rememberPilot=[&](Job j,std::vector<std::string> command,bool launch){
+        const size_t index=pilotJobs.size();
+        pilotJobs.push_back(std::move(j));pilotCommands.push_back(std::move(command));
+        if(launch)pilotLaunch.push_back(index);
+        return index;
+    };
+    auto pilot=[&](unsigned seed,const std::string& role,int count,bool balanced,bool embedded)->size_t{
         Job j=job;j.count=count;j.offset=0;j.seed=seed;j.assembled=false;j.pid=-1;j.seconds=0;j.matrix.clear();j.controls.clear();j.angles.clear();
         j.identity=Hash(key+" "+role+" "+Number(seed));j.executionHash=Hash(job.executionHash+" cutoff-prefix-pilot "+key+" "+role);
         j.folder=root+"/jobs/v"+j.identity;j.data=j.folder+"/result/result.dat";j.summary=j.folder+"/result/result_analytic_facets.tsv";
-        const auto found=cache.find(j.identity);if(found!=cache.end())return Materialize(found->second);
+        const auto found=cache.find(j.identity);if(found!=cache.end())return rememberPilot(Materialize(found->second),{},false);
         if(Exists(j.folder+"/complete.txt")){std::set<std::string> visited;ValidateStoredJob(j.folder,visited);
-            std::istringstream saved(Read(j.folder+"/complete.txt"));std::string identity;saved>>identity>>j.seconds;Require(identity==j.identity,"prefix pilot identity differs");j=Load(j);CacheJob(j);return j;}
+            std::istringstream saved(Read(j.folder+"/complete.txt"));std::string identity;saved>>identity>>j.seconds;Require(identity==j.identity,"prefix pilot identity differs");j=Load(j);CacheJob(j);return rememberPilot(j,{},false);}
         Directory(j.folder);
         if(Exists(j.folder+"/worker.pid"))Require(!WorkerAlive(j.folder+"/worker.pid"),"prefix pilot still running");
         if(Exists(j.folder+"/result"))Require(RenamePath(j.folder+"/result",j.folder+"/result_incomplete_"+Number(getpid()))==0,"cannot preserve prefix pilot output");
@@ -127,15 +148,23 @@ bool VerifyCutoffPrefix(const Job& job,const std::vector<std::string>& actualCom
         for(size_t i=0;i+2<command.size();++i)if(command[i]=="--sobol-seed")command[i+2]=Number(seed);
         for(size_t i=0;i+1<command.size();)if(command[i]=="--sobol-offset")command.erase(command.begin()+i,command.begin()+i+2);else ++i;
         if(embedded){command.push_back("--orientation-prefix-output");command.push_back(Number(m));}
-        std::vector<Job> jobs{j};std::vector<std::vector<std::string>> commands{command};ExecutePrepared(jobs,commands,{0});return jobs[0];
+        return rememberPilot(j,std::move(command),true);
     };
     std::array<unsigned,2> pilotSeeds{{8803u,8819u}};
     for(size_t i=0;i<pilotSeeds.size();++i)while(std::find(seeds.begin(),seeds.end(),pilotSeeds[i])!=seeds.end()||(i&&pilotSeeds[i]==pilotSeeds[0]))++pilotSeeds[i];
     try{
-        for(unsigned seed:pilotSeeds){
-            Job full,small,off,candidate;
-            if(seed==pilotSeeds[0]){full=pilot(seed,"full",n,true,false);small=pilot(seed,"small",m,true,false);off=pilot(seed,"off",m,false,false);candidate=pilot(seed,"embedded",n,true,true);}
-            else {candidate=pilot(seed,"embedded",n,true,true);off=pilot(seed,"off",m,false,false);small=pilot(seed,"small",m,true,false);full=pilot(seed,"full",n,true,false);}
+        std::array<std::array<size_t,4>,2> pilots;
+        for(size_t i=0;i<pilotSeeds.size();++i){
+            const unsigned seed=pilotSeeds[i];
+            if(i==0){pilots[i][0]=pilot(seed,"full",n,true,false);pilots[i][1]=pilot(seed,"small",m,true,false);pilots[i][2]=pilot(seed,"off",m,false,false);pilots[i][3]=pilot(seed,"embedded",n,true,true);}
+            else {pilots[i][3]=pilot(seed,"embedded",n,true,true);pilots[i][2]=pilot(seed,"off",m,false,false);pilots[i][1]=pilot(seed,"small",m,true,false);pilots[i][0]=pilot(seed,"full",n,true,false);}
+        }
+        if(!pilotLaunch.empty())ExecutePrepared(pilotJobs,pilotCommands,pilotLaunch);
+        for(const auto& indices:pilots){
+            const Job& full=pilotJobs[indices[0]];
+            const Job& small=pilotJobs[indices[1]];
+            const Job& off=pilotJobs[indices[2]];
+            const Job& candidate=pilotJobs[indices[3]];
             const Job embedded=CutoffPrefixView(candidate,m);
             baselineSeconds+=full.NativeWall()+small.NativeWall();candidateSeconds+=candidate.NativeWall();
             for(int depth:{job.depth,job.pairedDepth}){if(!depth)continue;

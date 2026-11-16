@@ -1,0 +1,28 @@
+{
+  "base": "a86ffb84",
+  "selected": [
+    "convex cutoff and Jones copy removal",
+    "cutoff prefix pilot batching and capped key",
+    "relative catalog paths and batched public export",
+    "CUDA header dependency tracking"
+  ],
+  "excluded": [
+    "GPU trace experiments",
+    "single exit and clip box opt-ins",
+    "extra preparation buffers",
+    "reweight cache experiment"
+  ],
+  "fullauto_convex_ABA_seconds": [
+    135.03577,
+    130.33405,
+    134.3932
+  ],
+  "fullauto_relative_catalog_ABA_seconds": [
+    155.72441,
+    143.8693,
+    147.44896
+  ],
+  "catalog_all16_max_difference_percent_M11": 6.06417e-06,
+  "catalog_gpu_activity_comparison": "invalid CUPTI records for first two runs; no utilization claim",
+  "checkpoint_policy_new_campaign": "disabled"
+}
