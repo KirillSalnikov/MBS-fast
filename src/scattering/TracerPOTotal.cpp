@@ -6297,6 +6297,7 @@ void TracerPOTotal::TraceWeightedOrientations(
     struct PreparedBlock
     {
         int start=0,count=0;
+        bool memoryAccounted=false;
         std::vector<PreparedOrientation> prepared;
         std::vector<PreparedOrientation> lower;
         std::vector<double> energies,outputEnergies;
@@ -6755,6 +6756,14 @@ void TracerPOTotal::TraceWeightedOrientations(
         return block;
     };
     int chunkNumber=0;
+    const auto accountPreparedBlock = [&](PreparedBlock& block){
+        if(block.memoryAccounted)return;
+        const auto started=std::chrono::steady_clock::now();
+        if(m_pairedDepth)memoryChunks.Update(block.lower,"Paired depth",m_mpiRank);
+        memoryChunks.Update(block.prepared,"Orientation average",m_mpiRank);
+        block.memoryAccounted=true;
+        memoryAccountingSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
+    };
     auto processBlock = [&](PreparedBlock &block)
     {
         const int iStart=block.start,thisChunk=block.count,iEnd=iStart+thisChunk;
@@ -7128,15 +7137,11 @@ void TracerPOTotal::TraceWeightedOrientations(
             }
             for(int p=0;p<nAz;++p)for(int t=0;t<=nZen;++t){pairedMatrices->insert(p,t,lower(p,t));
                 if(collectPrefix)prefixLowerMatrices->insert(p,t,lower(p,t));}
-            const auto accountingStarted=std::chrono::steady_clock::now();
-            memoryChunks.Update(block.lower,"Paired depth",m_mpiRank);
-            memoryAccountingSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-accountingStarted).count();
+
         }
         phase2_total += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - tp2).count();
 
-        const auto accountingStarted=std::chrono::steady_clock::now();
-        memoryChunks.Update(chunkPrepared, "Orientation average", m_mpiRank);
-        memoryAccountingSeconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-accountingStarted).count();
+        accountPreparedBlock(block);
 
         const auto reportingStarted=std::chrono::steady_clock::now();
         if (m_mpiRank == 0)
@@ -7350,6 +7355,9 @@ void TracerPOTotal::TraceWeightedOrientations(
                     if(failure)std::rethrow_exception(failure);
                     block=std::move(ready);
                 }
+                // Learn the actual footprint before ordering a second live chunk.
+                // Otherwise both startup chunks use the unmeasured pilot size.
+                accountPreparedBlock(*block);
                 const bool more=nextStart<myEnd;
                 const bool orderedFacet = more && orderedResidentFacet;
                 const int nextSize = more ? prefixBoundedChunk(nextStart,memoryChunks.Next(myEnd-nextStart)) : 0;
