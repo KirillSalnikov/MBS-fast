@@ -1,0 +1,93 @@
+{
+  "state": "passed",
+  "runs": [
+    {
+      "tag": "old",
+      "pid": 15063,
+      "started": 1794833733.763992,
+      "output": "/home/sasha_tvo_gpu2/mbs-fast/releases/20261116-analytic-f80709e6/fullauto_ABA_v2/old",
+      "seconds": 227.10261188121513,
+      "returncode": 0,
+      "final": {
+        "status": "converged",
+        "round": 5,
+        "combined_error95": 0.03285848531399687,
+        "counts_per_seed": [
+          2048,
+          1024,
+          1024
+        ],
+        "phi": 8,
+        "target_depth": 8,
+        "evaluated_theta": 150
+      }
+    },
+    {
+      "tag": "new",
+      "pid": 17770,
+      "started": 1794833960.867871,
+      "output": "/home/sasha_tvo_gpu2/mbs-fast/releases/20261116-analytic-f80709e6/fullauto_ABA_v2/new",
+      "seconds": 214.14067360479385,
+      "returncode": 0,
+      "final": {
+        "status": "converged",
+        "round": 5,
+        "combined_error95": 0.03285850364880998,
+        "counts_per_seed": [
+          2048,
+          1024,
+          1024
+        ],
+        "phi": 8,
+        "target_depth": 8,
+        "evaluated_theta": 150
+      }
+    },
+    {
+      "tag": "old_repeat",
+      "pid": 20389,
+      "started": 1794834175.0098636,
+      "output": "/home/sasha_tvo_gpu2/mbs-fast/releases/20261116-analytic-f80709e6/fullauto_ABA_v2/old_repeat",
+      "seconds": 227.1039149388671,
+      "returncode": 0,
+      "final": {
+        "status": "converged",
+        "round": 5,
+        "combined_error95": 0.03285847256276778,
+        "counts_per_seed": [
+          2048,
+          1024,
+          1024
+        ],
+        "phi": 8,
+        "target_depth": 8,
+        "evaluated_theta": 150
+      }
+    }
+  ],
+  "isolation_verified": true,
+  "stopped_after_test": [],
+  "matrix_comparison": {
+    "rows": 892,
+    "all16_scaled_M11": 6.335063314061836e-08,
+    "ratio_difference": 7.418041192419622e-08,
+    "same_grid": true
+  },
+  "gpu_load": {
+    "old": {
+      "samples": 227,
+      "mean": 29.215859030837006,
+      "below50_fraction": 0.7180616740088106,
+      "longest_low_consecutive_samples": 32
+    },
+    "new": {
+      "samples": 214,
+      "mean": 28.252336448598133,
+      "below50_fraction": 0.7523364485981309,
+      "longest_low_consecutive_samples": 27
+    }
+  },
+  "speedup": 1.0605330579522239,
+  "elapsed_reduction_percent": 5.707795480614886,
+  "scope": "One fullauto arb Dmax15.85 lambda1.55 m1.2906+0.00042407i eps0.04 theta0..180 four CPU cores RTX3080Ti; default matrix output includes interpolated rows."
+}
