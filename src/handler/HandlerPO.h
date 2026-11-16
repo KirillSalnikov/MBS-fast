@@ -461,7 +461,8 @@ protected:
     static bool HasInternalOpticalPath(const Beam &beam);
 
     void ComputeOpticalLengths(const Beam &beam, BeamInfo &info,
-                               const std::vector<int> *track = nullptr);
+                               const std::vector<int> *track = nullptr,
+                             const Point3f *extraPoint = nullptr, double *extraPath = nullptr);
 
     virtual void RotateJones(const Beam &beam, const BeamInfo &info,
                      const Vector3d &vf, const Vector3d &direction,
@@ -502,7 +503,8 @@ protected:
                                   const Vector3d &direction, const Vector3d &vf);
 
     BeamInfo ComputeBeamInfo(Beam &beam,
-                             const std::vector<int> *track = nullptr);
+                             const std::vector<int> *track = nullptr,
+                             const Point3f *extraPoint = nullptr, double *extraPath = nullptr);
 
 
 

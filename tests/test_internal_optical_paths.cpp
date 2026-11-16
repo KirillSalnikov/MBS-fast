@@ -13,9 +13,9 @@
 class Convex:public ScatteringConvex {public:using ScatteringConvex::ScatteringConvex;void General(){m_unitFacetNormals=false;}};
 class NonConvex:public ScatteringNonConvex {public:using ScatteringNonConvex::ScatteringNonConvex;void General(){m_unitFacetNormals=false;}};
 static size_t checked=0,different=0;static double worst=0;
-void Check(Scattering&s,const Beam&b,const std::vector<int>&track,std::array<Point3f,3> points){
- double actual[3];s.ComputeInternalOpticalPaths3(b,points.data(),track,actual);
- for(int j=0;j<3;++j){double ref=s.ComputeInternalOpticalPath(b,points[j],track);assert(std::isfinite(ref)==std::isfinite(actual[j]));if(std::isfinite(ref)){++checked;if(ref!=actual[j])++different;worst=std::max(worst,std::fabs(ref-actual[j])/std::max(1.,std::fabs(ref)));}}
+void Check(Scattering&s,const Beam&b,const std::vector<int>&track,std::array<Point3f,4> points){
+ double actual[4],three[3];s.ComputeInternalOpticalPaths4(b,points.data(),track,actual);s.ComputeInternalOpticalPaths3(b,points.data(),track,three);
+ for(int j=0;j<4;++j){double ref=s.ComputeInternalOpticalPath(b,points[j],track);assert(std::isfinite(ref)==std::isfinite(actual[j]));if(std::isfinite(ref)){++checked;if(ref!=actual[j])++different;worst=std::max(worst,std::fabs(ref-actual[j])/std::max(1.,std::fabs(ref)));}if(j<3){assert(std::isfinite(ref)==std::isfinite(three[j]));if(std::isfinite(ref)){++checked;if(ref!=three[j])++different;worst=std::max(worst,std::fabs(ref-three[j])/std::max(1.,std::fabs(ref)));}}}
 }
 int main(int argc,char**argv){assert(argc==2);
  for(int shape=0;shape<4;++shape)for(double absorption:{0.,.001})for(int pose=0;pose<3;++pose){
@@ -32,7 +32,7 @@ int main(int argc,char**argv){assert(argc==2);
   for(int general=0;general<2;++general){
    if(general){if(shape==3)static_cast<NonConvex*>(s.get())->General();else static_cast<Convex*>(s.get())->General();}
    bool malformed=false;
-   for(const auto&b:beams){if(b.nVertices<3||b.lastFacetId==__INT_MAX__||b.nActs==0)continue;std::vector<int>track;Tracks::RecoverTrack(b,p->nFacets,track);std::array<Point3f,3>pts{{b.arr[0],b.arr[1],b.AreaCentroid()}};Check(*s,b,track,pts);
+   for(const auto&b:beams){if(b.nVertices<3||b.lastFacetId==__INT_MAX__||b.nActs==0)continue;std::vector<int>track;Tracks::RecoverTrack(b,p->nFacets,track);std::array<Point3f,4>pts{{b.arr[0],b.arr[1],b.arr[2],b.AreaCentroid()}};Check(*s,b,track,pts);
     if(!malformed){malformed=true;for(double x:{std::numeric_limits<double>::infinity(),std::numeric_limits<double>::quiet_NaN()}){auto bad=pts;bad[1].cx=x;Check(*s,b,track,bad);}}
    }
   }

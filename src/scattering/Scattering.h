@@ -29,6 +29,8 @@ public:
     double restriction = 100;
 
 protected:
+    template<unsigned N> void ComputeInternalOpticalPathsBatch(const Beam &beam, const Point3f *sources,
+                                      const std::vector<int> &track, double *paths);
     Facet *m_facets;
     double m_geometryScale;
     double m_geometryLengthTolerance;
@@ -115,6 +117,8 @@ public:
                                       const std::vector<int> &track);
     // Same per-point arithmetic as scalar reconstruction; shared directions.
     void ComputeInternalOpticalPaths3(const Beam &beam, const Point3f *sources,
+                                      const std::vector<int> &track, double *paths);
+    void ComputeInternalOpticalPaths4(const Beam &beam, const Point3f *sources,
                                       const std::vector<int> &track, double *paths);
 //	double CrossSection(const Point3f &beamDir) const;
 

@@ -1,0 +1,105 @@
+{
+  "runs": [
+    {
+      "tag": "old",
+      "pid": 24227,
+      "started": 1794841884.7752492,
+      "output": "/home/sasha_tvo_gpu2/mbs-bench/absorption_centroid_batch_20261116/fullauto_ABA_v2/old",
+      "seconds": 208.08261311100796,
+      "returncode": 0,
+      "final": {
+        "status": "converged",
+        "round": 5,
+        "combined_error95": 0.03285850498103814,
+        "counts_per_seed": [
+          2048,
+          1024,
+          1024
+        ],
+        "phi": 8,
+        "target_depth": 8,
+        "evaluated_theta": 150
+      }
+    },
+    {
+      "tag": "new",
+      "pid": 26764,
+      "started": 1794842092.85914,
+      "output": "/home/sasha_tvo_gpu2/mbs-bench/absorption_centroid_batch_20261116/fullauto_ABA_v2/new",
+      "seconds": 198.1210399037227,
+      "returncode": 0,
+      "final": {
+        "status": "converged",
+        "round": 5,
+        "combined_error95": 0.03285850373819703,
+        "counts_per_seed": [
+          2048,
+          1024,
+          1024
+        ],
+        "phi": 8,
+        "target_depth": 8,
+        "evaluated_theta": 150
+      }
+    },
+    {
+      "tag": "old_repeat",
+      "pid": 29333,
+      "started": 1794842290.9814446,
+      "output": "/home/sasha_tvo_gpu2/mbs-bench/absorption_centroid_batch_20261116/fullauto_ABA_v2/old_repeat",
+      "seconds": 206.1232678531669,
+      "returncode": 0,
+      "final": {
+        "status": "converged",
+        "round": 5,
+        "combined_error95": 0.03285850841373108,
+        "counts_per_seed": [
+          2048,
+          1024,
+          1024
+        ],
+        "phi": 8,
+        "target_depth": 8,
+        "evaluated_theta": 150
+      }
+    }
+  ],
+  "decision": "Four-point path batch reduced fullauto time by4.3% on this task; numerical gate passed. Default enabled with scalar and3+1 fallbacks; GPU50% goal not met.",
+  "measurements": {
+    "old": {
+      "gpu_mean": 32.75961538461539,
+      "fraction_samples_below50": 0.7163461538461539,
+      "max_worker_process_count": 1,
+      "peak_worker_rss_MiB": 1997.3828125
+    },
+    "new": {
+      "gpu_mean": 34.95959595959596,
+      "fraction_samples_below50": 0.696969696969697,
+      "max_worker_process_count": 1,
+      "peak_worker_rss_MiB": 1983.625
+    },
+    "old_repeat": {
+      "gpu_mean": 32.21844660194175,
+      "fraction_samples_below50": 0.7038834951456311,
+      "max_worker_process_count": 1,
+      "peak_worker_rss_MiB": 1954.6953125
+    }
+  },
+  "comparisons": {
+    "old": {
+      "all16_scaled_M11": 6.266441657681702e-08,
+      "ratio_difference": 9.770675846176857e-08,
+      "integrals_scaled_max_column": 2.960071323619749e-07
+    },
+    "old_repeat": {
+      "all16_scaled_M11": 5.740484845711751e-08,
+      "ratio_difference": 6.808022967597083e-08,
+      "integrals_scaled_max_column": 3.0894753748966115e-07
+    }
+  },
+  "integral_scope": "Comparison of identical estimators only; fullauto angular tolerance does not certify total integrals or physical energy balance.",
+  "numerical_gate": {
+    "threshold": 3e-05,
+    "passed": true
+  }
+}

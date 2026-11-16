@@ -1268,12 +1268,15 @@ double Scattering::ComputeInternalOpticalPath(const Beam &beam,
     return path;
 }
 
-void Scattering::ComputeInternalOpticalPaths3(
+template<unsigned N>
+void Scattering::ComputeInternalOpticalPathsBatch(
     const Beam &beam, const Point3f *sources,
     const std::vector<int> &track, double *paths)
 {
-    Point3f points[3] = {sources[0], sources[1], sources[2]};
-    for (int j = 0; j < 3; ++j)
+    Point3f points[N];
+    for (unsigned j = 0; j < N; ++j)
+        points[j] = sources[j];
+    for (unsigned j = 0; j < N; ++j)
         paths[j] = 0.0;
     Point3f dir = -beam.direction;
     Location loc = Location::Out;
@@ -1297,7 +1300,7 @@ void Scattering::ComputeInternalOpticalPaths3(
             || std::fabs(denominator) <= geometry_parallel_tolerance(productScale))
             break;
 
-        for (size_t j = 0; j < 3; ++j)
+        for (size_t j = 0; j < N; ++j)
         {
             const double rayParameter =
                 (DotProduct(points[j], inNormal) + inNormal.d_param) / denominator;
@@ -1307,7 +1310,7 @@ void Scattering::ComputeInternalOpticalPaths3(
             if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
             {
                 // Preserve scalar truncation and splitting state on bad input.
-                for (int k = 0; k < 3; ++k)
+                for (unsigned k = 0; k < N; ++k)
                     paths[k] = ComputeInternalOpticalPath(beam, sources[k], track);
                 return;
             }
@@ -1318,4 +1321,16 @@ void Scattering::ComputeInternalOpticalPaths3(
         }
         loc = nextLoc;
     }
+}
+
+void Scattering::ComputeInternalOpticalPaths3(const Beam &beam, const Point3f *sources,
+    const std::vector<int> &track, double *paths)
+{
+    ComputeInternalOpticalPathsBatch<3>(beam, sources, track, paths);
+}
+
+void Scattering::ComputeInternalOpticalPaths4(const Beam &beam, const Point3f *sources,
+    const std::vector<int> &track, double *paths)
+{
+    ComputeInternalOpticalPathsBatch<4>(beam, sources, track, paths);
 }

@@ -925,7 +925,8 @@ void HandlerPO::AddToMueller()
 }
 
 BeamInfo HandlerPO::ComputeBeamInfo(Beam &beam,
-                                    const std::vector<int> *track)
+                                    const std::vector<int> *track,
+                                    const Point3f *extraPoint, double *extraPath)
 {
     BeamInfo info;
     info.normal = beam.Normal();
@@ -950,7 +951,7 @@ BeamInfo HandlerPO::ComputeBeamInfo(Beam &beam,
 
     if (m_hasAbsorption && HasInternalOpticalPath(beam))
     {
-        ComputeOpticalLengths(beam, info, track);
+        ComputeOpticalLengths(beam, info, track, extraPoint, extraPath);
     }
 
     info.area = beam.Area();
@@ -1191,7 +1192,8 @@ void HandlerPO::SetScatteringSphere(const ScatteringRange &grid)
 }
 
 void HandlerPO::ComputeOpticalLengths(const Beam &beam, BeamInfo &info,
-                                      const std::vector<int> *track)
+                                      const std::vector<int> *track,
+                                      const Point3f *extraPoint, double *extraPath)
 {
     int vertices[3] = {0, 1, 2};
     const Point3f a = beam.arr[1] - beam.arr[0];
@@ -1238,10 +1240,17 @@ void HandlerPO::ComputeOpticalLengths(const Beam &beam, BeamInfo &info,
     }();
     if (batchPaths)
     {
-        const Point3f sources[3] = {
-            beam.arr[vertices[0]], beam.arr[vertices[1]], beam.arr[vertices[2]]};
-        double paths[3];
-        m_scattering->ComputeInternalOpticalPaths3(beam, sources, *track, paths);
+        const Point3f sources[4] = {
+            beam.arr[vertices[0]], beam.arr[vertices[1]], beam.arr[vertices[2]],
+            extraPoint ? *extraPoint : beam.arr[vertices[0]]};
+        double paths[4];
+        if (extraPoint && extraPath)
+        {
+            m_scattering->ComputeInternalOpticalPaths4(beam, sources, *track, paths);
+            *extraPath = paths[3];
+        }
+        else
+            m_scattering->ComputeInternalOpticalPaths3(beam, sources, *track, paths);
         for (int i = 0; i < 3; ++i)
             info.opticalLengths[i] = paths[i];
     }
@@ -1251,6 +1260,8 @@ void HandlerPO::ComputeOpticalLengths(const Beam &beam, BeamInfo &info,
             info.opticalLengths[i] = m_scattering->ComputeInternalOpticalPath(
                 beam, beam.arr[vertices[i]], *track);
     }
+    if (!batchPaths && extraPoint && extraPath)
+        *extraPath = m_scattering->ComputeInternalOpticalPath(beam, *extraPoint, *track);
     ComputeLengthIndices(beam, info, vertices);
 
 //#ifdef _DEBUG // DEB
@@ -1795,6 +1806,11 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
     // calls in multi-size workflows.  Cache the O(V^2) diameter once rather
     // than recomputing it for every beam edge.
     m_geometryScale = m_particle->MaximalDimention();
+    // Sharing the centroid projection does not change its sampling point.
+    static const bool batchCentroid = []() {
+        const char *value = std::getenv("MBS_BATCH_ABSORPTION_CENTROID");
+        return value == nullptr || std::string(value) != "0";
+    }();
     out.beams.clear();
     out.integralRays.clear();
     out.beams.reserve(beams.size());
@@ -1852,8 +1868,15 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         if (hasInternalPath)
             Tracks::RecoverTrack(beam, m_particle->nFacets, track);
 
+        const bool useCentroid = batchCentroid && hasInternalPath
+            && (m_absorptionPointCount == 1 || beam.nVertices <= 0);
+        Point3f centroid;
+        double centroidPath = 0;
+        if (useCentroid)
+            centroid = beam.AreaCentroid();
         BeamInfo info = ComputeBeamInfo(
-            beam, hasInternalPath ? &track : nullptr);
+            beam, hasInternalPath ? &track : nullptr,
+            useCentroid ? &centroid : nullptr, useCentroid ? &centroidPath : nullptr);
 
         if (info.isBad)
             continue;
@@ -1876,7 +1899,10 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
                 // A vertex mean moves when an edge is subdivided. The area
                 // centroid samples the same linear path field for the same
                 // aperture, regardless of its polygon representation.
-                addPathAt(beam.AreaCentroid());
+                if (useCentroid)
+                    absorptionPaths.push_back(centroidPath);
+                else
+                    addPathAt(beam.AreaCentroid());
             }
             else
             {
