@@ -1,91 +1,92 @@
 {
   "wrapper_live": false,
   "native_status.json": {
-    "pid": 12242,
+    "pid": 14597,
     "state": "passed",
     "checks": [
       {
         "case": "arb_coherent",
-        "all16_scaled_M11": 1.2160419904235477e-08,
-        "ratio_difference": 5.4313763486746325e-09,
+        "all16_scaled_M11": 1.6157477878732944e-08,
+        "ratio_difference": 1.6157477911171725e-08,
         "identical": false,
         "seconds_ABA": [
-          7.076506649143994,
-          3.271036793012172,
-          7.125029509887099
+          6.777483936864883,
+          2.922485329210758,
+          6.577990255784243
         ],
-        "baseline_repeat_error": 8.132826489142465e-09
+        "baseline_repeat_error": 1.8529971132768737e-08
       },
       {
         "case": "arb_incoherent",
-        "all16_scaled_M11": 4.6013680598833204e-08,
-        "ratio_difference": 4.5642671531176404e-08,
+        "all16_scaled_M11": 4.296865767617942e-08,
+        "ratio_difference": 3.8001297775203113e-08,
         "identical": false,
         "seconds_ABA": [
-          7.077234750147909,
-          3.1718081701546907,
-          6.977277277037501
+          6.727701137773693,
+          2.921309805009514,
+          6.576311678159982
         ],
-        "baseline_repeat_error": 4.3306993504784196e-08
+        "baseline_repeat_error": 3.800129782665309e-08
       },
       {
         "case": "bullet_coherent",
-        "all16_scaled_M11": 3.084071157727039e-08,
-        "ratio_difference": 3.219208100091464e-08,
+        "all16_scaled_M11": 2.5305199282910597e-08,
+        "ratio_difference": 2.6702059341410234e-08,
         "identical": false,
         "seconds_ABA": [
-          3.971749909222126,
-          2.819486455991864,
-          3.9714548559859395
+          3.622338318731636,
+          2.570787507109344,
+          3.62192318495363
         ],
-        "baseline_repeat_error": 1.2574023834910268e-08
+        "baseline_repeat_error": 2.5700593021706075e-08
       },
       {
         "case": "bullet_incoherent",
-        "all16_scaled_M11": 3.7401765618435246e-08,
-        "ratio_difference": 4.048650104060414e-08,
+        "all16_scaled_M11": 5.2893636777158976e-08,
+        "ratio_difference": 4.921805596413975e-08,
         "identical": false,
         "seconds_ABA": [
-          3.9210827918723226,
-          2.8707322729751468,
-          3.8721410632133484
+          3.5717473798431456,
+          2.5713632623665035,
+          3.622901719994843
         ],
-        "baseline_repeat_error": 3.967022721970148e-08
+        "baseline_repeat_error": 4.435833022341651e-08
       },
       {
         "case": "droxtal_coherent",
-        "all16_scaled_M11": 1.5873944724216842e-08,
-        "ratio_difference": 1.5873944714250854e-08,
+        "all16_scaled_M11": 1.3555558005941922e-08,
+        "ratio_difference": 1.3430713652340387e-08,
         "identical": false,
         "seconds_ABA": [
-          0.8161750379949808,
-          0.6161745199933648,
-          0.8165853996761143
+          0.5673693618737161,
+          0.3162273312918842,
+          0.5157570247538388
         ],
-        "baseline_repeat_error": 2.2099857261192268e-08
+        "baseline_repeat_error": 1.3430713673809625e-08
       },
       {
         "case": "droxtal_incoherent",
-        "all16_scaled_M11": 2.8439880661256963e-08,
-        "ratio_difference": 3.7420363474538476e-08,
+        "all16_scaled_M11": 3.505717579419601e-08,
+        "ratio_difference": 2.7689480819326207e-08,
         "identical": false,
         "seconds_ABA": [
-          0.8160346942022443,
-          0.615972148720175,
-          0.6659631240181625
+          0.5170573107898235,
+          0.31656506890431046,
+          0.5187555071897805
         ],
-        "baseline_repeat_error": 2.7843768943984818e-08
+        "baseline_repeat_error": 2.9727352634390727e-08
       }
     ],
     "timing_valid": true,
     "reason": "production process tree paused with watchdog",
     "hashes": {
       "old": "ea7c1a010b19ea6e371b613b8f6be498ee5e197928a4f8e8f0b07b50233a2467",
-      "new": "1d6c37e0f57f88659e94f05acf5f6d26c7cded7e79175193f04ebac7110c1f83"
+      "new": "375279be1cfa8d0768027549189ddd6b760b6c69bb146d743511d010b6c79ed8"
     }
   },
   "pause_result.json": {
     "stopped_after_test": []
   },
-  "driver_tail": ""
+  "driver_tail": "",
+  "isolation_correction": "Supersedes the first timing run: all running campaign controller PIDs, including adopted processes outside the dispatcher subtree, and descendants were verified stopped."
 }
