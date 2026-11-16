@@ -114,7 +114,8 @@ ParticleFileLine NextHeaderLine(std::ifstream &input, const std::string &path,
 }
 
 void ValidateFacetPolygon(const std::vector<Point3f> &vertices,
-                          const std::string &path, int line)
+                          const std::string &path, int line,
+                          double coordinateRoundoff = 0.0)
 {
     Facet facet;
     for (const Point3f &point : vertices)
@@ -152,7 +153,10 @@ void ValidateFacetPolygon(const std::vector<Point3f> &vertices,
 
         const double planeDistance = std::fabs(
             DotProduct(vertices[i] - vertices[0], normal));
-        if (planeDistance > lengthTolerance)
+        // The reader rounds coordinates on a whole-particle grid. Small
+        // facets must allow that known serialization uncertainty too. This
+        // changes validation only; vertices and tracing tolerances are unchanged.
+        if (planeDistance > std::max(lengthTolerance, coordinateRoundoff))
         {
             ParticleFileError(
                 path, line,
@@ -853,7 +857,8 @@ void Particle::SetFromFile(const std::string &filename)
             ParticleFileError(filename, parsedFacetLines[facetIndex],
                               "a facet has zero or non-finite area.",
                               "remove duplicate/collinear vertices and keep a nondegenerate polygon.");
-        ValidateFacetPolygon(facet, filename, parsedFacetLines[facetIndex]);
+        ValidateFacetPolygon(facet, filename, parsedFacetLines[facetIndex],
+                             8.0 * canonicalQuantum);
         parsedFacets.push_back(facet);
     }
 
