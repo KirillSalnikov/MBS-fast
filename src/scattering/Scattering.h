@@ -113,6 +113,9 @@ public:
 
     double ComputeInternalOpticalPath(const Beam &beam, const Point3f sourcePoint,
                                       const std::vector<int> &track);
+    // Same per-point arithmetic as scalar reconstruction; shared directions.
+    void ComputeInternalOpticalPaths3(const Beam &beam, const Point3f *sources,
+                                      const std::vector<int> &track, double *paths);
 //	double CrossSection(const Point3f &beamDir) const;
 
 protected:

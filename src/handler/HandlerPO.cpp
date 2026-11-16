@@ -1231,10 +1231,25 @@ void HandlerPO::ComputeOpticalLengths(const Beam &beam, BeamInfo &info,
         track = &recoveredTrack;
     }
 
-    for (int i = 0; i < 3; ++i)
+    // Preparation-only optimization; use 0 to compare with scalar recovery.
+    static const bool batchPaths = []() {
+        const char *value = std::getenv("MBS_BATCH_INTERNAL_PATHS");
+        return value == nullptr || std::string(value) != "0";
+    }();
+    if (batchPaths)
     {
-        info.opticalLengths[i] = m_scattering->ComputeInternalOpticalPath(
-                    beam, beam.arr[vertices[i]], *track);
+        const Point3f sources[3] = {
+            beam.arr[vertices[0]], beam.arr[vertices[1]], beam.arr[vertices[2]]};
+        double paths[3];
+        m_scattering->ComputeInternalOpticalPaths3(beam, sources, *track, paths);
+        for (int i = 0; i < 3; ++i)
+            info.opticalLengths[i] = paths[i];
+    }
+    else
+    {
+        for (int i = 0; i < 3; ++i)
+            info.opticalLengths[i] = m_scattering->ComputeInternalOpticalPath(
+                beam, beam.arr[vertices[i]], *track);
     }
     ComputeLengthIndices(beam, info, vertices);
 

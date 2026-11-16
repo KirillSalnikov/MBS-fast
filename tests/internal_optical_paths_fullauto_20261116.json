@@ -1,0 +1,107 @@
+{
+  "runs": [
+    {
+      "tag": "old",
+      "pid": 19904,
+      "started": 1794837705.2989988,
+      "output": "/home/sasha_tvo_gpu2/mbs-bench/absorption_path_batch_20261116/fullauto_ABA_v2/old",
+      "seconds": 215.13377759698778,
+      "returncode": 0,
+      "final": {
+        "status": "converged",
+        "round": 5,
+        "combined_error95": 0.032858501403897185,
+        "counts_per_seed": [
+          2048,
+          1024,
+          1024
+        ],
+        "phi": 8,
+        "target_depth": 8,
+        "evaluated_theta": 150
+      }
+    },
+    {
+      "tag": "new",
+      "pid": 22460,
+      "started": 1794837920.43401,
+      "output": "/home/sasha_tvo_gpu2/mbs-bench/absorption_path_batch_20261116/fullauto_ABA_v2/new",
+      "seconds": 206.1268333592452,
+      "returncode": 0,
+      "final": {
+        "status": "converged",
+        "round": 5,
+        "combined_error95": 0.032858499289259276,
+        "counts_per_seed": [
+          2048,
+          1024,
+          1024
+        ],
+        "phi": 8,
+        "target_depth": 8,
+        "evaluated_theta": 150
+      }
+    },
+    {
+      "tag": "old_repeat",
+      "pid": 24977,
+      "started": 1794838126.5622082,
+      "output": "/home/sasha_tvo_gpu2/mbs-bench/absorption_path_batch_20261116/fullauto_ABA_v2/old_repeat",
+      "seconds": 214.13797011738643,
+      "returncode": 0,
+      "final": {
+        "status": "converged",
+        "round": 5,
+        "combined_error95": 0.03285849225364253,
+        "counts_per_seed": [
+          2048,
+          1024,
+          1024
+        ],
+        "phi": 8,
+        "target_depth": 8,
+        "evaluated_theta": 150
+      }
+    }
+  ],
+  "decision": "Batch optical paths improve this fullauto ABA by about4%; retain scalar fallback and validate default-enabled release before queue adoption. GPU goal not met.",
+  "measurements": {
+    "old": {
+      "gpu_mean": 28.91627906976744,
+      "fraction_samples_below50": 0.7534883720930232,
+      "peak_worker_rss_MiB": 1973.0234375
+    },
+    "new": {
+      "gpu_mean": 32.39320388349515,
+      "fraction_samples_below50": 0.6990291262135923,
+      "peak_worker_rss_MiB": 2037.265625
+    },
+    "old_repeat": {
+      "gpu_mean": 33.33177570093458,
+      "fraction_samples_below50": 0.6915887850467289,
+      "peak_worker_rss_MiB": 1944.19921875
+    }
+  },
+  "comparisons": {
+    "old": {
+      "all16_scaled_M11": 1.0757822340547649e-07,
+      "ratio_difference": 1.3642566665250655e-07,
+      "integrals_scaled_max_column": 2.7962816236286423e-07
+    },
+    "old_repeat": {
+      "all16_scaled_M11": 1.0823852847445088e-07,
+      "ratio_difference": 1.4709087092779072e-07,
+      "integrals_scaled_max_column": 2.98166121903875e-07
+    }
+  },
+  "integral_scope": "Comparison of identical estimators only; fullauto angular tolerance does not certify total integrals or physical energy balance.",
+  "baseline_code": "f80709e6",
+  "candidate_scope": "Only batched three-point internal optical paths; original analytic means, cache policy and scheduler.",
+  "native_validation": {
+    "state": "passed",
+    "requests": 84,
+    "matrix_ratio_max": 6.755432602201239e-08,
+    "integral_error_max": 3.347249514736107e-08,
+    "timing_scope": "Native correctness check, not ABA performance evidence."
+  }
+}

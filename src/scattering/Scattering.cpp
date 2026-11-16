@@ -1267,3 +1267,55 @@ double Scattering::ComputeInternalOpticalPath(const Beam &beam,
 //#endif
     return path;
 }
+
+void Scattering::ComputeInternalOpticalPaths3(
+    const Beam &beam, const Point3f *sources,
+    const std::vector<int> &track, double *paths)
+{
+    Point3f points[3] = {sources[0], sources[1], sources[2]};
+    for (int j = 0; j < 3; ++j)
+        paths[j] = 0.0;
+    Point3f dir = -beam.direction;
+    Location loc = Location::Out;
+
+    // Interface directions depend on the track, not on the aperture point.
+    // Keep each point's projection arithmetic and segment summation order.
+    for (int i = int(track.size()) - 1; i > 0; --i)
+    {
+        const Location nextLoc = beam.GetLocationByActNumber(i - 1);
+        Point3f &exNormal = m_facets[track[i]].ex_normal;
+        dir = splitting.ChangeBeamDirection(dir, exNormal, loc, nextLoc);
+        Point3f &inNormal = m_facets[track[i - 1]].in_normal;
+        double dirNorm2 = 1.0, productScale = 1.0;
+        if (!m_unitFacetNormals)
+        {
+            dirNorm2 = Norm(dir);
+            productScale = std::sqrt(dirNorm2 * Norm(inNormal));
+        }
+        const double denominator = DotProduct(dir, inNormal);
+        if (productScale <= DBL_MIN
+            || std::fabs(denominator) <= geometry_parallel_tolerance(productScale))
+            break;
+
+        for (size_t j = 0; j < 3; ++j)
+        {
+            const double rayParameter =
+                (DotProduct(points[j], inNormal) + inNormal.d_param) / denominator;
+            const double x = static_cast<double>(points[j].cx) - dir.cx * rayParameter;
+            const double y = static_cast<double>(points[j].cy) - dir.cy * rayParameter;
+            const double z = static_cast<double>(points[j].cz) - dir.cz * rayParameter;
+            if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+            {
+                // Preserve scalar truncation and splitting state on bad input.
+                for (int k = 0; k < 3; ++k)
+                    paths[k] = ComputeInternalOpticalPath(beam, sources[k], track);
+                return;
+            }
+            points[j] = Point3f(x, y, z);
+            const double len = std::fabs(rayParameter)
+                * (m_unitFacetNormals ? 1.0 : std::sqrt(dirNorm2));
+            paths[j] += len;
+        }
+        loc = nextLoc;
+    }
+}
