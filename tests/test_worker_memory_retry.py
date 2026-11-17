@@ -11,6 +11,15 @@ for mode in ['none','once','always','physics','host_once','host_always']:
  events=[json.loads(x) for x in (out/'fullauto_history.jsonl').read_text().splitlines()];retries=[x for x in events if x['event']=='worker_memory_retry']
  assert p.returncode==(0 if mode in ['none','once','host_once'] else 1),(mode,p.returncode)
  assert len(retries)==(1 if mode in ['once','always','host_once','host_always'] else 0),(mode,len(retries))
+ backoff=[x for x in events if x['event']=='worker_memory_backoff']
+ assert len(backoff)==len(retries)
+ if backoff:
+  assert backoff[0]['data']['chunk_cap']==1 and backoff[0]['data']['prepare_threads']==1
+  starts=[x for x in events if x['event']=='worker_start']
+  assert starts[1]['data']['chunk']==1 and starts[1]['data']['prepare_threads']==1
+  for key in ['count','offset','seed','depth','paired_depth','phi','theta_rows']:
+   assert starts[0]['data'][key]==starts[1]['data'][key],key
+
  error=None
  if p.returncode==0:
   matrix=np.loadtxt(out/'frozen_matrix.dat',skiprows=1)

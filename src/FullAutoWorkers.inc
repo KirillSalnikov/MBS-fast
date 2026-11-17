@@ -90,12 +90,24 @@ void ExecutePersistent(std::vector<Job>& result,std::vector<std::vector<std::str
     // a changed resource budget or retain unused tuning workers.
     for(size_t slot=0;slot<services.size();++slot)if(services[slot]&&
         (slot>=slots||services[slot]->identity!=WorkerIdentity(workerGpus[slot])))services[slot].reset();
-    std::vector<int> slotJob(slots,-1),memoryRetries(result.size(),0);std::vector<bool> gpuRetried(result.size(),false);
+    std::vector<int> slotJob(slots,-1),memoryRetries(result.size(),0);std::vector<bool> gpuRetried(result.size(),false),memoryBackoff(result.size(),false);
     std::vector<double> begun(result.size()),firstBegun(result.size(),-1);
     size_t next=0;double checkpointSeconds=0,callbackSeconds=0;
     auto launch=[&](size_t slot,size_t index){
         CheckHostMemory();
         Job& j=result[index];ApplyAutomaticPreparation(j,commands[index]);
+        // A fresh process alone does not cure an oversized preparation packet.
+        // Retry the identical sample in single-orientation chunks. Override
+        // automatic CPU preparation only for this failed request.
+        if(memoryBackoff[index]){
+            j.dispatchChunk=GpuChunkRetry::LimitCommand(commands[index],j.dispatchChunk,1);
+            bool found=false;
+            for(size_t k=0;k+1<commands[index].size();++k)
+                if(commands[index][k]=="--po-prepare-threads"){commands[index][k+1]="1";found=true;}
+            if(!found){commands[index].push_back("--po-prepare-threads");commands[index].push_back("1");}
+            j.preparationThreads=1;
+        }
+
         // Apply after any dispatch tuning: a retry's host-safe upper bound
         // cannot be raised by a later automatic preparation decision.
         const auto safeCap=gpuChunkRetryCaps.find(WorkerIdentity(workerGpus[slot]));
@@ -192,6 +204,8 @@ void ExecutePersistent(std::vector<Job>& result,std::vector<std::vector<std::str
                     Log("worker_memory_retry","{\"folder\":"+Quoted(j.folder)+",\"old_pid\":"+Number(failedPid)
                         +",\"retry\":1,\"system_ram_guard\":"+(hostReserve?"true":"false")+",\"same_sampling\":true,\"completed_blocks_preserved\":true,\"log\":"+Quoted(savedLog)+"}");
                     if(hostReserve)WaitAfterHostReserveFailure(j);
+                    memoryBackoff[index]=true;
+                    Log("worker_memory_backoff","{\"chunk_cap\":1,\"prepare_threads\":1,\"same_sampling\":true,\"retry_limit\":1}");
                     launch(slot,index);return false;
                 }
                 if(memoryMode&&(!received||status!=0)&&Exists(j.folder+"/stdout.log")){Atomic(root+"/last_worker_error.log",Read(j.folder+"/stdout.log"));ExportMemoryPublic(true);}

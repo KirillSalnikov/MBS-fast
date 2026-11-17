@@ -869,12 +869,12 @@ struct Engine {
         for(const auto& gpu:WorkerGpus()){
             const size_t copies=WorkersOnGpu(gpu);
             if(copies==1)continue;
-            Require(config.useGpu&&copies<=2,"at most two worker slots may share a CUDA GPU");
+            Require(config.useGpu&&copies<=4,"at most four worker slots may share a CUDA GPU");
             Require(dispatchThreads>0,"shared GPU dispatch requires explicit --fullauto-dispatch-threads per worker");
             const char* fraction=getenv("MBS_GPU_MEM_FRACTION");
             if(fraction&&*fraction){char* end=nullptr;double value=std::strtod(fraction,&end);
                 Require(end&&!*end&&std::isfinite(value)&&value>.1&&value<=.88/copies,
-                    "explicit MBS_GPU_MEM_FRACTION exceeds shared GPU budget or is invalid; use at most 0.44 for two workers");}
+                    "explicit MBS_GPU_MEM_FRACTION exceeds shared GPU budget or is invalid; use at most 0.88 divided by workers on this GPU");}
             const char* host=getenv("MBS_HOST_MEM_BUDGET_MB");
             if(host&&*host){char* end=nullptr;double value=std::strtod(host,&end);
                 Require(end&&!*end&&std::isfinite(value)&&value>=64&&value<=hostBudgetMb,
@@ -1337,7 +1337,24 @@ struct Engine {
             Require(!dispatchGpus.empty()&&dispatchGpus.size()<=8,"dispatch GPU list must contain 1..8 worker slots");
         }
         }else{Require(!args.IsCatched("fullauto_gpus")&&!args.IsCatched("fullauto_dispatch_gpus"),"GPU list requires CUDA backend");gpus.assign(size_t(Int("fullauto_cpu_workers",1)),"");}
+        const int gpuWorkers=Int("fullauto_gpu_workers",1);
+        Require(gpuWorkers==1||gpuWorkers==2||gpuWorkers==4,"fullauto GPU workers must be 1, 2 or 4");
+        if(args.IsCatched("fullauto_gpu_workers")){
+            Require(config.useGpu&&!go,"fullauto GPU workers require CUDA physical optics");
+            Require(dispatchGpus.empty()&&!args.IsCatched("fullauto_resume_compatible"),
+                "GPU workers conflict with compatible dispatch overrides");
+        }
+        if(gpuWorkers>1){
+            Require(!autoGpus&&dispatchGpus.empty()&&!args.IsCatched("fullauto_resume_compatible"),
+                "GPU workers require fixed GPU selection; use compatible dispatch overrides separately");
+            Require(dispatchThreads>0,"GPU workers require explicit --fullauto-dispatch-threads per worker");
+            Require(gpus.size()*gpuWorkers<=8,"GPU workers exceed eight slots");
+            for(const auto& gpu:gpus)for(int slot=0;slot<gpuWorkers;++slot)dispatchGpus.push_back(gpu);
+            Require(size_t(dispatchThreads)*dispatchGpus.size()<=size_t(FullAutoPreparation::AllowedPhysicalCores()),
+                "GPU workers exceed allowed physical CPU cores; reduce workers/threads or widen CPU affinity");
+        }
         workerThreads=config.threads>0?config.threads:std::max(1,std::min(16,QueryRuntimeResourceSnapshot().physicalCores/int(gpus.size())));
+        if(gpuWorkers>1)workerThreads=dispatchThreads;
         // A shared mean cache has one CPU owner per controller, not per GPU.
         // Reserve the selected GPUs' share of host cores for its independent
         // theta rows. Small GPU-pilot thread tuning must not shrink this pool.
@@ -2068,7 +2085,15 @@ struct Engine {
                         for(int k=1;k<16;++k){const double ar=a[r][k]/a[r][0],br=b[r][k]/b[r][0];
                             ratioError=std::max(ratioError,std::fabs(ar-br)/std::max(1.,std::max(std::fabs(ar),std::fabs(br))));}}
                 }}depthSharing=std::max(maximum,ratioError)<=tolerance;
-        }catch(const std::exception& error){const std::string message=error.what();const size_t pos=message.find("see ");const std::string log=pos==std::string::npos?message:Read(message.substr(pos+4));if(log.find("paired-depth cache unsupported")==std::string::npos)throw;depthSharing=false;}
+        }catch(const std::exception& error){
+            const std::string message=error.what();const size_t pos=message.find("see ");
+            std::string log=message;
+            // A worker can exit before returning its diagnostic stream. Do not
+            // replace that failure with a secondary missing/unreadable log error.
+            if(pos!=std::string::npos){try{log=Read(message.substr(pos+4));}catch(...){}}
+            if(log.find("paired-depth cache unsupported")==std::string::npos)throw;
+            depthSharing=false;
+        }
         depthVerified=true;Record(root+"/depth_sharing_verification.json","{\"enabled\":"+std::string(depthSharing?"true":"false")+",\"max_all16_difference_scaled_M11\":"+Number(maximum)
             +",\"max_ratio_difference\":"+Number(ratioError)+",\"numerical_tolerance\":"+Number(tolerance)+",\"probe_count\":"+Number(n)+",\"probe_seeds\":2,\"coherent\":"+(coherent?"true":"false")
             +",\"scope\":\"both depth matrices versus independent traces on identical orientations; unsupported shapes use independent traces\"}");

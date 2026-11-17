@@ -1054,7 +1054,7 @@ int main()
     ExpectSuccess("cost gated local native fullauto",localAuto);
     for(const std::string flag:{"--fullauto-resources","--fullauto-rotation-symmetry","--fullauto-cutoffs"}){
         auto valid=localAuto;valid.insert(valid.end(),{flag,"auto"});ExpectSuccess("native tuning "+flag,valid);
-        auto invalid=localAuto;invalid.insert(invalid.end(),{flag,"yes"});ExpectFailure("invalid tuning "+flag,invalid,"expects auto or off");}
+        auto invalid=localAuto;invalid.insert(invalid.end(),{flag,"yes"});ExpectFailure("invalid tuning "+flag,invalid,"invalid policy");}
     auto gpuAuto=localAuto;gpuAuto[3]="cuda";gpuAuto.insert(gpuAuto.end(),{"--fullauto-gpus","auto"});
     try{ParseConfig(gpuAuto,false,true);Pass("native automatic visible GPUs");}catch(const std::exception& e){FailTest("native automatic visible GPUs",e.what());}
     auto badGpu=localAuto;badGpu[3]="cuda";badGpu.insert(badGpu.end(),{"--fullauto-gpus","0,0"});
@@ -1062,8 +1062,8 @@ int main()
     auto sharedGpu=localAuto;sharedGpu[3]="cuda";
     sharedGpu.insert(sharedGpu.end(),{"--fullauto-resume-compatible","/bin/true","--fullauto-dispatch-gpus","0,0","--fullauto-dispatch-threads","6"});
     try{(void)ParseConfig(sharedGpu,false,true);Pass("two bounded dispatch workers on one GPU");}catch(const std::exception& ex){FailTest("two bounded dispatch workers",ex.what());}
-    auto tripleGpu=sharedGpu;*std::find(tripleGpu.begin(),tripleGpu.end(),"0,0")="0,0,0";
-    ExpectFailureForBuild("three dispatch workers rejected",tripleGpu,false,true,"too many worker slots");
+    auto tripleGpu=sharedGpu;*std::find(tripleGpu.begin(),tripleGpu.end(),"0,0")="0,0,0,0,0";
+    ExpectFailureForBuild("five dispatch workers rejected",tripleGpu,false,true,"too many worker slots");
     auto unboundedGpu=sharedGpu;unboundedGpu.resize(unboundedGpu.size()-2);
     ExpectFailureForBuild("shared dispatch needs thread bound",unboundedGpu,false,true,"bounded CPU pool");
     for(const std::string flag:{"--threads","--po-prepare-threads","--analytic-mean-threads"}){
@@ -1108,6 +1108,24 @@ int main()
         auto a=CanonicalBase();a.insert(a.end(),extra.begin(),extra.end());
         ExpectFailure("release rejects incompatible fixed mode "+extra[0],a,"");
     }
+    for(const std::string workers:{"1","2","4"}){
+        auto a=localAuto;a[3]="cuda";a.insert(a.end(),{"--fullauto-gpu-workers",workers,"--fullauto-dispatch-threads","3"});
+        ExpectSuccessForBuild("GPU workers accepted "+workers,a,false,true);
+    }
+    for(const std::string workers:{"0","3","5","-1"}){
+        auto a=localAuto;a[3]="cuda";a.insert(a.end(),{"--fullauto-gpu-workers",workers,"--fullauto-dispatch-threads","3"});
+        ExpectFailureForBuild("GPU workers count rejected "+workers,a,false,true,"must be 1, 2 or 4");
+    }
+    {auto a=localAuto;a[3]="cuda";a.insert(a.end(),{"--fullauto-gpu-workers","4"});
+        ExpectFailureForBuild("GPU workers require bounded CPU",a,false,true,"require explicit dispatch threads");}
+    {auto a=gpuAuto;a.insert(a.end(),{"--fullauto-gpu-workers","4","--fullauto-dispatch-threads","3"});
+        ExpectFailureForBuild("GPU workers reject automatic devices",a,false,true,"require fixed GPU selection");}
+    {auto a=localAuto;a.insert(a.end(),{"--fullauto-gpu-workers","1"});
+        ExpectFailure("CPU cannot select GPU workers",a,"requires CUDA PO fullauto");}
+    {auto a=sharedGpu;a.insert(a.end(),{"--fullauto-gpu-workers","1"});
+        ExpectFailureForBuild("explicit single worker is not silently overridden",a,false,true,"conflict with compatible dispatch overrides");}
+    {auto a=sharedGpu;*std::find(a.begin(),a.end(),"0,0")="0,0,0,0";
+        ExpectSuccessForBuild("four compatible dispatch workers",a,false,true);}
     if (failures != 0)
     {
         std::cerr << failures << " CLI test(s) failed\n";

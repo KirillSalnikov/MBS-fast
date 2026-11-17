@@ -1237,6 +1237,22 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
         if(!args.IsCatched("fullauto")||config.method!=RunMethod::PhysicalOptics||(value!="auto"&&value!="on"&&value!="off"))
             Fail("--fullauto-audit-angular requires PO fullauto and auto, on or off.","select a supported audit policy.");
     }
+    if(args.IsCatched("fullauto_gpu_workers")){
+        const int workers=IntValue(args,"fullauto_gpu_workers");
+        if(!args.IsCatched("fullauto")||!config.useGpu||config.method!=RunMethod::PhysicalOptics)
+            Fail("--fullauto-gpu-workers requires CUDA PO fullauto.","select --method po --backend cuda --fullauto EPS.");
+        if(workers!=1&&workers!=2&&workers!=4)
+            Fail("fullauto GPU workers must be 1, 2 or 4.","choose a supported worker count.");
+        if(args.IsCatched("fullauto_dispatch_gpus")||args.IsCatched("fullauto_resume_compatible"))
+            Fail("GPU workers conflict with compatible dispatch overrides.","use one worker placement policy, including when workers=1.");
+        if(workers>1){
+            if(!args.IsCatched("fullauto_dispatch_threads"))
+                Fail("GPU workers require explicit dispatch threads.","set --fullauto-dispatch-threads per worker.");
+            if(args.IsCatched("fullauto_dispatch_gpus")||args.IsCatched("fullauto_resume_compatible")||
+               (args.IsCatched("fullauto_gpus")&&args.GetStringValue("fullauto_gpus")=="auto"))
+                Fail("GPU workers require fixed GPU selection without compatible dispatch overrides.","use compatible dispatch separately, or keep the original worker placement.");
+        }
+    }
     if(args.IsCatched("fullauto_dispatch_threads")){
         RequirePositiveInt(args,"fullauto_dispatch_threads");
         if(!args.IsCatched("fullauto")||!config.useGpu||config.method!=RunMethod::PhysicalOptics)
@@ -1258,7 +1274,7 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
                 if(token.empty()||end!=token.c_str()+token.size()||id<0||id>2147483646)
                     Fail("invalid GPU index.","use nonnegative integer indices.");
                 ++slots;const int copies=++seen[int(id)];
-                if(copies>(dispatch?2:1))Fail("too many worker slots on one GPU.","use distinct --fullauto-gpus indices; compatible dispatch allows at most two copies.");
+                if(copies>(dispatch?4:1))Fail("too many worker slots on one GPU.","use distinct --fullauto-gpus indices; compatible dispatch allows at most four copies.");
                 if(dispatch&&copies==2&&!args.IsCatched("fullauto_dispatch_threads"))
                     Fail("shared GPU dispatch needs a bounded CPU pool.","set --fullauto-dispatch-threads per worker.");
             }
