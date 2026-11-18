@@ -948,13 +948,19 @@ void Scattering::Intersect(int facetID, const Beam &beam, Polygon &intersection)
         {
             const double denominatorSign = denominator >= 0.0 ? 1.0 : -1.0;
             double forwardScalar[MAX_VERTEX_NUM];
+            bool allForward = true;
             for (int i = 0; i < intersection.nVertices; ++i)
             {
                 forwardScalar[i] =
                     (DotProduct(intersection.arr[i], beamPlane)
                      + beamPlane.d_param) * denominatorSign;
+                allForward &= forwardScalar[i] >= -m_geometryDepthTolerance;
             }
 
+            // Every point survives in input order. Repeating the cleanup is
+            // identical only when its first pass retained all input vertices.
+            if (allForward && intersection.nVertices == outputSize)
+                return;
             Point3f forwardIntersection[MAX_VERTEX_NUM];
             const int forwardSize = clip_polygon_by_nonnegative_scalar(
                 intersection.arr, forwardScalar, intersection.nVertices,
