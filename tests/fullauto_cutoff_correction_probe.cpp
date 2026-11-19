@@ -67,7 +67,7 @@ int main(int argc,char** argv){try{
                 if(sourceSign==-1&&source.assembled){Require(source.assembled&&source.count==64,"balanced prefix was traced twice");++prefixViews;
                     const auto replay=Read(source.folder+"/command.args");Require(replay.find("--cutoff-profile\n"+e.CutoffBaseProfile()+"\n")!=std::string::npos&&replay.find("--orientation-prefix-output")==std::string::npos,"prefix standalone replay changed its estimator");}
                 else {Require(!source.assembled,"unexpected native correction source");++nativeLegs;}}
-            Require(prefixViews==1&&nativeLegs==(e.StagedCutoff()?4:2),"correction lost its two-leg transaction");
+            Require(prefixViews==1&&nativeLegs==2,"correction lost its two-leg transaction");
             for(int depth:{8,6}){const Job target=depth==8?j:e.LowerView(j,6);Matrix expected(3,Mueller{});IntegralScalar integrals;
                 std::istringstream sources(Read(j.folder+"/cutoff_sources.tsv"));int d,sign;std::string folder;
                 while(sources>>d>>sign>>folder)if(d==depth){const auto source=e.Materialize(*e.folderIndex.at(folder));const auto v=reader.Resolve(folder,depth);
@@ -103,7 +103,7 @@ int main(int argc,char** argv){try{
                 while(sources>>d>>sign>>folder){Require(d==8,"wrong pilot depth");const auto part=e.Materialize(*e.folderIndex.at(folder));++terms;
                     Require(part.seed==pilotSeeds[i]&&part.offset==j.offset,"pilot pairing lost");
                     for(size_t r=0;r<3;++r)for(int k=0;k<16;++k)expected[r][k]+=sign*part.matrix[r][k];}
-                Require(terms==(e.StagedCutoff()?5:3),"pilot correction source count");for(size_t r=0;r<3;++r)for(int k=0;k<16;++k)Close(j.matrix[r][k],expected[r][k],"pilot signed assembly wrong");
+                Require(terms==3,"pilot correction source count");for(size_t r=0;r<3;++r)for(int k=0;k<16;++k)Close(j.matrix[r][k],expected[r][k],"pilot signed assembly wrong");
             }}
         Require(!e.phiCutoffPilot&&e.ExecutionHash()==productionHash,"pilot scope changed production cache identity");
         // Mixed small direct-off and large corrected production prefixes.
