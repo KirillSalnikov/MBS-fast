@@ -743,6 +743,40 @@ void ScatteringNonConvex::SelectVisibleFacets(const Beam &beam, IntArray &facetI
     SortVisibleFacets(beam, facetIDs);
 }
 
+// Test on the unmodified incident aperture. Two hits require the usual
+// precedence graph. With zero or one, their relative order is already known.
+bool ScatteringNonConvex::FindSoleIntersection(const Beam &beam,
+                                               const IntArray &candidates,
+                                               int &soleFacet,
+                                               Polygon &intersection) const
+{
+    soleFacet = -1;
+    for (size_t i = 0; i < candidates.size; ++i)
+    {
+        const int facet = candidates.arr[i];
+        if (!MayBeamIntersectFacetProjected(beam, facet))
+            continue;
+        Polygon hit;
+        try
+        {
+            Intersect(facet, beam, hit);
+        }
+        catch (const std::runtime_error &)
+        {
+            // The ordered trace can consume the beam before reaching this
+            // facet. Reproduce that trace, including any error it encounters.
+            return false;
+        }
+        if (hit.nVertices < MIN_VERTEX_NUM)
+            continue;
+        if (soleFacet >= 0)
+            return false;
+        soleFacet = facet;
+        intersection = hit;
+    }
+    return true;
+}
+
 void ScatteringNonConvex::SortVisibleFacets(const Beam &beam,
                                              IntArray &facetIDs)
 {
@@ -1463,6 +1497,30 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
         {
             IntArray localFacetIds;
             const IntArray *facetIds = readyFacetIds;
+            IntArray soleCandidate;
+            Polygon soleIntersection;
+            int soleFacet = -1;
+            const bool plainCpuTrace = !readyFacetIds && !mayIntersect && !gpuPrefiltered
+#ifdef USE_CUDA
+                && !exactHit
+#endif
+                ;
+            if (plainCpuTrace && m_traceCpuProjectedPrefilter && !m_tracePrefilterStats)
+            {
+                FindVisibleFacets(beam, localFacetIds);
+                if (localFacetIds.size > 2 &&
+                    FindSoleIntersection(beam, localFacetIds, soleFacet, soleIntersection))
+                {
+                    if (soleFacet >= 0)
+                        soleCandidate.Add(soleFacet);
+                    facetIds = &soleCandidate;
+                }
+                else
+                {
+                    SortVisibleFacets(beam, localFacetIds);
+                    facetIds = &localFacetIds;
+                }
+            }
             if (facetIds == nullptr)
             {
                 if (m_tracePrefilterStats
@@ -1650,7 +1708,7 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
                     continue;
                 }
                 int facetId = facetIds->arr[i];
-                if (m_traceCpuProjectedPrefilter && !gpuPrefiltered)
+                if (m_traceCpuProjectedPrefilter && !gpuPrefiltered && facetIds != &soleCandidate)
                 {
                     bool mayIntersectProjected;
                     if (m_tracePrefilterStats)
@@ -1686,7 +1744,9 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
                 Polygon intersection;
                 if (m_tracePrefilterStats)
                     ++traceIntersectCalls;
-                if (m_tracePrefilterStats
+                if (facetIds == &soleCandidate)
+                    intersection = soleIntersection;
+                else if (m_tracePrefilterStats
                     && traceTimingSample(traceIntersectTimingCalls,
                                          traceIntersectTimingSamples))
                 {
@@ -1722,6 +1782,16 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
                     {
                         beam.nVertices = 0;
                         break;
+                    }
+                    if (facetIds == &soleCandidate && !isDivided && beam.nVertices > 0
+                        && !(beam.location == Location::In && m_facets[beam.lastFacetId].isVisibleIn))
+                    {
+                        // A partial cut changes the aperture. Resume after the
+                        // sole hit in the original facet order on the same ray.
+                        SortVisibleFacets(beam, localFacetIds);
+                        facetIds = &localFacetIds;
+                        i = std::find(localFacetIds.arr, localFacetIds.arr + localFacetIds.size,
+                                      soleFacet) - localFacetIds.arr;
                     }
                 }
             }

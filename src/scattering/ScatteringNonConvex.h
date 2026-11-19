@@ -33,6 +33,8 @@ private:
                          const IntArray *readyFacetIds = nullptr);
 
     void FindVisibleFacets(const Beam &beam, IntArray &facetIds);
+    bool FindSoleIntersection(const Beam &beam, const IntArray &candidates,
+                              int &soleFacet, Polygon &intersection) const;
     void FindVisibleFacetsForLight(IntArray &facetIDs);
     void BuildFacetVisibilityCache();
     void BuildFacetNormalCache();
