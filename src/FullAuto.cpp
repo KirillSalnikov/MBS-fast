@@ -6,6 +6,7 @@
 #include <functional>
 #include <exception>
 #include "FullAuto.h"
+#include "FullAutoPoleBudget.h"
 #include "FullAutoPhiPlateau.h"
 #include "FullAutoPairedAzimuth.h"
 #include "AnalyticFacetAverage.h"
@@ -889,7 +890,7 @@ struct Engine {
     bool directProductionDepth=false,chooseDepthEstimator=false;
     enum class DepthLadder { Adjacent, Wide, WideEndpoints, AdjacentEndpoints };
     DepthLadder depthLadder=DepthLadder::Adjacent;
-    bool rowPhiWork=false;
+    bool rowPhiWork=false,workingPairedRows=false;
     bool sparsePairedTiming=false,pairedPhiForecast=false,earlyDepthBands=false,depthPilotBands=false,usedDepthPilotBands=false;
     bool overlapPairedPrefetch=false,threeDepthPrefetch=false,prefixAnglePlan=false;
     int prefetchCoarse=0,prefetchMiddle=0;
@@ -1642,6 +1643,19 @@ struct Engine {
             Require(value=="0"||value=="1","invalid working row cost policy");
             rowPhiWork=value=="1"&&coherent&&!go&&local&&!fixedPhi;
             if(rowPhiWork)fingerprint<<"working_phi_local_rows_v1=1\n";
+        }
+        if(const char* option=std::getenv("MBS_FULLAUTO_WORKING_PAIRED_ROWS")){
+            const std::string value(option);
+            Require(value=="0"||value=="1","invalid working paired row forecast");
+            workingPairedRows=rowPhiWork&&value=="1";
+            if(workingPairedRows)fingerprint<<"working_paired_rows_v1=1\n";
+        }
+        if(const char* setting=std::getenv("MBS_FULLAUTO_POLE_ORIENTATIONS")){
+            const std::string flag(setting);
+            Require(flag=="0"||flag=="1","invalid pole orientation mode");
+            poleOrientations=flag=="1"&&coherent&&!go&&local&&config.useGpu&&!fixedPhi
+                &&!args.IsCatched("fullauto_initial")&&!args.IsCatched("fullauto_pilot")&&!config.adaptive.loadedFromFile;
+            if(poleOrientations)fingerprint<<"pole_orientations_priced_v2=1\n";
         }
         if(nestedPhiPilots)fingerprint<<"nested_phi_pilots_v1=1\n";
         if(reusePairedBase)fingerprint<<"production_paired_base=1\n";
@@ -3051,7 +3065,7 @@ struct Engine {
     #include "FullAutoPhiSharedRows.inc"
     #include "FullAutoControlPreflight.inc"
     #include "FullAutoPhiWinner.inc"
-    bool densePhiPlateau=false;
+    bool densePhiPlateau=false,poleOrientations=false;
     void Calibrate(const std::vector<double>& x,bool working=false,bool kernelOnly=false,int soleRule=0,bool screening=false,bool deferTuning=false,size_t workRows=0,bool separateTimings=false) {
         measuredPhi.clear();if(!working){startupPhiWitness.clear();startupPhiRows.clear();}
         const int previousPhi=phi;weightTheta=x;weights.clear();polarWeights.clear();phi=fixedPhi?fixedPhi:std::max(minPhi,std::min(maxPhi,4));
@@ -3106,6 +3120,13 @@ struct Engine {
         const bool comparePairs=pairedPhiForecast&&!working&&!kernelOnly&&!screening&&!fixedPhi
             &&!soleRule&&!canRefit&&!selectDenseRule&&!allowFinalists&&phiCandidates.size()>1
             &&x.size()<=8192/phiCandidates.size();
+        const bool compareWorking=workingPairedRows&&working&&!kernelOnly&&!screening&&!soleRule
+            &&!canRefit&&!allowFinalists&&phiCandidates.size()>1&&x.size()<=8192/phiCandidates.size();
+        struct RowTiming {
+            std::vector<double> work;
+            std::vector<std::array<double,3>> samples;
+        };
+        std::map<int,RowTiming> rowTimings;
         const bool deferMeasurements=comparePairs&&sparsePairedTiming&&!separateTimings&&!targetPhiPilot
             &&!rawPhiFallback&&!phiCutoffPilot&&PhiTimingSeeds()<8&&phiCandidates.size()>=4;
         NestedPhiSweep nested(phiCandidates);
@@ -3235,12 +3256,16 @@ struct Engine {
                         if(ratios&&j)error=std::max(error,stats.ratioInterval[row][j]);
                     }
                     if(error>peakError){peakRow=row;peakError=error;}
-                    totalWork+=std::max(double(initial)/calibrationCount,std::pow(error/statistical,2));
+                    const double rowWork=std::max(double(initial)/calibrationCount,std::pow(error/statistical,2));
+                    totalWork+=rowWork;
+                    if(compareWorking)rowTimings[phi].work.push_back(rowWork);
                 }
                 const double meanWork=std::min(pointwiseMultiplier,totalWork/x.size());
                 double cost=0;
                 for(size_t i=0;i<timedSeeds;++i){
                     const auto& job=valid[i];
+                    if(compareWorking)rowTimings[phi].samples.push_back({{
+                        std::max(1e-6,job.seconds-job.controlSetup),job.traceSeconds,job.diffractionSeconds}});
                     cost+=FullAutoPhiRowCost::Project(std::max(1e-6,job.seconds-job.controlSetup),
                         job.traceSeconds,job.diffractionSeconds,pointwiseMultiplier,meanWork);
                 }
@@ -3346,7 +3371,7 @@ struct Engine {
                 value.resolved=measuredScale&&candidateResolved&&std::isfinite(score)&&score>0&&std::isfinite(value.orientations);
                 measuredPhi[candidate]=value;
             }
-            if(comparePairs&&candidateResolved&&!confirming&&valid.size()==8){
+            if((comparePairs||compareWorking)&&candidateResolved&&!confirming&&valid.size()==8){
                 Samples raw;
                 for(size_t s=0;s<8;++s){
                     Require(valid[s].seed==validation[s],"paired azimuth validation scrambles changed order");
@@ -3502,6 +3527,45 @@ struct Engine {
                 selectedFitCount=trial.count;best=cheapest;
                 Log("paired_phi_forecast","{\"timed_winner\":"+Number(original)+",\"selected_phi\":"+Number(chosen)
                     +",\"budget\":"+Number(interpolation)+",\"extra_native_jobs\":0,\"production_accuracy_accepted\":false}");
+            }
+        }
+        if(compareWorking&&bestResolved&&pairedTrials.size()==phiCandidates.size()&&interpolation>0){
+            const auto& reference=pairedTrials.rbegin()->second;
+            int winner=chosen;
+            double cheapest=std::numeric_limits<double>::infinity();
+            bool usable=true;
+            for(const auto& entry:pairedTrials){
+                const auto& trial=entry.second;
+                const auto& timing=rowTimings.at(entry.first);
+                if(trial.count!=reference.count||timing.work.size()!=x.size()||timing.samples.empty()){
+                    usable=false;break;
+                }
+                std::vector<double> widths;
+                const auto diff=FullAutoPairedAzimuth::Measure(trial.raw,reference.raw,ratios,&widths);
+                if(!diff.valid){usable=false;break;}
+                double peak=trial.work,total=0;
+                for(size_t r=0;r<x.size();++r){
+                    const double relative=widths[r]/interpolation;
+                    const double work=std::max(timing.work[r],relative*relative);
+                    peak=std::max(peak,work);total+=work;
+                }
+                const double mean=std::min(peak,total/x.size());
+                double cost=0;
+                for(const auto& sample:timing.samples)
+                    cost+=FullAutoPhiRowCost::Project(sample[0],sample[1],sample[2],peak,mean);
+                cost=trial.setup+8*cost/timing.samples.size();
+                if(!std::isfinite(cost)){usable=false;break;}
+                Log("working_paired_phi_cost","{\"phi\":"+Number(entry.first)+",\"reference\":"+Number(pairedTrials.rbegin()->first)
+                    +",\"paired_scale\":"+Number(diff.scale)+",\"peak_theta\":"+Number(x[diff.row])
+                    +",\"mean_work\":"+Number(mean)+",\"peak_work\":"+Number(peak)
+                    +",\"original_seconds\":"+Number(trial.cost)+",\"projected_seconds\":"+Number(cost)+"}");
+                if(cost<cheapest){cheapest=cost;winner=entry.first;}
+            }
+            if(usable){
+                Log("working_paired_phi_choice","{\"original_phi\":"+Number(chosen)+",\"selected_phi\":"+Number(winner)
+                    +",\"matched_seeds\":8,\"extra_native_jobs\":0,\"accuracy_accepted\":false}");
+                chosen=winner;best=cheapest;auto& trial=pairedTrials.at(chosen);
+                selected=std::move(trial.scalar);selectedPolar=std::move(trial.polar);selectedFitCount=trial.count;
             }
         }
         if(selectDenseRule&&bestResolved){

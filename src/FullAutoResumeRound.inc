@@ -237,3 +237,30 @@ void BoundInitialProduction(Engine& e,AdaptiveState& state,const std::vector<int
         +",\"explicit_initial_unchanged\":true,\"correction_minima_preserved\":true,\"cached_blocks_retained\":true"
         +",\"allocation_reads_matrix_values\":false,\"accuracy_gates_unchanged\":true}");
 }
+
+// The general initial limiter can shrink an unpriced first round. Admit only
+// the extra base-depth pole jobs here, after that limiter, using measurements
+// on this solver/device. A missing recipe is retried at the next round.
+void PlanPricedPoles(Engine& e,AdaptiveState& state,const std::vector<int>& depths){
+    if(!e.poleOrientations||!e.local||!e.thetaPhi.empty()||state.counts.empty()||depths.empty())return;
+    const auto ids=AdaptiveGuards(state.knots,e.theta.size());
+    std::vector<size_t> poles;
+    for(size_t id:ids)if(e.theta[id]==0.||e.theta[id]==180.)poles.push_back(id);
+    const int target=FullAutoPoleBudget::Count(e.initial,e.maxCount,e.phi,ids.size(),poles.size());
+    std::vector<size_t> missing;
+    for(size_t id:poles)if(state.counts.front().at(id)<target)missing.push_back(id);
+    if(missing.empty())return;
+    AdditionalWork work(e,e.seeds.data());
+    Budgets trial{state.counts.front()};
+    const double allowance=90.*RoundPhysicalGpus(e);
+    // Price the full new native base prefixes, including single-row padding.
+    // Subtracting a forecast on the original budgets could hide duplicate work.
+    for(size_t id:missing)trial.front()[id]=target;
+    const auto price=work.Forecast(BudgetRequests(e,{depths.front()},trial,missing));
+    const bool admitted=price.profiled&&price.seconds<=allowance;
+    if(admitted)for(size_t id:missing)state.counts.front()[id]=target;
+    e.Log("pole_orientation_budget","{\"round\":"+Number(state.round)+",\"requested_base_per_seed\":"+Number(target)
+        +",\"missing_poles\":"+Number(missing.size())+",\"accepted_plan\":"+(admitted?"true":"false")
+        +",\"work_profiled\":"+(price.profiled?"true":"false")+",\"forecast_worker_seconds\":"+(price.profiled?Number(price.seconds):"null")
+        +",\"native_jobs\":"+Number(price.jobs)+",\"worker_seconds_limit\":"+Number(allowance)+",\"accuracy_accepted\":false}");
+}
