@@ -3701,7 +3701,21 @@ __global__ void diffraction_grid_mueller_full8_warp_stage_kernel(
         weight, &mOrient[out], lane, mask);
 }
 
-template <bool Split4, bool Fixed34, bool Grid3D = false>
+// Each segment owns a disjoint contiguous range of each packed beam bucket.
+// The second launch adds the complex fields before forming polarization products.
+struct PackedBeamRange { int first, end; };
+
+template <bool Segmented>
+__device__ inline PackedBeamRange packed_beam_range(int first, int end)
+{
+    if (!Segmented)
+        return {first, end};
+    const long long width = end-first;
+    return {first+static_cast<int>(width*blockIdx.y/gridDim.y),
+            first+static_cast<int>(width*(blockIdx.y+1)/gridDim.y)};
+}
+
+template <bool Split4, bool Fixed34, bool Grid3D = false, bool Segmented = false>
 __global__ void diffraction_grid_mueller_mixed8_kernel(const GpuBeam4 *__restrict__ beams4,
                                                        const int *__restrict__ beamOffsets4,
                                                        const int *__restrict__ beamOffsets4Quad,
@@ -3771,14 +3785,16 @@ __global__ void diffraction_grid_mueller_mixed8_kernel(const GpuBeam4 *__restric
         if (Fixed34)
         {
             const int beginQuad = beamOffsets4Quad[orient];
-            for (int bi = begin4; bi < beginQuad; ++bi)
+            const auto triangles = packed_beam_range<Segmented>(begin4, beginQuad);
+            for (int bi = triangles.first; bi < triangles.end; ++bi)
                 accumulate_compact_beam_jones_gpu<GpuBeam4, 4, 3>(
                     beams4[bi], cp, sp, sin_t, cos_t, dx, dy, dz,
                     vfx, vfy, vfz, vtx, vty, vtz,
                     waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
                     invComplWaveR, invComplWaveI, legacySign,
                     j00r, j00i, j01r, j01i, j10r, j10i, j11r, j11i);
-            for (int bi = beginQuad; bi < end4; ++bi)
+            const auto quads = packed_beam_range<Segmented>(beginQuad, end4);
+            for (int bi = quads.first; bi < quads.end; ++bi)
                 accumulate_compact_beam_jones_gpu<GpuBeam4, 4, 4>(
                     beams4[bi], cp, sp, sin_t, cos_t, dx, dy, dz,
                     vfx, vfy, vfz, vtx, vty, vtz,
@@ -3788,7 +3804,8 @@ __global__ void diffraction_grid_mueller_mixed8_kernel(const GpuBeam4 *__restric
         }
         else
         {
-            for (int bi = begin4; bi < end4; ++bi)
+            const auto small = packed_beam_range<Segmented>(begin4, end4);
+            for (int bi = small.first; bi < small.end; ++bi)
                 accumulate_compact_beam_jones_gpu<GpuBeam4, 4>(
                     beams4[bi], cp, sp, sin_t, cos_t, dx, dy, dz,
                     vfx, vfy, vfz, vtx, vty, vtz,
@@ -3798,7 +3815,8 @@ __global__ void diffraction_grid_mueller_mixed8_kernel(const GpuBeam4 *__restric
         }
     }
 
-    for (int bi = beamOffsets8[orient]; bi < beamOffsets8[orient + 1]; ++bi)
+    const auto octets = packed_beam_range<Segmented>(beamOffsets8[orient], beamOffsets8[orient + 1]);
+    for (int bi = octets.first; bi < octets.end; ++bi)
     {
         GpuReal d00r, d00i, d01r, d01i, d10r, d10i, d11r, d11i;
         const GpuBeam8 &b = beams8[bi];
@@ -3816,7 +3834,8 @@ __global__ void diffraction_grid_mueller_mixed8_kernel(const GpuBeam4 *__restric
         j11r += d11r; j11i += d11i;
     }
 
-    for (int bi = beamOffsets[orient]; bi < beamOffsets[orient + 1]; ++bi)
+    const auto large = packed_beam_range<Segmented>(beamOffsets ? beamOffsets[orient] : 0, beamOffsets ? beamOffsets[orient + 1] : 0);
+    for (int bi = large.first; bi < large.end; ++bi)
     {
         GpuReal d00r, d00i, d01r, d01i, d10r, d10i, d11r, d11i;
         const GpuBeam &b = beams[bi];
@@ -3834,9 +3853,31 @@ __global__ void diffraction_grid_mueller_mixed8_kernel(const GpuBeam4 *__restric
         j11r += d11r; j11i += d11i;
     }
 
+    if (Segmented) {
+        const size_t i = (static_cast<size_t>(blockIdx.y)*nOrient+orient)*gridCount+grid;
+        GpuReal* part = mFull+8*i;
+        part[0]=j00r; part[1]=j00i; part[2]=j01r; part[3]=j01i;
+        part[4]=j10r; part[5]=j10i; part[6]=j11r; part[7]=j11i;
+        return;
+    }
     mueller_accum_from_jones(j00r, j00i, j01r, j01i, j10r, j10i, j11r, j11i,
                              weights[orient] * (GpuReal)0.25,
                              &mFull[grid * 16]);
+}
+
+__global__ void sum_beam_segments_kernel(const GpuReal* partial, const GpuReal* weights,
+                                         int directions, int orientations, int segments, GpuReal* matrix)
+{
+    const int i = blockIdx.x*blockDim.x+threadIdx.x;
+    const int cells = directions*orientations;
+    if (i >= cells) return;
+    double field[8] = {};
+    for (int segment=0; segment<segments; ++segment) {
+        const GpuReal* part = partial+(static_cast<size_t>(segment)*cells+i)*8;
+        for (int c=0; c<8; ++c) field[c] += part[c];
+    }
+    mueller_accum_from_jones(field[0],field[1],field[2],field[3],field[4],field[5],field[6],field[7],
+                             weights[i/directions]*(GpuReal)0.25, matrix+16*(i%directions));
 }
 
 template <bool Grid3D>
@@ -6460,9 +6501,36 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     long long diffractionTotal = (long long)((fusedMueller || noAtomics)
         ? nOrient : (int)nBeams) * gridCount;
     int diffractionGrid = (int)((diffractionTotal + block - 1) / block);
+    int segments=0;
+    // A few directions leave the scalar fused kernel with only a few blocks,
+    // even if one orientation contains tens of thousands of apertures.
+    if (isCoh && (useBeam8 || useMixedBeam8) && splitBeam4 && fixedBeam34
+        && !stageMueller && !useWarpBeams && !computeNoShadow && diffractionTotal>0
+        && diffractionTotal<=8192 && nBeams/static_cast<size_t>(nOrient)>=2048) {
+        const int workLimit=static_cast<int>(std::min<size_t>(256,nBeams/nOrient/64));
+        const int wanted=static_cast<int>((65536+diffractionTotal-1)/diffractionTotal);
+        const int count=std::min(wanted,workLimit);
+        if (count>=4 && ensure_device_capacity(ws.j,ws.jCap,static_cast<size_t>(diffractionTotal)*count*8))
+            segments=count;
+        else if (count>=4) cudaGetLastError();
+    }
     if (fusedMueller)
     {
-        if (!isCoh)
+        if (segments) {
+            const dim3 segmentedGrid(diffractionGrid,segments);
+            diffraction_grid_mueller_mixed8_kernel<true,true,false,true><<<segmentedGrid,block>>>(
+                ws.beams4,ws.beamOffsets4,ws.beamOffsets4Quad,ws.beams8,ws.beamOffsets8,
+                ws.beams, useMixedBeam8 ? ws.beamOffsets : nullptr,
+                ws.sinTheta,ws.cosTheta,ws.sinPhi,ws.cosPhi,ws.vf,ws.weights,
+                nAz,nZen,nOrient,diffractionWaveIndex,diffractionWi2,gpu_effective_eps1(m_eps1),m_eps2,
+                real(m_complWave),imag(m_complWave),real(m_invComplWave),imag(m_invComplWave),
+                m_legacySign ? 1 : 0,ws.j);
+            if (!gpu_report_cuda_error(cudaGetLastError(),"segmented Jones diffraction")) return false;
+            sum_beam_segments_kernel<<<diffractionGrid,block>>>(ws.j,ws.weights,gridCount,nOrient,segments,ws.m);
+            if (timing) std::fprintf(stderr,"coherent beam segments=%d beams=%zu directions=%d orientations=%d\n",
+                                     segments,nBeams,gridCount,nOrient);
+        }
+        else if (!isCoh)
         {
             if (useWarpBeams)
             {
