@@ -6002,6 +6002,17 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     const int requestedStageMueller = gpu_stage_mueller_mode();
     const int requestedNoVertexCache = gpu_no_vertex_cache_mode();
     const int requestedNoAtomics = gpu_no_atomics_mode();
+    const bool denseCoherentGrid = isCoh && !computeNoShadow
+        && static_cast<long long>(nOrient) * gridCount <= 8192
+        && nBeams / static_cast<size_t>(nOrient) >= 2048;
+    // CUDA 12.0 produced wrong partial fields for dense joined rosettes on
+    // sm_86. Keep the warp packing and launch in agreement on that toolchain.
+    constexpr int compilerVersion = 100 * __CUDACC_VER_MAJOR__ + __CUDACC_VER_MINOR__;
+    constexpr bool segmentedFieldsSupported = compilerVersion >= 1208;
+    const int warpBeamsMode = gpu_warp_beams_mode();
+    const bool denseCuda120Warp = compilerVersion == 1200 && denseCoherentGrid
+        && requestedStageMueller != 1 && warpBeamsMode < 0;
+    const bool warpBeamsEnabled = denseCuda120Warp || gpu_warp_beams_enabled();
     const bool canUseBeam8 = gpu_compact_beams_enabled()
         && !computeNoShadow
         && requestedNoAtomics != 0
@@ -6009,7 +6020,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         // Compact staged output has a warp kernel only. The scalar staged
         // kernel reads GpuBeam, including on consumer GPUs whose default is
         // not warp-based; packing GpuBeam8 there leaves ws.beams invalid.
-        && (requestedStageMueller != 1 || (allBeam8 && gpu_warp_beams_enabled()))
+        && (requestedStageMueller != 1 || (allBeam8 && warpBeamsEnabled))
         && requestedNoVertexCache != 1;
     const bool packBeam8 = allBeam8 && canUseBeam8;
     const bool packMixedBeam8 = !allBeam8 && canUseBeam8
@@ -6018,7 +6029,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     const bool splitBeam4 = (packBeam8 || packMixedBeam8)
                          && gpu_compact_beam4_split_enabled()
                          && requestedStageMueller != 1
-                         && !gpu_warp_beams_enabled() && nBeams4 > 0;
+                         && !warpBeamsEnabled && nBeams4 > 0;
     const bool fixedBeam34 = splitBeam4 && compactAllAtLeast3;
     GpuUploadVector<GpuBeam> &hBeams = ws.hBeams;
     GpuUploadVector<GpuBeam4> &hBeams4 = ws.hBeams4;
@@ -6311,13 +6322,12 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         && !noVertexCache;
     const bool useMixedBeam8 = packMixedBeam8 && fusedMueller && !computeNoShadow
         && !stageMueller && !noVertexCache;
-    const int warpBeamsMode = gpu_warp_beams_mode();
     const bool autoIncoherentWarp = !isCoh
         && (long long)nOrient * gridCount <= 200000
         && nBeams >= (size_t)nOrient * 32;
     const bool preferWarpBeams = warpBeamsMode >= 0
         ? warpBeamsMode != 0
-        : (isCoh ? gpu_warp_beams_enabled() : autoIncoherentWarp);
+        : (isCoh ? warpBeamsEnabled : autoIncoherentWarp);
     const bool useWarpBeams = (useBeam8 || useMixedBeam8)
         && preferWarpBeams;
     t0 = timing ? gpu_now_ms() : 0.0;
@@ -6504,9 +6514,8 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     int segments=0;
     // A few directions leave the scalar fused kernel with only a few blocks,
     // even if one orientation contains tens of thousands of apertures.
-    if (isCoh && (useBeam8 || useMixedBeam8) && splitBeam4 && fixedBeam34
-        && !stageMueller && !useWarpBeams && !computeNoShadow && diffractionTotal>0
-        && diffractionTotal<=8192 && nBeams/static_cast<size_t>(nOrient)>=2048) {
+    if (segmentedFieldsSupported && denseCoherentGrid && (useBeam8 || useMixedBeam8)
+        && splitBeam4 && fixedBeam34 && !stageMueller && !useWarpBeams) {
         const int workLimit=static_cast<int>(std::min<size_t>(256,nBeams/nOrient/64));
         const int wanted=static_cast<int>((65536+diffractionTotal-1)/diffractionTotal);
         const int count=std::min(wanted,workLimit);
