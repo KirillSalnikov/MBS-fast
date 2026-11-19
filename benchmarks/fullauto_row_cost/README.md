@@ -32,3 +32,11 @@ Eight further scrambles of 512 orientations directly sampled all 1027 angles. Th
 | Neighboring-size proposal alone | 214 | 1.420% | 6 |
 
 The full-controller speedup for this option is still under evaluation. [Native arguments, timings, checksums and optical comparisons](screened_theta.json).
+
+## Paired azimuth cost on the working grid
+
+The controller measures each azimuth rule on matched orientations. One forecast prices the orientation count needed by each angle. The other also prices differences from the densest azimuth rule. With `MBS_FULLAUTO_WORKING_PAIRED_ROWS=1`, `MBS_FULLAUTO_PHI_ROW_COST=1` and `MBS_FULLAUTO_PHI_REGRET=1`, the controller selects the rule with the smallest worst cost relative to the cheapest rule in each forecast. The two forecasts reuse the same pilot measurements. The subsequent independent matrix checks use the requested tolerance. The [complete shortwave run settings and results](paired_phi_shortwave.json) include all other options used in this comparison.
+
+The exact tested source is commit `0b49dba`. For the arbitrary 10 µm particle at 0.355 µm the baseline, candidate and repeat baseline took 780.74, 250.65 and 529.19 seconds on a shared RTX 3080 Ti. The complete profile gave 2.11× against the faster baseline. The background GPU workload changed during the sequence. The largest difference across 2454 angles and 16 elements was 0.859% of the local reference M11. The maximum difference in ratios was 0.604 percentage points. This timing covers the whole profile, including earlier optimizations.
+
+On the arbitrary 56.23 µm particle at 1.550 µm, the previously published dense angular screen (commit `25f2679`) gave 1.79× for the full calculation. Its M11 differed by 1.560% of the reference at 61.254°, exceeding the 1% comparison threshold. See the [whole-grid comparison](screened_arb56.json).

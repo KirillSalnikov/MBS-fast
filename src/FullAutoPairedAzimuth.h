@@ -16,12 +16,13 @@ struct Difference {
 // influence function of each ratio of means, including its own denominator.
 // This schedules pilot work only; independent production acceptance is intact.
 template<class Samples>
-Difference Measure(const Samples& lower,const Samples& upper,bool ratios) {
+Difference Measure(const Samples& lower,const Samples& upper,bool ratios, std::vector<double>* perRow=nullptr) {
     Difference result;
     if(lower.size()!=8||upper.size()!=8||lower[0].empty())return result;
     const size_t rows=lower[0].size();
     for(size_t s=0;s<8;++s)
         if(lower[s].size()!=rows||upper[s].size()!=rows)return result;
+    if(perRow)perRow->assign(rows,0.);
     for(size_t r=0;r<rows;++r){
         std::array<double,16> lo{},hi{};
         for(size_t s=0;s<8;++s)for(size_t j=0;j<16;++j){
@@ -43,6 +44,7 @@ Difference Measure(const Samples& lower,const Samples& upper,bool ratios) {
                 const double se=std::sqrt(sum/56.);
                 if(!std::isfinite(mean)||!std::isfinite(se))return Difference{};
                 const double width=std::max(std::abs(mean),2.364624251*se);
+                if(perRow)(*perRow)[r]=std::max((*perRow)[r],width);
                 if(width>result.scale){result.scale=width;result.row=r;result.element=j;result.ratio=norm;}
             }
         }

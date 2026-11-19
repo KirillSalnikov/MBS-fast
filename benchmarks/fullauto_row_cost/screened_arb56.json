@@ -1,0 +1,78 @@
+{
+  "runs": {
+    "A": {
+      "seconds": 436.3553523607552,
+      "n": 8,
+      "phi": 16,
+      "round": 7,
+      "rows": 3160,
+      "reported_error": 0.03886309394446951,
+      "integrals": {
+        "Cext": 2651.2693121154434,
+        "Csca": 2477.682677141733,
+        "Cabs": 173.58663497371026
+      }
+    },
+    "B": {
+      "seconds": 243.67631958704442,
+      "n": 8,
+      "phi": 32,
+      "round": 8,
+      "rows": 3160,
+      "reported_error": 0.038970624261248483,
+      "integrals": {
+        "Cext": 2651.2693121154434,
+        "Csca": 2477.9592427315793,
+        "Cabs": 173.31006938386417
+      }
+    },
+    "A2": {
+      "seconds": 444.7482778998092,
+      "n": 8,
+      "phi": 16,
+      "round": 7,
+      "rows": 3160,
+      "reported_error": 0.03886309410409261,
+      "integrals": {
+        "Cext": 2651.2693121154434,
+        "Csca": 2477.682683144511,
+        "Cabs": 173.58662897093245
+      }
+    }
+  },
+  "differences": {
+    "A_B": {
+      "raw": 0.015600811992124517,
+      "theta": 61.25356125356125,
+      "element": "M11",
+      "ratio": 0.007358712767275483,
+      "ratio_theta": 114.58689458689459,
+      "ratio_element": "M33"
+    },
+    "A2_B": {
+      "raw": 0.015600832196950727,
+      "theta": 61.25356125356125,
+      "element": "M11",
+      "ratio": 0.007358706123751002,
+      "ratio_theta": 114.58689458689459,
+      "ratio_element": "M33"
+    },
+    "A_A2": {
+      "raw": 5.509191620981107e-08,
+      "theta": 77.37891737891738,
+      "element": "M11",
+      "ratio": 5.951174042451157e-08,
+      "ratio_theta": 34.75783475783476,
+      "ratio_element": "M33"
+    }
+  },
+  "speedup": 1.7907171000458388,
+  "passed_matrix": false,
+  "passed_time_and_matrix": false,
+  "background_unchanged": true,
+  "binary_sha256": {
+    "baseline": "a374cd60f661b79a3931d7b3abb2dc7d4b1814e487f46d5f039ae8220fd050ba",
+    "candidate": "37f78d34789d6045e4a1d37b55e42cdb9a264da8f471f5555d7dbd76efb5d144"
+  },
+  "archive_sha256": "a8f40ac918d9bcdf59349bb461aa093ecaf38cbb26b04967c72e731b32dfba3c"
+}
