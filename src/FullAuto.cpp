@@ -828,6 +828,7 @@ struct Engine {
     bool refinementWindow=false;double refinementLo=0,refinementHi=0,refinementEps=0;
     std::string refinementParent,refinementPolicy,meanReferenceOverride;
     bool legacyProjectedShadowIdentity=false;
+    bool joinedRosetteCpuFacets=false;
     std::set<std::string> refinementLocalJobs;bool refinementLocalJobsIndexed=false;
     void IndexRefinementLocalJobs(){
         if(refinementParent.empty()||refinementLocalJobsIndexed)return;
@@ -1106,7 +1107,7 @@ struct Engine {
             <<",\"initial_model\":"<<Quoted(initialModel)<<",\"estimated_final_orientation_count\":"<<Number(empiricalFinal)<<",\"depth_pilot_count\":"<<depthPilot<<",\"depth_search_order\":"<<Quoted(depthOrder)<<",\"initial_source\":"<<Quoted(initialSource)<<",\"maximum_edge_um\":"<<Number(maximumEdge)<<",\"maximum_diameter_um\":"<<Number(maximumDiameter)<<",\"oldauto_N_beta_estimate\":"<<Number(estimatedBeta)<<",\"oldauto_N_gamma_estimate\":"<<Number(estimatedGamma)<<",\"oldauto_orientation_estimate\":"<<Number(estimatedOrientations)<<",\"initial_count\":"<<initial<<",\"minimum_correction_count\":"<<minimum<<",\"max_count\":"<<maxCount<<",\"max_rounds\":"<<roundLimit
             <<",\"initial_theta_support\":"<<startTheta<<",\"max_theta_evaluations\":"<<maxTheta<<",\"min_phi\":"<<minPhi<<",\"max_phi\":"<<maxPhi
             <<",\"stable_passes\":"<<stablePasses<<",\"automatic_depth\":"<<(autoDepth?"true":"false")<<",\"depth_start\":"<<depthStart<<",\"depth_maximum\":"<<depthMaximum<<",\"depth_budget\":"<<Number(depthBudget)<<",\"physical_target_depth\":"<<target<<",\"phi\":"<<phi
-            <<",\"effective_analytic_mean_threads\":"<<(dispatchThreads?dispatchThreads:analyticMeanThreads)<<",\"angular_audit_policy\":"<<Quoted(angularAuditPolicy)<<",\"short_packet_policy\":"<<Quoted(shortPacketPolicy)<<",\"dispatch_threads\":"<<dispatchThreads<<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
+            <<",\"effective_analytic_mean_threads\":"<<(dispatchThreads?dispatchThreads:analyticMeanThreads)<<",\"angular_audit_policy\":"<<Quoted(angularAuditPolicy)<<",\"short_packet_policy\":"<<Quoted(shortPacketPolicy)<<",\"dispatch_threads\":"<<dispatchThreads<<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"joined_rosette_cpu_facets_default\":"<<(joinedRosetteCpuFacets?"true":"false")<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
             <<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"selected_gpus\":[";
         for(size_t i=0;i<gpus.size();++i)out<<(i?",":"")<<Quoted(gpus[i]);
         out<<"],\"dispatch_gpus\":[";for(size_t i=0;i<WorkerGpus().size();++i)out<<(i?",":"")<<Quoted(WorkerGpus()[i]);
@@ -1488,6 +1489,21 @@ struct Engine {
                 signature=legacySignature;legacyProjectedShadowIdentity=true;
             }
         }
+        // Joined arms form a nonconvex aggregate. The CPU trace resolves facet
+        // precedence on each aperture and leaves the CUDA diffraction path active.
+        // Preserve the saved recipe when explicitly resuming a compatible older run.
+        const bool restorePreviousRecipe = !compatibleHash.empty() && Exists(root+"/configuration.txt")
+            && Read(root+"/configuration.txt") == signature+"\n";
+        const bool explicitTraceEnvironment = std::any_of(environment.active.begin(), environment.active.end(),
+            [](const std::pair<std::string,std::string>& entry) {return entry.first.find("MBS_GPU_TRACE_")==0;});
+        joinedRosetteCpuFacets = coherent && config.useGpu && args.IsCatched("rosette_joined")
+            && tracePolicy=="auto" && !args.IsCatched("gpu_trace") && !args.IsCatched("no_gpu_trace")
+            && !args.IsCatched("no_trace_prefilter") && !args.IsCatched("trace_prefilter_stats")
+            && !explicitTraceEnvironment && !restorePreviousRecipe;
+        if (joinedRosetteCpuFacets) {
+            base.push_back("--no-gpu-trace-prefilter");
+            signature = Hash(signature+"\njoined_rosette_cpu_facets_v1");
+        }
         std::ostringstream supplied;supplied<<"{\"priority\":\"explicit CLI > config file > automatic selection\",\"options\":[";bool first=true;
         for(const auto& spec:GetCliOptionSpecs())if(args.IsCatched(spec.key)){
             supplied<<(first?"":",")<<"{\"flag\":"<<Quoted(CliCanonicalFlag(spec.key))<<",\"policy\":"<<Quoted(FullAutoOptionPolicy(spec.key))<<",\"values\":[";
@@ -1517,7 +1533,7 @@ struct Engine {
             <<",\"mirror_budget\":"<<(mirror?eps/256:0)<<",\"max_mirror_residual95_scaled_M11\":"<<mirrorError
             <<",\"final_checks\":"<<(finalChecks?"true":"false")<<",\"final_physics_audit\":"<<(PhysicalAuditEnabled()?"true":"false")<<",\"prepare_thread_cap\":"<<prepareThreadCap<<",\"accuracy_scope\":"<<Quoted(depthFallback?"production at fixed depth; depth adequacy unverified":"production")<<",\"adaptive_schema\":2,\"local_orientations\":"<<(local?"true":"false")<<",\"ratio_accuracy\":"<<(ratios?"true":"false")<<",\"max_pointwise_ratio95\":"<<lastRatio<<",\"independent_final_validation\":"<<(independentPassed?"true":"false")<<",\"saved_orientation_blocks_this_invocation\":"<<savedOrientationBlocks
             <<",\"analytic_mean_budget\":"<<(controls?eps/64:0)<<",\"max_estimated_analytic_mean_error_scaled_M11\":"<<lastAnalyticError
-            <<",\"execution_budget\":"<<((resourcePolicy=="auto"||config.useGpu)?eps/1024:0)<<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"effective_analytic_mean_threads\":"<<(dispatchThreads?dispatchThreads:analyticMeanThreads)<<",\"angular_audit_policy\":"<<Quoted(angularAuditPolicy)<<",\"short_packet_policy\":"<<Quoted(shortPacketPolicy)<<",\"dispatch_threads\":"<<dispatchThreads<<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
+            <<",\"execution_budget\":"<<((resourcePolicy=="auto"||config.useGpu)?eps/1024:0)<<",\"host_memory_budget_mib\":"<<hostBudgetMb<<",\"effective_analytic_mean_threads\":"<<(dispatchThreads?dispatchThreads:analyticMeanThreads)<<",\"angular_audit_policy\":"<<Quoted(angularAuditPolicy)<<",\"short_packet_policy\":"<<Quoted(shortPacketPolicy)<<",\"dispatch_threads\":"<<dispatchThreads<<",\"worker_lifetime\":"<<Quoted(workerPolicy)<<",\"trace_policy\":"<<Quoted(tracePolicy)<<",\"joined_rosette_cpu_facets_default\":"<<(joinedRosetteCpuFacets?"true":"false")<<",\"analytic_mean_threads\":"<<analyticMeanThreads<<",\"worker_threads\":"<<workerThreads<<",\"worker_chunk\":"<<workerChunk<<",\"orientation_block\":"<<orientationBlock
             <<",\"rotation_beta_factor\":"<<rotationBeta<<",\"rotation_gamma_factor\":"<<rotationGamma<<",\"rotation_budget\":"<<((rotationBeta>1||rotationGamma>1)?eps/256:0)
             <<",\"cutoff_estimator\":"<<Quoted(balancedCorrection?CutoffEstimator():"direct")<<",\"cutoff_correction_fraction\":"<<(balancedCorrection?.125:0)<<",\"cutoff_off_correction_nominal_fraction\":"<<(balancedCorrection?(StagedCutoff()?1./64:.125):0)<<",\"cutoff_correction_minimum_count\":64"<<",\"selected_cutoff\":"<<Quoted(selectedCutoff)<<",\"cutoff_budget\":"<<(selectedCutoff!="requested"&&selectedCutoff!="off"?eps/8:0)<<",\"max_cutoff_residual95\":"<<cutoffError
             <<angularSamplingStatus<<",\"coherent\":"<<(coherent?"true":"false")<<",\"fixed_phi\":"<<fixedPhi<<",\"scope\":\"eight-seed pointwise intervals; interpolation guards on requested grid; mirror paired pilot when enabled; current target physics; final audit policy is reported separately; no global simultaneous confidence claim\"}\n";
