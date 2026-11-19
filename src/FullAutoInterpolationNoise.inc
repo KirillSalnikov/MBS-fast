@@ -101,11 +101,33 @@ void CopyInterpolationCheck(InterpolationResult& into,const InterpolationResult&
     into.maximum=from.maximum;into.bad=from.bad;into.matrixMeans=from.matrixMeans;
     into.matrixNoise=from.matrixNoise;into.ratioMeans=from.ratioMeans;into.ratioNoise=from.ratioNoise;into.growth=from.growth;
 }
+// Sampling can be expensive when a resolved mean lies just inside the angular
+// tolerance. Price a direct support before growing the same residual again.
+void PlanCostedInterpolationKnots(Engine& e,const AdaptiveState& state,
+        const std::vector<size_t>& ids,InterpolationResult& result){
+    if(!e.costedInterpolationKnots||state.interpolationCounts.size()!=1
+        ||!e.thetaPhi.empty()||result.bad.empty())return;
+    for(size_t id:result.bad){
+        auto& plan=result.growth.at(std::lower_bound(ids.begin(),ids.end(),id)-ids.begin());
+        if(plan.biasDominated||plan.level!=0||plan.counts.empty()
+            ||plan.observedCounts.size()!=plan.counts.size()
+            ||std::binary_search(state.knots.begin(),state.knots.end(),id))continue;
+        const auto bounds=std::minmax_element(plan.observedCounts.begin(),plan.observedCounts.end());
+        if(*bounds.first!=*bounds.second)continue;
+        const auto cost=FullAutoKnotWork::Compare(e.interpolation,plan.mean,plan.noise,
+            *bounds.first,e.initial,e.maxCount,plan.counts.size());
+        if(!cost.promote)continue;
+        plan.costedKnot=true;plan.level=-1;plan.phi=0;plan.counts.clear();plan.observedCounts.clear();
+        e.Log("interpolation_knot_cost","{\"theta\":"+Number(e.theta[id])+",\"mean\":"+Number(plan.mean)
+            +",\"noise95\":"+Number(plan.noise)+",\"growth_orientation_work\":"+Number(cost.growth)
+            +",\"split_orientation_work\":"+Number(cost.split)+",\"accuracy_accepted\":false}");
+    }
+}
 void WriteInterpolationNoise(Engine& e,const InterpolationResult& result,const std::vector<size_t>& ids,const std::string& folder){
     std::ostringstream out;out<<"theta_deg,metric,absolute_mean,noise95,upper95,decision,selected_level,selected_phi_0_means_joint,worker_cost_proxy\n";
     for(size_t r=0;r<ids.size();++r)for(int j=0;j<16;++j)for(int ratio=0;ratio<=(e.ratios&&j?1:0);++ratio){
         const auto& p=result.growth[r];const double upper=(ratio?result.ratioErrors:result.matrixErrors)[r][j];
-        const char* decision=result.errors[r]<=e.interpolation?"passed":p.biasDominated?"refine_theta":p.level>=0?"sample_residual":"refine_theta_no_growth";
+        const char* decision=result.errors[r]<=e.interpolation?"passed":p.costedKnot?"refine_theta_cost":p.biasDominated?"refine_theta":p.level>=0?"sample_residual":"refine_theta_no_growth";
         out<<Number(e.theta[ids[r]])<<",M"<<j/4+1<<j%4+1<<(ratio?"/M11":"/scale(M11)")<<','
             <<Number((ratio?result.ratioMeans:result.matrixMeans)[r][j])<<','
             <<Number((ratio?result.ratioNoise:result.matrixNoise)[r][j])<<','<<Number(upper)<<','
@@ -123,7 +145,7 @@ void RefineInterpolationFailures(Engine& e,AdaptiveState& state,const std::vecto
         // A proposal for an overlapping stencil may already cover this one.
         // It is still progress relative to the observed completed prefix.
         if(canGrow){bool grows=false;for(const auto& n:p.counts)grows=grows||n.second>before[p.level][n.first];canGrow=grows;}
-        const char* action=canGrow?"sample_residual":p.biasDominated?"refine_theta":"refine_theta_no_growth";
+        const char* action=canGrow?"sample_residual":p.costedKnot?"refine_theta_cost":p.biasDominated?"refine_theta":"refine_theta_no_growth";
         auto log=[&](int level,size_t node,int observed,int next){
             rows<<Number(e.theta[id])<<','<<action<<",M"<<p.element/4+1<<p.element%4+1<<(p.ratio?"/M11":"/scale(M11)")
                 <<','<<Number(p.mean)<<','<<Number(p.noise)<<','<<Number(p.upper)<<','<<level<<','<<p.phi<<','

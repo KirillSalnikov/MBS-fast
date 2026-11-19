@@ -5,6 +5,7 @@
 #include <exception>
 #include "FullAuto.h"
 #include "FullAutoInterpolationPolicy.h"
+#include "FullAutoKnotWork.h"
 #include "FullAutoAngularPilotCost.h"
 #include "FullAutoAngularCohort.h"
 #include "FullAutoTraceEvidence.h"
@@ -1013,6 +1014,7 @@ struct Engine {
     bool angularCache=true,sharedMeans=false;size_t assembledJobs=0,reusedRows=0,newRows=0;
     bool incremental=true;int orientationBlock=65536;size_t savedOrientationBlocks=0;
     std::string controlPolicy="auto";int thetaAuditCount=0;
+    bool costedInterpolationKnots=false;
     bool local=true,ratios=true,phiRecheck=true,polarControls=true,finalChecks=false,finalAudit=false,physicsAudit=false;
     std::vector<std::array<Mueller,2>> polarWeights;
     double lastRatio=0,lastAnalyticError=0,lastCombined=-1,lastIndependentCombined=-1;bool independentPassed=false,independentNeedsSampling=true;
@@ -1382,6 +1384,12 @@ struct Engine {
                 "compatible resume requires identical CUDA architecture, precision, phase math, compiler, OpenMP and MPI profiles");
         }
         std::ostringstream fingerprint;fingerprint<<(compatibleHash.empty()?binaryHash:compatibleHash)<<'\n';
+        if(const char* setting=std::getenv("MBS_FULLAUTO_INTERPOLATION_KNOT_COST")){
+            const std::string value(setting);
+            Require(value=="0"||value=="1","invalid interpolation knot cost mode");
+            costedInterpolationKnots=value=="1"&&coherent&&!go&&local;
+            if(costedInterpolationKnots)fingerprint<<"interpolation_knot_work_v1=1\n";
+        }
         const bool fingerprintMemory=MemoryPath(root)||Exists(root+"/memory_storage_v1.txt")
             ||((!args.IsCatched("fullauto_storage")||args.GetStringValue("fullauto_storage")!="legacy")
                 &&((args.IsCatched("fullauto_storage")&&args.GetStringValue("fullauto_storage")=="memory")
@@ -1425,7 +1433,9 @@ struct Engine {
         // Result-affecting environment forms part of resume/cache identity.
         auto opticalEnvironment=environment;
         opticalEnvironment.active.erase(std::remove_if(opticalEnvironment.active.begin(),opticalEnvironment.active.end(),
-            [](const std::pair<std::string,std::string>& entry){return entry.first=="MBS_FULLAUTO_PACK_JOBS";}),opticalEnvironment.active.end());
+            [](const std::pair<std::string,std::string>& entry){
+                return entry.first=="MBS_FULLAUTO_PACK_JOBS" || entry.first=="MBS_FULLAUTO_INTERPOLATION_KNOT_COST";
+            }),opticalEnvironment.active.end());
         fingerprint<<FormatRuntimeEnvironmentReport(opticalEnvironment);
         char host[256]={};Require(gethostname(host,sizeof(host)-1)==0,"cannot determine host identity");
         fingerprint<<"host="<<host<<"\nthreads="<<workerThreads<<"\nanalytic_mean_threads="<<analyticMeanThreads<<'\n';
