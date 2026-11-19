@@ -18,7 +18,7 @@ with tempfile.TemporaryDirectory(prefix='mbs_mean_rows_')as directory:
         return np.atleast_2d(np.loadtxt(subprocess.check_output([str(probe),'mean-cached',
             'rectangle',scale,ri,'0','circular',str(cache),str(reference),*map(str,angles)],text=True).splitlines()))
     first=run([0,90,180]);header=cache.read_text().splitlines()[0].split()
-    assert header[0]=='MBS_PHYSICAL_FACET_MEAN_V3_COMPACT_ROWS' and int(header[2])==3
+    assert header[0]=='MBS_PHYSICAL_FACET_MEAN_V3_COMPACT_ROWS_EDGE_MOMENTS_V1' and int(header[2])==3
     run([45,135]);assert int(cache.read_text().splitlines()[0].split()[2])==5
     np.testing.assert_array_equal(run([0,90,180]),first)
     # The same angles must be bitwise identical when computed alone and in a
