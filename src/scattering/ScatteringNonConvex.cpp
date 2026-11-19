@@ -360,6 +360,7 @@ double ProjectedCross(const Point2f &a, const Point2f &b, const Point2f &c)
 
 struct ProjectedPolygon
 {
+    double orientation = 1.0;
     Point2f vertices[2*MAX_VERTEX_NUM];
     size_t size = 0;
     double minX = 0.0;
@@ -396,13 +397,6 @@ struct ProjectedPolygon
         }
         Push(point);
     }
-
-    void Assign(const ProjectedPolygon &other)
-    {
-        size = other.size;
-        for (size_t index = 0; index < size; ++index)
-            vertices[index] = other.vertices[index];
-    }
 };
 
 double ProjectedSignedArea(const ProjectedPolygon &polygon)
@@ -417,50 +411,56 @@ double ProjectedSignedArea(const ProjectedPolygon &polygon)
     return 0.5*twiceArea;
 }
 
-void IntersectProjectedFacets(const ProjectedPolygon &subject,
-                              const ProjectedPolygon &clip,
-                              double areaTolerance,
-                              ProjectedPolygon &overlap)
+// The caller consumes the returned polygon before the next clip on this thread.
+const ProjectedPolygon &IntersectProjectedFacets(const ProjectedPolygon &subject,
+                                                const ProjectedPolygon &clip,
+                                                double areaTolerance)
 {
-    ProjectedPolygon first;
-    ProjectedPolygon second;
+    static thread_local ProjectedPolygon first, second;
     const ProjectedPolygon *input = &subject;
     ProjectedPolygon *result = &first;
-    const double orientation = ProjectedSignedArea(clip) >= 0.0 ? 1.0 : -1.0;
-    for (size_t edge = 0; edge < clip.size && input->size != 0; ++edge)
+    double sides[2*MAX_VERTEX_NUM];
+    for (size_t edge = 0; edge < clip.size; ++edge)
     {
         const Point2f &a = clip.vertices[edge];
         const Point2f &b = clip.vertices[(edge + 1) % clip.size];
-        result->Clear();
-        Point2f previous = input->vertices[input->size - 1];
-        double previousSide = orientation*ProjectedCross(a, b, previous);
-        bool previousInside = previousSide >= -areaTolerance;
-        for (size_t index = 0; index < input->size; ++index)
+        size_t insideCount = 0;
+        for (size_t i = 0; i < input->size; ++i)
         {
-            const Point2f &current = input->vertices[index];
-            const double currentSide = orientation*ProjectedCross(a, b, current);
-            const bool currentInside = currentSide >= -areaTolerance;
-            if (currentInside != previousInside)
+            sides[i] = clip.orientation * ProjectedCross(a, b, input->vertices[i]);
+            insideCount += sides[i] >= -areaTolerance;
+        }
+        if (insideCount == input->size)
+            continue;
+
+        result->Clear();
+        if (insideCount == 0)
+            return *result;
+
+        size_t previous = input->size - 1;
+        for (size_t i = 0; i < input->size; ++i)
+        {
+            const Point2f &current = input->vertices[i];
+            const bool currentInside = sides[i] >= -areaTolerance;
+            if (currentInside != (sides[previous] >= -areaTolerance))
             {
-                const double denominator = previousSide - currentSide;
+                const double denominator = sides[previous] - sides[i];
                 if (std::fabs(denominator) > DBL_MIN)
                 {
-                    const double t = previousSide/denominator;
-                    result->Push(Point2f(
-                        previous.x + t*(current.x - previous.x),
-                        previous.y + t*(current.y - previous.y)));
+                    const double t = sides[previous]/denominator;
+                    const Point2f &before = input->vertices[previous];
+                    result->Push(Point2f(before.x + t*(current.x - before.x),
+                                         before.y + t*(current.y - before.y)));
                 }
             }
             if (currentInside)
                 result->Push(current);
-            previous = current;
-            previousSide = currentSide;
-            previousInside = currentInside;
+            previous = i;
         }
         input = result;
         result = result == &first ? &second : &first;
     }
-    overlap.Assign(*input);
+    return *input;
 }
 
 bool ProjectedOverlapPoint(const ProjectedPolygon &first,
@@ -472,8 +472,7 @@ bool ProjectedOverlapPoint(const ProjectedPolygon &first,
         || first.maxY < second.minY || second.maxY < first.minY)
         return false;
 
-    ProjectedPolygon overlap;
-    IntersectProjectedFacets(first, second, areaTolerance, overlap);
+    const ProjectedPolygon &overlap = IntersectProjectedFacets(first, second, areaTolerance);
     if (overlap.size < 3
         || std::fabs(ProjectedSignedArea(overlap)) <= areaTolerance)
         return false;
@@ -1154,6 +1153,7 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
             projected[index].PushWithBounds(Point2f(
                 DotProduct(facet.arr[vertex], axisU),
                 DotProduct(facet.arr[vertex], axisV)));
+        projected[index].orientation = ProjectedSignedArea(projected[index]) >= 0.0 ? 1.0 : -1.0;
     }
 
     // The relation graph is sparse and contains at most 256 vertices. Keep it
