@@ -81,6 +81,7 @@ public:
     }
 
     bool IsConcave() const;
+    bool HasConvexComponents() const { return m_hasConvexComponents; }
 
     void Output(const std::string &name) const;
     void Scale(double ratio);
@@ -92,6 +93,9 @@ public:
     int nFacets;					///< number of facets
     bool isAggregated = false;
     bool isConcave;
+protected:
+    bool m_hasConvexComponents = false;
+public:
     int nFacetsInPart = 0;
 
     Angle rotAngle;

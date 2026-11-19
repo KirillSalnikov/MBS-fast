@@ -1158,6 +1158,32 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
     }
     direction = direction/directionLength;
 
+    const size_t count = facetIDs.size;
+    const int facetsPerPart = m_particle->HasConvexComponents() ? m_particle->nFacetsInPart : 0;
+    int facingPart[MAX_FACET_NUM];
+    if (facetsPerPart > 0)
+    {
+        // A line parallel to the ray enters and exits a convex component once.
+        // Two front faces (or two back faces) cannot occlude one another.
+        // Keep the polygon test for nearly edge-on faces.
+        const double grazing = std::sqrt(EPS_PROJECTION);
+        bool sameSide = true;
+        for (size_t i = 0; i < count; ++i)
+        {
+            const int id = ordered[i].facetId;
+            const int part = 1 + id/facetsPerPart;
+            const double cosine = DotProduct(direction, m_facets[id].ex_normal);
+            facingPart[i] = cosine > grazing ? part : (cosine < -grazing ? -part : 0);
+            sameSide = sameSide && facingPart[i] != 0 && facingPart[i] == facingPart[0];
+        }
+        if (sameSide)
+        {
+            for (size_t i = 0; i < count; ++i)
+                facetIDs.arr[i] = ordered[i].facetId;
+            return;
+        }
+    }
+
     Point3f reference;
     const double ax = std::fabs(direction.cx);
     const double ay = std::fabs(direction.cy);
@@ -1175,7 +1201,6 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
     // their cross product is the second unit projection axis. A second sqrt
     // here only perturbs that basis by roundoff on every sort call.
 
-    const size_t count = facetIDs.size;
     static thread_local std::vector<ProjectedPolygon> projected;
     if (projected.size() < count)
         projected.resize(count);
@@ -1209,6 +1234,8 @@ void ScatteringNonConvex::SortFacets_faster(const Point3f &beamDir,
             if (ordered[second].depth
                 > ordered[first].maximumDepth + depthTolerance)
                 break;
+            if (facetsPerPart > 0 && facingPart[first] != 0 && facingPart[first] == facingPart[second])
+                continue;
             Point2f overlapPoint;
             if (!ProjectedOverlapPoint(projected[first], projected[second],
                                        areaTolerance, overlapPoint))

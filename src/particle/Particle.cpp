@@ -651,6 +651,7 @@ Particle::Particle()
 
 void Particle::SetFromFile(const std::string &filename)
 {
+    m_hasConvexComponents = false;
     std::ifstream pfile(filename, std::ios::in);
 
     if (!pfile.is_open())
@@ -1037,6 +1038,7 @@ void Particle::SetFromFile(const std::string &filename)
 
 void Particle::Init(int facetCount, const ::complex &refrIndex)
 {
+    m_hasConvexComponents = false;
     nFacets = facetCount;
     m_refractiveIndex = refrIndex;
 }
@@ -1303,6 +1305,7 @@ void Particle::FindFlippedFacets(std::vector<unsigned> &facetIndices) const
 
 void Particle::Concate(const std::vector<Particle> &parts)
 {
+    m_hasConvexComponents = false;
     int i = 0;
     nFacets = 0;
 

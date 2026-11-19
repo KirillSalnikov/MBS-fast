@@ -76,6 +76,7 @@ BulletRosette::BulletRosette(const complex &refrIndex, double diameter,
 	}
 
 	Concate(bullets);
+	m_hasConvexComponents = diameter > 0 && height > 0 && peakHeight > 0;
 
 	SetDefaultNormals();
 	Reset();
