@@ -89,30 +89,78 @@
     "MBS_FULLAUTO_PAIRED_ROW_PREFETCH": "1",
     "MBS_ANALYTIC_SHARED_RADIAL": "1"
   },
-  "runs": [
-    {
-      "tag": "A",
+  "runs": {
+    "A": {
       "seconds": 583.2577095599845,
-      "error": 0.03929779707129544,
-      "phi": 16,
       "n": 10,
+      "phi": 16,
+      "round": 7,
       "rows": 2454,
-      "round": 7
+      "reported_error": 0.03929779707129544,
+      "integrals": {
+        "Cext": 84.21253244203095,
+        "Csca": 84.21253244203095,
+        "Cabs": 0.0
+      }
     },
-    {
-      "tag": "B",
+    "B": {
       "seconds": 267.5897666872479,
-      "error": 0.03971329718460939,
-      "phi": 16,
       "n": 10,
+      "phi": 16,
+      "round": 8,
       "rows": 2454,
-      "round": 8
+      "reported_error": 0.03971329718460939,
+      "integrals": {
+        "Cext": 84.21178473042119,
+        "Csca": 84.21178473042119,
+        "Cabs": 0.0
+      }
+    },
+    "A2": {
+      "seconds": 606.9483733861707,
+      "n": 10,
+      "phi": 16,
+      "round": 7,
+      "rows": 2454,
+      "reported_error": 0.039297788123029545,
+      "integrals": {
+        "Cext": 84.21253244203095,
+        "Csca": 84.21253244203095,
+        "Cabs": 0.0
+      }
     }
-  ],
-  "first_pair_comparison": {
-    "rows": 2454,
-    "raw": 0.009031431454284039,
-    "ratio": 0.005179174258814867
   },
-  "status": "A and B complete; repeat baseline running at time of publication"
+  "status": "complete",
+  "matrix_comparison": {
+    "A_B": {
+      "raw": 0.009031431454284039,
+      "theta": 171.12107623318386,
+      "element": "M11",
+      "ratio": 0.005179174258814867,
+      "ratio_theta": 168.40603342845495,
+      "ratio_element": "M44"
+    },
+    "A2_B": {
+      "raw": 0.00903146600562745,
+      "theta": 171.12107623318386,
+      "element": "M11",
+      "ratio": 0.0051791764345042735,
+      "ratio_theta": 168.40603342845495,
+      "ratio_element": "M44"
+    },
+    "A_A2": {
+      "raw": 6.274517139396665e-08,
+      "theta": 78.95637994292703,
+      "element": "M11",
+      "ratio": 7.534312163048895e-08,
+      "ratio_theta": 68.53648593558907,
+      "ratio_element": "M44"
+    }
+  },
+  "speedup": 2.179671206342062,
+  "binary_sha256": {
+    "baseline": "a374cd60f661b79a3931d7b3abb2dc7d4b1814e487f46d5f039ae8220fd050ba",
+    "candidate": "028235bed5d80cf8ed13f93aead421ce9456ac022f33e5bf2864c2a5b662d086"
+  },
+  "archive_sha256": "89312d80ce3cc64e92478ea0431cb9e12dd70c3bef7cbe879a0cd13819f13489"
 }
