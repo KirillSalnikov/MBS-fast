@@ -1,3 +1,4 @@
+#include "FullAutoKnotWork.h"
 #include "FullAutoPhiRowCost.h"
 #include <list>
 #include "FullAutoBinaryProfile.h"
@@ -889,7 +890,7 @@ struct Engine {
     bool directProductionDepth=false,chooseDepthEstimator=false;
     enum class DepthLadder { Adjacent, Wide, WideEndpoints, AdjacentEndpoints };
     DepthLadder depthLadder=DepthLadder::Adjacent;
-    bool rowPhiWork=false;
+    bool rowPhiWork=false, costedInterpolationKnots=false;
     bool sparsePairedTiming=false,pairedPhiForecast=false,earlyDepthBands=false,depthPilotBands=false,usedDepthPilotBands=false;
     bool overlapPairedPrefetch=false,threeDepthPrefetch=false,prefixAnglePlan=false;
     int prefetchCoarse=0,prefetchMiddle=0;
@@ -1642,6 +1643,12 @@ struct Engine {
             Require(value=="0"||value=="1","invalid working row cost policy");
             rowPhiWork=value=="1"&&coherent&&!go&&local&&!fixedPhi;
             if(rowPhiWork)fingerprint<<"working_phi_local_rows_v1=1\n";
+        }
+        if(const char* setting=std::getenv("MBS_FULLAUTO_INTERPOLATION_KNOT_COST")){
+            const std::string value(setting);
+            Require(value=="0"||value=="1","invalid interpolation knot cost mode");
+            costedInterpolationKnots=value=="1"&&coherent&&!go&&local;
+            if(costedInterpolationKnots)fingerprint<<"interpolation_knot_work_v1=1\n";
         }
         if(nestedPhiPilots)fingerprint<<"nested_phi_pilots_v1=1\n";
         if(reusePairedBase)fingerprint<<"production_paired_base=1\n";

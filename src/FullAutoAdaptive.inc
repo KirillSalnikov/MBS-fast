@@ -389,7 +389,7 @@ void CalibrateWorkingPhi(Engine& e,const std::vector<double>& work,bool shared){
         +",\"forecast_growth\":"+Number(growth)+",\"challenger_lead\":"+Number(lead)+",\"production_accuracy_accepted\":false}");
 }
 struct InterpolationGrowth {
-    bool biasDominated=false,ratio=false;
+    bool biasDominated=false,ratio=false,costedKnot=false;
     int element=0,level=-1,phi=0;
     double upper=0,mean=0,noise=0,seconds=0,reduction=0;
     std::vector<std::pair<size_t,int>> counts;
@@ -1004,6 +1004,7 @@ int RunAdaptive(Engine& e){
         Atomic(e.root+"/angular_sampling.csv",angularSampling.table);
         Atomic(e.root+"/angular_shape.csv",angularSampling.shapeTable);
         Atomic(e.root+"/angular_cohorts.csv",angularSampling.cohortTable);
+        PlanCostedInterpolationKnots(e,state,ids,interp);
         WriteInterpolationNoise(e,interp,ids,roundSnapshot);
         Atomic(roundSnapshot+"/level_prefix_stability.csv",prefixCheck.table);
         Atomic(roundSnapshot+"/level_prefix_sources.tsv",prefixCheck.sources);

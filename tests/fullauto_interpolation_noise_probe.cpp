@@ -409,6 +409,31 @@ int main(int argc,char** argv){try{
             state.counts[0]==std::vector<int>(n,524288),"compact uniform plan changed actual allocation");
         ++passed;
     }
+    // M44 at 69.122807 degrees in the coherent 31.62-micron droxtal.
+    {
+        Engine e(args,config);AdaptiveState state;Init(e,state,root+"/costed_knot",1);
+        e.interpolation=.01;state.interpolationCounts=state.counts;
+        InterpolationResult result;InitInterpolationNoise(result,ids.size());
+        result.bad={1};
+        auto& plan=result.growth[1];plan.level=0;plan.mean=.010000502571986584;
+        plan.noise=.00082483336278700321;result.maximum=plan.mean+plan.noise;
+        const double failedUpper=result.maximum;
+        for(size_t node:ids){plan.counts.emplace_back(node,1024);plan.observedCounts.push_back(512);}
+        PlanCostedInterpolationKnots(e,state,ids,result);
+        Require(!plan.costedKnot&&plan.level==0,"default changed residual scheduling");
+        e.costedInterpolationKnots=true;
+        plan.observedCounts.back()=256;
+        PlanCostedInterpolationKnots(e,state,ids,result);
+        Require(!plan.costedKnot,"mixed observed prefixes were priced as uniform");
+        plan.observedCounts.back()=512;
+        PlanCostedInterpolationKnots(e,state,ids,result);
+        Require(plan.costedKnot&&plan.level<0&&plan.counts.empty(),"expensive residual kept growing");
+        Require(result.maximum==failedUpper&&result.bad==std::vector<size_t>{1},
+                "scheduling changed interpolation acceptance");
+        RefineInterpolationFailures(e,state,ids,result,true);
+        Require(state.knots==std::vector<size_t>({0,1,2,4}),"failed guard was not scheduled directly");
+        ++passed;
+    }
     // Complete cross-angle cancellation must not produce a noisy guard.
     {
         Engine e(args,config);AdaptiveState state;Init(e,state,root+"/cancel_angles");
