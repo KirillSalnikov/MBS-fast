@@ -1,0 +1,170 @@
+{
+  "gpu": "NVIDIA GeForce RTX 3080 Ti",
+  "campaign_size_um": 31.62,
+  "source_tgz_sha256": "9e53b3e3afcb10b0670d810aea894674c9564768ab8106f53a6ac91a87f09bbe",
+  "baseline_commit": "4294c7f56",
+  "argv": [
+    "--method",
+    "po",
+    "--backend",
+    "cuda",
+    "--particle",
+    "4",
+    "32.35",
+    "71.81",
+    "15.81",
+    "--wavelength-um",
+    "1.550",
+    "--ri",
+    "1.2906",
+    "0.00042407",
+    "--symmetry",
+    "2",
+    "6",
+    "--fullauto",
+    "0.04",
+    "--fullauto-max-rounds",
+    "512",
+    "--fullauto-theta-range",
+    "0",
+    "180",
+    "--fullauto-final-checks",
+    "off",
+    "--fullauto-symmetry-checks",
+    "off",
+    "--fullauto-rotation-symmetry",
+    "off",
+    "--fullauto-mirror",
+    "auto",
+    "--fullauto-cutoffs",
+    "staged",
+    "--fullauto-resources",
+    "off",
+    "--fullauto-workers",
+    "persistent",
+    "--fullauto-memory-mib",
+    "1024",
+    "--fullauto-checkpoint-seconds",
+    "0",
+    "--po-trace-backend",
+    "cpu",
+    "--orientation-pipeline",
+    "--close",
+    "--allow-experimental-environment",
+    "--fullauto-gpus",
+    "0",
+    "--fullauto-dispatch-threads",
+    "4",
+    "--fullauto-gpu-workers",
+    "1"
+  ],
+  "common_environment": {
+    "MBS_CPU_TRACE_FINE_SCHEDULE": "1",
+    "MBS_GPU_RECYCLE_PREPARED": "1",
+    "MBS_HOST_MEM_BUDGET_MB": "8192",
+    "MBS_HOST_MEM_RESERVE_MB": "8192",
+    "MBS_GPU_MEM_FRACTION": "0.65",
+    "OMP_DYNAMIC": "FALSE",
+    "OMP_WAIT_POLICY": "PASSIVE"
+  },
+  "candidate_environment": {
+    "MBS_CONVEX_PATH_PREFIX": "1",
+    "MBS_PREFIX_EXTINCTION": "1",
+    "MBS_PREPARED_SAMPLED_ABSORPTION": "1",
+    "MBS_PAIRED_GPU_FIELDS": "1",
+    "MBS_PAIRED_REUSE_UPPER_STORAGE": "1",
+    "MBS_FULLAUTO_DIRECT_DEPTH": "0",
+    "MBS_FULLAUTO_LOWEST_PASSING_DEPTH": "1",
+    "MBS_FULLAUTO_CUTOFF_PREFIX": "0",
+    "MBS_FULLAUTO_PHI_PILOT": "128",
+    "MBS_FULLAUTO_STARTUP_PROCESSING_COST": "1",
+    "MBS_FULLAUTO_NESTED_PHI": "1",
+    "MBS_FULLAUTO_COMPLETE_PHI_SWEEP": "1",
+    "MBS_FULLAUTO_RAW_PHI_REUSE": "1",
+    "MBS_FULLAUTO_PHI_TIMING_WAVE": "1",
+    "MBS_FULLAUTO_DEPTH_PILOT_BANDS": "first-two",
+    "MBS_FULLAUTO_PAIRED_PHI_FORECAST": "1",
+    "MBS_FULLAUTO_SPARSE_PHI_TIMING": "1",
+    "MBS_FULLAUTO_PHI_ROW_COST": "1",
+    "MBS_FULLAUTO_PAIRED_BASE": "1",
+    "MBS_FULLAUTO_REUSE_MIDDLE_DEPTH": "1",
+    "MBS_FULLAUTO_PAIRED_ROW_PREFETCH": "1",
+    "MBS_ANALYTIC_SHARED_RADIAL": "1"
+  },
+  "runs": {
+    "A": {
+      "seconds": 1305.3643647069111,
+      "n": 12,
+      "phi": 16,
+      "round": 7,
+      "rows": 1027,
+      "reported_error": 0.03382412783556048,
+      "integrals": {
+        "Cext": 1305.6307378202532,
+        "Csca": 1241.0330312853866,
+        "Cabs": 64.59770653486657
+      }
+    },
+    "B": {
+      "seconds": 871.4767113419948,
+      "n": 12,
+      "phi": 16,
+      "round": 12,
+      "rows": 1027,
+      "reported_error": 0.03383660259302668,
+      "integrals": {
+        "Cext": 1305.618822032398,
+        "Csca": 1240.9661210474464,
+        "Cabs": 64.65270098495148
+      }
+    },
+    "A2": {
+      "seconds": 1280.8586491229944,
+      "n": 12,
+      "phi": 16,
+      "round": 7,
+      "rows": 1027,
+      "reported_error": 0.033824123756748974,
+      "integrals": {
+        "Cext": 1305.6307378202532,
+        "Csca": 1241.0306723637393,
+        "Cabs": 64.6000654565139
+      }
+    }
+  },
+  "differences": {
+    "A_B": {
+      "raw": 0.010649278832058916,
+      "theta": 31.57894736842105,
+      "element": "M33",
+      "ratio": 0.007492263933983306,
+      "ratio_theta": 67.89473684210526,
+      "ratio_element": "M34"
+    },
+    "A2_B": {
+      "raw": 0.010649281144530563,
+      "theta": 31.57894736842105,
+      "element": "M33",
+      "ratio": 0.007492265486341326,
+      "ratio_theta": 67.89473684210526,
+      "ratio_element": "M34"
+    },
+    "A_A2": {
+      "raw": 0.0031339908007846327,
+      "theta": 90.70175438596492,
+      "element": "M22",
+      "ratio": 0.0019888730901509444,
+      "ratio_theta": 90.70175438596492,
+      "ratio_element": "M22"
+    }
+  },
+  "speedup": 1.4697566010118488,
+  "passed_matrix": false,
+  "passed_time_and_matrix": false,
+  "background_unchanged": true,
+  "binary_sha256": {
+    "baseline": "5a1cbb46f8aeb5873b01a705d9da52a4ea4943616842bf662b859bc9e4dfe812",
+    "candidate": "9f7c463c965aa3dc55311ae5e760c2dbb1769cc8bc7b2e926b19cf641a95f57a"
+  },
+  "archive_sha256": "9d78ad05bfa62fb69f49455b817d47e3c5fc6c26f3e32fcbae4ba12521ba4e7c"
+}
