@@ -1,5 +1,6 @@
 #include "PrefixPath.h"
 #include "ScatteringConvex.h"
+#include "FacetRayBounds.h"
 
 ScatteringConvex::ScatteringConvex(Particle *particle, Light *incidentLight,
                                    bool isOpticalPath, int nActs)
@@ -128,6 +129,22 @@ bool ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
 {
     auto* ctx=PrefixPath::current();
     if(ctx && (&ctx->output!=&outBeams || !m_unitFacetNormals || imag(splitting.GetRi())==0))ctx=nullptr;
+    static const bool enabled=std::getenv("MBS_TEST_FACET_RAY_BOUNDS")!=nullptr;
+    std::vector<FacetRayBounds::Box> boxes;
+    {boxes.reserve(m_particle->nFacets);
+        for(int f=0;f<m_particle->nFacets;++f)boxes.push_back(FacetRayBounds::Limits(m_facets[f]));}
+    const int faceCount=m_particle->nFacets;
+    std::vector<double> storage(size_t(faceCount)*10);
+    for(int f=0;f<faceCount;++f){
+        for(int j=0;j<3;++j){
+            storage[j*faceCount+f]=boxes[f].center.coordinates[j];
+            storage[(3+j)*faceCount+f]=boxes[f].half.coordinates[j];
+            storage[(6+j)*faceCount+f]=m_facets[f].ex_normal.coordinates[j];
+        }
+        storage[9*faceCount+f]=boxes[f].usable?boxes[f].margin:std::numeric_limits<double>::infinity();
+    }
+    std::vector<unsigned char> eligible(faceCount);
+    unsigned long long miss=0, tested=0;
     std::vector<int> pending;
     if(ctx){ctx->recording=true;pending.resize(m_beamTree.size(),-1);ctx->emitted.assign(outBeams.size(),-2);}
     while (m_treeSize != 0)
@@ -147,6 +164,22 @@ bool ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
         // instead of constructing its Jones matrix and track id for every
         // candidate facet. SplitSecondaryBeams overwrites it on every hit.
         Beam inBeam;
+        const FacetRayBounds::Footprint footprint(beam);
+        const auto& w=footprint;
+        const double* centerU=&storage[faceCount*w.u], *centerV=&storage[faceCount*w.v], *centerK=&storage[faceCount*w.k];
+        const double* ex=&storage[faceCount*(3+w.u)],*ey=&storage[faceCount*(3+w.v)],*ez=&storage[faceCount*(3+w.k)];
+        const double* nx=&storage[6*faceCount],*ny=&storage[7*faceCount],*nz=&storage[8*faceCount],*pad=&storage[9*faceCount];
+        const double dx=beam.direction.cx,dy=beam.direction.cy,dz=beam.direction.cz;
+        const double sx=std::abs(w.du),sy=std::abs(w.dv);
+        unsigned char* mask=eligible.data();
+        #pragma omp simd
+        for(int f=0;f<faceCount;++f){
+            const double cos=dx*nx[f]+dy*ny[f]+dz*nz[f];
+            const double pu=centerU[f]-w.du*centerK[f],pv=centerV[f]-w.dv*centerK[f];
+            const double a=ex[f]+sx*ez[f]+pad[f]+w.scale,b=ey[f]+sy*ez[f]+pad[f]+w.scale;
+            const bool miss=(pu+a<w.loU)|(pu-a>w.hiU)|(pv+b<w.loV)|(pv-b>w.hiV);
+            mask[f]=!((cos < -1.e-8)|((cos>.001)&miss));
+        }
         for (int id = 0; id < m_particle->nFacets; ++id)
         {
             if (id == beam.lastFacetId)
@@ -154,6 +187,7 @@ bool ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
                 continue;
             }
 
+            if(!mask[id])continue;
             const auto oldSize=outBeams.size();
             bool isIncident = SplitSecondaryBeams(beam, id, inBeam, outBeams);
 
@@ -180,6 +214,7 @@ bool ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
         }
     }
 
+    if(enabled && std::getenv("MBS_TEST_RAY_COUNTS"))std::fprintf(stderr,"raybounds %llu %llu\n",miss,tested);
     return true;
 }
 

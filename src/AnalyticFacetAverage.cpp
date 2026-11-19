@@ -1,3 +1,4 @@
+#include <limits>
 #include "AnalyticFacetAverage.h"
 #include "cuda/GpuAnalyticFacet.h"
 #include <algorithm>
@@ -318,6 +319,7 @@ struct Basis
         return Green(step,std::move(values),std::move(derivatives));
     }
 };
+#include "CoarseEdgeMeasure.h"
 // Geometry-only quadrature distances, shared by all theta rows of this pass.
 // A bounded cache is optional; uncached edge pairs retain the original loop.
 struct EdgeDistances {
@@ -515,7 +517,7 @@ void Control::PrepareCachedMeans(const std::vector<double>&theta,const std::stri
         const unsigned char *p=static_cast<const unsigned char*>(data);
         for(size_t i=0;i<bytes;++i){fingerprint^=p[i];fingerprint*=1099511628211ULL;}
     };
-    const char version[]="MBS_PHYSICAL_FACET_MEAN_V3_COMPACT_ROWS";mix(version,sizeof(version));
+    const char version[]="MBS_PHYSICAL_FACET_MEAN_V3_COMPACT_ROWS_EDGE_MOMENTS_V1";mix(version,sizeof(version));
     const double tolerance=MeanRefinementTolerance();
     if(tolerance<1e-4)mix(&tolerance,sizeof(tolerance));
     double re=index.real(),im=index.imag();mix(&re,sizeof(re));mix(&im,sizeof(im));mix(&wave,sizeof(wave));
@@ -724,6 +726,23 @@ void Control::PrepareMeans(const std::vector<double>&theta)
         std::vector<double> edgeX,edgeW;Gauss(nodes,edgeX,edgeW);
         for(int i=0;i<nodes;++i){edgeX[i]=(edgeX[i]+1)/2;edgeW[i]/=2;}
         size_t edgeBudget=64*size_t(1024)*1024;
+        BinnedEdgeMeasure measure;
+        std::vector<unsigned char> usedBins(theta.size(),0);
+        // Construct the distance table only when many active rows share
+        // enough Gauss nodes to amortize one scan of its radial intervals.
+        size_t edgePairs=0;
+        for(size_t g:representatives){
+            const auto m=patches[g].x.size();
+            edgePairs+=m*(m-1)/2;
+        }
+        const double radialIntervals=maxDiameter*maxQ/step;
+        const double quadraturePairs=double(edgePairs)*nodes*nodes;
+        const auto pendingRows=std::count(converged.begin(),converged.end(),0);
+        if(pendingRows>=96 && radialIntervals>0 && quadraturePairs>=8*radialIntervals)
+            measure.Build(patches,representatives,multiplicity,edgeX,edgeW,step,maxQ,maxDiameter);
+        const size_t measureBytes=measure.bins.capacity()*sizeof(BinnedEdgeMeasure::Bin)
+            +measure.diagonal.capacity()*sizeof(std::pair<double,double>);
+        edgeBudget-=std::min(edgeBudget,measureBytes);
         const char* shareRadial=std::getenv("MBS_ANALYTIC_SHARED_RADIAL");
         if(shareRadial && std::string(shareRadial)=="1"){
             std::vector<size_t> ends;
@@ -737,7 +756,7 @@ void Control::PrepareMeans(const std::vector<double>&theta)
                 if(meanDevice>=0 && end>gpuFirst+16384)end=gpuFirst;
                 if(end>basis.count)ends.push_back(end);
             }
-            basis.PrepareExactTable(ends,edgeBudget/4);
+            basis.PrepareExactTable(ends,measure.bins.empty()?edgeBudget/4:edgeBudget);
             edgeBudget-=basis.exactTable.size()*sizeof(double);
         }
         std::vector<EdgeDistances> edgeGeometry;edgeGeometry.reserve(representatives.size());
@@ -758,7 +777,8 @@ void Control::PrepareMeans(const std::vector<double>&theta)
             if(Q>0)
             {
                 Green green=basis.Combine(moments.At(theta[row]),Q*maxDiameter+step,meanDevice);
-                for(size_t g=0;g<representatives.size();++g)
+                if(measure.Evaluate(green,Q,reflection)){reflection/=(wave*wave);usedBins[row]=1;}
+                else for(size_t g=0;g<representatives.size();++g)
                 {
                     const Patch &p=patches[representatives[g]];
                     reflection+=multiplicity[g]*EdgeMean(p.x,p.y,Q,edgeX,edgeW,edgeGeometry[g],[&green](double z){return green.Value(z);},[&green](double z){return green.Same(z);})/(wave*wave);
@@ -783,6 +803,7 @@ void Control::PrepareMeans(const std::vector<double>&theta)
             means[row]=Components{reflection,shadow};
             }catch(...){errors[row]=std::current_exception();}
         }
+        if(meanThreads>0)std::clog<<"binned_measure pass="<<pass<<" bins="<<measure.bins.size()<<" accepted="<<std::count(usedBins.begin(),usedBins.end(),1)<<std::endl;
         // Only independent rows run in parallel. Preserve the serial order
         // of the convergence reduction and all sums within each row.
         for(size_t row=0;row<theta.size();++row){
