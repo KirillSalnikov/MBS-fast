@@ -1785,12 +1785,16 @@ int RunCalculation(int argc, const char* argv[])
         ConfigureOpenMPThreads(config.threads);
     }
 
+    const std::string traceMode=args.IsCatched("po_trace_backend")?args.GetStringValue("po_trace_backend"):"";
+    const bool packetHybrid=traceMode=="packet-hybrid";
+    const bool hybridTrace=packetHybrid||traceMode=="hybrid";
     const bool explicitCache = args.IsCatched("trace_cache_mb");
     const auto resources = QueryRuntimeMemorySnapshot();
     const char* hostBudget = std::getenv("MBS_HOST_MEM_BUDGET_MB");
     bool traceBufferPool = false;
 #ifdef USE_CUDA
-    traceBufferPool = GpuConvexQueue::Capacity::BufferPoolEnabled();
+    traceBufferPool = GpuConvexQueue::Capacity::BufferPoolEnabled()
+        || (packetHybrid && !std::getenv("MBS_GPU_TRACE_BUFFER_POOL"));
 #endif
     const auto cacheLimits = TraceCachePolicy::Resolve(
         persistentWorker, explicitCache, explicitCache ? args.GetIntValue("trace_cache_mb") : 0,
@@ -1850,13 +1854,22 @@ int RunCalculation(int argc, const char* argv[])
         }
         return 2;
     }
-    if(args.IsCatched("po_trace_backend")) {
-        const auto mode=args.GetStringValue("po_trace_backend");
-        const bool resident=mode!="cpu";
+    if(!traceMode.empty()) {
+        const bool resident=traceMode!="cpu";
         for(const char* name:{"MBS_GPU_TRACE_CONVEX_QUEUE","MBS_GPU_TRACE_CONVEX_LEVELS","MBS_GPU_TRACE_CONVEX_DIRECT"})
             setenv(name,resident?"1":"0",1);
-        setenv("MBS_GPU_TRACE_HYBRID",mode=="hybrid"?"1":"0",1);
-        additionalSummary+="PO tracing backend requested: "+mode+" (unsupported cases retain CPU preparation)\n";
+        setenv("MBS_GPU_TRACE_HYBRID",hybridTrace?"1":"0",1);
+        if(packetHybrid){
+            // Native workers restore the request environment between commands.
+            // Respect explicit capacity, scheduling and thread overrides.
+            setenv("MBS_GPU_TRACE_DEEP_CAPACITY","1",0);
+            setenv("MBS_GPU_TRACE_CONVEX_SCHEDULE","split8",0);
+            setenv("MBS_GPU_TRACE_BUFFER_POOL","1",0);
+            setenv("MBS_GPU_RESIDENT_FACET_CONTROL","1",0);
+            setenv("MBS_GPU_HYBRID_GPU_THREADS","1",0);
+            if(args.IsCatched("analytic_facet_average"))setenv("MBS_GPU_HYBRID_PRODUCER_CUDA","0",0);
+        }
+        additionalSummary+="PO tracing backend requested: "+traceMode+" (unsupported cases retain CPU preparation)\n";
     }
     additionalSummary += FormatRuntimeEnvironmentReport(runtimeEnvironment);
 
@@ -2993,8 +3006,7 @@ int RunCalculation(int argc, const char* argv[])
                 ? args.GetIntValue("analytic_mean_threads",0) : 0;
             tracer->m_analyticControlWeights=args.IsCatched("analytic_control_weights")
                 ? args.GetStringValue("analytic_control_weights",0) : "";
-            tracer->m_orientationPipeline=args.IsCatched("orientation_pipeline")
-                ||(args.IsCatched("po_trace_backend")&&args.GetStringValue("po_trace_backend")=="hybrid");
+            tracer->m_orientationPipeline=args.IsCatched("orientation_pipeline")||hybridTrace;
             tracer->m_profilePhases=args.IsCatched("profile_phases");
             tracer->m_prepareThreads=args.IsCatched("po_prepare_threads")?args.GetIntValue("po_prepare_threads"):0;
             if(cacheMb>0)tracer->SetPreparedReuseKey(PreparedRecipe(args));

@@ -1206,9 +1206,9 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
     }
     for(const char* key:{"fullauto_trace","po_trace_backend"})if(args.IsCatched(key)){
         const auto value=args.GetStringValue(key);
-        if(value!="cpu"&&value!="resident"&&value!="hybrid"&&!(std::string(key)=="fullauto_trace"&&value=="auto"))
-            Fail("invalid PO trace backend.","choose cpu, resident, hybrid, or auto for fullauto.");
-        if((value=="resident"||value=="hybrid")&&(!config.useGpu||config.method!=RunMethod::PhysicalOptics))
+        if(value!="cpu"&&value!="resident"&&value!="hybrid"&&value!="packet-hybrid"&&!(std::string(key)=="fullauto_trace"&&value=="auto"))
+            Fail("invalid PO trace backend.","choose cpu, resident, hybrid, packet-hybrid, or auto for fullauto.");
+        if((value=="resident"||value=="hybrid"||value=="packet-hybrid")&&(!config.useGpu||config.method!=RunMethod::PhysicalOptics))
             Fail("resident/hybrid PO tracing requires --method po --backend cuda.","select cpu tracing for this backend/method.");
     }
     if(args.IsCatched("fullauto_work_queue")){

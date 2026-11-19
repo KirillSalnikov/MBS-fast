@@ -6166,10 +6166,14 @@ void TracerPOTotal::TraceWeightedOrientations(
     }
 
     const auto facetWeights=AnalyticFacetAverage::ReadControlWeights(m_analyticControlWeights,facetTheta);
+    // EnvInt accepts only positive integers. Read the producer switch as a
+    // boolean so an explicit zero really keeps both CUDA paths on the consumer.
+    const bool producerUsesCuda=!std::getenv("MBS_GPU_HYBRID_PRODUCER_CUDA")
+        || EnvEnabled("MBS_GPU_HYBRID_PRODUCER_CUDA");
     const bool residentFacetControl = ResidentFacetControl::Eligible(
         ResidentFacetControl::Enabled(std::getenv("MBS_GPU_RESIDENT_FACET_CONTROL")),
         bool(facetControl), bool(analyticControl), m_analyticFacetSamples,
-        m_analyticAzimuthGaussian, EnvEnabled("MBS_GPU_TRACE_HYBRID"));
+        m_analyticAzimuthGaussian, EnvEnabled("MBS_GPU_TRACE_HYBRID") && producerUsesCuda);
 
 
     m_incomingEnergy = 0;
@@ -7152,10 +7156,10 @@ void TracerPOTotal::TraceWeightedOrientations(
     };
     bool hybrid=false;
 #ifdef USE_CUDA
-    hybrid=pipeline && nThreads>=2 && EnvEnabled("MBS_GPU_TRACE_HYBRID")
+    hybrid=pipeline && preparationThreads>=2 && nThreads>=2 && EnvEnabled("MBS_GPU_TRACE_HYBRID")
         && EnvEnabled("MBS_GPU_TRACE_CONVEX_QUEUE") && EnvEnabled("MBS_GPU_TRACE_CONVEX_DIRECT")
         && handlerPO->CanHandleResidentConvexGpu() && dynamic_cast<ScatteringConvex*>(m_scattering)
-        && !facetControl && !analyticControl && !m_analyticFacetSamples && !m_analyticAzimuthGaussian
+        && (!facetControl || residentFacetControl) && !analyticControl && !m_analyticFacetSamples && !m_analyticAzimuthGaussian
         && imag(m_particle->GetRefractiveIndex())==0;
 #endif
     if(hybrid && myStart<myEnd)
@@ -7164,7 +7168,7 @@ void TracerPOTotal::TraceWeightedOrientations(
         // own CUDA consumer, it queues completed matrix blocks; otherwise it
         // queues prepared beams for the caller. The shared cursor assigns each
         // orientation exactly once without changing its weight.
-        const bool producerCuda=EnvInt("MBS_GPU_HYBRID_PRODUCER_CUDA",1)!=0;
+        const bool producerCuda=!facetControl && producerUsesCuda;
         const int reserve=std::max(1,std::min(8,EnvInt("MBS_GPU_HYBRID_RESERVE",2)));
         const int gpuThreads=std::max(1,std::min(preparationThreads-1,EnvInt("MBS_GPU_HYBRID_GPU_THREADS",std::min(2,preparationThreads-1))));
         const int cpuThreads=std::max(1,std::min(preparationThreads,EnvInt("MBS_GPU_HYBRID_CPU_THREADS",std::min(8,preparationThreads-gpuThreads))));

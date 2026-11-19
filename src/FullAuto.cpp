@@ -1171,7 +1171,7 @@ struct Engine {
         angularCache=!args.IsCatched("fullauto_angular_cache")||args.GetStringValue("fullauto_angular_cache")!="off";
         workerPolicy=args.IsCatched("fullauto_workers")?args.GetStringValue("fullauto_workers"):"auto";
         tracePolicy=args.IsCatched("po_trace_backend")?args.GetStringValue("po_trace_backend"):(args.IsCatched("fullauto_trace")?args.GetStringValue("fullauto_trace"):"auto");
-        if(tracePolicy=="hybrid")kernel.pipeline=fixedPipeline=true;
+        if(tracePolicy=="hybrid"||tracePolicy=="packet-hybrid")kernel.pipeline=fixedPipeline=true;
         workQueuePolicy=args.IsCatched("fullauto_work_queue")?args.GetStringValue("fullauto_work_queue"):"auto";
         incremental=!args.IsCatched("fullauto_incremental")||args.GetStringValue("fullauto_incremental")!="off";
         orientationBlock=Int("fullauto_orientation_block",65536);
@@ -1751,24 +1751,47 @@ struct Engine {
         if(shortPacketVerifying||shortPacketPolicy=="off"||!config.useGpu||go||!kernel.pipeline||resourcePolicy!="auto"||!FullAutoScheduling::ShortPacket(job.inputAngles.size(),job.phi,job.count,workerChunk,args.IsCatched("chunk"),cap))return 0;
         return cap; // cap the adaptive memory chunk; never bypass its memory guard
     }
-    bool VerifyShortPacketChunk(const Job& job,const std::vector<std::string>& actualCommand){
+    static double PacketIntegralDifference(const std::string& first,const std::string& second){
+        std::istringstream a(first),b(second);
+        std::string ah,bh,x,y;
+        if(!std::getline(a,ah)||!std::getline(b,bh)||ah!=bh)return 1e100;
+        std::istringstream columns(ah);
+        std::string column;
+        double error=0;
+        while(columns>>column){
+            if(!(a>>x)||!(b>>y))return 1e100;
+            if(x==y)continue; // Includes identical labels and unavailable diagnostics.
+            char* endX=nullptr;char* endY=nullptr;
+            const double u=std::strtod(x.c_str(),&endX),v=std::strtod(y.c_str(),&endY);
+            if(*endX||*endY||!std::isfinite(u)||!std::isfinite(v))return 1e100;
+            // Error estimates already express a fraction of the integral.
+            const bool fraction=column=="partial_integral_error_estimate_rel"||column=="Csca_error_estimate_rel";
+            const double scale=fraction?1.:std::max(std::fabs(u),1e-30);
+            error=std::max(error,std::fabs(u-v)/scale);
+        }
+        return (a>>x)||(b>>y)?1e100:error;
+    }
+    bool VerifyShortPacketChunk(const Job& job,const std::vector<std::string>& actualCommand,bool traceTrial=false){
         // The pilot changes N to 2048. Retaining a larger requested prefix can
         // make M >= N, and testing only the full matrix does not validate the
         // separately accumulated prefix after changing chunk boundaries.
         if(std::find(actualCommand.begin(),actualCommand.end(),"--orientation-prefix-output")!=actualCommand.end())return false;
-        const int cap=ShortPacketCandidate(job.inputAngles.size());
-        const std::string key=Hash(std::string("short-packet-v5 ")+job.executionHash+Number(workerChunk)+" "+Number(cap)+" "+Number(job.depth)+" "+Number(job.pairedDepth)+" "+Number(job.phi)+" "+Number(job.mirrored)+" "+Number(job.hasControls)
+        const int cap=traceTrial?workerChunk:ShortPacketCandidate(job.inputAngles.size());
+        const std::string policy=traceTrial?"packet-hybrid-v1 ":"short-packet-v5 ";
+        const std::string placement=traceTrial?Number(workerThreads)+" "+Number(dispatchThreads)+" "+Number(job.preparationThreads)+" "+WorkerGpus().front():"";
+        const std::string key=Hash(policy+placement+job.executionHash+Number(workerChunk)+" "+Number(cap)+" "+Number(job.depth)+" "+Number(job.pairedDepth)+" "+Number(job.phi)+" "+Number(job.mirrored)+" "+Number(job.hasControls)
             +" "+Number(FullAutoPreparation::Bucket(job.inputAngles.size()))+" "+Number(int(job.inputAngles.front()/15))+" "+Number(int(job.inputAngles.back()/15)));
         auto known=shortPacketChecks.find(key);if(known!=shortPacketChecks.end())return known->second;
         const std::string path=root+"/short_packet_validation_"+key+".json";
         if(Exists(path)){const auto saved=CompactJson(Read(path));
             if(saved.find("\"binary_fnv1a64\":"+Quoted(binaryHash))!=std::string::npos){const bool passed=saved.find("\"passed\":true")!=std::string::npos;shortPacketChecks[key]=passed;return passed;}}
         const bool savedCollecting=collecting;const int savedChunk=workerChunk;collecting=false;shortPacketVerifying=true;
-        double error=0,baselineSeconds=0,candidateSeconds=0;
-        auto pilotJob=[&](unsigned seed,int chunk){
+        double error=0,baselineSeconds=0,candidateSeconds=0,integralError=0;
+        bool gpuExecuted=true;
+        auto pilotJob=[&](unsigned seed,int chunk,bool hybrid){
             Job j=job;j.count=2048;j.seed=seed;j.offset=0;j.assembled=false;j.pid=-1;
-            j.identity=Hash("short-packet-pilot-v5 "+binaryHash+key+Number(seed)+" "+Number(chunk));
-            j.executionHash=Hash(job.executionHash+" short-packet-validation-v5 "+Number(chunk));
+            j.identity=Hash("short-packet-pilot-v5 "+binaryHash+key+Number(seed)+" "+Number(chunk)+(hybrid?" hybrid":""));
+            j.executionHash=Hash(job.executionHash+" short-packet-validation-v5 "+Number(chunk)+(hybrid?" hybrid":""));
             j.folder=root+"/jobs/v"+j.identity;j.data=j.folder+"/result/result.dat";j.summary=j.folder+"/result/result_analytic_facets.tsv";
             if(cache.count(j.identity))return Materialize(cache.at(j.identity));
             if(Exists(j.folder+"/complete.txt")){std::set<std::string> seen;ValidateStoredJob(j.folder,seen);j=Load(j);CacheJob(j);return j;}
@@ -1779,20 +1802,29 @@ struct Engine {
             auto remove=[&](const std::string& name){for(size_t i=0;i+1<command.size();)if(command[i]==name)command.erase(command.begin()+i,command.begin()+i+2);else ++i;};
             for(size_t i=0;i+2<command.size();++i)if(command[i]=="--sobol-seed"){command[i+1]="2048";command[i+2]=Number(seed);}
             remove("--sobol-offset");remove("--orientation-chunk");remove("--output");
+            if(traceTrial){
+                remove("--po-trace-backend");
+                command.push_back("--po-trace-backend");command.push_back(hybrid?"packet-hybrid":"cpu");
+            }
             if(chunk){command.push_back("--orientation-chunk");command.push_back(Number(chunk));}
             command.push_back("--output");command.push_back(j.folder+"/result");j.dispatchChunk=chunk;
             std::vector<Job> jobs{j};std::vector<std::vector<std::string>> commands{command};ExecutePrepared(jobs,commands,{0});return jobs[0];
         };
         try{for(unsigned seed:{8501u,8513u}){
-            workerChunk=savedChunk;const Job baseline=pilotJob(seed,savedChunk);
-            workerChunk=cap;const Job candidate=pilotJob(seed,cap);
+            workerChunk=savedChunk;const Job baseline=pilotJob(seed,savedChunk,false);
+            workerChunk=cap;const Job candidate=pilotJob(seed,cap,traceTrial);
+            if(traceTrial)gpuExecuted=gpuExecuted&&FullAutoTraceEvidence::ExecutedWithReader(candidate.folder,[](const std::string& path){return Exists(path)?Read(path):std::string();});
             baselineSeconds+=baseline.NativeWall();candidateSeconds+=candidate.NativeWall();
             for(int depth:{job.depth,job.pairedDepth}){if(!depth)continue;
+                if(traceTrial){
+                    const std::string suffix="/result/result"+(depth==job.depth?std::string():"_depth"+Number(depth))+"_integrals.tsv";
+                    integralError=std::max(integralError,PacketIntegralDifference(Read(baseline.folder+suffix),Read(candidate.folder+suffix)));
+                }
                 const auto a=Data({depth==job.depth?baseline:LowerView(baseline,depth)});
                 const auto b=Data({depth==job.depth?candidate:LowerView(candidate,depth)});
                 for(size_t r=0;r<a[0].size();++r){const auto& x=a[0][r];const auto& y=b[0][r];if(!(x[0]>0&&y[0]>0)){error=1e100;continue;}
                     for(int j=0;j<16;++j)error=std::max(error,std::fabs(x[j]-y[j])/x[0]);
-                    if(ratios)for(int j=1;j<16;++j)error=std::max(error,std::fabs(x[j]/x[0]-y[j]/y[0]));}
+                    if(traceTrial||ratios)for(int j=1;j<16;++j)error=std::max(error,std::fabs(x[j]/x[0]-y[j]/y[0]));}
             }
         }}catch(...){workerChunk=savedChunk;collecting=savedCollecting;shortPacketVerifying=false;throw;}
         workerChunk=savedChunk;collecting=savedCollecting;shortPacketVerifying=false;
@@ -1803,10 +1835,26 @@ struct Engine {
 #else
         const double tolerance=std::min(1e-7,eps/1024);
 #endif
-        const bool passed=error<=tolerance&&candidateSeconds<baselineSeconds*.97;
-        const std::string report="{\"execution_recipe\":"+Quoted(job.executionHash)+",\"paired_depth_checked\":"+Number(job.pairedDepth)+",\"passed\":"+std::string(passed?"true":"false")+",\"binary_fnv1a64\":"+Quoted(binaryHash)+",\"count_per_pilot\":2048,\"paired_pilots\":2,\"theta_rows\":"+Number(job.inputAngles.size())+",\"baseline_chunk_cap\":"+Number(savedChunk)+",\"chunk_cap\":"+Number(cap)+",\"candidate_policy\":\"narrow-packets-512-v5\",\"max_all16_and_ratios_difference\":"+Number(error)
-            +",\"numerical_tolerance\":"+Number(tolerance)+",\"baseline_processing_seconds\":"+Number(baselineSeconds)+",\"candidate_processing_seconds\":"+Number(candidateSeconds)+",\"minimum_saving_fraction\":0.03}";
-        Record(path,report);Log("short_packet_validation",report);shortPacketChecks[key]=passed;return passed;
+        const bool passed=gpuExecuted&&integralError<=tolerance&&baselineSeconds>0&&candidateSeconds>0&&error<=tolerance&&candidateSeconds<baselineSeconds*(traceTrial?.90:.97);
+        const std::string report="{\"execution_recipe\":"+Quoted(job.executionHash)+",\"paired_depth_checked\":"+Number(job.pairedDepth)+",\"passed\":"+std::string(passed?"true":"false")+",\"binary_fnv1a64\":"+Quoted(binaryHash)+",\"count_per_pilot\":2048,\"paired_pilots\":2,\"theta_rows\":"+Number(job.inputAngles.size())+",\"baseline_chunk_cap\":"+Number(savedChunk)+",\"chunk_cap\":"+Number(cap)+",\"candidate_policy\":"+Quoted(traceTrial?"packet-hybrid-v1":"narrow-packets-512-v5")+",\"max_all16_and_ratios_difference\":"+Number(error)
+            +",\"numerical_tolerance\":"+Number(tolerance)+",\"baseline_processing_seconds\":"+Number(baselineSeconds)+",\"candidate_processing_seconds\":"+Number(candidateSeconds)+",\"minimum_saving_fraction\":"+Number(traceTrial?.10:.03)+"}";
+        const std::string receipt=traceTrial?report.substr(0,report.size()-1)+",\"gpu_execution_verified\":"+std::string(gpuExecuted?"true":"false")+",\"max_integral_difference\":"+Number(integralError)+"}":report;
+        Record(path,receipt);Log(traceTrial?"packet_trace_validation":"short_packet_validation",receipt);shortPacketChecks[key]=passed;return passed;
+    }
+    bool ApplyPacketTracing(Job& job,std::vector<std::string>& command){
+        if(tracePolicy!="auto"||shortPacketPolicy=="off"||shortPacketVerifying||!config.useGpu||go||args.IsCatched("incoh")
+           ||config.refractiveImag!=0||config.geometry==GeometryClassification::Nonconvex
+           ||!args.IsCatched("p")||(args.GetIntValue("p")!=2&&args.GetIntValue("p")!=4)
+           ||workerThreads<2||WorkerGpus().size()!=1||job.count<32768||job.depth<6||job.depth>18
+           ||job.inputAngles.empty()||job.inputAngles.size()>8||job.paired
+           ||args.IsCatched("no_gpu_trace")||args.IsCatched("trace_cache_mb")
+           ||getenv("MBS_GPU_TRACE_CONVEX_QUEUE")||getenv("MBS_GPU_TRACE_CONVEX_DIRECT")||getenv("MBS_GPU_TRACE_HYBRID"))return false;
+        auto backend=std::find(command.begin(),command.end(),"--po-trace-backend");
+        if(backend!=command.end()&&*(backend+1)!="cpu")return false;
+        if(!VerifyShortPacketChunk(job,command,true))return false;
+        if(backend!=command.end())*(backend+1)="packet-hybrid";
+        else{command.push_back("--po-trace-backend");command.push_back("packet-hybrid");}
+        return true;
     }
     void ApplyShortPacketChunk(Job& job,std::vector<std::string>& command){
         if(std::find(command.begin(),command.end(),"--orientation-prefix-output")!=command.end()){job.dispatchChunk=0;return;}
@@ -1849,7 +1897,8 @@ struct Engine {
             auto& command=commands[index];
             if(std::find(command.begin(),command.end(),"--no-text-reports")==command.end())
                 command.push_back("--no-text-reports");
-            ApplyDispatchThreads(result[index],command);ApplyShortPacketChunk(result[index],command);
+            ApplyDispatchThreads(result[index],command);
+            if(!ApplyPacketTracing(result[index],command))ApplyShortPacketChunk(result[index],command);
         }
         if(PersistentEnabled()){ExecutePersistent(result,commands,todo,onComplete);return;}
         for(auto& service:services)service.reset();
