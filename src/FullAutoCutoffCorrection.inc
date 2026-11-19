@@ -108,17 +108,27 @@ std::string CutoffPrefixValidationKey(const Job& job)const{
     for(unsigned seed:seeds)profile<<' '<<seed;
     return Hash(profile.str());
 }
-bool VerifyCutoffPrefix(const Job& job,const std::vector<std::string>& actualCommand){
+// The two comparison scrambles each run full, embedded, small and off.
+static long long CutoffPrefixPilotOrientations(int productionCount){
+    const int n=std::min(1024,productionCount);
+    return 4LL*(n+std::max(64,n/8));
+}
+bool VerifyCutoffPrefix(const Job& job,const std::vector<std::string>& actualCommand,
+                        const std::string& preparedKey="",long long plannedPrefixOrientations=-1){
     if(!NativeWorkerCapabilities::OrientationPrefixOutput())return false;
 #ifndef MBS_GPU_FP32
-    (void)job;(void)actualCommand;return true;
+    (void)job;(void)actualCommand;(void)preparedKey;(void)plannedPrefixOrientations;return true;
 #else
     if(!config.useGpu)return true;
     const int n=std::min(job.count,1024),m=std::max(64,n/8);
-    const auto key=CutoffPrefixValidationKey(job),path=root+"/cutoff_prefix_validation_"+key+".json";
+    const auto key=preparedKey.empty()?CutoffPrefixValidationKey(job):preparedKey,path=root+"/cutoff_prefix_validation_"+key+".json";
     const auto known=cutoffPrefixChecks.find(key);if(known!=cutoffPrefixChecks.end())return known->second;
     if(Exists(path)){const auto saved=CompactJson(Read(path));const bool passed=saved.find("\"passed\":true")!=std::string::npos;
         cutoffPrefixChecks[key]=passed;return passed;}
+    // Without a receipt the ordinary separate prefix already gives the
+    // reference estimator. Defer an expensive validation on small batches.
+    // Do not cache this choice: a later, larger batch may justify the pilot.
+    if(plannedPrefixOrientations>=0&&plannedPrefixOrientations<CutoffPrefixPilotOrientations(job.count))return false;
     const bool oldCollecting=collecting,oldCorrecting=correctionExecuting,oldVerifying=shortPacketVerifying;
     collecting=false;correctionExecuting=true;shortPacketVerifying=true;
     double error=0,baselineSeconds=0,candidateSeconds=0;size_t comparisons=0;const double started=Seconds();
@@ -257,6 +267,19 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
             launch.push_back(index);}
         native.push_back(j);return index;
     };
+    std::map<size_t,std::string> prefixKeys;
+    std::map<std::string,long long> plannedPrefixOrientations;
+#ifdef MBS_GPU_FP32
+    if(config.useGpu&&NativeWorkerCapabilities::OrientationPrefixOutput()){
+        for(size_t i:todo){
+            const Job& job=result[i];
+            if(!CorrectCutoffJob(job)||Exists(CutoffPrefixRecipePath(job)))continue;
+            const auto key=CutoffPrefixValidationKey(job);
+            prefixKeys.emplace(i,key);
+            plannedPrefixOrientations[key]+=std::max(64,job.count/8);
+        }
+    }
+#endif
     for(size_t i:todo){const auto& j=result[i];
         if(!CorrectCutoffJob(j)){direct[i]=native.size();launch.push_back(native.size());native.push_back(j);nativeCommands.push_back(commands[i]);continue;}
         Recipe recipe;recipe.parent=i;recipe.staged=StagedCutoff();const int m=std::max(64,j.count/8);
@@ -280,7 +303,10 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
                 const auto identity=Hash(j.identity+"\ncutoff-child-v1 "+Number(n)+" "+Number(depth)+" "+Number(pair)+" "+Number(balanced));
                 existing=existing||cache.count(identity)||Exists(root+"/jobs/c"+identity);
             }
-            if(!existing&&VerifyCutoffPrefix(j,commands[i])){Atomic(prefixRecipe,"embedded-prefix-v1\n");recipe.embeddedPrefix=true;}
+            const auto key=prefixKeys.find(i);
+            const std::string profile=key==prefixKeys.end()?"":key->second;
+            const long long demand=key==prefixKeys.end()?-1:plannedPrefixOrientations.at(profile);
+            if(!existing&&VerifyCutoffPrefix(j,commands[i],profile,demand)){Atomic(prefixRecipe,"embedded-prefix-v1\n");recipe.embeddedPrefix=true;}
         }
         // An embedded recipe was created only with paired balanced depths.
         // Unrelated incomplete ordinary children must not change that identity.

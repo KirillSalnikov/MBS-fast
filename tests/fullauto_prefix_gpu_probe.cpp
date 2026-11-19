@@ -11,17 +11,20 @@ void SetupPrefixGpu(Engine& e,const std::string& root,const std::string& binary)
 }
 int main(int argc,char** argv){try{
     Require(argc==3,"OUTPUT BINARY");ArgPP args;RunConfig config;config.useGpu=true;Engine e(args,config);SetupPrefixGpu(e,argv[1],argv[2]);e.WarmCache();
-    auto first=e.DirectStage(512,e.seeds.data(),1,8,e.theta,true,false,0,6);
+    auto small=e.DirectStage(512,e.seeds.data(),1,8,e.theta,true,false,0,6);
+    Require(e.cutoffPrefixChecks.empty()&&!Exists(e.CutoffPrefixRecipePath(small[0])),
+            "short batch spent an independent calibration or cached a rejection");
+    auto first=e.DirectStage(8192,e.seeds.data(),8,8,e.theta,true,false,0,6);
     Require(e.cutoffPrefixChecks.size()==1,"missing cached numerical gate");const bool accepted=e.cutoffPrefixChecks.begin()->second;
-    auto next=e.DirectStage(512,e.seeds.data(),1,8,e.theta,true,false,512,6);
+    auto next=e.DirectStage(8192,e.seeds.data(),1,8,e.theta,true,false,8192,6);
     Require(e.cutoffPrefixChecks.size()==1,"recalibrated unchanged execution profile");
     for(const auto* group:{&first,&next})Require(Exists((*group)[0].folder+"/cutoff_prefix_recipe.txt")==accepted,"gate decision not applied to production");
-    e.eps=1e-13;auto strict=e.DirectStage(512,e.seeds.data(),1,8,e.theta,true,false,1024,6);
+    e.eps=1e-13;auto strict=e.DirectStage(8192,e.seeds.data(),8,8,e.theta,true,false,16384,6);
     Require(e.cutoffPrefixChecks.size()==2,"tighter tolerance reused loose validation");
     Require(!Exists(strict[0].folder+"/cutoff_prefix_recipe.txt"),"strict FP32 gate failed to restore original estimator");
     for(auto& service:e.services)service.reset();
     Engine restored(args,config);SetupPrefixGpu(restored,argv[1],argv[2]);restored.WarmCache();restored.forbidNativeWork=true;
-    auto resumed=restored.DirectStage(512,e.seeds.data(),1,8,e.theta,true,false,0,6);
+    auto resumed=restored.DirectStage(8192,e.seeds.data(),1,8,e.theta,true,false,0,6);
     Require(resumed[0].matrix==first[0].matrix,"completed prefix transaction changed on restart");
     std::cout<<"PASS GPU prefix runtime gate, cached decision, strict-tolerance fallback and checkpoint; accepted="<<accepted<<'\n';return 0;
 }catch(const std::exception& ex){std::cerr<<ex.what()<<'\n';return 1;}}
