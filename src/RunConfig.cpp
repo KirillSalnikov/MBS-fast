@@ -1806,6 +1806,8 @@ RunConfig RunConfig::FromCommandLine(const ArgPP &args,
         ValidateBuiltinParticle(args, config.warnings);
     else
         RequireReadableFile(args, "pf");
+    if (args.IsCatched("rosette_joined") && (!args.IsCatched("p") || IntValue(args, "p", 0) != 3))
+        Fail("--rosette-joined requires built-in particle 3.", "use --particle 3 L D with --rosette-joined.");
     if (args.IsCatched("rs") && !args.IsCatched("pf"))
         Fail("--resize-dmax-um requires a file particle.", "add --particle-file FILE or remove --resize-dmax-um.");
     RejectTogether(args, "rs", "k_eq", "choose either Dmax scaling or k_eq scaling, not both.");

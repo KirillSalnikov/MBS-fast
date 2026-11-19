@@ -459,7 +459,7 @@ Built-in particle types:
 |---:|---|---|
 | 1 | Hexagonal column/plate | `L D` |
 | 2 | Bullet | `L D` |
-| 3 | Bullet rosette | `L D [cap]` |
+| 3 | Bullet rosette | `L D [cap]`. Use `--rosette-joined` to place the six tips at the center. The default tip offset is 1 µm. `L` is the length of one prismatic shaft and `D` its diameter across opposite vertices. |
 | 4 | Droxtal | `L D extra`, uses the extra shape parameter |
 | 10 | Concave hexagonal | `L D concavity` |
 | 12 | Hexagonal aggregate | `L D count` |

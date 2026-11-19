@@ -398,7 +398,7 @@ dOmega(theta_j) = 2*pi * (cos(theta_left) - cos(theta_right))
 |---:|---|---|
 | 1 | Hexagonal column/plate | `L D` |
 | 2 | Bullet | `L D` |
-| 3 | Bullet rosette | `L D [cap]` |
+| 3 | Bullet rosette | `L D [cap]`. Флаг `--rosette-joined` совмещает все шесть остриёв в центре. По умолчанию каждое остриё отстоит от центра на 1 мкм. `L` — длина призматической части одного луча, `D` — диаметр между противоположными вершинами её основания. |
 | 4 | Droxtal | `L D extra` |
 | 10 | Concave hexagonal | `L D concavity` |
 | 12 | Hexagonal aggregate | `L D count` |

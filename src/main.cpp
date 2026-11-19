@@ -360,7 +360,7 @@ static std::unique_ptr<Particle> CreateConfiguredParticle(const ArgPP& args,
             sup = (args.GetArgNumber("p") == 4)
                     ? args.GetDoubleValue("p", 3)
                     : diameter*sqrt(3)*tan(DegToRad(62))/4;
-            particleOwner.reset(new BulletRosette(refrIndex, diameter, height, sup));
+            particleOwner.reset(new BulletRosette(refrIndex, diameter, height, sup, args.IsCatched("rosette_joined")));
             particle = particleOwner.get();
             break;
         case ParticleType::Droxtal:

@@ -8,7 +8,7 @@ BulletRosette::BulletRosette()
 }
 
 BulletRosette::BulletRosette(const complex &refrIndex, double diameter,
-							 double height, double peakHeight)
+							 double height, double peakHeight, bool joinedTips)
 	: BulletRosette()
 {
 	isConcave = true;
@@ -17,18 +17,18 @@ BulletRosette::BulletRosette(const complex &refrIndex, double diameter,
 	Init(8, refrIndex);
 
 	std::vector<Particle> bullets;
-	double halfHeight = height/2;
+	const double centerShift = height / 2 + peakHeight + (joinedTips ? 0.0 : 1.0);
 
 	{
 		Bullet b(refrIndex, diameter, height, peakHeight);
-		b.Move(0, 0, -(halfHeight + peakHeight + 1));
+		b.Move(0, 0, -centerShift);
 		b.Fix();
 		bullets.push_back(b);
 	}
 
 	{
 		Bullet b(refrIndex, diameter, height, peakHeight);
-		b.Move(0, 0, -(halfHeight + peakHeight + 1));
+		b.Move(0, 0, -centerShift);
 		b.Fix();
 		b.Rotate(DegToRad(90), 0, 0);
 		b.Fix();
@@ -37,7 +37,7 @@ BulletRosette::BulletRosette(const complex &refrIndex, double diameter,
 
 	{
 		Bullet b(refrIndex, diameter, height, peakHeight);
-		b.Move(0, 0, -(halfHeight + peakHeight + 1));
+		b.Move(0, 0, -centerShift);
 		b.Fix();
 		b.Rotate(DegToRad(180), 0, 0);
 		b.Fix();
@@ -46,7 +46,7 @@ BulletRosette::BulletRosette(const complex &refrIndex, double diameter,
 
 	{
 		Bullet b(refrIndex, diameter, height, peakHeight);
-		b.Move(0, 0, -(halfHeight + peakHeight + 1));
+		b.Move(0, 0, -centerShift);
 		b.Fix();
 		b.Rotate(DegToRad(270), 0, 0);
 		b.Fix();
@@ -55,7 +55,7 @@ BulletRosette::BulletRosette(const complex &refrIndex, double diameter,
 
 	{
 		Bullet b(refrIndex, diameter, height, peakHeight);
-		b.Move(0, 0, -(halfHeight + peakHeight + 1));
+		b.Move(0, 0, -centerShift);
 		b.Fix();
 		b.Rotate(DegToRad(90), 0, 0);
 		b.Fix();
@@ -66,7 +66,7 @@ BulletRosette::BulletRosette(const complex &refrIndex, double diameter,
 
 	{
 		Bullet b(refrIndex, diameter, height, peakHeight);
-		b.Move(0, 0, -(halfHeight + peakHeight + 1));
+		b.Move(0, 0, -centerShift);
 		b.Fix();
 		b.Rotate(DegToRad(90), 0, 0);
 		b.Fix();

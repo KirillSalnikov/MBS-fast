@@ -571,6 +571,23 @@ expect_success 'particle: bullet rosette' \
     "$MBS" --method po --particle 3 1 1 0.2 --refractive-index 1.31 0 \
     --wavelength-um 10 --max-reflections 1 --backend cpu --threads 1 --close \
     --fixed-orientation 0 0 "${GRID[@]}"
+expect_success 'particle: joined bullet rosette' \
+    "$MBS" --method po --particle 3 1 1 --rosette-joined --ri 1.31 0 \
+    --wavelength-um 10 --max-reflections 1 --backend cpu --threads 1 --close \
+    --fixed-orientation 0 0 "${GRID[@]}" --save-geometry "$WORK_DIR/joined.dat"
+python3 - "$WORK_DIR/joined.dat" <<'PYTEST' || exit 1
+import sys
+from pathlib import Path
+facets = Path(sys.argv[1]).read_text().strip().split("\n\n")[1:]
+assert len(facets) == 78
+for start in range(0, 78, 13):
+    vertices = [tuple(map(float, row.split())) for facet in facets[start:start+13] for row in facet.splitlines()]
+    assert sum(sum(x*x for x in vertex) < 1e-24 for vertex in vertices) == 6
+PYTEST
+expect_error 'particle: joined tips require a rosette' \
+    "$MBS" --method po --particle 2 1 1 --rosette-joined --ri 1.31 0 \
+    --wavelength-um 10 --max-reflections 1 --backend cpu --close \
+    --fixed-orientation 0 0 "${GRID[@]}"
 expect_success 'particle: canonical droxtal' \
     "$MBS" --method po --particle 4 1 --refractive-index 1.31 0 \
     --wavelength-um 10 --max-reflections 1 --backend cpu --threads 1 --close \
