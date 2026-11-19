@@ -56,6 +56,24 @@ DS_INLINE Number two_sum(float a,float b) {
 DS_INLINE Number quick_sum(float a,float b) {
     float s=add_rn(a,b); return Number(s,add_rn(b,-add_rn(s,-a)));
 }
+// Sum two products of single-word coordinates. The FMA residuals retain
+// the low words even when the two leading products almost cancel.
+DS_INLINE Number projection2(float a,float x,float b,float y) {
+    const float ax=mul_rn(a,x), by=mul_rn(b,y);
+    Number leading=two_sum(ax,by);
+    const float residual=add_rn(fma_rn(a,x,-ax), fma_rn(b,y,-by));
+    return two_sum(leading.hi,add_rn(leading.lo,residual));
+}
+// A lower bound from one actual vertex can exclude the moment expansion.
+// The margin covers both rounded products, their sum and the threshold
+// conversion. Inside the margin the extended-precision classifier decides.
+DS_INLINE bool outside_unit_moment_cone(float a,float x,float b,float y) {
+    const float ax=mul_rn(a,x),by=mul_rn(b,y);
+    const float magnitude=::fmaxf(::fabsf(ax),::fabsf(by));
+    const float margin=mul_rn(16.0f*FLT_EPSILON,magnitude);
+    const float phase=::fabsf(add_rn(ax,by));
+    return phase<=FLT_MAX && phase>add_rn(0.001000001f,margin);
+}
 DS_INLINE Number operator-(Number a){return Number(-a.hi,-a.lo);}
 DS_INLINE Number operator+(Number a,Number b){
     Number s=two_sum(a.hi,b.hi),t=two_sum(a.lo,b.lo);
@@ -67,6 +85,17 @@ DS_INLINE Number operator*(Number a,Number b){
     float p=mul_rn(a.hi,b.hi),e=fma_rn(a.hi,b.hi,-p);
     e=fma_rn(a.hi,b.lo,e);e=fma_rn(a.lo,b.hi,e);
     return quick_sum(p,e);
+}
+// Fused double-single multiply/add: retain product and sum residuals,
+// then normalize once. Used by the bounded Horner polynomial below. Like
+// operator*, this omits the low*low term and is not a correctly rounded
+// IEEE fused operation. Requires precise arithmetic, without reassociation.
+DS_INLINE Number mul_add(Number a,Number b,Number c){
+    float p=mul_rn(a.hi,b.hi),e=fma_rn(a.hi,b.hi,-p);
+    e=fma_rn(a.hi,b.lo,e);e=fma_rn(a.lo,b.hi,e);
+    Number s=two_sum(p,c.hi);
+    e=add_rn(e,c.lo);e=add_rn(e,s.lo);
+    return quick_sum(s.hi,e);
 }
 DS_INLINE Number operator/(Number a,Number b){
     float q=div_rn(a.hi,b.hi);Number r=a-b*Number(q);
@@ -99,28 +128,70 @@ DS_INLINE void sincos_pair(Number x,Number &s,Number &c) {
     }
     int quadrant;Number r=reduce_quadrant(x,quadrant),z=r*r;
     Number ps=Number(0x1.952c780000000p-49f,-0x1.f9ea560000000p-74f);
-    ps=Number(-0x1.ae7f3e0000000p-41f,-0x1.ccee080000000p-67f)+z*ps;
-    ps=Number(0x1.6124620000000p-33f,-0x1.8af25e0000000p-58f)+z*ps;
-    ps=Number(-0x1.ae64560000000p-26f,-0x1.fd51380000000p-52f)+z*ps;
-    ps=Number(0x1.71de3a0000000p-19f,0x1.55b1cc0000000p-45f)+z*ps;
-    ps=Number(-0x1.a01a020000000p-13f,0x1.7f97fa0000000p-39f)+z*ps;
-    ps=Number(0x1.1111120000000p-7f,-0x1.ddddde0000000p-32f)+z*ps;
-    ps=Number(-0x1.5555560000000p-3f,0x1.5555560000000p-28f)+z*ps;
+    ps=mul_add(z,ps,Number(-0x1.ae7f3e0000000p-41f,-0x1.ccee080000000p-67f));
+    ps=mul_add(z,ps,Number(0x1.6124620000000p-33f,-0x1.8af25e0000000p-58f));
+    ps=mul_add(z,ps,Number(-0x1.ae64560000000p-26f,-0x1.fd51380000000p-52f));
+    ps=mul_add(z,ps,Number(0x1.71de3a0000000p-19f,0x1.55b1cc0000000p-45f));
+    ps=mul_add(z,ps,Number(-0x1.a01a020000000p-13f,0x1.7f97fa0000000p-39f));
+    ps=mul_add(z,ps,Number(0x1.1111120000000p-7f,-0x1.ddddde0000000p-32f));
+    ps=mul_add(z,ps,Number(-0x1.5555560000000p-3f,0x1.5555560000000p-28f));
     Number pc=Number(-0x1.6827860000000p-53f,-0x1.dcbecc0000000p-80f);
-    pc=Number(0x1.ae7f3e0000000p-45f,0x1.ccee080000000p-71f)+z*pc;
-    pc=Number(-0x1.93974a0000000p-37f,-0x1.180f940000000p-62f)+z*pc;
-    pc=Number(0x1.1eed8e0000000p-29f,0x1.ff1b140000000p-54f)+z*pc;
-    pc=Number(-0x1.27e4fc0000000p-22f,0x1.10ec140000000p-47f)+z*pc;
-    pc=Number(0x1.a01a020000000p-16f,-0x1.7f97fa0000000p-42f)+z*pc;
-    pc=Number(-0x1.6c16c20000000p-10f,0x1.27d27e0000000p-35f)+z*pc;
-    pc=Number(0x1.5555560000000p-5f,-0x1.5555560000000p-30f)+z*pc;
-    pc=Number(-0x1.0000000000000p-1f,0x0.0p+0f)+z*pc;
+    pc=mul_add(z,pc,Number(0x1.ae7f3e0000000p-45f,0x1.ccee080000000p-71f));
+    pc=mul_add(z,pc,Number(-0x1.93974a0000000p-37f,-0x1.180f940000000p-62f));
+    pc=mul_add(z,pc,Number(0x1.1eed8e0000000p-29f,0x1.ff1b140000000p-54f));
+    pc=mul_add(z,pc,Number(-0x1.27e4fc0000000p-22f,0x1.10ec140000000p-47f));
+    pc=mul_add(z,pc,Number(0x1.a01a020000000p-16f,-0x1.7f97fa0000000p-42f));
+    pc=mul_add(z,pc,Number(-0x1.6c16c20000000p-10f,0x1.27d27e0000000p-35f));
+    pc=mul_add(z,pc,Number(0x1.5555560000000p-5f,-0x1.5555560000000p-30f));
+    pc=mul_add(z,pc,Number(-0x1.0000000000000p-1f,0x0.0p+0f));
     Number sr=r+r*z*ps,cr=Number(1.0f)+z*pc;
     switch(quadrant){case 0:s=sr;c=cr;break;case 1:s=cr;c=-sr;break;
         case 2:s=-sr;c=-cr;break;default:s=-cr;c=sr;break;}
 }
 DS_INLINE Number sin(Number x){Number s,c;sincos_pair(x,s,c);return s;}
+// Strict phasors ultimately store two binary32 values. Evaluate the small
+// high-order terms in binary32, retaining two words for the leading terms.
+// Near a rounding midpoint the complete two-word polynomial remains authoritative.
+#ifdef MBS_GPU_ROUNDED_DS_PHASE
+DS_INLINE bool unambiguous_float(Number y) {
+    const float a=::fabsf(y.hi);
+    if (!(a>=FLT_MIN))return false;
+    // The spacing towards zero is conservative at an exact power of two.
+    const float halfGap=0.5f*(a-::nextafterf(a,0.0f));
+    return ::fabsf(y.lo)+1e-10f*a<halfGap;
+}
+DS_INLINE bool rounded_reduced_sincos(Number r,int quadrant,float* s,float* c) {
+    if (!(::fabsf(r.hi)<=0.9f))return false;
+    Number z=r*r;
+    // Horner tails start at r^7 and r^8. On |r|<=0.9 their coefficient
+    // rounding and truncated terms contribute under 1e-10 of each result.
+    float st=fma_rn(z.hi,-1.0f/1307674368000.0f,1.0f/6227020800.0f);
+    st=fma_rn(z.hi,st,-1.0f/39916800.0f);
+    st=fma_rn(z.hi,st,1.0f/362880.0f);
+    st=fma_rn(z.hi,st,-1.0f/5040.0f);
+    Number ps=mul_add(z,Number(st),Number(0x1.111112p-7f,-0x1.dddddep-32f));
+    ps=mul_add(z,ps,Number(-0x1.555556p-3f,0x1.555556p-28f));
+    float ct=fma_rn(z.hi,1.0f/20922789888000.0f,-1.0f/87178291200.0f);
+    ct=fma_rn(z.hi,ct,1.0f/479001600.0f);
+    ct=fma_rn(z.hi,ct,-1.0f/3628800.0f);
+    ct=fma_rn(z.hi,ct,1.0f/40320.0f);
+    Number pc=mul_add(z,Number(ct),Number(-0x1.6c16c2p-10f,0x1.27d27ep-35f));
+    pc=mul_add(z,pc,Number(0x1.555556p-5f,-0x1.555556p-30f));
+    pc=mul_add(z,pc,Number(-0.5f));
+    Number sr=r+r*z*ps,cr=Number(1.0f)+z*pc;
+    if(!unambiguous_float(sr)||!unambiguous_float(cr))return false;
+    switch(quadrant){case 0:*s=sr.hi;*c=cr.hi;break;case 1:*s=cr.hi;*c=-sr.hi;break;
+        case 2:*s=-sr.hi;*c=-cr.hi;break;default:*s=-cr.hi;*c=sr.hi;break;}
+    return true;
+}
+#endif
 DS_INLINE void sincos_float(Number x,float *s,float *c,bool precise) {
+#ifdef MBS_GPU_ROUNDED_DS_PHASE
+    if (precise && ::fabsf(x.hi)<=1048576.0f) {
+        int quadrant;Number r=reduce_quadrant(x,quadrant);
+        if(rounded_reduced_sincos(r,quadrant,s,c))return;
+    }
+#endif
     if (precise || !(::fabsf(x.hi)<=1048576.0f)) {
         Number sd,cd;sincos_pair(x,sd,cd);*s=(float)sd;*c=(float)cd;return;
     }

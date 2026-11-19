@@ -56,7 +56,23 @@ LevelPrefixDecision CheckLevelPrefixes(Engine& e,const std::vector<int>& depths,
             // also validates every source graph before any value is reused.
             const auto key=InterpolationGroupKey(e,checkDepths,half,checked,e.seeds.data());AdaptiveData previous;
             if(!RestoreInterpolationGroup(e,key,checkDepths.size(),checked.size(),previous)){
-                previous=EvaluateBudget(e,checkDepths,half,checked,e.seeds.data());SaveInterpolationGroup(e,key,previous);}
+                // The half-prefix test consumes only the signed correction.
+                // A full cached group also suffices, but a correction-only
+                // receipt must never be returned to a caller asking for a base.
+                if(level&&e.correctionOnlyPrefix){
+                    const auto correctionKey=Hash(key+" half-prefix-correction-only-v1");
+                    if(!RestoreInterpolationGroup(e,correctionKey,1,checked.size(),previous)){
+                        previous=EvaluateBudget(e,checkDepths,half,checked,e.seeds.data(),true,1);
+                        SaveInterpolationGroup(e,correctionKey,previous);
+                        e.Log("correction_only_half_prefix","{\"lower_depth\":"+Number(checkDepths.front())
+                            +",\"upper_depth\":"+Number(checkDepths.back())+",\"theta_rows\":"+Number(checked.size())
+                            +",\"independent_replicas\":8}");
+                    }
+                }else{
+                    previous=EvaluateBudget(e,checkDepths,half,checked,e.seeds.data());
+                    SaveInterpolationGroup(e,key,previous);
+                }
+            }
             result.sources+=previous.sources;Samples alternate=stage.levels[level];
             const auto& old=previous.levels.back();
             for(size_t k=0;k<checked.size();++k){const size_t row=std::lower_bound(ids.begin(),ids.end(),checked[k])-ids.begin();
@@ -105,6 +121,47 @@ void PreparePrefixStabilityPolicy(Engine& e,AdaptiveState& state,bool resumed){
         SaveAdaptive(e,state);e.Log("prefix_stability_policy_migration","{\"production_blocks_retained\":true,\"old_stability_acceptance_invalidated\":true}");}
     e.Record(path,"{\"policy\":"+Quoted(PrefixStabilityPolicy())+",\"all_depth_levels\":true,\"joint_level_sum\":true,\"recompute_each_round\":true,\"comparison\":\"full estimator with each level and then all levels replaced by half prefixes; paired eight-seed mean shift plus noise95\",\"correction_minimum\":\"max(2*minimum,min(2*initial,16*minimum))\",\"statistical_not_rigorous_bound\":true}");
 }
+// Reaching the minimum N only makes the measured full/half comparison possible.
+bool PlanMissingPrefixFloors(const Engine& e,const AdaptiveState& state,const std::vector<size_t>& ids,
+        const LevelPrefixDecision& checks,Budgets& proposed){
+    if(checks.passed||!checks.failed)return false;
+    size_t missing=0,rows=0;
+    for(size_t id:ids){
+        bool any=false;
+        for(size_t l=0;l<proposed.size();++l){
+            const auto floor=PrefixMinimumCount(e,l);
+            if(proposed[l][id]>std::max<long long>(state.counts[l][id],floor))return false;
+            if(state.counts[l][id]>=floor)continue;
+            if(floor>e.maxCount)return false;
+            ++missing;any=true;
+        }
+        rows+=any;
+    }
+    if(missing!=checks.failed||rows!=checks.failedJoint)return false;
+    for(size_t l=0;l<proposed.size();++l){
+        const int floor=static_cast<int>(PrefixMinimumCount(e,l));
+        for(size_t id:ids)if(state.counts[l][id]<floor)
+            proposed[l][id]=std::max(proposed[l][id],std::min(floor,Doubled(e,Doubled(e,state.counts[l][id]))));
+    }
+    return true;
+}
+// Wall time times all worker slots is an upper bound on the work performed
+// by those slots, including controller waits. Retain the more conservative
+// of two consecutive observations on the same grid. Reset after a restart.
+struct PrefixFloorTiming {
+    int plannedRound=-1;std::string key;double started=0,raw=0,previousRatio=0;
+    void Plan(int round,const std::string& context,double now,double forecast){
+        plannedRound=round;key=context;started=now;raw=forecast;
+    }
+    double Observe(int round,const std::string& context,double now,size_t slots){
+        if(plannedRound+1!=round||context!=key||raw<=0||now<=started||!slots){
+            previousRatio=0;return 1.;
+        }
+        const double upper=(now-started)*slots/raw;
+        const double factor=previousRatio>0?std::max(.25,std::min(1.,2*std::max(upper,previousRatio))):1.;
+        previousRatio=upper;return factor;
+    }
+};
 void RequirePrefixGrowth(const LevelPrefixDecision& check,const std::vector<size_t>& ids,Budgets& proposed){
     for(size_t level=0;level<proposed.size();++level)for(size_t id:ids)proposed[level][id]=std::max(proposed[level][id],check.required[level][id]);
 }

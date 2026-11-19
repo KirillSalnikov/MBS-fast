@@ -358,9 +358,8 @@ void BigUnsigned::initFromPrimitive(X x) {
 	if (x == 0)
 		; // NumberlikeArray already initialized us to zero.
 	else {
-		// Create a single block.  blk is NULL; no need to delete it.
-		cap = 1;
-		blk = new Blk[1];
+		// Activate the first word for a nonzero value.
+		allocate(1);
 		len = 1;
 		blk[0] = Blk(x);
 	}

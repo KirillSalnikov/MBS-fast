@@ -1,3 +1,4 @@
+#include "PrefixPath.h"
 #include "Scattering.h"
 #include "../TraceTreeReserve.h"
 
@@ -1198,6 +1199,14 @@ double Scattering::ComputeInternalOpticalPath(const Beam &beam,
                                               const Point3f sourcePoint,
                                               const vector<int> &track)
 {
+    if(auto* ctx=PrefixPath::current()){
+        double value=0;
+        if(ctx->evaluate<1>(ctx->lookup(beam),&sourcePoint,&value))return value;
+    }
+    if(&track==&PrefixPath::deferredTrack()){
+        std::vector<int> actual;Tracks::RecoverTrack(beam,m_particle->nFacets,actual);
+        return ComputeInternalOpticalPath(beam,sourcePoint,actual);
+    }
     double path = 0;
     Point3f dir = -beam.direction; // back direction
     Location loc = Location::Out;
@@ -1279,6 +1288,12 @@ void Scattering::ComputeInternalOpticalPathsBatch(
     const Beam &beam, const Point3f *sources,
     const std::vector<int> &track, double *paths)
 {
+    if(auto* ctx=PrefixPath::current())
+        if(ctx->evaluate<N>(ctx->lookup(beam),sources,paths))return;
+    if(&track==&PrefixPath::deferredTrack()){
+        std::vector<int> actual;Tracks::RecoverTrack(beam,m_particle->nFacets,actual);
+        ComputeInternalOpticalPathsBatch<N>(beam,sources,actual,paths);return;
+    }
     Point3f points[N];
     for (unsigned j = 0; j < N; ++j)
         points[j] = sources[j];

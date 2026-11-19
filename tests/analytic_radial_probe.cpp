@@ -9,7 +9,9 @@ int main(){
     while(std::cin>>degree>>z){
         if(degree<0||degree>320||degree%2||z<64)return 2;
         std::vector<double> factors(161,0);factors[degree/2]=1;
-        const auto value=basis.Exact(z,factors);
+        // The uncached radial primitive now takes a grid index. Set its exact phase to z.
+        basis.step=std::ldexp(z,-12);
+        const auto value=basis.Exact(4096,factors);
         std::cout<<value[0]<<' '<<value[1]<<'\n';
     }
 }

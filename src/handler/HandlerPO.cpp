@@ -1,3 +1,5 @@
+#include "PrefixPath.h"
+#include "DepthExtinction.h"
 #include "HandlerPO.h"
 #include "HandlerPO_fast.h"
 #include "HandlerPO_avx.h"
@@ -926,7 +928,8 @@ void HandlerPO::AddToMueller()
 
 BeamInfo HandlerPO::ComputeBeamInfo(Beam &beam,
                                     const std::vector<int> *track,
-                                    const Point3f *extraPoint, double *extraPath)
+                                    const Point3f *extraPoint, double *extraPath,
+                             bool fitLengths)
 {
     BeamInfo info;
     info.normal = beam.Normal();
@@ -951,7 +954,7 @@ BeamInfo HandlerPO::ComputeBeamInfo(Beam &beam,
 
     if (m_hasAbsorption && HasInternalOpticalPath(beam))
     {
-        ComputeOpticalLengths(beam, info, track, extraPoint, extraPath);
+        ComputeOpticalLengths(beam, info, track, extraPoint, extraPath, fitLengths);
     }
 
     info.area = beam.Area();
@@ -1193,7 +1196,8 @@ void HandlerPO::SetScatteringSphere(const ScatteringRange &grid)
 
 void HandlerPO::ComputeOpticalLengths(const Beam &beam, BeamInfo &info,
                                       const std::vector<int> *track,
-                                      const Point3f *extraPoint, double *extraPath)
+                                      const Point3f *extraPoint, double *extraPath,
+                             bool fitLengths)
 {
     int vertices[3] = {0, 1, 2};
     const Point3f a = beam.arr[1] - beam.arr[0];
@@ -1231,6 +1235,16 @@ void HandlerPO::ComputeOpticalLengths(const Beam &beam, BeamInfo &info,
     {
         Tracks::RecoverTrack(beam, m_particle->nFacets, recoveredTrack);
         track = &recoveredTrack;
+    }
+
+    if (!fitLengths)
+    {
+        // The prepared regular diffraction kernel consumes sampled attenuation.
+        // Still reject exactly the same degenerate projected triangles.
+        ComputeLengthIndices(beam, info, vertices, false);
+        if (extraPoint && extraPath && !info.isBad)
+            *extraPath = m_scattering->ComputeInternalOpticalPath(beam, *extraPoint, *track);
+        return;
     }
 
     // Preparation-only optimization; use 0 to compare with scalar recovery.
@@ -1802,6 +1816,12 @@ static double PreparedMueller00(const Matrix2x2c& j)
 void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
                               PreparedOrientation &out)
 {
+    PrepareBeams(beams, sinZenith, out, nullptr);
+}
+
+void HandlerPO::PrepareBeams(std::vector<Beam>& beams, double sinZenith,
+                             PreparedOrientation& out, const std::array<double,3>* cutoffMaxima)
+{
     // Particle size is invariant during this call but can change between
     // calls in multi-size workflows.  Cache the O(V^2) diameter once rather
     // than recomputing it for every beam edge.
@@ -1817,15 +1837,18 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
     out.sinZenith = sinZenith;
     out.extinctionOt = 0.0;
 
-    double jRel = (m_beamCutoffJRel >= 0) ? m_beamCutoffJRel : m_targetEps;
-    double areaRel = (m_beamCutoffAreaRel >= 0) ? m_beamCutoffAreaRel : m_targetEps;
-    double importanceRel = m_beamCutoffImportanceRel;
+    const auto relative = PreparedCutoffRelatives();
+    const double jRel=relative[0], areaRel=relative[1], importanceRel=relative[2];
     const bool useBeamCutoff = (jRel > 0.0) || (areaRel > 0.0)
                             || (importanceRel > 0.0);
 
     // Pass 1: compute unabsorbed max |J|^2 and max area for relative cutoffs.
     double maxJnorm = 0, maxArea = 0, maxImportance = 0;
-    if (useBeamCutoff)
+    if (cutoffMaxima) {
+        maxJnorm = (*cutoffMaxima)[0];
+        maxArea = (*cutoffMaxima)[1];
+        maxImportance = (*cutoffMaxima)[2];
+    } else if (useBeamCutoff)
     {
         for (Beam &beam : beams)
         {
@@ -1851,6 +1874,10 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
     int skippedImportanceCount = 0;
     int candidateBeams = 0;
 
+    static const bool sampledAbsorptionOnly = []() {
+        const char *value = std::getenv("MBS_PREPARED_SAMPLED_ABSORPTION");
+        return value && std::string(value) == "1";
+    }();
     // Pass 2: prepare beams, skip negligible ones
     double localEnergy = 0;
     for (Beam &beam : beams)
@@ -1864,10 +1891,13 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
 
         const bool hasInternalPath =
             m_hasAbsorption && HasInternalOpticalPath(beam);
-        std::vector<int> track;
-        if (hasInternalPath)
-            Tracks::RecoverTrack(beam, m_particle->nFacets, track);
-
+        std::vector<int> decoded;
+        const std::vector<int>* track=nullptr;
+        if(hasInternalPath){
+            auto* ctx=PrefixPath::current();
+            if(ctx && ctx->lookup(beam)>=0)track=&PrefixPath::deferredTrack();
+            else {Tracks::RecoverTrack(beam,m_particle->nFacets,decoded);track=&decoded;}
+        }
         const bool useCentroid = batchCentroid && hasInternalPath
             && (m_absorptionPointCount == 1 || beam.nVertices <= 0);
         Point3f centroid;
@@ -1875,8 +1905,9 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
         if (useCentroid)
             centroid = beam.AreaCentroid();
         BeamInfo info = ComputeBeamInfo(
-            beam, hasInternalPath ? &track : nullptr,
-            useCentroid ? &centroid : nullptr, useCentroid ? &centroidPath : nullptr);
+            beam, track,
+            useCentroid ? &centroid : nullptr, useCentroid ? &centroidPath : nullptr,
+            !sampledAbsorptionOnly || beam.nVertices < 3 || beam.nVertices >= BeamEdgeData::MAX_EDGES);
 
         if (info.isBad)
             continue;
@@ -1892,7 +1923,7 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
             auto addPathAt = [&](const Point3f &point)
             {
                 absorptionPaths.push_back(
-                    m_scattering->ComputeInternalOpticalPath(beam, point, track));
+                    m_scattering->ComputeInternalOpticalPath(beam, point, *track));
             };
             if (m_absorptionPointCount == 1 || beam.nVertices <= 0)
             {
@@ -2039,9 +2070,16 @@ void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
 double HandlerPO::ComputeForwardExtinctionOt(
     const PreparedOrientation &prepared) const
 {
+    return ComputeForwardExtinctionOt(prepared, 0);
+}
+
+double HandlerPO::ComputeForwardExtinctionOt(
+    const PreparedOrientation &prepared, int maximumDepth) const
+{
     complex f00(0.0, 0.0), f01(0.0, 0.0);
     complex f10(0.0, 0.0), f11(0.0, 0.0);
 
+    auto* cap=maximumDepth?nullptr:DepthExtinction::current();
     const double cos_t = 1.0;
     const double cp = 1.0;
     const double sp = 0.0;
@@ -2054,6 +2092,8 @@ double HandlerPO::ComputeForwardExtinctionOt(
 
     for (const PreparedBeam &pb : prepared.beams)
     {
+        if (maximumDepth && !pb.isExternal && pb.nActs > maximumDepth)
+            continue;
         if (m_otPhaseAverage && !pb.isExternal)
             continue;
         if (!pb.edgeData.valid && pb.fallback)
@@ -2063,8 +2103,9 @@ double HandlerPO::ComputeForwardExtinctionOt(
             const double reference = pb.isExternal
                 ? pb.opticalPath : m_otFarReferencePath;
             const complex phase = exp_im(-m_waveIndex * reference);
-            f00 += amplitude[0][0] * phase;
-            f11 += amplitude[1][1] * phase;
+            const complex a=amplitude[0][0]*phase,b=amplitude[1][1]*phase;
+            f00+=a;f11+=b;
+            if(cap)cap->add(pb.isExternal?0:pb.nActs,a,b);
             continue;
         }
         if (!pb.edgeData.valid
@@ -2202,22 +2243,16 @@ double HandlerPO::ComputeForwardExtinctionOt(
         const double jp10r = pb.jp10r, jp10i = pb.jp10i;
         const double jp11r = pb.jp11r, jp11i = pb.jp11i;
 
-        f00 += complex(sr00r * jp00r - sr00i * jp00i
+        const complex a(sr00r * jp00r - sr00i * jp00i
                        + sr01r * jp10r - sr01i * jp10i,
                        sr00r * jp00i + sr00i * jp00r
                        + sr01r * jp10i + sr01i * jp10r);
-        f01 += complex(sr00r * jp01r - sr00i * jp01i
-                       + sr01r * jp11r - sr01i * jp11i,
-                       sr00r * jp01i + sr00i * jp01r
-                       + sr01r * jp11i + sr01i * jp11r);
-        f10 += complex(sr10r * jp00r - sr10i * jp00i
-                       + sr11r * jp10r - sr11i * jp10i,
-                       sr10r * jp00i + sr10i * jp00r
-                       + sr11r * jp10i + sr11i * jp10r);
-        f11 += complex(sr10r * jp01r - sr10i * jp01i
+        const complex b(sr10r * jp01r - sr10i * jp01i
                        + sr11r * jp11r - sr11i * jp11i,
                        sr10r * jp01i + sr10i * jp01r
                        + sr11r * jp11i + sr11i * jp11r);
+        f00+=a;f11+=b;
+        if(cap)cap->add(pb.isExternal?0:pb.nActs,a,b);
     }
 
     // Canonical optical-theorem amplitude: this is the object-centered
@@ -2225,7 +2260,7 @@ double HandlerPO::ComputeForwardExtinctionOt(
     // far-screen field amplitude.  Therefore the physical default is Im(S).
     // --ot_ping is kept only to reproduce legacy files where the reported
     // forward amplitude still carried an exp(i k (r-z)) far-reference phase.
-    const complex forward = f00 + f11;
+    const auto finish=[&](const complex& forward){
     double forwardExtinctionAmplitude = imag(forward);
     if (m_otPingDistance != 0.0)
     {
@@ -2237,6 +2272,12 @@ double HandlerPO::ComputeForwardExtinctionOt(
     const double cext = m_wavelength * forwardExtinctionAmplitude
         * prepared.sinZenith;
     return std::isfinite(cext) ? cext : 0.0;
+    };
+    if(cap){
+        cap->result.resize(cap->depths.size());
+        for(size_t i=0;i<cap->depths.size();++i)cap->result[i]=finish(cap->diag0[i]+cap->diag1[i]);
+    }
+    return finish(f00+f11);
 }
 
 double HandlerPO::ComputeForwardExtinctionOtScaled(
@@ -2820,8 +2861,14 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                                     std::vector<Arr2DC> &localJ,
                                     std::vector<Arr2DC> *localJ_noshadow)
 {
-    if (!ComputeNoShadow())
-        localJ_noshadow = nullptr;
+    HandleBeamsToLocal(prepared, localM, localJ, localJ_noshadow, 0);
+}
+
+void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared, Arr2D &localM,
+                                  std::vector<Arr2DC> &localJ,
+                                  std::vector<Arr2DC> *secondaryJ, int lowerDepth)
+{
+    if (!lowerDepth && !ComputeNoShadow()) secondaryJ = nullptr;
 
     double sinZenith = prepared.sinZenith;
     int nAz_global = m_sphere.nAzimuth;
@@ -2912,6 +2959,7 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
         double jp10r = pb.jp10r, jp10i = pb.jp10i;
         double jp11r = pb.jp11r, jp11i = pb.jp11i;
         bool isExternal = pb.isExternal;
+        const bool addSecondary = secondaryJ && (lowerDepth ? isExternal || pb.nActs <= lowerDepth : !isExternal);
         int nZen = nZen_global;
 
         for (int i = 0; i < nAz_global; ++i)
@@ -3070,8 +3118,8 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                     else
                     {
                         localJ[0].insert_2x2_packed4(i, j, batch.cell);
-                        if (localJ_noshadow && !isExternal)
-                            (*localJ_noshadow)[0].insert_2x2_packed4(
+                        if (addSecondary)
+                            (*secondaryJ)[0].insert_2x2_packed4(
                                 i, j, batch.cell);
                     }
                     j += 3;
@@ -3215,8 +3263,8 @@ void HandlerPO::HandleBeamsToLocal(const PreparedOrientation &prepared,
                     // For coherent mode, accumulate into localJ[0]
                     localJ[0].insert_2x2(i, j, d00, d01, d10, d11);
                     // Also accumulate without shadow beam (for separate output)
-                    if (localJ_noshadow && !isExternal)
-                        (*localJ_noshadow)[0].insert_2x2(i, j, d00, d01, d10, d11);
+                    if (addSecondary)
+                        (*secondaryJ)[0].insert_2x2(i, j, d00, d01, d10, d11);
                 }
             }
         }
@@ -3250,6 +3298,17 @@ bool HandlerPO::HandleOrientationsToLocalGpuOnDevice(
                                              unsigned long long /*cacheToken*/)
 {
     return false;
+}
+
+bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientation>&,
+                                             int,int,Arr2D&,Arr2D&,double,double,int)
+{
+    return false;
+}
+int HandlerPO::SelectGpuOrientationBatchSize(const std::vector<PreparedOrientation>& p,
+                                             int start,int count,bool) const
+{
+    return SelectGpuOrientationBatchSize(p,start,count);
 }
 
 bool HandlerPO::HandleOrientationsToLocalGpuCached(

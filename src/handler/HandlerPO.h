@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 #include "Handler.h"
 #include "BeamCache.h"
 #include "CutoffStatistics.h"
@@ -311,7 +313,11 @@ public:
     /// Must be called sequentially (uses m_isBadBeam, modifies beams).
     void PrepareBeams(std::vector<Beam> &beams, double sinZenith,
                       PreparedOrientation &out);
+    // Maxima must come from these raw beams before their Jones matrices are rotated.
+    void PrepareBeams(std::vector<Beam> &beams, double sinZenith,
+                      PreparedOrientation &out, const std::array<double,3>* cutoffMaxima);
     double ComputeForwardExtinctionOt(const PreparedOrientation &prepared) const;
+    double ComputeForwardExtinctionOt(const PreparedOrientation &prepared, int maximumDepth) const;
 #ifdef USE_CUDA
     // Native-request boundary only, before producers start. Frees capacity
     // retained by the opt-in bounded resident path; legacy TLS is untouched.
@@ -341,6 +347,10 @@ public:
                             Arr2D &localM,
                             std::vector<Arr2DC> &localJ,
                             std::vector<Arr2DC> *localJ_noshadow = nullptr);
+    // For coherent paired depths, accumulate both fields during the same beam walk.
+    void HandleBeamsToLocal(const PreparedOrientation &prepared, Arr2D &localM,
+                            std::vector<Arr2DC> &localJ,
+                            std::vector<Arr2DC> *secondaryJ, int lowerDepth);
     bool HandleBeamsToLocalGpu(const PreparedOrientation &prepared,
                                Arr2D &localM,
                                Arr2D &localM_noshadow);
@@ -354,6 +364,14 @@ public:
                                       Arr2D &localM_noshadow,
                                       double scale = 1.0,
                                       double waveIndex = 0.0);
+    bool HandleOrientationsToLocalGpu(const std::vector<PreparedOrientation>& prepared, int start,
+                                      int count, Arr2D& full, Arr2D& secondary,
+                                      double scale, double waveIndex, int lowerDepth);
+    bool HandleDepthPacketGpu(const std::vector<PreparedOrientation>& prepared, int start,
+                              int count, Arr2D& full, Arr2D& middle, double scale, double waveIndex,
+                              int middleDepth, const std::vector<int>& coarseDepths, const std::vector<Arr2D*>& outputs);
+    int SelectGpuOrientationBatchSize(const std::vector<PreparedOrientation>& prepared,
+                                      int start, int maxCount, bool pairedField) const;
 #ifdef USE_CUDA
     // Unsupported returns true with used=false and leaves accumulators intact.
     // Once used=true, a failure is fatal: callers must not repeat the batch.
@@ -447,6 +465,11 @@ public:
     bool IsFullOnly() const;
     bool ComputeNoShadow() const;
     bool HasAbsorptionAccounting() const;
+    std::array<double,3> PreparedCutoffRelatives() const {
+        return {{m_beamCutoffJRel>=0?m_beamCutoffJRel:m_targetEps,
+                 m_beamCutoffAreaRel>=0?m_beamCutoffAreaRel:m_targetEps,
+                 m_beamCutoffImportanceRel}};
+    }
     std::string BeamCutoffReport() const;
 
     matrix *m_Lp;
@@ -462,7 +485,8 @@ protected:
 
     void ComputeOpticalLengths(const Beam &beam, BeamInfo &info,
                                const std::vector<int> *track = nullptr,
-                             const Point3f *extraPoint = nullptr, double *extraPath = nullptr);
+                             const Point3f *extraPoint = nullptr, double *extraPath = nullptr,
+                             bool fitLengths = true);
 
     virtual void RotateJones(const Beam &beam, const BeamInfo &info,
                      const Vector3d &vf, const Vector3d &direction,
@@ -504,7 +528,8 @@ protected:
 
     BeamInfo ComputeBeamInfo(Beam &beam,
                              const std::vector<int> *track = nullptr,
-                             const Point3f *extraPoint = nullptr, double *extraPath = nullptr);
+                             const Point3f *extraPoint = nullptr, double *extraPath = nullptr,
+                             bool fitLengths = true);
 
 
 

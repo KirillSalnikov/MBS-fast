@@ -10,6 +10,8 @@ class AdditionalWork {
     using Depth=std::tuple<int,int,int>;
     using Slot=std::array<uint64_t,5>; // N, offset, depth, paired depth, seed
     std::map<Depth,Profile> profiles;
+    mutable std::set<Depth> reportedMissingProfiles;
+    bool reportMissingProfiles=false;
     struct Coverage {std::vector<const Job*> candidates;std::unique_ptr<double[]> angles;size_t size=0;bool indexed=false;};
     struct CoverageBudget {size_t bytes=0,limit;explicit CoverageBudget(size_t maximum):limit(maximum){}};
     std::shared_ptr<CoverageBudget> coverageBudget;
@@ -36,13 +38,26 @@ class AdditionalWork {
         // never its samples, for a small uncorrected production block.
         if(profile==profiles.end()&&role==0)profile=profiles.find(Depth{depth,paired,2});
         ++result.jobs;
-        if(profile==profiles.end()){result.profiled=false;return;}
+        if(profile==profiles.end()){
+            result.profiled=false;
+            // Report the missing physical recipe, not just a null total. This
+            // distinguishes a genuinely unmeasured worker from a planner
+            // repeatedly asking for an execution path it never dispatches.
+            if(reportMissingProfiles&&reportedMissingProfiles.size()<16&&reportedMissingProfiles.insert(Depth{depth,paired,role}).second)
+                e.Log("work_forecast_missing_profile","{\"depth\":"+Number(depth)
+                    +",\"paired_depth\":"+Number(paired)+",\"role\":"+Number(role)
+                    +",\"phi\":"+Number(e.phi)+",\"count\":"+Number(count)
+                    +",\"rows\":"+Number(rows)+",\"production_profiles_only\":"+(productionOnly?"true":"false")+"}");
+            return;
+        }
         const auto& p=profile->second;const double trace=count*p.trace,diffraction=count*p.diffraction*rows;
         result.seconds+=p.setup+trace+diffraction-p.overlap*std::min(trace,diffraction);
     }
     void CorrectedCost(WorkForecast& result,int count,int depth,int paired,size_t rows)const{
         const int m=std::max(64,count/8);
         if(e.StagedCutoff()){const int k=std::max(64,count/64);
+            if(k==m){NativeCost(result,count,depth,paired,rows,1);
+                NativeCost(result,m,depth,paired,rows,1);NativeCost(result,m,depth,paired,rows,2);return;}
             NativeCost(result,count,depth,paired,rows,1);NativeCost(result,m,depth,paired,rows,1);
             NativeCost(result,m,depth,paired,rows,3);NativeCost(result,k,depth,paired,rows,2);
             if(k!=m)NativeCost(result,k,depth,paired,rows,3);return;
@@ -121,6 +136,8 @@ class AdditionalWork {
 
 public:
     AdditionalWork(Engine& engine,const unsigned* seedSet,bool ignoreSaved=false,bool productionProfilesOnly=false,bool uniform=false,size_t coverageLimit=8*1024*1024):e(engine),ignoreCoverage(ignoreSaved),productionOnly(productionProfilesOnly),uniformPhi(uniform),coverageBudget(new CoverageBudget(coverageLimit)){
+        const char* diagnostic=std::getenv("MBS_FULLAUTO_FORECAST_DIAGNOSTICS");
+        reportMissingProfiles=diagnostic&&std::string(diagnostic)=="1";
         std::copy(seedSet,seedSet+8,seeds.begin());const auto recipe=e.ExecutionHash();
         const auto balancedRecipe=Hash(recipe+(e.StagedCutoff()?" staged-fast-child-v1":" balanced-child-v1")),offRecipe=Hash(recipe+" off-child-v1");
         for(const auto& item:e.cache){const Job& j=item.second;
@@ -237,11 +254,36 @@ public:
         forecasts.emplace(requests,result);return result;
     }
 };
+// A single high/middle paired trace supplies both uses of the middle
+// estimator when the two correction levels request identical Sobol and theta
+// groups. Keep each correction in the allocator and evaluate the coarse
+// level independently. A single angle can have depth-dependent padding.
+std::set<int> ReusableMiddleCounts(const Engine& e,const std::vector<int>& depths,
+                                   const Budgets& counts,const std::vector<size_t>& ids){
+    std::set<int> result;
+    if(!e.reuseMiddleDepth||!e.depthSharing||depths.size()!=3||ids.size()<2)return result;
+    std::set<int> mismatches;
+    std::map<int,size_t> matching;
+    for(size_t id:ids){
+        if(e.PhiForTheta(id)!=e.PhiForTheta(ids.front()))return {};
+        const int middle=counts[1][id],high=counts[2][id];
+        if(middle==high)++matching[middle];
+        else{mismatches.insert(middle);mismatches.insert(high);}
+    }
+    for(const auto& group:matching)
+        if(group.second>1&&!mismatches.count(group.first))result.insert(group.first);
+    return result;
+}
 std::vector<Engine::WorkRequest> BudgetRequests(const Engine& e,const std::vector<int>& depths,const Budgets& counts,const std::vector<size_t>& ids,bool uniform=false){
     std::vector<Engine::WorkRequest> requests;
+    const auto middleCounts=ReusableMiddleCounts(e,depths,counts,ids);
     for(size_t l=0;l<depths.size();++l){std::map<int,std::vector<double>> groups;
         for(size_t id:ids)groups[counts[l][id]].push_back(e.theta[id]);
         for(auto& g:groups){auto& x=g.second;if(x.size()==1&&(uniform||e.thetaPhi.empty())){x.push_back(ids.size()>1?(e.theta[ids.front()]==x[0]?e.theta[ids.back()]:e.theta[ids.front()]):(e.theta.front()==x[0]?e.theta.back():e.theta.front()));std::sort(x.begin(),x.end());}
+            if(l==1&&middleCounts.count(g.first)){
+                requests.push_back({g.first,0,depths[0],0,x});
+                continue;
+            }
             requests.push_back(Engine::WorkRequest{g.first,0,depths[l],l&&e.depthSharing?depths[l-1]:0,x});
             if(l&&!e.depthSharing)requests.push_back(Engine::WorkRequest{g.first,0,depths[l-1],0,x});}}
     return requests;

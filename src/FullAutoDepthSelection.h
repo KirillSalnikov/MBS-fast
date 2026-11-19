@@ -26,7 +26,7 @@ inline Decision Classify(double upper,double lower,double referenceUpper,double 
     if(FiniteBound(lower)&&lower>budget)return Fail;
     return Unresolved;
 }
-inline std::vector<int> Candidates(int start,int maximum){
+inline std::vector<int> Candidates(int start,int maximum,bool shallowestFirst=false){
     std::vector<int> result;
     for(int n=start;;n=std::min(maximum,n>maximum/2?maximum:2*n)){
         result.push_back(n);if(n==maximum)break;
@@ -35,6 +35,7 @@ inline std::vector<int> Candidates(int start,int maximum){
     // passing coarse candidate, not just the last coarse interval.
     for(int n=start;n<=maximum;n+=2)
         if(std::find(result.begin(),result.end(),n)==result.end())result.push_back(n);
+    if(shallowestFirst)std::sort(result.begin(),result.end());
     return result;
 }
 }

@@ -24,6 +24,14 @@
 
 namespace AnalyticFacetAverage
 {
+double MeanRefinementTolerance()
+{
+    const char* option=std::getenv("MBS_ANALYTIC_TIGHT_MEANS");
+    if(!option||std::strcmp(option,"0")==0)return 1e-4;
+    if(std::strcmp(option,"1")==0)return 1e-5;
+    throw std::invalid_argument("MBS_ANALYTIC_TIGHT_MEANS requires 0 or 1");
+}
+
 std::vector<std::array<double,2>> ReadControlWeights(
     const std::string &path,const std::vector<double> &thetaRadians)
 {
@@ -212,7 +220,8 @@ struct Basis
             for(size_t i=0;i<count;++i){g[i*terms+l]=values[i];d[i*terms+l]=f[i];}
         }
     }
-    std::array<double,2> Exact(double z,const std::vector<double>&factor)const
+    template<class Consume>
+    void ExactTerms(double z,Consume consume)const
     {
         // Ci(z) asymptotics at z>=64. Stop before the divergent tail; the
         // omitted term is below FP64 precision in this domain.
@@ -226,16 +235,43 @@ struct Basis
         const double g0=.5772156649015328606065120900824024+std::log(z)
             -(std::sin(z)/z*a-std::cos(z)/(z*z)*b);
         const auto j=AnalyticBackscatter::SphericalBessel(degree,z);
-        double value=factor[0]*g0,derivative=factor[0]*(1-std::cos(z))/z;
+        consume(0,g0,1-std::cos(z));
         // H_q = integral_0^z j_q(t) dt for odd q. Its exact recurrence gives
         // F_l=integral_0^z t*j_l(t)dt and G_l=integral_0^z F_l(t)/t dt.
         double H=1-j[0],A=1,T=0;const double K=g0-1+j[0];
         for(int l=2;l<=degree;l+=2){
             if(l>2){const int q=l-1;const double next=double(q-1)/q*H-double(2*q-1)/q*j[q-1];
                 T=double(q-1)/q*T-(H+next)/q;A*=double(q-1)/q;H=next;}
-            value+=factor[l/2]*(l*A*K+l*T-H);
-            derivative+=factor[l/2]*(l*H/z-j[l-1]);
+            consume(l/2,l*A*K+l*T-H,l*H/z-j[l-1]);
         }
+    }
+    // Exact radial primitives depend on degree, radius and step. Only the
+    // contraction coefficients vary across theta within this refinement pass.
+    std::vector<double> exactTable;
+    size_t exactTableEnd=0;
+    void PrepareExactTable(std::vector<size_t>& ends,size_t byteLimit){
+        if(ends.size()<4)return;
+        std::nth_element(ends.begin(),ends.begin()+3,ends.end(),std::greater<size_t>());
+        const size_t first=count-1;
+        exactTableEnd=std::min(ends[3],first+byteLimit/(2*terms*sizeof(double)));
+        if(exactTableEnd<=count){exactTableEnd=0;return;}
+        exactTable.resize((exactTableEnd-first)*2*terms);
+        for(size_t i=first;i<exactTableEnd;++i){
+            double* row=exactTable.data()+(i-first)*2*terms;
+            ExactTerms(i*step,[row](size_t l,double g,double d){row[2*l]=g;row[2*l+1]=d;});
+        }
+    }
+    std::array<double,2> Exact(size_t i,const std::vector<double>&factor)const{
+        const double z=i*step;
+        double value=0,derivative=0;
+        const auto contract=[&](size_t l,double g,double d){
+            if(l==0){value=factor[0]*g;derivative=factor[0]*d/z;}
+            else{value+=factor[l]*g;derivative+=factor[l]*d;}
+        };
+        if(i<exactTableEnd && i>=count-1){
+            const double* row=exactTable.data()+(i-(count-1))*2*terms;
+            for(size_t l=0;l<terms;++l)contract(l,row[2*l],row[2*l+1]);
+        }else ExactTerms(z,contract);
         return {{value,derivative}};
     }
     Green Combine(const std::vector<double>&a,double maxz,int gpuDevice=-1)const
@@ -255,7 +291,7 @@ struct Basis
             for(size_t l=0;l<terms;++l)
             {values[i]+=factor[l]*g[i*terms+l];derivatives[i]+=factor[l]*d[i*terms+l];}
         if(core<n){
-            const double z0=(core-1)*step;const auto anchor=Exact(z0,factor);
+            const double z0=(core-1)*step;const auto anchor=Exact(core-1,factor);
             const double offset=values[core-1]-anchor[0],fluxOffset=z0*(derivatives[core-1]-anchor[1]);
             size_t cpuEnd=n;
 #ifdef USE_CUDA
@@ -272,7 +308,7 @@ struct Basis
 #else
             (void)gpuDevice;
 #endif
-            for(size_t i=core;i<cpuEnd;++i){const double z=i*step;const auto primitive=Exact(z,factor);
+            for(size_t i=core;i<cpuEnd;++i){const double z=i*step;const auto primitive=Exact(i,factor);
                 // Preserve the integrated small-z core, including its tiny
                 // Simpson error, with continuous value and derivative.
                 values[i]=primitive[0]+offset+fluxOffset*std::log(z/z0);
@@ -336,6 +372,7 @@ double EdgeMean(const std::vector<double>&px,const std::vector<double>&py,double
     }
     return result;
 }
+template<bool vertexForm>
 C Fourier(const std::vector<double>&x,const std::vector<double>&y,double qx,double qy)
 {
     double maxphase=0;for(size_t i=0;i<x.size();++i)maxphase=std::max(maxphase,std::fabs(qx*x[i]+qy*y[i]));
@@ -349,6 +386,30 @@ C Fourier(const std::vector<double>&x,const std::vector<double>&y,double qx,doub
             result+=area*C(1-(p0*p0+p1*p1+p2*p2+p0*p1+p0*p2+p1*p2)/12,(p0+p1+p2)/3);
         }
         return result;
+    }
+    if(vertexForm){
+        // Integrate exp(i phase) from its endpoint values. Adjacent edges
+        // share an endpoint. The midpoint expression avoids cancellation for
+        // short phase spans and loss of endpoint accuracy at large arguments.
+        double s0,c0,firstS,firstC;
+        const double initial=qx*x[0]+qy*y[0];firstS=s0=std::sin(initial);firstC=c0=std::cos(initial);
+        C sum=0.;
+        for(size_t i=0;i<x.size();++i){
+            const size_t j=(i+1==x.size()?0:i+1);
+            const double dx=x[j]-x[i],dy=y[j]-y[i];
+            const double dp=qx*dx+qy*dy,amplitude=qx*dy-qy*dx;
+            double s1=firstS,c1=firstC;
+            if(j){const double phase=qx*x[j]+qy*y[j];s1=std::sin(phase);c1=std::cos(phase);}
+            const double componentScale=std::max(std::fabs(qx*x[i])+std::fabs(qy*y[i]),std::fabs(qx*x[j])+std::fabs(qy*y[j]));
+            if(std::fabs(dp)<.02 || componentScale>1e6){
+                const double middle=.5*(qx*(x[i]+x[j])+qy*(y[i]+y[j]));
+                sum+=amplitude*std::exp(C(0,middle))*Sinc(dp/2);
+            }else{
+                sum+=C(s1-s0,c0-c1)*(amplitude/dp);
+            }
+            s0=s1;c0=c1;
+        }
+        return sum/C(0,qx*qx+qy*qy);
     }
     C result=0;
     for(size_t i=0;i<x.size();++i)
@@ -455,6 +516,8 @@ void Control::PrepareCachedMeans(const std::vector<double>&theta,const std::stri
         for(size_t i=0;i<bytes;++i){fingerprint^=p[i];fingerprint*=1099511628211ULL;}
     };
     const char version[]="MBS_PHYSICAL_FACET_MEAN_V3_COMPACT_ROWS";mix(version,sizeof(version));
+    const double tolerance=MeanRefinementTolerance();
+    if(tolerance<1e-4)mix(&tolerance,sizeof(tolerance));
     double re=index.real(),im=index.imag();mix(&re,sizeof(re));mix(&im,sizeof(im));mix(&wave,sizeof(wave));
     mix(shadowMode.data(),shadowMode.size());
     const size_t count=faces.size();mix(&count,sizeof(count));
@@ -486,7 +549,7 @@ void Control::PrepareCachedMeans(const std::vector<double>&theta,const std::stri
                 if(!(file>>angle>>row.value.reflection>>row.value.shadow>>row.error)
                     || !std::isfinite(angle)||angle<0||angle>pi
                     || !std::isfinite(row.value.reflection+row.value.shadow)||row.value.reflection<0||row.value.shadow<0
-                    || !std::isfinite(row.error)||row.error<0||row.error>=1e-4||!stored.emplace(angle,row).second){valid=false;break;}}
+                    || !std::isfinite(row.error)||row.error<0||row.error>=tolerance||!stored.emplace(angle,row).second){valid=false;break;}}
             if(!valid)stored.clear();
         }
     }
@@ -531,17 +594,42 @@ Vec Observer(const std::array<Vec,3> &frame,double theta,double azimuth)
 }
 
 Components Control::Evaluate(const Vec&source,const Vec&observer)const
-{return EvaluateUnit(Unit(source),Unit(observer));}
+{return EvaluateUnit<false>(Unit(source),Unit(observer),nullptr);}
 
 Components Control::Evaluate(const Vec&source,const Vec&observer,double theta)const
 {
     const Vec u=Unit(source),v=Unit(observer);
     if(!std::isfinite(theta) || theta<0 || theta>pi || std::fabs(Dot(u,v)+std::cos(theta))>1e-10)
         throw std::invalid_argument("analytic facet: theta is inconsistent with source/observer directions");
-    return EvaluateUnit(u,v);
+    return EvaluateUnit<false>(u,v,nullptr);
 }
 
-Components Control::EvaluateUnit(const Vec&u,const Vec&v)const
+void Control::PrepareIncident(const Vec& source,Incident& incident,bool vertexPhases)const
+{
+    incident.direction=Unit(source);
+    incident.owner=this;
+    incident.vertexPhases=vertexPhases;
+    incident.visible.clear();
+    incident.projectedArea=0;
+    if(index==C(1,0))return;
+    incident.visible.reserve(patches.size());
+    for(size_t i=0;i<patches.size();++i){
+        const auto& p=patches[i];
+        const double mu=Dot(p.n,incident.direction);
+        if(mu<=GrazingTolerance)continue;
+        incident.projectedArea+=mu*p.area;
+        incident.visible.push_back({i,mu,Reflectance(mu,index)});
+    }
+}
+
+Components Control::Evaluate(const Incident& incident,const Vec& observer)const
+{
+    if(incident.owner!=this)throw std::invalid_argument("incident data belongs to a different facet control");
+    return incident.vertexPhases?EvaluateUnit<true,true>(incident.direction,Unit(observer),&incident):EvaluateUnit<true,false>(incident.direction,Unit(observer),&incident);
+}
+
+template<bool prepared,bool vertexForm>
+Components Control::EvaluateUnit(const Vec&u,const Vec&v,const Incident* incident)const
 {
     if(index==C(1,0))return Components{0,0};
     // Half-angle lengths remain accurate at both poles, unlike 1 +/- u.v.
@@ -550,18 +638,25 @@ Components Control::EvaluateUnit(const Vec&u,const Vec&v)const
     const double k=2*pi/wave,t=Dot(u,v),sine=Length(Cross(u,v));
     Vec reflectedQ(k*(u.x+v.x),k*(u.y+v.y),k*(u.z+v.z));
     Vec shadowQ(k*(v.x-t*u.x),k*(v.y-t*u.y),k*(v.z-t*u.z));
-    Components result{0,0};double projectedArea=0;
-    for(const Patch&p:patches)
+    Components result{0,0};
+    double projectedArea=prepared?incident->projectedArea:0;
+    const size_t count=prepared?incident->visible.size():patches.size();
+    for(size_t i=0;i<count;++i)
     {
-        double mu=Dot(p.n,u);if(mu<=GrazingTolerance)continue;
-        projectedArea+=mu*p.area;
+        const auto& p=patches[prepared?incident->visible[i].patch:i];
+        const double mu=prepared?incident->visible[i].mu:Dot(p.n,u);
+        if(!prepared){
+            if(mu<=GrazingTolerance)continue;
+            projectedArea+=mu*p.area;
+        }
         if(h2>0)
         {
-            double nu=Dot(p.n,v),weight=h2*std::max(0.,c2+mu*nu)*Reflectance(mu,index);
-            result.reflection+=weight*std::norm(Fourier(p.x,p.y,Dot(reflectedQ,p.h),Dot(reflectedQ,p.v)))/(wave*wave);
+            const double fresnel=prepared?incident->visible[i].reflectance:Reflectance(mu,index);
+            double nu=Dot(p.n,v),weight=h2*std::max(0.,c2+mu*nu)*fresnel;
+            result.reflection+=weight*std::norm(Fourier<vertexForm>(p.x,p.y,Dot(reflectedQ,p.h),Dot(reflectedQ,p.v)))/(wave*wave);
         }
         if(shadowMode=="facets" && c2>0 && h2>0)
-            result.shadow+=c2*c2*mu*mu*std::norm(Fourier(p.x,p.y,Dot(shadowQ,p.h),Dot(shadowQ,p.v)))/(wave*wave);
+            result.shadow+=c2*c2*mu*mu*std::norm(Fourier<vertexForm>(p.x,p.y,Dot(shadowQ,p.h),Dot(shadowQ,p.v)))/(wave*wave);
     }
     if(shadowMode!="off" && (h2==0 || shadowMode=="circular"))
     {
@@ -616,6 +711,7 @@ void Control::PrepareMeans(const std::vector<double>&theta)
     means.assign(theta.size(),Components{0,0});
     meanErrors.assign(theta.size(),0);std::vector<unsigned char> converged(theta.size(),0);refinementError=0;
     std::vector<Components>previous(theta.size(),Components{0,0});
+    const double tolerance=MeanRefinementTolerance();
     double lastReflection=0,lastShadow=0,lastAngle=0;
     for(int pass=0;pass<5;++pass)
     {
@@ -628,6 +724,22 @@ void Control::PrepareMeans(const std::vector<double>&theta)
         std::vector<double> edgeX,edgeW;Gauss(nodes,edgeX,edgeW);
         for(int i=0;i<nodes;++i){edgeX[i]=(edgeX[i]+1)/2;edgeW[i]/=2;}
         size_t edgeBudget=64*size_t(1024)*1024;
+        const char* shareRadial=std::getenv("MBS_ANALYTIC_SHARED_RADIAL");
+        if(shareRadial && std::string(shareRadial)=="1"){
+            std::vector<size_t> ends;
+            for(size_t row=0;row<theta.size();++row)if(!converged[row]){
+                double h2,c2;Angles(theta[row],h2,c2);
+                const double extent=4*pi/wave*std::sqrt(h2)*maxDiameter+step;
+                const double required=std::max(4.,std::ceil(extent/step)+2);
+                if(!std::isfinite(required)||required>8388608)continue;
+                size_t end=size_t(required);
+                const size_t gpuFirst=std::max(basis.count,size_t(std::ceil((degree+11.)/step)));
+                if(meanDevice>=0 && end>gpuFirst+16384)end=gpuFirst;
+                if(end>basis.count)ends.push_back(end);
+            }
+            basis.PrepareExactTable(ends,edgeBudget/4);
+            edgeBudget-=basis.exactTable.size()*sizeof(double);
+        }
         std::vector<EdgeDistances> edgeGeometry;edgeGeometry.reserve(representatives.size());
         for(size_t g=0;g<representatives.size();++g){const Patch& p=patches[representatives[g]];
             edgeGeometry.emplace_back(p.x,p.y,edgeX,edgeBudget);}
@@ -681,7 +793,7 @@ void Control::PrepareMeans(const std::vector<double>&theta)
                 double re=std::fabs(reflection-previous[row].reflection)/std::max(std::fabs(reflection),1e-100);
                 double se=std::fabs(shadow-previous[row].shadow)/std::max(std::fabs(reflection)+std::fabs(shadow),1e-100);
                 const double error=std::max(re,se);
-                if(error<1e-4){converged[row]=1;meanErrors[row]=error;refinementError=std::max(refinementError,error);}
+                if(error<tolerance){converged[row]=1;meanErrors[row]=error;refinementError=std::max(refinementError,error);}
                 if(std::max(re,se)>worst){lastReflection=re;lastShadow=se;lastAngle=theta[row]*180/pi;}
                 worst=std::max(worst,std::max(re,se));
             }
@@ -692,7 +804,7 @@ void Control::PrepareMeans(const std::vector<double>&theta)
             <<std::chrono::duration<double>(std::chrono::steady_clock::now()-passStarted).count()<<std::endl;
         if(std::find(converged.begin(),converged.end(),0)==converged.end())return;
         if(pass==4)
-            throw std::runtime_error("analytic facet mean did not converge within1e-4 at theta="
+            throw std::runtime_error("analytic facet mean did not converge within "+std::to_string(tolerance)+" at theta="
                 +std::to_string(lastAngle)+", reflection change="+std::to_string(lastReflection)
                 +", shadow change="+std::to_string(lastShadow)
                 +".\n  Fix: reduce particle size/grid or remove --analytic-facet-average.");

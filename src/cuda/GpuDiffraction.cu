@@ -1,3 +1,6 @@
+#include <cstring>
+#include <iostream>
+#include <climits>
 #include "HandlerPO.h"
 #include "GpuPhaseReduction.cuh"
 #include "GpuUploadBuffer.h"
@@ -181,7 +184,7 @@ struct GpuBeam
     unsigned char edge_valid_x[32], edge_valid_y[32];
     int nVertices;
     int nEdgeX, nEdgeY;
-    int isExternal;
+    int omitFromSecondary;
 
     GpuReal bdx, bdy, bdz;
     GpuReal horAx, horAy, horAz;
@@ -213,7 +216,7 @@ struct GpuCompactBeam
     unsigned char edge_valid_x[MaxVertices], edge_valid_y[MaxVertices];
     int nVertices;
     int nEdgeX, nEdgeY;
-    int isExternal;
+    int omitFromSecondary;
 
     GpuReal bdx, bdy;
     GpuReal horAx, horAy, horAz;
@@ -402,7 +405,7 @@ static inline void pack_prepared_gpu_beam(const PreparedBeam &pb,
     b.nVertices = pb.edgeData.nVertices;
     b.nEdgeX = 0;
     b.nEdgeY = 0;
-    b.isExternal = pb.isExternal ? 1 : 0;
+    b.omitFromSecondary = pb.isExternal ? 1 : 0;
     b.orientation = orientation;
     const double coordinateScale = scale * phaseCoordinateScale;
     for (int e = 0; e < b.nVertices; ++e)
@@ -487,7 +490,7 @@ static inline void pack_prepared_gpu_compact_beam(const PreparedBeam &pb,
     b.nVertices = pb.edgeData.nVertices;
     b.nEdgeX = 0;
     b.nEdgeY = 0;
-    b.isExternal = pb.isExternal ? 1 : 0;
+    b.omitFromSecondary = pb.isExternal ? 1 : 0;
     const double coordinateScale = scale * phaseCoordinateScale;
     for (int e = 0; e < b.nVertices; ++e)
     {
@@ -1063,6 +1066,10 @@ __device__ inline bool small_phase_polygon_factor_gpu(
 {
     if (nv < 3)
         return false;
+#if defined(MBS_GPU_PHASE_DS) && defined(MBS_GPU_PHASE_PROJECTED)
+    if (UnitWave && MbsDS::outside_unit_moment_cone(A,b.x[0],B,b.y[0]))
+        return false;
+#endif
     // Keep the moment reduction in extended precision even in the optional
     // float GPU build: signed polygon moments are cancellation-prone.
     const DsReal qx = UnitWave ? (DsReal)A
@@ -1242,7 +1249,13 @@ __device__ inline bool compute_beam_integral_cached_gpu(const BeamT &b,
         {
             const GpuVertexPhaseReal x = (GpuVertexPhaseReal)b.x[v];
             const GpuVertexPhaseReal y = (GpuVertexPhaseReal)b.y[v];
+#if defined(MBS_GPU_PHASE_DS) && defined(MBS_GPU_PHASE_PROJECTED) && !defined(MBS_GPU_PHASE_FP32)
+            const DsReal local = UnitWave ? MbsDS::projection2(A,b.x[v],B,b.y[v])
+                                          : qx * x + qy * y;
+            gpu_sincos_phase(local + commonPhase,
+#else
             gpu_sincos_phase(qx * x + qy * y + commonPhase,
+#endif
 #ifdef MBS_GPU_LOCAL_PHASE_EDGES
                              &vs[v], &vc[v], (preciseVertices & (1u << v)) != 0);
 #else
@@ -1350,8 +1363,12 @@ __device__ inline bool compute_beam_jones_context_limited_gpu(const BeamT &b,
     // no vertex phasors, so it applies the common phase below as before.
     DsReal commonPhase = 0.0;
     {
+#if defined(MBS_GPU_PHASE_DS) && defined(MBS_GPU_PHASE_PROJECTED)
+        const DsReal dpSin = MbsDS::projection2(cp,b.cenx,sp,b.ceny);
+#else
         const DsReal dpSin = (DsReal)cp * (DsReal)b.cenx
                            + (DsReal)sp * (DsReal)b.ceny;
+#endif
         const DsReal dpCos = -(DsReal)b.cenz;
         const DsReal phaseWave = UnitWave ? 1.0 : (DsReal)waveIndex;
         commonPhase = -phaseWave
@@ -1561,8 +1578,12 @@ __device__ inline bool compute_beam_jones_context_gpu_multik(
 
     DsReal commonPhase = 0.0;
     {
+#if defined(MBS_GPU_PHASE_DS) && defined(MBS_GPU_PHASE_PROJECTED)
+        const DsReal dpSin = MbsDS::projection2(cp,b.cenx,sp,b.ceny);
+#else
         const DsReal dpSin = (DsReal)cp * (DsReal)b.cenx
                            + (DsReal)sp * (DsReal)b.ceny;
+#endif
         const DsReal dpCos = -(DsReal)b.cenz;
         commonPhase = -(DsReal)waveIndexEff
                     * ((DsReal)sin_t * dpSin + (DsReal)cos_t * dpCos);
@@ -2279,7 +2300,7 @@ __global__ void diffraction_kernel(const GpuBeam *__restrict__ beams, int nBeams
     gpu_atomic_add(&jFull[off + 2], d01r); gpu_atomic_add(&jFull[off + 3], d01i);
     gpu_atomic_add(&jFull[off + 4], d10r); gpu_atomic_add(&jFull[off + 5], d10i);
     gpu_atomic_add(&jFull[off + 6], d11r); gpu_atomic_add(&jFull[off + 7], d11i);
-    if (jNoShadow && !b.isExternal)
+    if (jNoShadow && !b.omitFromSecondary)
     {
         gpu_atomic_add(&jNoShadow[off + 0], d00r); gpu_atomic_add(&jNoShadow[off + 1], d00i);
         gpu_atomic_add(&jNoShadow[off + 2], d01r); gpu_atomic_add(&jNoShadow[off + 3], d01i);
@@ -2406,7 +2427,7 @@ __global__ void diffraction_grid_kernel(const GpuBeam *__restrict__ beams,
         j01r += d01r; j01i += d01i;
         j10r += d10r; j10i += d10i;
         j11r += d11r; j11i += d11i;
-        if (!b.isExternal)
+        if (!b.omitFromSecondary)
         {
             n00r += d00r; n00i += d00i;
             n01r += d01r; n01i += d01i;
@@ -2542,8 +2563,8 @@ __global__ void mueller_batch_kernel(const GpuReal *__restrict__ jFull,
     gpu_atomic_add(&out[15], ( c1r - c2r) * weight);
 }
 
-template <bool WarpBeams = false>
-__global__ void diffraction_grid_mueller_kernel(const GpuBeam *__restrict__ beams,
+template <bool WarpBeams = false, int MaxVertices = 32, typename BeamT = GpuBeam>
+__global__ void diffraction_grid_mueller_kernel(const BeamT *__restrict__ beams,
                                                 const int *__restrict__ beamOffsets,
                                                 const GpuReal *__restrict__ sinTheta,
                                                 const GpuReal *__restrict__ cosTheta,
@@ -2602,8 +2623,8 @@ __global__ void diffraction_grid_mueller_kernel(const GpuBeam *__restrict__ beam
     for (int bi = begin + lane; bi < end; bi += WarpBeams ? 32 : 1)
     {
         GpuReal d00r, d00i, d01r, d01i, d10r, d10i, d11r, d11i;
-        const GpuBeam &b = beams[bi];
-        if (!compute_beam_jones_context_gpu<true>(
+        const BeamT &b = beams[bi];
+        if (!compute_beam_jones_context_limited_gpu<BeamT, MaxVertices, true>(
                 b, cp, sp, sin_t, cos_t, dx, dy, dz, vfx, vfy, vfz,
                 vtx, vty, vtz,
                 waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
@@ -2615,7 +2636,7 @@ __global__ void diffraction_grid_mueller_kernel(const GpuBeam *__restrict__ beam
         j01r += d01r; j01i += d01i;
         j10r += d10r; j10i += d10i;
         j11r += d11r; j11i += d11i;
-        if (!b.isExternal)
+        if (!b.omitFromSecondary)
         {
             n00r += d00r; n00i += d00i;
             n01r += d01r; n01i += d01i;
@@ -2653,6 +2674,83 @@ __global__ void diffraction_grid_mueller_kernel(const GpuBeam *__restrict__ beam
     if (mNoShadow)
         mueller_accum_from_jones(n00r, n00i, n01r, n01i, n10r, n10i, n11r, n11i,
                                  weight, &mNoShadow[grid * 16]);
+}
+
+template <int MaxVertices, typename BeamT>
+__global__ void diffraction_three_depth_kernel(const BeamT *__restrict__ beams,
+                                                const int *__restrict__ beamOffsets,
+                                                const GpuReal *__restrict__ sinTheta,
+                                                const GpuReal *__restrict__ cosTheta,
+                                                const GpuReal *__restrict__ sinPhi,
+                                                const GpuReal *__restrict__ cosPhi,
+                                                const GpuReal *__restrict__ vf,
+                                                const GpuReal *__restrict__ weights,
+                                                int nAz, int nZen,
+                                                int nOrient,
+                                                GpuReal waveIndex,
+                                                GpuReal wi2,
+                                                GpuReal eps1,
+                                                GpuReal eps2,
+                                                GpuReal complWaveR,
+                                                GpuReal complWaveI,
+                                                GpuReal invComplWaveR,
+                                                GpuReal invComplWaveI,
+                                                int legacySign,
+                                                GpuReal *__restrict__ mFull,
+                                                GpuReal *__restrict__ mNoShadow,
+                                                int bands)
+{
+    const int gridCount = nAz * (nZen + 1);
+    const long long total = (long long)nOrient * gridCount;
+    const long long thread = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    const long long idx = thread;
+    if (idx >= total) return;
+
+    const int orient = (int)(idx / gridCount);
+    const int grid = (int)(idx - (long long)orient * gridCount);
+    const int begin = beamOffsets[orient];
+    const int end = beamOffsets[orient + 1];
+    const int p = grid / (nZen + 1);
+    const int t = grid - p * (nZen + 1);
+    const GpuReal cp = cosPhi[p], sp = sinPhi[p];
+    const GpuReal sin_t = sinTheta[t], cos_t = cosTheta[t];
+    const GpuReal dx = sin_t * cp;
+    const GpuReal dy = sin_t * sp;
+    const GpuReal dz = -cos_t;
+    const GpuReal vfx = vf[(grid * 3) + 0];
+    const GpuReal vfy = vf[(grid * 3) + 1];
+    const GpuReal vfz = vf[(grid * 3) + 2];
+    GpuReal vtx, vty, vtz;
+    transverse_basis_gpu(vfx, vfy, vfz, dx, dy, dz, vtx, vty, vtz);
+
+    GpuReal j00r = 0.0, j00i = 0.0;
+    GpuReal j01r = 0.0, j01i = 0.0;
+    GpuReal j10r = 0.0, j10i = 0.0;
+    GpuReal j11r = 0.0, j11i = 0.0;
+    int first=begin;
+    const GpuReal weight = weights[orient] * (GpuReal)0.25;
+    for(int band=0;band<bands;++band){
+        const int last=band+1==bands?end:beamOffsets[size_t(band+1)*nOrient+1+orient];
+        for (int bi = first; bi < last; ++bi) {
+        GpuReal d00r, d00i, d01r, d01i, d10r, d10i, d11r, d11i;
+        const BeamT &b = beams[bi];
+        if (!compute_beam_jones_context_limited_gpu<BeamT, MaxVertices, true>(
+                b, cp, sp, sin_t, cos_t, dx, dy, dz, vfx, vfy, vfz,
+                vtx, vty, vtz,
+                waveIndex, wi2, eps1, eps2, complWaveR, complWaveI,
+                invComplWaveR, invComplWaveI, legacySign, 1,
+                d00r, d00i, d01r, d01i, d10r, d10i, d11r, d11i))
+            continue;
+
+        j00r += d00r; j00i += d00i;
+        j01r += d01r; j01i += d01i;
+        j10r += d10r; j10i += d10i;
+        j11r += d11r; j11i += d11i;
+        }
+        first=last;
+        GpuReal* target=band+1==bands?mFull:band+2==bands?mNoShadow:mNoShadow+size_t(band+1)*gridCount*16;
+        mueller_accum_from_jones(j00r,j00i,j01r,j01i,j10r,j10i,j11r,j11i,weight,&target[grid*16]);
+    }
 }
 
 template <bool ComputeNoShadow>
@@ -2720,7 +2818,7 @@ __global__ void diffraction_grid_mueller_incoherent_kernel(
         mueller_add_from_jones(d00r, d00i, d01r, d01i,
                                d10r, d10i, d11r, d11i,
                                weight, full);
-        if (ComputeNoShadow && !b.isExternal)
+        if (ComputeNoShadow && !b.omitFromSecondary)
             mueller_add_from_jones(d00r, d00i, d01r, d01i,
                                    d10r, d10i, d11r, d11i,
                                    weight, noShadow);
@@ -4255,7 +4353,7 @@ bool HandlerPO::HandleBeamsToLocalGpu(const PreparedOrientation &prepared,
         b.nVertices = pb.edgeData.nVertices;
         b.nEdgeX = 0;
         b.nEdgeY = 0;
-        b.isExternal = pb.isExternal ? 1 : 0;
+        b.omitFromSecondary = pb.isExternal ? 1 : 0;
         b.orientation = 0;
         for (int e = 0; e < b.nVertices; ++e)
         {
@@ -4387,6 +4485,12 @@ int HandlerPO::SelectGpuOrientationBatchSize(const std::vector<PreparedOrientati
                                              int start,
                                              int maxCount) const
 {
+    return SelectGpuOrientationBatchSize(prepared,start,maxCount,false);
+}
+
+int HandlerPO::SelectGpuOrientationBatchSize(const std::vector<PreparedOrientation>& prepared,
+                                            int start,int maxCount,bool pairedField) const
+{
     if (maxCount <= 1)
         return std::max(1, maxCount);
 
@@ -4398,10 +4502,10 @@ int HandlerPO::SelectGpuOrientationBatchSize(const std::vector<PreparedOrientati
     const int nZen = m_sphere.nZenith;
     const size_t gridCount = (size_t)nAz * ((size_t)nZen + 1);
 
-    const bool computeNoShadow = ComputeNoShadow();
+    const bool computeNoShadow = pairedField || ComputeNoShadow();
     const int noAtomicsMode = gpu_no_atomics_mode();
     const bool definitelyNoAtomics = (noAtomicsMode > 0)
-        || (noAtomicsMode < 0 && !computeNoShadow);
+        || (noAtomicsMode < 0 && (pairedField || !computeNoShadow));
     const int fusedMuellerMode = gpu_fused_mueller_mode();
     const bool fusedMueller = definitelyNoAtomics && ((fusedMuellerMode >= 0)
         ? (fusedMuellerMode != 0)
@@ -5732,6 +5836,20 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                                              double scale,
                                              double waveIndex)
 {
+    return HandleOrientationsToLocalGpu(prepared,start,count,localM,localM_noshadow,scale,waveIndex,0);
+}
+
+bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientation>& prepared,
+                                             int start,int count,Arr2D& localM,Arr2D& localM_noshadow,
+                                             double scale,double waveIndex,int lowerDepth)
+{
+    return HandleDepthPacketGpu(prepared,start,count,localM,localM_noshadow,scale,waveIndex,lowerDepth,{},{});
+}
+
+bool HandlerPO::HandleDepthPacketGpu(const std::vector<PreparedOrientation>& prepared,
+                                     int start,int count,Arr2D& localM,Arr2D& localM_noshadow,
+                                     double scale,double waveIndex,int lowerDepth,const std::vector<int>& coarseDepths,const std::vector<Arr2D*>& outputs)
+{
     auto failDirect = [](const char *where) {
         if (gpu_fft_debug_enabled())
             std::fprintf(stderr, "GPU direct failed at %s\n", where);
@@ -5745,11 +5863,22 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     const int gridCount = nAz * (nZen + 1);
     if (nOrient == 0 || gridCount == 0)
         return true;
-    const bool computeNoShadow = ComputeNoShadow();
+    if(lowerDepth && (!isCoh || ComputeNoShadow()))return failDirect("incompatible-secondary-field");
+    const bool thirdDepth=!coarseDepths.empty();
+    if(outputs.size()!=coarseDepths.size() || lowerDepth>30 || (thirdDepth && (coarseDepths.front()<1 || coarseDepths.back()>=lowerDepth)))
+        return failDirect("invalid-depth-range");
+    for(size_t i=0;i<coarseDepths.size();++i)
+        if(!outputs[i] || (i && coarseDepths[i-1]>=coarseDepths[i]))return failDirect("invalid-depth-band");
+    const int bands=int(coarseDepths.size())+2;
+    int bandForDepth[31]={};
+    if(thirdDepth)for(int d=0;d<=lowerDepth;++d)
+        bandForDepth[d]=int(std::lower_bound(coarseDepths.begin(),coarseDepths.end(),d)-coarseDepths.begin());
+    const bool computeNoShadow = lowerDepth || ComputeNoShadow();
 
     if (!g_gpuMultiWorker && !g_gpuFftLowDirect)
     {
         const int nDevices = gpu_multi_device_count(nOrient);
+        if(thirdDepth && nDevices>1)return failDirect("third-depth-requires-one-visible-device");
         if (nDevices > 1)
         {
             int savedDevice = 0;
@@ -5792,7 +5921,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                 const int subCount = end - begin;
                 jobs.push_back(std::async(std::launch::async,
                     [this, &prepared, &partialM, &partialMns, dev, begin, subCount,
-                     scale, waveIndex]() -> bool {
+                     scale, waveIndex, lowerDepth]() -> bool {
                         if (subCount <= 0)
                             return true;
                         int savedWorkerDevice = 0;
@@ -5815,7 +5944,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                         } guard(savedWorkerDevice);
                         bool ok = this->HandleOrientationsToLocalGpu(
                             prepared, begin, subCount, partialM[dev],
-                            partialMns[dev], scale, waveIndex);
+                            partialMns[dev], scale, waveIndex, lowerDepth);
                         return ok;
                     }));
             }
@@ -5839,7 +5968,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
 
     GpuWorkspace &ws = g_gpuWorkspace;
     const bool reusePacked = g_gpuPackCacheToken != 0
-        && ws.packedCacheValid
+        && !lowerDepth && ws.packedCacheValid
         && ws.packedCacheToken == g_gpuPackCacheToken
         && ws.packedStart == start
         && ws.packedOrientCount == nOrient
@@ -5877,6 +6006,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                     // every clipped polygon. Keep the ENTIRE orientation on
                     // CPU: adding a single beam's Mueller matrix would lose its
                     // coherent cross terms with the other beams.
+                    if(thirdDepth)return failDirect("three-depth-aperture-unavailable");
                     const int bad = start + oi;
                     std::fprintf(stderr,
                         "GPU aperture fallback: orientation-in-chunk=%d "
@@ -5886,7 +6016,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                         pb.fallback ? pb.fallback->beam.nVertices : -1);
                     if (oi > 0 && !HandleOrientationsToLocalGpu(
                             prepared, start, oi, localM, localM_noshadow,
-                            scale, waveIndex))
+                            scale, waveIndex, lowerDepth))
                         return false;
 
                     std::vector<Arr2DC> cpuJ, cpuJns;
@@ -5909,7 +6039,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                     }
                     const PreparedOrientation &cpuOrientation = *cpuSource;
                     HandleBeamsToLocal(cpuOrientation, localM, cpuJ,
-                                       computeNoShadow ? &cpuJns : nullptr);
+                                       computeNoShadow ? &cpuJns : nullptr, lowerDepth);
                     AddToMuellerLocal(cpuJ, cpuOrientation.sinZenith,
                                       localM, nAz, nZen);
                     if (computeNoShadow)
@@ -5918,7 +6048,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                     const int remaining = nOrient - oi - 1;
                     return remaining == 0 || HandleOrientationsToLocalGpu(
                         prepared, bad + 1, remaining, localM, localM_noshadow,
-                        scale, waveIndex);
+                        scale, waveIndex, lowerDepth);
                 }
                 maxBeamVertices = std::max(
                     maxBeamVertices, pb.edgeData.nVertices);
@@ -5961,8 +6091,11 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     const int requestedStageMueller = gpu_stage_mueller_mode();
     const int requestedNoVertexCache = gpu_no_vertex_cache_mode();
     const int requestedNoAtomics = gpu_no_atomics_mode();
+    // For two depths the compact kernel consumes one eight-vertex buffer.
+    // A wider aperture retains the general kernel and its full-width layout.
+    const bool compactPair=lowerDepth && allBeam8;
     const bool canUseBeam8 = gpu_compact_beams_enabled()
-        && !computeNoShadow
+        && (!computeNoShadow || compactPair)
         && requestedNoAtomics != 0
         && requestedFusedMueller != 0
         // Compact staged output has a warp kernel only. The scalar staged
@@ -5974,7 +6107,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     const bool packMixedBeam8 = !allBeam8 && canUseBeam8
                              && requestedStageMueller != 1
                              && nBeams8 > 0 && nBeamsLarge > 0;
-    const bool splitBeam4 = (packBeam8 || packMixedBeam8)
+    const bool splitBeam4 = !lowerDepth && (packBeam8 || packMixedBeam8)
                          && gpu_compact_beam4_split_enabled()
                          && requestedStageMueller != 1
                          && !gpu_warp_beams_enabled() && nBeams4 > 0;
@@ -6006,7 +6139,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         else
             hBeams.resize(nBeams);
         hWeights.assign(nOrient, 0.0);
-        hBeamOffsets.assign(nOrient + 1, 0);
+        hBeamOffsets.assign((thirdDepth?size_t(bands):1)*size_t(nOrient)+1,0);
         if (splitBeam4)
         {
             hBeamOffsets4.assign(nOrient + 1, 0);
@@ -6114,6 +6247,27 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
             size_t out = (size_t)hBeamOffsets[oi];
             size_t out8 = packMixedBeam8 ? (size_t)hBeamOffsets8[oi] : 0;
             const PreparedOrientation &po = prepared[start + oi];
+            if(thirdDepth){
+                const auto bandOf=[&](const PreparedBeam& beam){
+                    const int depth=beam.isExternal?0:std::max(0,beam.nActs);
+                    return depth>lowerDepth?bands-1:bandForDepth[depth];
+                };
+                // Up to 30 physical depths, including the reference and anchor.
+                size_t counts[32]={},cursor[32]={};
+                for(const auto& beam:po.beams)++counts[bandOf(beam)];
+                cursor[0]=out;
+                for(int b=1;b<bands;++b){
+                    cursor[b]=cursor[b-1]+counts[b-1];
+                    hBeamOffsets[size_t(b)*nOrient+1+oi]=int(cursor[b]);
+                }
+                const double absorption=AbsorptionCoefficient();
+                for(const auto& beam:po.beams){
+                    const size_t dest=cursor[bandOf(beam)]++;
+                    if(packBeam8)pack_prepared_gpu_compact_beam(beam,oi,scale,scale2,scaleOnPack,waveIndex,packedPhaseScale,absorption,hBeams8[dest]);
+                    else pack_prepared_gpu_beam<GpuBeam,32>(beam,oi,scale,scale2,scaleOnPack,waveIndex,packedPhaseScale,absorption,hBeams[dest]);
+                }
+                continue;
+            }
             if (splitBeam4)
             {
                 size_t cursor[9] = {};
@@ -6163,7 +6317,9 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                         pack_prepared_gpu_compact_beam(
                             pb, oi, scale, scale2, scaleOnPack, waveIndex,
                             packedPhaseScale, AbsorptionCoefficient(),
-                            hBeams8[cursor[nv]++]);
+                            hBeams8[cursor[nv]]);
+                        if(lowerDepth)hBeams8[cursor[nv]].omitFromSecondary=!pb.isExternal && pb.nActs>lowerDepth;
+                        ++cursor[nv];
                     }
                     else
                     {
@@ -6181,7 +6337,11 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                     pack_prepared_gpu_beam<GpuBeam, 32>(
                         pb, oi, scale, scale2, scaleOnPack, waveIndex,
                         packedPhaseScale, AbsorptionCoefficient(),
-                        hBeams[out++]);
+                        hBeams[out]);
+                    // Depth and no-shadow views are mutually exclusive. The same second
+                    // Jones accumulator can contain exactly the lower-depth beam set.
+                    if(lowerDepth)hBeams[out].omitFromSecondary = !pb.isExternal && pb.nActs>lowerDepth;
+                    ++out;
                 }
             }
         }
@@ -6213,7 +6373,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     {
         noAtomics = (noAtomicsMode != 0);
     }
-    else if (!computeNoShadow)
+    else if (lowerDepth || !computeNoShadow)
     {
         // For full-only output the fused orientation-grid kernel avoids
         // large Jones buffers and a second Mueller pass. Short production
@@ -6229,7 +6389,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
             const size_t jonesBytes =
                 jCount * sizeof(GpuReal) * (computeNoShadow ? 2 : 1);
             const size_t muellerBytes =
-                mCount * sizeof(GpuReal) * (computeNoShadow ? 2 : 1);
+                mCount * sizeof(GpuReal) * (computeNoShadow ? 2+coarseDepths.size() : 1);
             const size_t beamBytes =
                 (splitBeam4
                     ? nBeams4 * sizeof(GpuBeam4)
@@ -6258,6 +6418,8 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     const bool fusedMueller = !isCoh || (noAtomics && ((fusedMuellerMode >= 0)
         ? (fusedMuellerMode != 0)
         : true));
+    if(thirdDepth && !fusedMueller)return failDirect("three-depth-needs-fused-output");
+    const size_t secondarySize=(coarseDepths.size()+1)*mCount;
     const int stageMuellerMode = gpu_stage_mueller_mode();
     const bool stageMueller = isCoh && fusedMueller && !computeNoShadow && ((stageMuellerMode >= 0)
         ? (stageMuellerMode != 0)
@@ -6266,7 +6428,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     const bool noVertexCache = (noVertexCacheMode >= 0)
         ? (noVertexCacheMode != 0)
         : false;
-    const bool useBeam8 = packBeam8 && fusedMueller && !computeNoShadow
+    const bool useBeam8 = packBeam8 && fusedMueller && (!computeNoShadow || compactPair)
         && !noVertexCache;
     const bool useMixedBeam8 = packMixedBeam8 && fusedMueller && !computeNoShadow
         && !stageMueller && !noVertexCache;
@@ -6314,7 +6476,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     if (!fusedMueller && computeNoShadow && !ensure_device_capacity(ws.jNoShadow, ws.jNoShadowCap, jCount)) return failDirect("alloc-jones-ns");
     if (!ensure_device_capacity(ws.m, ws.mCap, mCount)) return failDirect("alloc-mueller");
     if (stageMueller && !ensure_device_capacity(ws.mOrient, ws.mOrientCap, (size_t)nOrient * gridCount * 16)) return failDirect("alloc-orient-mueller");
-    if (computeNoShadow && !ensure_device_capacity(ws.mNoShadow, ws.mNoShadowCap, mCount)) return failDirect("alloc-mueller-ns");
+    if (computeNoShadow && !ensure_device_capacity(ws.mNoShadow, ws.mNoShadowCap, secondarySize)) return failDirect("alloc-mueller-ns");
     if (timing) tEnsure = gpu_now_ms() - t0;
 
     t0 = timing ? gpu_now_ms() : 0.0;
@@ -6394,7 +6556,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         if (splitBeam4 && cudaMemcpy(ws.beamOffsets4, hBeamOffsets4.data(), hBeamOffsets4.size() * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) return failDirect("copy-offsets4");
         if (fixedBeam34 && cudaMemcpy(ws.beamOffsets4Quad, hBeamOffsets4Quad.data(), hBeamOffsets4Quad.size() * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) return failDirect("copy-offsets4-quad");
         if ((splitBeam4 || useMixedBeam8) && cudaMemcpy(ws.beamOffsets8, hBeamOffsets8.data(), hBeamOffsets8.size() * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) return failDirect("copy-offsets8");
-        if (g_gpuPackCacheToken != 0)
+        if (!lowerDepth && g_gpuPackCacheToken != 0)
         {
             ws.packedCacheToken = g_gpuPackCacheToken;
             ws.packedStart = start;
@@ -6414,7 +6576,7 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     if (!fusedMueller && cudaMemset(ws.j, 0, jCount * sizeof(GpuReal)) != cudaSuccess) return failDirect("memset-j");
     if (!fusedMueller && computeNoShadow && cudaMemset(ws.jNoShadow, 0, jCount * sizeof(GpuReal)) != cudaSuccess) return failDirect("memset-j-ns");
     if (cudaMemset(ws.m, 0, mCount * sizeof(GpuReal)) != cudaSuccess) return failDirect("memset-m");
-    if (computeNoShadow && cudaMemset(ws.mNoShadow, 0, mCount * sizeof(GpuReal)) != cudaSuccess) return failDirect("memset-m-ns");
+    if (computeNoShadow && cudaMemset(ws.mNoShadow, 0, secondarySize * sizeof(GpuReal)) != cudaSuccess) return failDirect("memset-m-ns");
     if (timing) tCopy = gpu_now_ms() - t0;
 
     t0 = timing ? gpu_now_ms() : 0.0;
@@ -6656,7 +6818,52 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
         }
         else if (computeNoShadow)
         {
-            diffraction_grid_mueller_kernel<<<diffractionGrid, block>>>(
+            // Compare warp-cooperative accumulation against the scalar grid on
+            // the same paired fields. Launch complete warps so every shuffle
+            // has 32 active lanes, including orientations with very few beams.
+            const char* warpPairOption = lowerDepth ? std::getenv("MBS_PAIRED_GPU_WARP") : nullptr;
+            const bool warpPair = warpPairOption && std::strcmp(warpPairOption,"1")==0
+                && block%32==0 && diffractionTotal<=(static_cast<long long>(INT_MAX)*block)/32;
+            const int pairGrid = warpPair ? int((diffractionTotal*32+block-1)/block) : diffractionGrid;
+            static thread_local bool reportedPairWarp=false;
+            if(warpPair && !reportedPairWarp){
+                std::clog<<"Paired coherent warp reduction active"<<std::endl;
+                reportedPairWarp=true;
+            }
+            if(thirdDepth && useBeam8)
+                diffraction_three_depth_kernel<8><<<diffractionGrid,block>>>(ws.beams8, ws.beamOffsets, ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                        ws.vf, ws.weights, nAz, nZen, nOrient, diffractionWaveIndex, diffractionWi2,
+                        gpu_effective_eps1(m_eps1), m_eps2, real(m_complWave), imag(m_complWave),
+                        real(m_invComplWave), imag(m_invComplWave), m_legacySign ? 1 : 0,
+                        ws.m, ws.mNoShadow, bands);
+            else if(thirdDepth)
+                diffraction_three_depth_kernel<32><<<diffractionGrid,block>>>(ws.beams, ws.beamOffsets, ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                        ws.vf, ws.weights, nAz, nZen, nOrient, diffractionWaveIndex, diffractionWi2,
+                        gpu_effective_eps1(m_eps1), m_eps2, real(m_complWave), imag(m_complWave),
+                        real(m_invComplWave), imag(m_invComplWave), m_legacySign ? 1 : 0,
+                        ws.m, ws.mNoShadow, bands);
+            else if(warpPair && useBeam8)
+                diffraction_grid_mueller_kernel<true,8><<<pairGrid, block>>>(
+                    ws.beams8, ws.beamOffsets, ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                    ws.vf, ws.weights, nAz, nZen, nOrient, diffractionWaveIndex, diffractionWi2,
+                    gpu_effective_eps1(m_eps1), m_eps2, real(m_complWave), imag(m_complWave),
+                    real(m_invComplWave), imag(m_invComplWave), m_legacySign ? 1 : 0,
+                    ws.m, ws.mNoShadow);
+            else if(warpPair)
+                diffraction_grid_mueller_kernel<true><<<pairGrid, block>>>(
+                    ws.beams, ws.beamOffsets, ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                    ws.vf, ws.weights, nAz, nZen, nOrient, diffractionWaveIndex, diffractionWi2,
+                    gpu_effective_eps1(m_eps1), m_eps2, real(m_complWave), imag(m_complWave),
+                    real(m_invComplWave), imag(m_invComplWave), m_legacySign ? 1 : 0,
+                    ws.m, ws.mNoShadow);
+            else if(useBeam8)
+                diffraction_grid_mueller_kernel<false,8><<<diffractionGrid, block>>>(
+                    ws.beams8, ws.beamOffsets, ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
+                    ws.vf, ws.weights, nAz, nZen, nOrient, diffractionWaveIndex, diffractionWi2,
+                    gpu_effective_eps1(m_eps1), m_eps2, real(m_complWave), imag(m_complWave),
+                    real(m_invComplWave), imag(m_invComplWave), m_legacySign ? 1 : 0,
+                    ws.m, ws.mNoShadow);
+            else diffraction_grid_mueller_kernel<<<diffractionGrid, block>>>(
                 ws.beams, ws.beamOffsets, ws.sinTheta, ws.cosTheta, ws.sinPhi, ws.cosPhi,
                 ws.vf, ws.weights, nAz, nZen, nOrient,
                 diffractionWaveIndex, diffractionWi2,
@@ -7043,11 +7250,11 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
     t0 = timing ? gpu_now_ms() : 0.0;
     ws.hM.resize(mCount);
     if (computeNoShadow)
-        ws.hMNoShadow.resize(mCount);
+        ws.hMNoShadow.resize(secondarySize);
     std::vector<GpuReal> &hM = ws.hM;
     std::vector<GpuReal> &hMns = ws.hMNoShadow;
     if (cudaMemcpy(hM.data(), ws.m, mCount * sizeof(GpuReal), cudaMemcpyDeviceToHost) != cudaSuccess) return failDirect("copy-m-host");
-    if (computeNoShadow && cudaMemcpy(hMns.data(), ws.mNoShadow, mCount * sizeof(GpuReal), cudaMemcpyDeviceToHost) != cudaSuccess) return failDirect("copy-m-ns-host");
+    if (computeNoShadow && cudaMemcpy(hMns.data(), ws.mNoShadow, secondarySize * sizeof(GpuReal), cudaMemcpyDeviceToHost) != cudaSuccess) return failDirect("copy-m-ns-host");
     if (timing) tD2h = gpu_now_ms() - t0;
 
     t0 = timing ? gpu_now_ms() : 0.0;
@@ -7061,6 +7268,11 @@ bool HandlerPO::HandleOrientationsToLocalGpu(const std::vector<PreparedOrientati
                 cell[k] += m[k];
             if (computeNoShadow)
             {
+                for(size_t i=0;i<outputs.size();++i){
+                    double* coarse=outputs[i]->RawCell(p,t);
+                    const auto* cell=hMns.data()+(i+1)*mCount+size_t(grid)*16;
+                    for(int k=0;k<16;++k)coarse[k]+=cell[k];
+                }
                 const GpuReal *mn = &hMns[grid * 16];
                 double *cellNs = localM_noshadow.RawCell(p, t);
                 for (int k = 0; k < 16; ++k)
@@ -7141,7 +7353,7 @@ bool HandlerPO::DiffractThetasGpu(const std::vector<PreparedOrientation> &prepar
             b.nVertices = pb.edgeData.nVertices;
             b.nEdgeX = 0;
             b.nEdgeY = 0;
-            b.isExternal = pb.isExternal ? 1 : 0;
+            b.omitFromSecondary = pb.isExternal ? 1 : 0;
             b.orientation = oi;
             for (int e = 0; e < b.nVertices; ++e)
             {

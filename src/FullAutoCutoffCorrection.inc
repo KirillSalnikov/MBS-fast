@@ -24,16 +24,37 @@ std::vector<std::string> CutoffChildCommand(const std::vector<std::string>& orig
         set("--cutoff-profile",CutoffBaseProfile());}
     set("--output",output);return c;
 }
-void WriteCutoffMatrix(Job& job,const std::vector<Job>& parts,const std::vector<std::string>& command,int depth,const std::string& stem){
+void WriteCutoffMatrix(Job& job,const std::vector<Job>& parts,const std::vector<std::string>& command,int depth,const std::string& stem,bool cancelledBound=false){
     Require(parts.size()==3||parts.size()==5,"cutoff correction needs three or five terms");
     const auto& x=job.inputAngles;Matrix matrix(x.size(),Mueller{});std::vector<std::array<double,5>> cv(job.hasControls?x.size():0,std::array<double,5>{});
     double refinement=0,setup=0;
+    // A shared reference is deterministic for this particle and theta.
+    // The signed cutoff coefficients sum to one for both estimator recipes.
+    // The production reference sums the source bounds. Reproduce that
+    // decision independently of the faster way the native samples are made.
+    bool commonMean=job.hasControls&&sharedMeans&&!componentwiseCutoffMeanBound;
+    const auto& first=parts.front();
+    if(cancelledBound)Require(parts.size()==5&&parts[1].folder==parts[4].folder&&sharedMeans&&referenceCutoffMeanBound&&job.hasControls,
+        "invalid shared analytic bound for cancelling cutoff terms");
     for(size_t i=0;i<parts.size();++i){const auto& p=parts[i];const int sign=(i==2||i==4)?-1:1;
+        if(cancelledBound&&(i==1||i==4)){
+            Require(p.depth==depth&&p.angles.size()==x.size()&&std::equal(p.angles.begin(),p.angles.end(),x.begin(),[](double a,double b){return std::fabs(a-b)<1e-10;})&&p.hasControls&&std::isfinite(p.controlRefinement)&&p.controlRefinement>=0,
+                "incompatible deterministic analytic reference");
+            refinement+=p.controlRefinement;
+            if(i==1)setup+=p.controlSetup;
+            continue;
+        }
         Require(p.seed==job.seed&&p.offset==job.offset&&p.depth==depth&&p.angles.size()==x.size()&&p.hasControls==job.hasControls,"incompatible cutoff correction source");
         for(size_t r=0;r<x.size();++r){Require(std::fabs(p.angles[r]-x[r])<1e-10,"cutoff source theta differs");for(int j=0;j<16;++j)matrix[r][j]+=sign*p.matrix[r][j];
-            if(job.hasControls)for(int j=0;j<5;++j)cv[r][j]+=sign*p.controls[r][j];}
+            if(job.hasControls){
+                for(int j=0;j<5;++j)cv[r][j]+=sign*p.controls[r][j];
+                if(commonMean&&(p.controls[r][1]!=first.controls[r][1]
+                             ||p.controls[r][2]!=first.controls[r][2]))commonMean=false;
+            }}
+        if(p.controlRefinement!=first.controlRefinement)commonMean=false;
         refinement+=p.controlRefinement;setup+=p.controlSetup;
     }
+    if(commonMean)refinement=first.controlRefinement;
     WriteMatrix(stem+".dat",x,matrix);
     if(job.hasControls){std::vector<std::array<double,2>> coefficients(x.size(),{{1,1}});
         for(size_t i=0;i+1<command.size();++i)if(command[i]=="--analytic-control-weights"){
@@ -108,14 +129,14 @@ std::string CutoffPrefixValidationKey(const Job& job)const{
     for(unsigned seed:seeds)profile<<' '<<seed;
     return Hash(profile.str());
 }
-bool VerifyCutoffPrefix(const Job& job,const std::vector<std::string>& actualCommand){
+bool VerifyCutoffPrefix(const Job& job,const std::vector<std::string>& actualCommand,bool inner=false){
     if(!NativeWorkerCapabilities::OrientationPrefixOutput())return false;
 #ifndef MBS_GPU_FP32
-    (void)job;(void)actualCommand;return true;
+    (void)job;(void)actualCommand;(void)inner;return true;
 #else
     if(!config.useGpu)return true;
     const int n=std::min(job.count,1024),m=std::max(64,n/8);
-    const auto key=CutoffPrefixValidationKey(job),path=root+"/cutoff_prefix_validation_"+key+".json";
+    const auto key=CutoffPrefixValidationKey(job)+(inner?"_balanced_inner":""),path=root+"/cutoff_prefix_validation_"+key+".json";
     const auto known=cutoffPrefixChecks.find(key);if(known!=cutoffPrefixChecks.end())return known->second;
     if(Exists(path)){const auto saved=CompactJson(Read(path));const bool passed=saved.find("\"passed\":true")!=std::string::npos;
         cutoffPrefixChecks[key]=passed;return passed;}
@@ -145,6 +166,8 @@ bool VerifyCutoffPrefix(const Job& job,const std::vector<std::string>& actualCom
         if(Exists(j.folder+"/worker.pid"))Require(!WorkerAlive(j.folder+"/worker.pid"),"prefix pilot still running");
         if(Exists(j.folder+"/result"))Require(RenamePath(j.folder+"/result",j.folder+"/result_incomplete_"+Number(getpid()))==0,"cannot preserve prefix pilot output");
         auto command=CutoffChildCommand(actualCommand,count,j.depth,j.pairedDepth,balanced,j.folder+"/result");
+        if(inner&&balanced)for(size_t i=0;i+1<command.size();++i)
+            if(command[i]=="--cutoff-profile")command[i+1]="balanced";
         for(size_t i=0;i+2<command.size();++i)if(command[i]=="--sobol-seed")command[i+2]=Number(seed);
         for(size_t i=0;i+1<command.size();)if(command[i]=="--sobol-offset")command.erase(command.begin()+i,command.begin()+i+2);else ++i;
         if(embedded){command.push_back("--orientation-prefix-output");command.push_back(Number(m));}
@@ -177,6 +200,19 @@ bool VerifyCutoffPrefix(const Job& job,const std::vector<std::string>& actualCom
                     for(int k=0;k<16;++k){if(!std::isfinite(reference[k])||!std::isfinite(result[k])){error=1e100;continue;}
                         error=std::max(error,std::fabs(reference[k]-result[k])/reference[0]);
                         error=std::max(error,std::fabs(reference[k]/reference[0]-result[k]/result[0]));}
+                    if(inner){
+                        // The staged estimator uses B_m and B_k with opposite signs.
+                        // Check each source too, so errors cannot hide by cancellation.
+                        for(const auto& pair:{std::make_pair(&a[row],&c[row]),std::make_pair(&b[row],&p[row])}){
+                            const auto& ref=*pair.first;const auto& trial=*pair.second;
+                            if(!(ref[0]>0&&trial[0]>0)){error=1e100;continue;}
+                            for(int k=0;k<16;++k){
+                                if(!std::isfinite(ref[k])||!std::isfinite(trial[k])){error=1e100;continue;}
+                                error=std::max(error,std::fabs(ref[k]-trial[k])/ref[0]);
+                                error=std::max(error,std::fabs(ref[k]/ref[0]-trial[k]/trial[0]));
+                            }
+                        }
+                    }
                     ++comparisons;
                 }
             }
@@ -191,7 +227,7 @@ bool VerifyCutoffPrefix(const Job& job,const std::vector<std::string>& actualCom
         +",\"max_all16_and_ratios_difference\":"+Number(error)+",\"numerical_tolerance\":"+Number(tolerance)
         +",\"baseline_processing_seconds\":"+Number(baselineSeconds)+",\"prefix_processing_seconds\":"+Number(candidateSeconds)
         +",\"pilot_elapsed_seconds\":"+Number(Seconds()-started)+",\"fallback\":\"original_three_leg_estimator\",\"production_sampling_unchanged\":true}";
-    Record(path,report);Log("cutoff_prefix_validation",report);cutoffPrefixChecks[key]=passed;return passed;
+    Record(path,report);Log(inner?"cutoff_inner_prefix_validation":"cutoff_prefix_validation",report);cutoffPrefixChecks[key]=passed;return passed;
 #endif
 }
 // A completed native source can still be read after a controller-only upgrade
@@ -231,12 +267,14 @@ bool RestoreCutoffPrefixRecipe(const Job& parent,int prefix){
     Record(parent.folder+"/cutoff_prefix_fallback.json",receipt);
     Atomic(path,"three-leg-v1\n");Log("cutoff_prefix_recipe_fallback",receipt);return false;
 }
+#include "FullAutoCutoffGrowth.inc"
 bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::string>>& commands,const std::vector<size_t>& todo,const std::function<void(size_t)>& onComplete){
     bool any=false;for(size_t i:todo)any=any||CorrectCutoffJob(result[i]);if(!any)return false;
     IndexAppendBatch indexWrites(*this);
-    struct Recipe {size_t parent;bool embeddedPrefix=false,staged=false;std::vector<size_t> children;};std::vector<Recipe> recipes;
+    struct Recipe {size_t parent;bool embeddedPrefix=false,innerPrefix=false,staged=false,cancelledBound=false;std::vector<size_t> children;};std::vector<Recipe> recipes;
     std::vector<Job> native;std::vector<std::vector<std::string>> nativeCommands;std::vector<size_t> launch;
     std::map<size_t,size_t> direct;
+    std::map<std::vector<std::string>,size_t> meanWitnesses;
     auto add=[&](const Job& parent,const std::vector<std::string>& command,int n,int depth,int pairedDepth,bool balanced,int prefix,const std::string& overrideProfile="")->size_t{
         Job j=parent;j.count=n;j.depth=depth;j.pairedDepth=pairedDepth;j.assembled=false;
         // Separate child identities from production targets: a corrected target
@@ -259,7 +297,18 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
     };
     for(size_t i:todo){const auto& j=result[i];
         if(!CorrectCutoffJob(j)){direct[i]=native.size();launch.push_back(native.size());native.push_back(j);nativeCommands.push_back(commands[i]);continue;}
-        Recipe recipe;recipe.parent=i;recipe.staged=StagedCutoff();const int m=std::max(64,j.count/8);
+        Recipe recipe;recipe.parent=i;const int m=std::max(64,j.count/8);
+        // At the minimum correction counts B_m and B_k are the SAME native
+        // sample (seed, offset, depth, angles and controls). Cancel it before
+        // dispatch: F_N+B_m-F_m+O_m-B_m = F_N+O_m-F_m. This does not
+        // change sample counts or select a recipe from observed values.
+        const int k=std::max(64,j.count/64);
+        // In the reference policy the two equal balanced terms cancel in the
+        // matrix but both positive refinement allowances enter the analytic
+        // budget. add() shares their native job, including its measured bound.
+        recipe.staged=StagedCutoff()&&(m!=k||(j.hasControls&&referenceCutoffMeanBound));
+        if(StagedCutoff()&&!recipe.staged)Log("cutoff_exact_cancellation",
+            "{\"estimator\":\"F_N+O_m-F_m\",\"cancelled_profile\":\"balanced\",\"N\":"+Number(j.count)+",\"m_equals_k\":"+Number(m)+",\"sample_values_inspected\":false}");
         bool pairedBalanced=j.pairedDepth!=0;
         // Resume any existing five-leg transaction with its original children.
         // New transactions share both balanced depth traces and need three legs.
@@ -268,11 +317,30 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
             if(cache.count(identity)||Exists(root+"/jobs/c"+identity))pairedBalanced=false;
         }
         bool prefixEligible=NativeWorkerCapabilities::OrientationPrefixOutput();
+        const char* prefixPolicy=std::getenv("MBS_FULLAUTO_CUTOFF_PREFIX");
+        // Qualifying an embedded prefix costs eight extra pilot jobs on a
+        // new grid. Use the equivalent separate prefix for short GPU jobs.
+        if(prefixPolicy)prefixEligible=prefixEligible&&std::string(prefixPolicy)!="0";
+#ifdef MBS_GPU_FP32
+        else if(UseCoherentGpuScheduling()&&j.count<=1024)prefixEligible=false;
+#endif
         for(const char* flag:{"--no-shadow-output","--analytic-backscatter","--analytic-facet-samples","--analytic-azimuth-gaussian"})
             if(std::find(commands[i].begin(),commands[i].end(),flag)!=commands[i].end())prefixEligible=false;
         // Existing interrupted transactions retain their exact native recipe.
         // The durable choice is written before dispatching any of its children.
         const auto prefixRecipe=CutoffPrefixRecipePath(j);
+        if(prefixEligible&&!prefixPolicy&&extendCutoffChild&&(!controls||sharedMeans)&&coherent&&!go&&
+           !j.paired&&!j.nestedPhiMin&&!Exists(prefixRecipe)&&j.count>=128){
+            // A measured, complete native half can supply the first half of F_N.
+            // Look only at metadata. Honour any explicit or durable prefix choice.
+            Job fast=j;fast.pairedDepth=pairedBalanced?j.pairedDepth:0;
+            fast.executionHash=Hash(j.executionHash+(StagedCutoff()?" staged-fast-child-v1":" balanced-child-v1"));
+            const auto cmd=CutoffChildCommand(commands[i],j.count,j.depth,fast.pairedDepth,true,j.folder+"/result");
+            if(CutoffWindowSource(fast,j.count/2,cmd)){
+                prefixEligible=false;
+                Log("cutoff_reuse_prior_half","{\"count\":"+Number(j.count)+",\"paired_depth\":"+Number(fast.pairedDepth)+"}");
+            }
+        }
         if(Exists(prefixRecipe))recipe.embeddedPrefix=RestoreCutoffPrefixRecipe(j,m);
         else if(prefixEligible&&(!j.pairedDepth||pairedBalanced)){
             bool existing=false;
@@ -285,20 +353,57 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
         // An embedded recipe was created only with paired balanced depths.
         // Unrelated incomplete ordinary children must not change that identity.
         if(recipe.embeddedPrefix)pairedBalanced=j.pairedDepth!=0;
+        if(balancedInnerPrefix&&recipe.staged&&k<m){
+            const auto path=j.folder+"/balanced_inner_prefix_recipe.txt";
+            if(Exists(path)){
+                const auto saved=Read(path);Require(saved=="embedded-v1\n"||saved=="direct-v1\n","unknown balanced inner prefix recipe");
+                recipe.innerPrefix=saved=="embedded-v1\n";
+            }else{
+                Job middle=j;middle.count=m;
+                recipe.innerPrefix=prefixEligible&&VerifyCutoffPrefix(middle,commands[i],true);
+                Atomic(path,recipe.innerPrefix?"embedded-v1\n":"direct-v1\n");
+            }
+        }
         recipe.children.push_back(add(j,commands[i],j.count,j.depth,pairedBalanced?j.pairedDepth:0,true,recipe.embeddedPrefix?m:0));
-        recipe.children.push_back(add(j,commands[i],m,j.depth,j.pairedDepth,recipe.staged,0,recipe.staged?"balanced":""));
+        // The two balanced matrices cancel on identical Sobol prefixes. Their
+        // refinement is a deterministic property of the common facet reference.
+        // Keep a real balanced worker for each otherwise identical request group.
+        std::vector<std::string> witnessKey;
+        if(shareCancelledCutoffBound&&sharedMeans&&j.hasControls&&referenceCutoffMeanBound&&recipe.staged&&m==k){
+            witnessKey=CutoffChildCommand(commands[i],m,j.depth,j.pairedDepth,true,"");
+            auto seed=std::find(witnessKey.begin(),witnessKey.end(),"--sobol-seed");
+            const auto ref=std::find(witnessKey.begin(),witnessKey.end(),"--analytic-mean-reference-grid");
+            if(seed!=witnessKey.end()&&witnessKey.end()-seed>=3&&seed[2]==Number(j.seed)&&ref!=witnessKey.end()){
+                seed[2]="shared deterministic bound";
+                witnessKey.push_back(j.weightHash);
+                recipe.cancelledBound=true;
+            }
+        }
+        auto witness=meanWitnesses.find(witnessKey);
+        if(recipe.cancelledBound&&witness!=meanWitnesses.end()){
+            recipe.children.push_back(witness->second);
+            Log("cutoff_balanced_bound_reuse","{\"count\":"+Number(m)+",\"seed\":"+Number(j.seed)+",\"source_seed\":"+Number(native[witness->second].seed)+"}");
+        }else{
+            recipe.children.push_back(add(j,commands[i],m,j.depth,j.pairedDepth,recipe.staged,recipe.innerPrefix?k:0,recipe.staged?"balanced":""));
+            if(recipe.cancelledBound)meanWitnesses[witnessKey]=recipe.children.back();
+        }
         if(recipe.embeddedPrefix){
             // The view becomes ready only after its native source has a durable
             // completion marker. It consumes no worker slot.
             recipe.children.push_back(native.size());Job view=j;view.count=m;native.push_back(view);nativeCommands.emplace_back();
         }else recipe.children.push_back(add(j,commands[i],m,j.depth,pairedBalanced?j.pairedDepth:0,true,0));
-        if(recipe.staged){const int k=std::max(64,j.count/64);
+        if(recipe.staged){
             recipe.children.push_back(add(j,commands[i],k,j.depth,j.pairedDepth,false,0));
-            recipe.children.push_back(add(j,commands[i],k,j.depth,j.pairedDepth,true,0,"balanced"));}
+            if(recipe.innerPrefix){
+                recipe.children.push_back(native.size());Job view=j;view.count=k;native.push_back(view);nativeCommands.emplace_back();
+            }else if(recipe.cancelledBound)recipe.children.push_back(recipe.children[1]);
+            else recipe.children.push_back(add(j,commands[i],k,j.depth,j.pairedDepth,true,0,"balanced"));
+        }
         if(j.pairedDepth&&!pairedBalanced){recipe.children.push_back(add(j,commands[i],j.count,j.pairedDepth,0,true,0));recipe.children.push_back(add(j,commands[i],m,j.pairedDepth,0,true,0));}
         recipes.push_back(recipe);
         if(recipe.staged)Log("cutoff_staged_recipe","{\"estimator\":\"F_N+B_m-F_m+O_k-B_k\",\"N\":"+Number(j.count)+",\"m\":"+Number(m)+",\"k\":"+Number(std::max(64,j.count/64))+",\"fixed_before_samples\":true}");
-        Log("cutoff_correction_start","{\"folder\":"+Quoted(j.folder)+",\"profile\":"+Quoted(CutoffBaseProfile())+",\"physical_target\":\"off\",\"count\":"+Number(j.count)+",\"correction_count\":"+Number(m)+",\"seed\":"+Number(j.seed)+",\"offset\":"+Number(j.offset)+",\"depth\":"+Number(j.depth)+",\"paired_depth\":"+Number(j.pairedDepth)+",\"native_trace_jobs\":"+Number(recipe.children.size()-(recipe.embeddedPrefix?1:0))+",\"native_prefix_output_capability\":"+(NativeWorkerCapabilities::OrientationPrefixOutput()?"true":"false")+",\"embedded_balanced_prefix\":"+(recipe.embeddedPrefix?"true":"false")+",\"paired_balanced_depths\":"+(pairedBalanced?"true":"false")+",\"fraction_selected_before_samples\":true}");
+        const size_t distinct=std::set<size_t>(recipe.children.begin(),recipe.children.end()).size();
+        Log("cutoff_correction_start","{\"folder\":"+Quoted(j.folder)+",\"profile\":"+Quoted(CutoffBaseProfile())+",\"physical_target\":\"off\",\"count\":"+Number(j.count)+",\"correction_count\":"+Number(m)+",\"seed\":"+Number(j.seed)+",\"offset\":"+Number(j.offset)+",\"depth\":"+Number(j.depth)+",\"paired_depth\":"+Number(j.pairedDepth)+",\"native_trace_jobs\":"+Number(distinct-(recipe.embeddedPrefix?1:0)-(recipe.innerPrefix?1:0))+",\"native_prefix_output_capability\":"+(NativeWorkerCapabilities::OrientationPrefixOutput()?"true":"false")+",\"embedded_inner_prefix\":"+(recipe.innerPrefix?"true":"false")+",\"embedded_balanced_prefix\":"+(recipe.embeddedPrefix?"true":"false")+",\"paired_balanced_depths\":"+(pairedBalanced?"true":"false")+",\"fraction_selected_before_samples\":true}");
     }
     // Each parent is committed immediately after its last native source. The
     // executor has already fed the next GPU request before calling this code.
@@ -314,17 +419,25 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
             lower=k.size()==3?std::vector<Job>{LowerView(native[k[0]],j.pairedDepth),low,LowerView(native[k[2]],j.pairedDepth)}
                 :std::vector<Job>{native[k[3]],low,native[k[4]]};}
         Directory(j.folder+"/result");DerivedFileBatch outputFiles(j.folder,PrepareDerivedPublication());
-        WriteCutoffMatrix(j,upper,commands[recipe.parent],j.depth,j.folder+"/result/result");
+        WriteCutoffMatrix(j,upper,commands[recipe.parent],j.depth,j.folder+"/result/result",recipe.cancelledBound);
         std::ostringstream sources,signedSources,integrity;
-        for(size_t i=0;i<upper.size();++i)signedSources<<j.depth<<' '<<((i==2||i==4)?-1:1)<<' '<<upper[i].folder<<'\n';
+        auto writeSigned=[&](int depth,const std::vector<Job>& parts){
+            if(recipe.cancelledBound){
+                for(size_t i:{size_t(0),size_t(3),size_t(2)})
+                    signedSources<<depth<<' '<<(i==2?-1:1)<<' '<<parts[i].folder<<'\n';
+            }else for(size_t i=0;i<parts.size();++i)
+                signedSources<<depth<<' '<<((i==2||i==4)?-1:1)<<' '<<parts[i].folder<<'\n';
+        };
+        writeSigned(j.depth,upper);
         if(j.pairedDepth){const auto stem=j.folder+"/result/result_depth"+Number(j.pairedDepth);
-            WriteCutoffMatrix(j,lower,commands[recipe.parent],j.pairedDepth,stem);
-            for(size_t i=0;i<lower.size();++i){signedSources<<j.pairedDepth<<' '<<((i==2||i==4)?-1:1)<<' '<<lower[i].folder<<'\n';
+            WriteCutoffMatrix(j,lower,commands[recipe.parent],j.pairedDepth,stem,recipe.cancelledBound);
+            writeSigned(j.pairedDepth,lower);
+            for(size_t i=0;i<lower.size();++i){
                 // Views are durable inputs too; validate their provenance on resume.
                 sources<<lower[i].folder<<'\t'<<FileHash(lower[i].folder+"/complete.txt")<<'\n';}
             std::ostringstream pair;pair<<stem+".dat"<<' '<<FileHash(stem+".dat")<<'\n';if(j.hasControls)pair<<stem+"_analytic_facets.tsv"<<' '<<FileHash(stem+"_analytic_facets.tsv")<<'\n';
             Atomic(j.folder+"/paired_depth.tsv",pair.str());integrity<<j.folder+"/paired_depth.tsv"<<' '<<Hash(pair.str())<<'\n';}
-        j.seconds=0;std::set<size_t> charged;for(size_t index:k){const auto& part=native[index];if((!recipe.embeddedPrefix||index!=k[2])&&charged.insert(index).second)j.seconds+=part.seconds;sources<<part.folder<<'\t'<<FileHash(part.folder+"/complete.txt")<<'\n';}
+        j.seconds=0;std::set<size_t> charged;for(size_t index:k){const auto& part=native[index];if((!recipe.embeddedPrefix||index!=k[2])&&(!recipe.innerPrefix||index!=k[4])&&charged.insert(index).second)j.seconds+=part.seconds;sources<<part.folder<<'\t'<<FileHash(part.folder+"/complete.txt")<<'\n';}
         Atomic(j.folder+"/cutoff_sources.tsv",signedSources.str());integrity<<j.folder+"/cutoff_sources.tsv"<<' '<<Hash(signedSources.str())<<'\n';
         Atomic(j.folder+"/integral_outputs.fnv",integrity.str());Atomic(j.folder+"/angular_sources.tsv",sources.str());
         std::ostringstream replay;replay<<exe<<'\n';for(const auto& c:commands[recipe.parent])replay<<c<<'\n';Atomic(j.folder+"/command.args",replay.str());
@@ -334,9 +447,14 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
         std::set<std::string> verified;ValidateStoredJob(j.folder,verified);j=Load(j);CacheJob(j);
         Log("cutoff_correction_complete","{\"folder\":"+Quoted(j.folder)+",\"seconds\":"+Number(j.seconds)+",\"assembly_seconds\":"+Number(Seconds()-assemblyBegin)+",\"streaming_assembly\":true,\"combined_replica_enters_accuracy_estimate\":true,\"old_off_blocks_compatible\":true}");
     };
+    std::map<size_t,CutoffGrowth> growth;
+    PlanCutoffGrowth(native,nativeCommands,launch,growth);
     std::vector<bool> ready(native.size(),true),assembled(recipes.size(),false);
     for(size_t i:launch)ready[i]=false;
-    for(const auto& recipe:recipes)if(recipe.embeddedPrefix)ready[recipe.children[2]]=false;
+    for(const auto& recipe:recipes){
+        if(recipe.embeddedPrefix)ready[recipe.children[2]]=false;
+        if(recipe.innerPrefix)ready[recipe.children[4]]=false;
+    }
     std::vector<std::vector<size_t>> dependents(native.size());
     for(size_t i=0;i<recipes.size();++i)for(size_t child:recipes[i].children)dependents[child].push_back(i);
     auto finish=[&](size_t parent){
@@ -346,12 +464,20 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
             native[recipe.children[2]]=CutoffPrefixView(native[recipe.children[0]],std::max(64,native[recipe.children[0]].count/8));
             ready[recipe.children[2]]=true;
         }
+        if(recipe.innerPrefix&&ready[recipe.children[1]]&&!ready[recipe.children[4]]){
+            const size_t view=recipe.children[4];
+            native[view]=CutoffPrefixView(native[recipe.children[1]],native[view].count);
+            ready[view]=true;
+        }
         for(size_t child:recipe.children)if(!ready[child])return;
         assemble(recipes[parent]);assembled[parent]=true;
     };
+    for(const auto& step:growth)if(ready[step.first])native[step.first]=CommitCutoffGrowth(step.second,&native[step.first]);
     for(size_t i=0;i<recipes.size();++i)finish(i); // interrupted assembly: children already durable
     const bool wasCollecting=collecting;collecting=false;correctionExecuting=true;
     try{ExecutePrepared(native,nativeCommands,launch,[&](size_t index){
+        const auto step=growth.find(index);
+        if(step!=growth.end())native[index]=CommitCutoffGrowth(step->second,&native[index]);
         ready[index]=true;for(size_t parent:dependents[index])finish(parent);
         // This is a progress pump, not a parent-completion notification. It may
         // prepare the next bounded batch while current native work runs.

@@ -1300,11 +1300,41 @@ void ValidateOrientationModifiers(const ArgPP &args, const RunConfig &config)
     }
     if(args.IsCatched("go_fullauto_worker")&&(config.method!=RunMethod::GeometricalOptics||mode!=OrientationMode::SobolSeed||args.IsCatched("fullauto")))
         Fail("--go-fullauto-worker is a seeded GO worker option.","use only a GO controller worker recipe.");
+    if(args.IsCatched("nested_phi_min")){
+        RequirePositiveInt(args,"nested_phi_min");
+        const int lower=IntValue(args,"nested_phi_min");
+        const int upper=args.IsCatched("nphi")?IntValue(args,"nphi"):0;
+        if(!args.IsCatched("sobol_seed")||!args.IsCatched("haar_alpha")||config.method!=RunMethod::PhysicalOptics
+           ||args.IsCatched("fullauto")||args.IsCatched("paired_depth")||args.IsCatched("orientation_prefix_output")
+           ||args.IsCatched("analytic_backscatter")||args.IsCatched("analytic_azimuth_gaussian")
+           ||upper<=lower||upper%lower!=0||((upper/lower)&(upper/lower-1))!=0)
+            Fail("nested phi requires a seeded native PO calculation and dyadically nested azimuth counts.",
+                 "provide --haar-alpha --sobol-seed N S --phi-points P --nested-phi-min Q with P/Q a power of two, P > Q.");
+    }
     if(args.IsCatched("orientation_prefix_output")){
         RequirePositiveInt(args,"orientation_prefix_output");
         if(!args.IsCatched("sobol_seed")||!args.IsCatched("haar_alpha")||config.method!=RunMethod::PhysicalOptics
             ||IntValue(args,"orientation_prefix_output")>=IntValue(args,"sobol_seed")||args.IsCatched("fullauto"))
             Fail("--orientation-prefix-output requires a native PO seeded Haar Sobol worker with 0 < M < N.","remove the internal worker modifier or specify a smaller prefix.");
+    }
+    if(args.IsCatched("depth_output_last")){
+        RequirePositiveInt(args,"depth_output_last");
+        if(!args.IsCatched("depth_output_step")||!args.IsCatched("coarse_depth_output")||!args.IsCatched("paired_depth")
+                ||IntValue(args,"depth_output_last")<IntValue(args,"coarse_depth_output")
+                ||IntValue(args,"depth_output_last")>=IntValue(args,"paired_depth"))
+            Fail("intermediate depth limit outside the requested band","use a last depth from the coarse depth through paired depth minus one.");
+    }
+    if(args.IsCatched("depth_output_step")){
+        RequirePositiveInt(args,"depth_output_step");
+        if(!args.IsCatched("coarse_depth_output") || IntValue(args,"depth_output_step")>2)
+            Fail("--depth-output-step requires coarse depth and stride 1 or 2.","specify a supported coherent depth range.");
+    }
+    if(args.IsCatched("coarse_depth_output")){
+        RequirePositiveInt(args,"coarse_depth_output");
+        if(!args.IsCatched("paired_depth")||IntValue(args,"coarse_depth_output")>=IntValue(args,"paired_depth")
+                ||args.IsCatched("incoh")||args.IsCatched("fullauto")
+                ||args.IsCatched("orientation_prefix_output")||args.IsCatched("nested_phi_min"))
+            Fail("--coarse-depth-output requires a native coherent CPU paired job with a smaller coarse depth.","remove the coarse output or supply a supported depth.");
     }
     if(args.IsCatched("paired_depth")){
         RequirePositiveInt(args,"paired_depth");

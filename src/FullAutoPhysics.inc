@@ -48,23 +48,77 @@ DepthResidual DepthDifference(const Samples& first,const Samples& second,bool go
 double PhysicalDepthBound(const Samples& first,const Samples& second,const Matrix& reference,bool go,size_t bins,bool ratios){
     return DepthDifference(first,second,go,bins,ratios,&reference).upper;
 }
+std::vector<double> DepthPilotGrid(const Engine& e,size_t limit){
+    const size_t rows=std::min(limit,std::min(e.theta.size(),size_t(e.maxTheta)));
+    if(rows<2)return std::vector<double>(e.theta.begin(),e.theta.begin()+rows);
+    std::vector<double> grid;
+    grid.reserve(rows);
+    for(size_t row=0;row<rows;++row)grid.push_back(e.theta[row*(e.theta.size()-1)/(rows-1)]);
+    return grid;
+}
 void PrepareDepthPhi(Engine& e,const std::vector<double>& x){
     if(e.fixedPhi)return;
     const unsigned seeds[8]={1800001001u,1800001013u,1800001031u,1800001043u,1800001057u,1800001069u,1800001081u,1800001099u};
     for(unsigned seed:seeds)Require(std::find(e.seeds.begin(),e.seeds.end(),seed)==e.seeds.end(),"startup phi/production seed overlap");
     std::set<int> candidates;for(int candidate:{4,32})candidates.insert(std::max(e.minPhi,std::min(e.maxPhi,candidate)));
+    const char* costPolicy=std::getenv("MBS_FULLAUTO_STARTUP_PROCESSING_COST");
+    const bool processingCost=costPolicy?std::string(costPolicy)=="1":e.UseCoherentGpuScheduling();
+    // The depth search pays for up to 65 angular rows at its reference
+    // depth. A nine-row timing at the initial depth can rank phi differently.
+    const auto referenceGrid=processingCost?DepthPilotGrid(e,65):x;
+    const int trialDepth=processingCost?FullAutoDepthSelection::Anchor(e.depthMaximum):e.target;
+    // Cost trials must start with warm worker contexts and without an implicit
+    // prepared-beam cache advantage for the later phi candidate. Explicit user
+    // cache settings remain authoritative. Restore arguments even on failure.
+    struct RestoreStartupBase {
+        Engine& engine;std::vector<std::string> saved;
+        explicit RestoreStartupBase(Engine& value):engine(value),saved(value.base){}
+        ~RestoreStartupBase(){engine.base.swap(saved);}
+    } restore(e);
+    if(processingCost){
+        const bool disableCache=!e.args.IsCatched("trace_cache_mb");
+        if(disableCache){e.RemoveOption("--trace-cache-mib");e.base.push_back("--trace-cache-mib");e.base.push_back("0");}
+        const unsigned warmSeeds[8]={1800002003u,1800002011u,1800002021u,1800002033u,1800002041u,1800002051u,1800002063u,1800002077u};
+        for(unsigned seed:warmSeeds)Require(std::find(e.seeds.begin(),e.seeds.end(),seed)==e.seeds.end(),"startup warmup/production seed overlap");
+        e.phi=*candidates.begin();const double begin=Seconds();
+        e.DirectStage(16,warmSeeds,std::min(size_t(8),e.WorkerGpus().size()),trialDepth,referenceGrid,false);
+        e.Log("startup_phi_warmup","{\"seconds\":"+Number(Seconds()-begin)
+            +",\"implicit_trace_cache_disabled\":"+(disableCache?"true":"false")
+            +",\"included_in_accuracy_estimate\":false}");
+    }
     const int n=std::min(e.pilot,64);int winner=e.phi;double best=std::numeric_limits<double>::max();bool resolvedWinner=false;
     for(int candidate:candidates){
-        e.phi=candidate;const auto jobs=e.Stage(n,seeds,8,e.target,x,false);const auto stats=Estimate(e.Data(jobs,false));
-        const double uncertainty=e.ratios?std::max(stats.maxInterval,stats.maxRatioInterval):stats.maxInterval;
+        e.phi=candidate;auto jobs=e.Stage(n,seeds,8,trialDepth,referenceGrid,false);
+        const auto anchor=e.Data(jobs,false);
+        const auto stats=Estimate(anchor);
+        // The expensive depth decision compares two matrices computed on the
+        // same scrambles. Rank rules using the uncertainty of this difference.
+        DepthResidual paired;
+        const int comparisonDepth=std::min(e.depthMaximum,2*e.depthStart);
+        if(processingCost){
+            const auto lower=e.Stage(n,seeds,8,comparisonDepth,referenceGrid,false);
+            paired=DepthDifference(e.Data(lower,false),anchor,false,referenceGrid.size(),e.ratios);
+            jobs.insert(jobs.end(),lower.begin(),lower.end());
+        }
+        const double rawUncertainty=e.ratios?std::max(stats.maxInterval,stats.maxRatioInterval):stats.maxInterval;
+        const double uncertainty=processingCost
+            ?(FullAutoScheduling::Resolved(paired.upper)?paired.interval:1e100)
+            :rawUncertainty;
         const bool resolved=FullAutoScheduling::Resolved(uncertainty);
         const double error=resolved?uncertainty:(FullAutoScheduling::Resolved(stats.maxInterval)?stats.maxInterval:1e25);
-        double seconds=0;for(const auto& job:jobs)seconds+=std::max(1e-6,job.seconds-job.controlSetup);
+        double seconds=0,wallSeconds=0,processingSeconds=0;size_t measuredProcessing=0;
+        for(const auto& job:jobs){wallSeconds+=std::max(1e-6,job.seconds-job.controlSetup);
+            if(job.processingSeconds>=0&&std::isfinite(job.processingSeconds)){processingSeconds+=job.processingSeconds;++measuredProcessing;}
+            seconds+=FullAutoScheduling::StartupWorkerCost(job.seconds-job.controlSetup,job.processingSeconds,processingCost);}
+
         const double score=seconds*std::max(double(e.depthPilot)/n,std::pow(error/e.depthBudget,2));
         if((resolved&&!resolvedWinner)||(resolved==resolvedWinner&&score<best)){winner=candidate;best=score;resolvedWinner=resolved;}
         e.Log("startup_phi_candidate","{\"phi\":"+Number(candidate)+",\"count_per_seed\":"+Number(n)
-            +",\"theta_rows\":"+Number(x.size())+",\"seconds\":"+Number(seconds)+",\"forecast_score\":"+Number(score)
+            +",\"theta_rows\":"+Number(referenceGrid.size())+",\"trial_depth\":"+Number(trialDepth)+",\"seconds\":"+Number(seconds)+",\"forecast_score\":"+Number(score)
             +",\"uncertainty95\":"+Number(uncertainty)+",\"resolved\":"+(resolved?"true":"false")
+            +",\"raw_matrix_uncertainty95\":"+Number(rawUncertainty)+",\"paired_depth_interval95\":"+Number(paired.interval)
+            +",\"comparison_depth\":"+Number(processingCost?comparisonDepth:0)+",\"worker_wall_seconds\":"+Number(wallSeconds)+",\"worker_processing_seconds\":"+Number(processingSeconds)
+            +",\"measured_processing_jobs\":"+Number(measuredProcessing)+",\"processing_cost_policy\":"+(processingCost?"true":"false")
             +",\"accuracy_accepted\":false,\"adaptive_pilot_growth\":false,\"full_production_selection_follows\":true}");
     }
     e.phi=winner;
@@ -77,8 +131,7 @@ void PrepareDepthStartup(Engine& e){
         std::istringstream input(payload);std::string signature;Require(bool(input>>signature>>e.phi>>e.kernel.block>>e.kernel.pipeline>>e.kernel.warp>>e.controls)&&signature==e.signature,"depth startup inputs changed");
         e.startupKernel=true;e.SetMirror(false);e.WarmCache();return;
     }
-    std::vector<double> x;const size_t size=std::min(size_t(9),std::min(e.theta.size(),size_t(e.maxTheta)));
-    for(size_t row=0;row<size;++row)x.push_back(e.theta[row*(e.theta.size()-1)/(size-1)]);
+    const auto x=DepthPilotGrid(e,9);
     const int oldPilot=e.pilot,oldKernel=e.kernelCount;const bool oldControls=e.controls;
     e.pilot=std::min(e.pilot,64);e.kernelCount=std::min(e.kernelCount,64);e.controls=false;
     const double begin=Seconds();e.State("startup_sampling_tuning",0,{e.pilot},x.size(),0,0,0);

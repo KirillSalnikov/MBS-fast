@@ -7,7 +7,7 @@ std::string OutputDecisionPolicyIdentity(const Engine& e){
 using Budgets=std::vector<std::vector<int>>;
 struct AdaptiveData {std::vector<Samples> levels;std::vector<std::vector<double>> costs;std::vector<double> analytic;std::string sources;};
 std::vector<int> AdaptiveDepths(const Engine& e){
-    std::vector<int> depths;for(int d:{std::max(1,e.target-4),std::max(1,e.target-2),e.target})if(depths.empty()||depths.back()!=d)depths.push_back(d);return depths;
+    return e.ProductionDepths();
 }
 #include "FullAutoInterpolationCheckpoint.inc"
 std::vector<int> PeakBudgets(const Budgets& n){std::vector<int> result;for(const auto& level:n)result.push_back(*std::max_element(level.begin(),level.end()));return result;}
@@ -87,7 +87,8 @@ std::vector<size_t> AdaptiveGuards(const std::vector<size_t>& knots,size_t size,
     std::set<size_t> all(knots.begin(),knots.end());
     for(size_t i=1;i<knots.size();++i){size_t q=(knots[i-1]+knots[i])/2;if(q>knots[i-1]&&q<knots[i])all.insert(q);}return {all.begin(),all.end()};
 }
-AdaptiveData EvaluateUniformBudget(Engine& e,const std::vector<int>& depths,const Budgets& counts,const std::vector<size_t>& ids,const unsigned* seeds,bool prefetch=true){
+AdaptiveData EvaluateUniformBudget(Engine& e,const std::vector<int>& depths,const Budgets& counts,const std::vector<size_t>& ids,const unsigned* seeds,bool prefetch=true,size_t firstLevel=0){
+    Require(firstLevel==0||(firstLevel==1&&depths.size()==2),"invalid correction-only budget");
     const auto x=Angles(e.theta,ids);AdaptiveData result;result.analytic.assign(ids.size(),0);std::ostringstream sources;
     auto subsetFor=[&](size_t level,int count,const std::vector<size_t>& rows){
         std::vector<double> subset;for(size_t r:rows)subset.push_back(x[r]);
@@ -97,47 +98,74 @@ AdaptiveData EvaluateUniformBudget(Engine& e,const std::vector<int>& depths,cons
             subset.push_back(padding);std::sort(subset.begin(),subset.end());}
         return subset;
     };
+    // A paired native request already emits the lower matrix on its own
+    // orientations. Reuse it as the base when both groups have exactly the
+    // same sampling count and theta rows. Single-row requests may use
+    // different padding angles at the two depths and keep their own recipe.
+    const auto middleCounts=ReusableMiddleCounts(e,depths,counts,ids);
+    const bool shareBase=e.reusePairedBase&&e.depthSharing&&depths.size()>1;
+    std::set<int> differentRows;
+    if(shareBase)for(size_t id:ids){
+        const int base=counts[0][id], correction=counts[1][id];
+        if(base!=correction){differentRows.insert(base);differentRows.insert(correction);}
+    }
+    auto pairedBaseGroup=[&](size_t level,int count,size_t rows){
+        return shareBase&&level==0&&!middleCounts.count(count)&&rows>1&&!differentRows.count(count);
+    };
     if(prefetch){std::vector<Engine::WorkRequest> requests;
-        for(size_t level=0;level<depths.size();++level){std::map<int,std::vector<size_t>> groups;
+        for(size_t level=firstLevel;level<depths.size();++level){std::map<int,std::vector<size_t>> groups;
             for(size_t r=0;r<ids.size();++r)groups[counts[level][ids[r]]].push_back(r);
             for(const auto& group:groups){const auto subset=subsetFor(level,group.first,group.second);
+                if(pairedBaseGroup(level,group.first,group.second.size()))continue;
                 if(CompleteCachedPrefix(e,group.first,depths[level],subset,seeds)
                         &&(!level||CompleteCachedPrefix(e,group.first,depths[level-1],subset,seeds)))continue;
+                if(level==1&&middleCounts.count(group.first)){
+                    requests.push_back({group.first,0,depths[0],0,subset});
+                    continue;
+                }
                 requests.push_back({group.first,0,depths[level],level&&e.depthSharing?depths[level-1]:0,subset});
                 if(level&&!e.depthSharing)requests.push_back({group.first,0,depths[level-1],0,subset});}}
         if(!requests.empty())e.Prefetch(requests,seeds);
     }
-    for(size_t level=0;level<depths.size();++level){Samples data(8,Matrix(ids.size()));std::vector<double> cost(ids.size());std::map<int,std::vector<size_t>> groups;
+    for(size_t level=firstLevel;level<depths.size();++level){Samples data(8,Matrix(ids.size()));std::vector<double> cost(ids.size());std::map<int,std::vector<size_t>> groups;
         for(size_t r=0;r<ids.size();++r)groups[counts[level][ids[r]]].push_back(r);
         for(const auto& group:groups){const auto subset=subsetFor(level,group.first,group.second);
             const bool complete=CompleteCachedPrefix(e,group.first,depths[level],subset,seeds)
                 &&(!level||CompleteCachedPrefix(e,group.first,depths[level-1],subset,seeds));
-            std::vector<Job> upper,lower;if(level&&e.depthSharing&&!complete){auto pair=e.SharedStage(group.first,seeds,8,depths[level],depths[level-1],subset);upper=pair.first;lower=pair.second;}else upper=e.Stage(group.first,seeds,8,depths[level],subset);
+            std::vector<Job> upper,lower;
+            if(pairedBaseGroup(level,group.first,group.second.size())&&!complete){
+                upper=e.SharedStage(group.first,seeds,8,depths[1],depths[0],subset).second;
+                e.Log("paired_base_reuse","{\"count_per_seed\":"+Number(group.first)+",\"theta_rows\":"+Number(subset.size())+"}");
+            }else if(level==1&&middleCounts.count(group.first)&&!complete){
+                upper=e.SharedStage(group.first,seeds,8,depths[2],depths[1],subset).second;
+                lower=e.Stage(group.first,seeds,8,depths[0],subset);
+                e.Log("middle_depth_from_top_pair","{\"count_per_seed\":"+Number(group.first)+",\"theta_rows\":"+Number(subset.size())+"}");
+            }else if(level&&e.depthSharing&&!complete){auto pair=e.SharedStage(group.first,seeds,8,depths[level],depths[level-1],subset);upper=pair.first;lower=pair.second;}else upper=e.Stage(group.first,seeds,8,depths[level],subset);
             Samples value=e.Data(upper);double seconds=e.Cost(upper,group.first);
             for(size_t s=0;s<8;++s)sources<<level<<" 1 "<<group.first<<' '<<seeds[s]<<' '<<upper[s].folder<<'\n';
             if(level){if(lower.empty())lower=e.Stage(group.first,seeds,8,depths[level-1],subset);value=Subtract(value,e.Data(lower));seconds+=e.Cost(lower,group.first);
                 for(size_t s=0;s<8;++s)sources<<level<<" -1 "<<group.first<<' '<<seeds[s]<<' '<<lower[s].folder<<'\n';}
             for(size_t r:group.second){const size_t row=std::lower_bound(subset.begin(),subset.end(),x[r])-subset.begin();cost[r]=seconds;for(int s=0;s<8;++s)data[s][r]=value[s][row];
-                if(!level&&e.controls){const auto polar=e.Polar(x[r]);const auto scalar=e.ScalarWeights(x[r]);for(const auto& job:upper)for(int j=0;j<16;++j){const double wr=j?polar[0][j]:scalar[0],ws=j?polar[1][j]:scalar[1];const auto& c=job.controls[row];result.analytic[r]=std::max(result.analytic[r],job.controlRefinement*(std::fabs(wr*c[1])+std::fabs(ws*c[2])));}}
+                if(!level&&e.controls){const auto polar=e.Polar(x[r]);const auto scalar=e.ScalarWeights(x[r]);for(const auto& job:upper)for(int j=0;j<16;++j){const double wr=j?polar[0][j]:scalar[0],ws=j?polar[1][j]:scalar[1];result.analytic[r]=std::max(result.analytic[r],e.ControlMeanRefinement(job,row,wr,ws));}}
             }
         }
-        result.levels.push_back(data);result.costs.push_back(cost);
+        result.levels.push_back(std::move(data));result.costs.push_back(std::move(cost));
     }
     result.sources=sources.str();return result;
 }
-AdaptiveData EvaluateBudgetImpl(Engine& e,const std::vector<int>& depths,const Budgets& counts,const std::vector<size_t>& ids,const unsigned* seeds,bool prefetch=true){
-    if(e.thetaPhi.empty())return EvaluateUniformBudget(e,depths,counts,ids,seeds,prefetch);
+AdaptiveData EvaluateBudgetImpl(Engine& e,const std::vector<int>& depths,const Budgets& counts,const std::vector<size_t>& ids,const unsigned* seeds,bool prefetch=true,size_t firstLevel=0){
+    if(e.thetaPhi.empty())return EvaluateUniformBudget(e,depths,counts,ids,seeds,prefetch,firstLevel);
     std::map<int,std::vector<size_t>> groups;for(size_t id:ids)groups[e.PhiForTheta(id)].push_back(id);
-    AdaptiveData result;result.levels.assign(depths.size(),Samples(8,Matrix(ids.size())));result.costs.assign(depths.size(),std::vector<double>(ids.size()));result.analytic.resize(ids.size());
-    for(const auto& group:groups){PhiScope scope(e,group.first);const auto part=EvaluateUniformBudget(e,depths,counts,group.second,seeds,prefetch);result.sources+=part.sources;
+    AdaptiveData result;result.levels.assign(depths.size()-firstLevel,Samples(8,Matrix(ids.size())));result.costs.assign(depths.size()-firstLevel,std::vector<double>(ids.size()));result.analytic.resize(ids.size());
+    for(const auto& group:groups){PhiScope scope(e,group.first);const auto part=EvaluateUniformBudget(e,depths,counts,group.second,seeds,prefetch,firstLevel);result.sources+=part.sources;
         for(size_t r=0;r<group.second.size();++r){const size_t row=std::lower_bound(ids.begin(),ids.end(),group.second[r])-ids.begin();result.analytic[row]=part.analytic[r];
-            for(size_t l=0;l<depths.size();++l){result.costs[l][row]=part.costs[l][r];for(size_t s=0;s<8;++s)result.levels[l][s][row]=part.levels[l][s][r];}}
+            for(size_t l=0;l<result.costs.size();++l){result.costs[l][row]=part.costs[l][r];for(size_t s=0;s<8;++s)result.levels[l][s][row]=part.levels[l][s][r];}}
     }return result;
 }
-AdaptiveData EvaluateBudget(Engine& e,const std::vector<int>& depths,const Budgets& counts,const std::vector<size_t>& ids,const unsigned* seeds,bool prefetch=true){
+AdaptiveData EvaluateBudget(Engine& e,const std::vector<int>& depths,const Budgets& counts,const std::vector<size_t>& ids,const unsigned* seeds,bool prefetch=true,size_t firstLevel=0){
     ValidationBatch validation;auto& shared=*activeValidationBatch;const double started=Seconds();
     const size_t checked=shared.checked,reused=shared.reused;
-    auto result=EvaluateBudgetImpl(e,depths,counts,ids,seeds,prefetch);
+    auto result=EvaluateBudgetImpl(e,depths,counts,ids,seeds,prefetch,firstLevel);
     e.Log("assembly_source_validation","{\"checked_nodes\":"+Number(shared.checked-checked)
         +",\"reused_compound_graphs\":"+Number(shared.reused-reused)+",\"graph_cache_bytes\":"+Number(shared.compounds.Bytes())
         +",\"graph_cache_limit_bytes\":"+Number(shared.compounds.Limit())+",\"assembly_and_work_seconds\":"+Number(Seconds()-started)
@@ -279,6 +307,87 @@ void HistoryRecord(Engine& e,int round,const std::string& record){
 std::vector<double> WorkingGrid(const Engine& e,const std::vector<size_t>& evaluated){std::vector<double> grid;const size_t n=std::min(size_t(257),evaluated.size());
     for(size_t i=0;i<n;++i)grid.push_back(e.theta[evaluated[i*(evaluated.size()-1)/(n-1)]]);
     return grid;}
+// Cover the angular domain in equal groups, selecting the most variable real
+// point in each group. Always keep the two requested endpoints.
+std::vector<double> PhiChallengeGrid(const Engine& e,const std::vector<double>& work){
+    if(work.size()<=33)return work;
+    std::vector<double> grid={work.front()};
+    for(size_t k=0;k<31;++k){
+        const size_t first=1+k*(work.size()-2)/31,end=1+(k+1)*(work.size()-2)/31;
+        size_t selected=first;double worst=-1;
+        for(size_t i=first;i<end;++i){
+            auto row=std::lower_bound(e.theta.begin(),e.theta.end(),work[i]);
+            Require(row!=e.theta.end()&&*row==work[i],"challenge grid outside requested angles");
+            const double risk=e.densePhiRisk[size_t(row-e.theta.begin())];
+            if(risk>worst){selected=i;worst=risk;}
+        }
+        grid.push_back(work[selected]);
+    }
+    grid.push_back(work.back());
+    for(double angle:e.startupPhiWitness){
+        auto at=std::lower_bound(work.begin(),work.end(),angle);
+        if(at!=work.end())grid.push_back(*at);
+        if(at!=work.begin()&&(at==work.end()||*at!=angle))grid.push_back(*std::prev(at));
+    }
+    std::sort(grid.begin(),grid.end());
+    grid.erase(std::unique(grid.begin(),grid.end()),grid.end());
+    return grid;
+}
+void CalibrateWorkingPhi(Engine& e,const std::vector<double>& work,bool shared){
+    if(!shared||e.densePhiRisk.size()!=e.theta.size()||work.size()<=65){e.Calibrate(work,true);return;}
+    const int initial=e.phi;
+    const auto sharedRows=e.SharedPhiProposal(work);
+    if(sharedRows.winner){
+        e.Calibrate(work,true,false,sharedRows.winner,false,true);
+        const auto fit=e.measuredPhi.find(sharedRows.winner);
+        const auto source=e.startupPhiRows.find(sharedRows.winner);
+        const bool retained=fit!=e.measuredPhi.end()&&fit->second.resolved&&source!=e.startupPhiRows.end()
+            &&fit->second.score<sharedRows.runner;
+        e.Log("phi_shared_rows_fit","{\"shared_rows\":"+Number(sharedRows.overlap)+",\"phi\":"+Number(sharedRows.winner)
+            +",\"full_score\":"+Number(fit==e.measuredPhi.end()?0:fit->second.score)+",\"competitor_forecast\":"+Number(sharedRows.runner)
+            +",\"retained\":"+(retained?"true":"false")+",\"production_accuracy_accepted\":false}");
+        if(retained){
+            e.TuneTracing(work);
+            e.Log("target_phi_working_decision","{\"startup_phi\":"+Number(initial)+",\"screen_phi\":"+Number(e.phi)
+                +",\"final_phi\":"+Number(e.phi)+",\"challenge_rows\":"+Number(sharedRows.overlap)
+                +",\"working_rows\":"+Number(work.size())+",\"extra_screen_jobs\":0,\"production_accuracy_accepted\":false}");
+            return;
+        }
+        e.phi=initial;
+    }
+    const auto challenge=PhiChallengeGrid(e,work);
+    e.Calibrate(challenge,true,false,0,true,false,work.size());
+    const auto scores=e.measuredPhi;const int winner=e.phi;
+    auto selected=scores.find(winner);
+    double runner=1e100;bool complete=selected!=scores.end()&&selected->second.resolved&&scores.size()>1;
+    for(const auto& item:scores){
+        complete=complete&&item.second.resolved;
+        if(item.first!=winner)runner=std::min(runner,item.second.lowerCost);
+    }
+    bool retained=false;
+    // The initial rule controls only startup geometry. A different rule can
+    // also qualify when all its challengers have resolved and the full-grid
+    // growth stays within its observed cost advantage.
+    double growth=0,lead=0;
+    if(complete&&selected->second.upperCost<runner){
+        e.Calibrate(work,true,false,winner,false,true);
+        const auto full=e.measuredPhi.find(winner);
+        // The winner must still resolve all raw and normalized elements on the
+        // entire working grid. If additional angles consume the observed lead,
+        // run the ordinary full challenge, reusing available native samples.
+        if(full!=e.measuredPhi.end()&&full->second.resolved&&selected->second.orientations>0){
+            growth=full->second.orientations/selected->second.orientations;
+            lead=runner/selected->second.upperCost;
+            retained=std::isfinite(growth)&&std::isfinite(lead)&&growth<=lead;
+        }
+    }
+    if(retained)e.TuneTracing(work);
+    else{e.phi=initial;e.Calibrate(work,true);}
+    e.Log("target_phi_working_decision","{\"startup_phi\":"+Number(initial)+",\"screen_phi\":"+Number(winner)
+        +",\"final_phi\":"+Number(e.phi)+",\"working_rows\":"+Number(work.size())
+        +",\"challenge_rows\":"+Number(challenge.size())+",\"limited_to_winner\":"+(retained?"true":"false")
+        +",\"forecast_growth\":"+Number(growth)+",\"challenger_lead\":"+Number(lead)+",\"production_accuracy_accepted\":false}");
+}
 struct InterpolationGrowth {
     bool biasDominated=false,ratio=false;
     int element=0,level=-1,phi=0;
@@ -726,6 +835,34 @@ bool PrepareOutputInterpolationPolicy(Engine& e,AdaptiveState& state,bool resume
         +",\"scope\":\"production output, paired interpolation residuals and independent angular control; direct support means unchanged\"}");
     return changed;
 }
+void CheckPlannedControlRows(Engine& e,const std::vector<int>& depths,const Budgets& counts,const std::vector<size_t>& ids){
+    std::vector<double> planned;planned.swap(e.controlPreflightAngles);
+    if(!e.controlPreflight||!e.controls||!e.sharedMeans||e.controlPolicy!="auto"||e.phi!=e.controlPreflightPhi||!e.thetaPhi.empty()||planned.empty())return;
+    std::vector<size_t> subset;
+    for(size_t id:ids)if(std::binary_search(planned.begin(),planned.end(),e.theta[id]))subset.push_back(id);
+    if(subset.empty()||ids.size()<=subset.size()+1)return;
+    if(subset.size()==1){
+        subset.push_back(subset.front()==ids.front()?ids.back():ids.front());
+        std::sort(subset.begin(),subset.end());
+    }
+    const double begin=Seconds();const auto sample=EvaluateBudget(e,depths,counts,subset,e.seeds.data());
+    const auto mean=Mean(Combine(sample.levels));
+    double worst=0,angle=0;
+    for(size_t r=0;r<subset.size();++r){
+        if(!std::binary_search(planned.begin(),planned.end(),e.theta[subset[r]])||!(mean[r][0]>0))continue;
+        const double error=sample.analytic[r]/mean[r][0];
+        if(std::isfinite(error)&&error>worst){worst=error;angle=e.theta[subset[r]];}
+    }
+    const double limit=e.eps/64;
+    // A marginal difference on a short CUDA packet must go through the
+    // regular full-grid decision. Passing the preflight never accepts a row.
+    const bool switchToRaw=worst>limit+e.eps/1024;
+    e.Log("analytic_control_preflight","{\"rows\":"+Number(subset.size())+",\"production_theta\":"+Number(ids.size())
+        +",\"worst_theta_deg\":"+Number(angle)+",\"measured_error_scaled_M11\":"+Number(worst)
+        +",\"analytic_budget\":"+Number(limit)+",\"switch_to_raw\":"+(switchToRaw?"true":"false")
+        +",\"seconds\":"+Number(Seconds()-begin)+",\"accuracy_accepted\":false}");
+    Require(!switchToRaw,"analytic mean numerical budget exceeded on production preflight rows");
+}
 int RunAdaptive(Engine& e){
     const auto depths=AdaptiveDepths(e);
     AdaptiveState state;state.counts=Budgets(depths.size(),std::vector<int>(e.theta.size(),e.minimum));state.counts[0].assign(e.theta.size(),e.initial);
@@ -777,7 +914,7 @@ int RunAdaptive(Engine& e){
         catch(const std::exception& error){if(!e.RecoverUnsupportedControls(error,x))throw;if(e.thetaAuditCount)state.knots=e.AuditThetaSupport(state.knots);}
         ids=AdaptiveGuards(state.knots,e.theta.size());if(e.phiRecheck&&!e.fixedPhi&&ids.size()>2*x.size()){
             Atomic(e.root+"/initial_calibration.json",Read(e.root+"/calibration.json"));
-            try{e.Calibrate(WorkingGrid(e,ids),true);if(!e.VerifyMirror(WorkingGrid(e,ids))){e.SetMirror(false);e.Calibrate(WorkingGrid(e,ids),true);}}
+            try{CalibrateWorkingPhi(e,WorkingGrid(e,ids),e.TargetPhiEnabled(x.size()));if(!e.VerifyMirror(WorkingGrid(e,ids))){e.SetMirror(false);e.Calibrate(WorkingGrid(e,ids),true);}}
             catch(const std::exception& error){if(!e.RecoverUnsupportedControls(error,WorkingGrid(e,ids),true))throw;}}
         // On small grids startup, matrix assembly and tracing dominate. The
         // measured regressions do not justify grouping there; retain a
@@ -787,6 +924,7 @@ int RunAdaptive(Engine& e){
         e.TuneFinalResources(WorkingGrid(e,ids));
         SaveAdaptive(e,state);
     }
+    PrefixFloorTiming floorTiming;
     double lastCI=0,lastInterpolation=0;size_t lastNodes=0;
     for(;state.round<e.roundLimit;++state.round){
         BoundInitialProduction(e,state,depths);
@@ -802,7 +940,14 @@ int RunAdaptive(Engine& e){
         // stability within this round; a new round/resume gets a fresh scope.
         ValidationBatch roundValidation("one adaptive round");
         AdaptiveData stage;Samples data;Statistics stats;
-        try{e.VerifyDepthSharing(WorkingGrid(e,ids));stage=EvaluateBudget(e,depths,state.counts,ids,e.seeds.data());data=Combine(stage.levels);
+        try{if(depths.size()>1){
+                const auto grid=WorkingGrid(e,ids);
+                if(e.CustomDepthLadder()){
+                    for(size_t l=1;l<depths.size();++l)e.VerifyDepthSharing(grid,depths[l],depths[l-1]);
+                }else e.VerifyDepthSharing(grid);
+            }
+            if(state.round==0&&!resumed)CheckPlannedControlRows(e,depths,state.counts,ids);
+            stage=EvaluateBudget(e,depths,state.counts,ids,e.seeds.data());data=Combine(stage.levels);
             const int recovery=RecoverNonpositiveProduction(e,state,depths,stage,ids,data,"production");
             if(recovery==2)return 4;
             if(recovery==1)continue;
@@ -1000,7 +1145,28 @@ int RunAdaptive(Engine& e){
         if(!(phiPlan.oldPhi&&phiPlan.phase==0)&&TryCorrectionProbe(e,state,depths,stage,ids,stats,proposed,lastInterpolation)){--state.round;continue;}
         if(TryWorkingPhi(e,state,depths,stage,ids,stats,lastInterpolation,&interp)){--state.round;continue;}
         GateLocalCost(e,work,proposed,depths,ids);
-        BoundRoundWork(e,work,state.counts,proposed,depths,ids,stats,state.knots,{},state.interpolationCounts.empty()?nullptr:&state.interpolationCounts,outputPriorities);
+        bool floorOnly=e.planPrefixFloor&&positive&&budget.directPass&&budget.outputPass&&angularSampling.passed
+            &&interp.maximum<=e.interpolation&&change<=NumericalBudget(e)&&e.thetaPhi.empty()&&!e.refinementWindow
+            &&PlanMissingPrefixFloors(e,state,ids,prefixCheck,proposed);
+        double factor=1.,planned=0.;std::string context;
+        if(floorOnly){
+            std::ostringstream key;key<<e.ExecutionHash()<<' '<<e.phi<<' '<<e.kernel.block<<' '<<e.kernel.pipeline<<' '<<e.kernel.warp;
+            key<<" worker "<<e.workerThreads<<' '<<e.orientationBlock<<' '<<e.controls<<' '<<e.mirror;
+            for(const auto& gpu:e.WorkerGpus())key<<' '<<gpu;
+            key<<" depths";for(int depth:depths)key<<' '<<depth;
+            key<<" knots";for(size_t id:state.knots)key<<' '<<id;
+            key<<" residual "<<state.interpolationPhi;
+            for(const auto& level:state.interpolationCounts)for(size_t id:ids)key<<' '<<level[id];
+            context=Hash(key.str());
+            factor=floorTiming.Observe(state.round,context,Seconds(),e.WorkerGpus().size());
+        }
+        BoundRoundWork(e,work,state.counts,proposed,depths,ids,stats,state.knots,{},state.interpolationCounts.empty()?nullptr:&state.interpolationCounts,outputPriorities,factor,floorOnly?&planned:nullptr);
+        if(floorOnly){
+            floorTiming.Plan(state.round,context,Seconds(),planned);
+            e.Log("mandatory_prefix_floor_plan","{\"round\":"+Number(state.round)+",\"missing_level_rows\":"+Number(prefixCheck.failed)
+                +",\"missing_joint_rows\":"+Number(prefixCheck.failedJoint)+",\"cost_factor\":"+Number(factor)
+                +",\"selected_uncalibrated_worker_seconds\":"+Number(planned)+",\"observed_checks_used_for_acceptance\":true}");
+        }
         if(proposed==state.counts)break;
         state.counts=proposed;SaveAdaptive(e,state);
     }

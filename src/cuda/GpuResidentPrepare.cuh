@@ -99,7 +99,7 @@ __global__ void residentPrepare(const GpuConvexQueue::Input* inputs,
         out.x[v]=x[v]*par.k;out.y[v]=y[v]*par.k;
         if(fabs(dx)>=par.edgeTolerance){out.slope_yx[v]=dy/dx;out.edge_valid_x[out.nEdgeX++]=v;}
         if(fabs(dy)>=par.edgeTolerance){out.slope_xy[v]=dx/dy;out.edge_valid_y[out.nEdgeY++]=v;}}
-    out.isExternal=shadow;out.orientation=orientation;
+    out.omitFromSecondary=shadow;out.orientation=orientation;
     out.bdx=dot(beam.direction,horizontal);out.bdy=dot(beam.direction,vertical);out.bdz=0;
     out.horAx=horizontal.x;out.horAy=horizontal.y;out.horAz=horizontal.z;
     out.verAx=vertical.x;out.verAy=vertical.y;out.verAz=vertical.z;
@@ -327,7 +327,7 @@ __global__ void residentIncoherent(const GpuBeam* beams,const int* offsets,const
         accumulate_beam_mueller_incoherent_gpu<GpuBeam,32>(beams[i],cp[p],sp[p],st[t],ct[t],
             vfx,vfy,vfz,vtx,vty,vtz,1,1,par.eps1,par.eps2,
             par.cwr,par.cwi,par.icwr,par.icwi,par.legacy,weights[orient]*GpuReal(.25),one);
-        for(int k=0;k<16;++k){full[k]+=one[k];if(matrixNS&&!beams[i].isExternal)noShadow[k]+=one[k];}
+        for(int k=0;k<16;++k){full[k]+=one[k];if(matrixNS&&!beams[i].omitFromSecondary)noShadow[k]+=one[k];}
     }
     for(int k=0;k<16;++k){
         if(WarpBeams)for(int shift=16;shift;shift>>=1){

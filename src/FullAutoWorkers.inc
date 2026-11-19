@@ -52,6 +52,13 @@ void CompleteNative(Job& j) {
     if(packJobs)remember(j.folder+"/command.args",FileHash(j.folder+"/command.args"));
     std::string pairHash;if(j.pairedDepth){const std::string name=j.folder+"/result/result_depth"+std::to_string(j.pairedDepth);std::ostringstream manifest;
         manifest<<name+".dat"<<' '<<FileHash(name+".dat")<<'\n';if(controls)manifest<<name+"_analytic_facets.tsv"<<' '<<FileHash(name+"_analytic_facets.tsv")<<'\n';
+        for(int depth=j.coarseDepth;depth>0&&depth<j.pairedDepth&&(!j.coarseLast||depth<=j.coarseLast);depth=j.coarseStep?depth+j.coarseStep:j.pairedDepth){
+            const auto stem=j.folder+"/result/result_depth"+Number(depth);
+            for(const auto& suffix:std::vector<std::string>{".dat","_analytic_facets.tsv"}){
+                if(suffix!=".dat"&&!controls)continue;
+                manifest<<stem+suffix<<' '<<FileHash(stem+suffix)<<'\n';
+            }
+        }
         Atomic(j.folder+"/paired_depth.tsv",manifest.str());pairHash=" "+Hash(manifest.str());
         rememberManifest(manifest.str());remember(j.folder+"/paired_depth.tsv",Hash(manifest.str()));}
     std::ostringstream integrals;
@@ -62,7 +69,13 @@ void CompleteNative(Job& j) {
     }
     if(j.pairedDepth){const auto path=j.folder+"/result/result_depth"+Number(j.pairedDepth)+"_integrals_revision.txt";
         if(Exists(path))integrals<<path<<' '<<FileHash(path)<<'\n';}
+    for(int depth=j.coarseDepth;depth>0&&depth<j.pairedDepth&&(!j.coarseLast||depth<=j.coarseLast);depth=j.coarseStep?depth+j.coarseStep:j.pairedDepth){
+        const auto stem=j.folder+"/result/result_depth"+Number(depth);
+        for(const auto& suffix:std::vector<std::string>{"_integrals.tsv","_integrals_revision.txt"})
+            integrals<<stem+suffix<<' '<<FileHash(stem+suffix)<<'\n';
+    }
     AppendNativePrefixIntegrity(j,integrals);
+    AppendNestedPhiIntegrity(j,integrals);
     Atomic(j.folder+"/integral_outputs.fnv",integrals.str());
     rememberManifest(integrals.str());remember(j.folder+"/integral_outputs.fnv",Hash(integrals.str()));
     const auto dataHash=FileHash(j.data),summaryHash=controls?FileHash(j.summary):"none";
@@ -199,7 +212,16 @@ void ExecutePersistent(std::vector<Job>& result,std::vector<std::vector<std::str
                     const pid_t failedPid=services[slot]->pid;
                     services[slot].reset();slotJob[slot]=-1;j.pid=-1;
                     RemovePath(j.folder+"/worker.pid");
-                    const std::string savedLog=j.folder+"/stdout.memory-retry.log";
+                    // A memory failure can follow creation of the native result directory.
+                    // A new worker automatically adds "(1)" to an existing output name.
+                    std::string suffix;
+                    for(unsigned attempt=1;Exists(j.folder+"/stdout.memory-retry"+suffix+".log")
+                            ||Exists(j.folder+"/memory-retry"+suffix+".result.failed");++attempt)
+                        suffix="_"+Number(attempt);
+                    const std::string savedLog=j.folder+"/stdout.memory-retry"+suffix+".log";
+                    const std::string partial=j.folder+"/result";
+                    if(Exists(partial))Require(RenamePath(partial,j.folder+"/memory-retry"+suffix+".result.failed")==0,
+                        "cannot preserve partial output before memory retry");
                     Require(RenamePath(j.folder+"/stdout.log",savedLog)==0,"cannot preserve memory failure log");
                     Log("worker_memory_retry","{\"folder\":"+Quoted(j.folder)+",\"old_pid\":"+Number(failedPid)
                         +",\"retry\":1,\"system_ram_guard\":"+(hostReserve?"true":"false")+",\"same_sampling\":true,\"completed_blocks_preserved\":true,\"log\":"+Quoted(savedLog)+"}");

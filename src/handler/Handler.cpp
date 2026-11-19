@@ -302,7 +302,7 @@ void Handler::ComputeCoordinateSystemAxes(const Point3d& normal,
 }
 
 void Handler::ComputeLengthIndices(const Beam &beam, BeamInfo &info,
-                                   const int vertices[3])
+                                   const int vertices[3], bool fitLengths)
 {
     auto *lens = info.opticalLengths;
 
@@ -324,6 +324,8 @@ void Handler::ComputeLengthIndices(const Beam &beam, BeamInfo &info,
 
     if (std::isfinite(den) && fabs(den) > determinantTolerance)
     {
+        if (!fitLengths)
+            return;
 #ifdef _DEBUG // DEB
         double aa = lens[0]*(p2.x*p3.y - p3.x*p2.y);
         double bb = lens[1]*(p1.x*p3.y + p3.x*p1.y);

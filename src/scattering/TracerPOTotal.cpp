@@ -1,3 +1,8 @@
+#include "PrefixPath.h"
+#include "DepthExtinction.h"
+thread_local int mbsCoarseDepthOutput=0;
+thread_local int mbsDepthOutputLast=0;
+thread_local int mbsDepthOutputStep=0;
 #include "PreparedReuse.h"
 #include "PreparedMemoryProfile.h"
 #include "HostMemoryReserve.h"
@@ -6165,6 +6170,8 @@ void TracerPOTotal::TraceWeightedOrientations(
                   << ", component refinement=" << facetControl->RefinementError() << ", setup=" << facetSetupSeconds << " s" << std::endl;
     }
 
+    const bool vertexFacetPhases=facetControl && EnvEnabled("MBS_CPU_FACET_VERTEX_PHASE");
+    const bool prepareFacetIncident=vertexFacetPhases || (facetControl && EnvEnabled("MBS_CPU_FACET_INCIDENT_CACHE"));
     const auto facetWeights=AnalyticFacetAverage::ReadControlWeights(m_analyticControlWeights,facetTheta);
     const bool residentFacetControl = ResidentFacetControl::Eligible(
         ResidentFacetControl::Enabled(std::getenv("MBS_GPU_RESIDENT_FACET_CONTROL")),
@@ -6294,12 +6301,55 @@ void TracerPOTotal::TraceWeightedOrientations(
     m_scattering->PrepareForParallelTrace();
     const double parallelSetupSeconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-parallelSetupStarted).count();
 
+    const char* activeCutoffOption=std::getenv("MBS_PAIRED_ACTIVE_CUTOFF");
+    const bool activeCutoffOnly=m_pairedDepth&&(mbsCoarseDepthOutput||(activeCutoffOption&&std::string(activeCutoffOption)=="1"));
+    const auto preparedCutoff=handlerPO->PreparedCutoffRelatives();
+    const bool reuseCutoffMaxima=m_pairedDepth && EnvEnabled("MBS_PAIRED_REUSE_CUTOFF_MAXIMA");
+    const bool jointCpuDepth = m_pairedDepth && !handlerPO->IsGpuEnabled() && handlerPO->isCoh
+        && !computeNoShadow && (mbsCoarseDepthOutput || EnvEnabled("MBS_PAIRED_CPU_FIELDS"));
+    const bool jointGpuDepth = m_pairedDepth && handlerPO->IsGpuEnabled() && handlerPO->isCoh
+        && !computeNoShadow && !handlerPO->IsFftEnabled() && (mbsCoarseDepthOutput || EnvEnabled("MBS_PAIRED_GPU_FIELDS"));
+    const int thirdDepth=mbsCoarseDepthOutput;
+    std::vector<int> coarseDepths;
+    std::vector<std::unique_ptr<Arr2D>> coarseMatrices;
+    std::vector<double> coarseExtinction;
+    auto allocateCoarseMatrices=[&](){
+        std::vector<std::unique_ptr<Arr2D>> matrices;
+        for(size_t i=0;i<coarseDepths.size();++i){
+            matrices.emplace_back(new Arr2D(nAz+1,nZen+1,4,4));
+            matrices.back()->ClearArr();
+        }
+        return matrices;
+    };
+    std::vector<size_t> depthBand;
+    if(thirdDepth){
+        if(!(jointCpuDepth||jointGpuDepth) || thirdDepth<1 || thirdDepth>=m_pairedDepth || m_orientationPrefixOutput ||
+           std::any_of(preparedCutoff.begin(),preparedCutoff.end(),[](double x){return x>0;}))
+            throw std::runtime_error("third depth requires a coherent CPU pair with disabled relative cutoffs and prefix output");
+        const int last=mbsDepthOutputLast?mbsDepthOutputLast:m_pairedDepth-1;
+        for(int depth=thirdDepth;depth<=last;){
+            coarseDepths.push_back(depth);
+            if(!mbsDepthOutputStep || m_pairedDepth-depth<=mbsDepthOutputStep)break;
+            depth+=mbsDepthOutputStep;
+        }
+        coarseMatrices=allocateCoarseMatrices();
+        coarseExtinction.assign(coarseDepths.size(),0.);
+        for(int depth=0;depth<=m_pairedDepth;++depth)
+            depthBand.push_back(std::lower_bound(coarseDepths.begin(),coarseDepths.end(),depth)-coarseDepths.begin());
+    }
+    const bool collectExtinctions=m_pairedDepth && EnvEnabled("MBS_PREFIX_EXTINCTION");
+    std::vector<int> extinctionLevels;
+    if(collectExtinctions){extinctionLevels=coarseDepths;extinctionLevels.push_back(m_pairedDepth);}
+    size_t jointFieldOrientations=0;
+    const bool reuseUpperStorage = m_pairedDepth && (jointCpuDepth || jointGpuDepth || EnvEnabled("MBS_PAIRED_REUSE_UPPER_STORAGE"));
     struct PreparedBlock
     {
+        std::vector<std::vector<double>> extByDepth;
         int start=0,count=0;
         bool memoryAccounted=false;
         std::vector<PreparedOrientation> prepared;
         std::vector<PreparedOrientation> lower;
+        std::vector<unsigned char> deferredLower,lowerIsSubset;
         std::vector<double> energies,outputEnergies;
         std::vector<std::array<AnalyticBackscatter::Vec,3>> frames;
         std::unique_ptr<Arr2D> residentFull,residentNS,residentLower;
@@ -6313,10 +6363,24 @@ void TracerPOTotal::TraceWeightedOrientations(
         {PreparedBlock released=std::move(block);}
         seconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
     };
+    // Called only after the upper diffraction has consumed the full beam list.
+    const auto materializeLower = [&](PreparedBlock& block) {
+        for (size_t i=0;i<block.deferredLower.size();++i) {
+            if (!block.deferredLower[i]) continue;
+            auto& beams = block.prepared[i].beams;
+            beams.erase(std::remove_if(beams.begin(),beams.end(),[&](const PreparedBeam& beam) {
+                return !beam.isExternal && beam.nActs > m_pairedDepth;
+            }),beams.end());
+            beams.swap(block.lower[i].beams);
+            block.deferredLower[i]=0;
+        }
+    };
     auto prepareBlock = [&](int iStart,int thisChunk,bool allowResident,int prepareThreads)
     {
         PreparedBlock block;block.start=iStart;block.count=thisChunk;
         if(m_pairedDepth)block.lower.resize(thisChunk);
+        if(reuseUpperStorage)block.deferredLower.resize(thisChunk);
+        if(jointGpuDepth||jointCpuDepth)block.lowerIsSubset.resize(thisChunk);
         if(facetControl)
         {
             block.frames.resize(thisChunk);
@@ -6326,6 +6390,7 @@ void TracerPOTotal::TraceWeightedOrientations(
         // has its own Particle, Scattering and HandlerPO scratch state.
         auto tp1 = std::chrono::high_resolution_clock::now();
         auto &chunkPrepared=block.prepared;
+        if(collectExtinctions)block.extByDepth.resize(thisChunk);
         try
         {
             chunkPrepared.resize(thisChunk);
@@ -6386,7 +6451,7 @@ void TracerPOTotal::TraceWeightedOrientations(
             parallelError.Rethrow();
             std::vector<GpuConvexQueue::Status> status;
             GpuConvexQueue::Metrics metrics;
-            const bool directEligible=directRequested && directModeEligible
+            const bool directEligible=!thirdDepth && directRequested && directModeEligible
                 && std::find(residentReady.begin(),residentReady.end(),char(0))==residentReady.end();
             if(directEligible){
                 std::vector<GpuConvexQueue::Output> external;
@@ -6541,7 +6606,8 @@ void TracerPOTotal::TraceWeightedOrientations(
                     const double pose[]={orientation.beta,orientation.gamma,orientation.alpha,orientation.qx,orientation.qy,orientation.qz,orientation.qw,weight};
                     reuseKey.append(reinterpret_cast<const char*>(pose),sizeof(pose));reuseKey.push_back(orientation.useQuaternion?'q':'e');
                     const auto cached=PreparedReuse::Get(reuseKey);
-                    if(cached){chunkPrepared[i]=cached->upper;if(m_pairedDepth)block.lower[i]=cached->lower;
+                    if(cached && (!thirdDepth||cached->lowerIsSubset)){chunkPrepared[i]=cached->upper;if(m_pairedDepth)block.lower[i]=cached->lower;
+                        if(!block.lowerIsSubset.empty())block.lowerIsSubset[i]=cached->lowerIsSubset;
                         block.energies[i]=cached->incoming;block.outputEnergies[i]=cached->outgoing;continue;}
                 }
                 std::chrono::high_resolution_clock::time_point profileStart;
@@ -6560,6 +6626,7 @@ void TracerPOTotal::TraceWeightedOrientations(
                         now - profileStart).count();
                     profileStart = now;
                 }
+                PrefixPath::Scope pathScope(localBeams);
                 bool ok;
 #ifdef USE_CUDA
                 if(residentReady[i])
@@ -6650,13 +6717,24 @@ void TracerPOTotal::TraceWeightedOrientations(
                     // their maxima differ, prepare the lower raw subset on
                     // its own before upper preparation mutates polarization.
                     std::vector<Beam> lowerRaw;bool reusePrepared=true;
-                    if(m_pairedDepth){double upperMax[3]={},lowerMax[3]={};
-                        for(const auto& beam:localBeams){
-                            if(beam.lastFacetId==__INT_MAX__)continue;
-                            const double j=beam.J.Norm(),a=beam.Area();
-                            const double value[3]={j,a,j*a};
-                            for(int k=0;k<3;++k){upperMax[k]=std::max(upperMax[k],value[k]);if(beam.nActs<=m_pairedDepth)lowerMax[k]=std::max(lowerMax[k],value[k]);}}
-                        for(int k=0;k<3;++k)reusePrepared=reusePrepared&&upperMax[k]==lowerMax[k];
+                    std::array<double,3> upperMax{},lowerMax{};
+                    if(m_pairedDepth){
+                        const bool needJ=!activeCutoffOnly||preparedCutoff[0]>0;
+                        const bool needArea=!activeCutoffOnly||preparedCutoff[1]>0;
+                        const bool needImportance=!activeCutoffOnly||preparedCutoff[2]>0;
+                        if(needJ||needArea||needImportance){
+                            for(const auto& beam:localBeams){
+                                if(beam.lastFacetId==__INT_MAX__)continue;
+                                const double j=(needJ||needImportance)?beam.J.Norm():0.;
+                                const double a=(needArea||needImportance)?beam.Area():0.;
+                                const double values[]={needJ?j:0.,needArea?a:0.,needImportance?j*a:0.};
+                                for(int k=0;k<3;++k){
+                                    upperMax[k]=std::max(upperMax[k],values[k]);
+                                    if(beam.nActs<=m_pairedDepth)lowerMax[k]=std::max(lowerMax[k],values[k]);
+                                }
+                            }
+                            for(int k=0;k<3;++k)reusePrepared=reusePrepared&&upperMax[k]==lowerMax[k];
+                        }
                         // The common path reuses prepared upper beams. Avoid
                         // copying their large raw polygons into an unused
                         // vector; only the different-cutoff-maxima path needs
@@ -6665,12 +6743,23 @@ void TracerPOTotal::TraceWeightedOrientations(
                             for(const auto& beam:localBeams)
                                 if(beam.nActs<=m_pairedDepth||beam.lastFacetId==__INT_MAX__)
                                     lowerRaw.push_back(beam);
-                            localHandler.PrepareBeams(lowerRaw,weight,block.lower[i]);}}
+                            localHandler.PrepareBeams(lowerRaw,weight,block.lower[i],reuseCutoffMaxima ? &lowerMax : nullptr);}}
                     double beforeOutput = localHandler.m_outputEnergy;
-                    localHandler.PrepareBeams(localBeams, weight, chunkPrepared[i]);
-                    if(m_pairedDepth&&reusePrepared){auto& lower=block.lower[i];lower.sinZenith=weight;
-                        for(const auto& beam:chunkPrepared[i].beams)if(beam.nActs<=m_pairedDepth||beam.isExternal)lower.beams.push_back(beam);
-                        lower.extinctionOt=localHandler.ComputeForwardExtinctionOt(lower);}
+                    if(collectExtinctions){
+                        DepthExtinction::Capture capture(extinctionLevels,block.extByDepth[i]);
+                        localHandler.PrepareBeams(localBeams,weight,chunkPrepared[i],reuseCutoffMaxima ? &upperMax : nullptr);
+                    }else
+                    localHandler.PrepareBeams(localBeams, weight, chunkPrepared[i],reuseCutoffMaxima ? &upperMax : nullptr);
+                    if(m_pairedDepth&&reusePrepared){if(!block.lowerIsSubset.empty())block.lowerIsSubset[i]=1;
+                        auto& lower=block.lower[i];lower.sinZenith=weight;
+                        const size_t perOrientation = reuseKey.empty() ? 0 : PreparedReuse::Cache().limit / size_t(nOrient);
+                        if (reuseUpperStorage && (!perOrientation || PreparedReuse::Value::PreparedBytes(chunkPrepared[i])+sizeof(PreparedReuse::Value)>perOrientation)) {
+                            block.deferredLower[i]=1;
+                            lower.extinctionOt=(collectExtinctions && !block.extByDepth[i].empty())?block.extByDepth[i].back():localHandler.ComputeForwardExtinctionOt(chunkPrepared[i],m_pairedDepth);
+                        } else {
+                            for(const auto& beam:chunkPrepared[i].beams)if(beam.nActs<=m_pairedDepth||beam.isExternal)lower.beams.push_back(beam);
+                            lower.extinctionOt=(collectExtinctions && !block.extByDepth[i].empty())?block.extByDepth[i].back():localHandler.ComputeForwardExtinctionOt(lower);
+                        }}
                     block.outputEnergies[i] = localHandler.m_outputEnergy - beforeOutput;
                 }
                 else
@@ -6682,15 +6771,19 @@ void TracerPOTotal::TraceWeightedOrientations(
 #else
                 block.energies[i] = localScatter->GetIncedentEnergy() * weight;
 #endif
-                const size_t reuseBytes=sizeof(PreparedReuse::Value)+PreparedReuse::Value::PreparedBytes(chunkPrepared[i])
-                    +(m_pairedDepth?PreparedReuse::Value::PreparedBytes(block.lower[i]):0);
-                if(ok&&!reuseKey.empty()&&reuseBytes*size_t(nOrient)<=PreparedReuse::Cache().limit){
-                    PreparedReuse::Value value;value.upper=chunkPrepared[i];if(m_pairedDepth)value.lower=block.lower[i];
-                    value.incoming=block.energies[i];value.outgoing=block.outputEnergies[i];
-                    // Avoid streaming large production sets through a cache
-                    // that cannot hold even one complete per-seed job.
-                    PreparedReuse::Put(reuseKey,std::move(value));
+                if(ok&&!reuseKey.empty() && (!reuseUpperStorage || !block.deferredLower[i])){
+                    const size_t reuseBytes=sizeof(PreparedReuse::Value)+PreparedReuse::Value::PreparedBytes(chunkPrepared[i])
+                        +(m_pairedDepth?PreparedReuse::Value::PreparedBytes(block.lower[i]):0);
+                    if(reuseBytes<=PreparedReuse::Cache().limit / size_t(nOrient)){
+                        PreparedReuse::Value value;
+                        value.upper=chunkPrepared[i];
+                        if(m_pairedDepth){value.lower=block.lower[i];value.lowerIsSubset=!block.lowerIsSubset.empty()&&block.lowerIsSubset[i];}
+                        value.incoming=block.energies[i];value.outgoing=block.outputEnergies[i];
+                        PreparedReuse::Put(reuseKey,std::move(value));
+                    }
                 }
+                if(pathScope.hits && std::getenv("MBS_PATH_STATS"))
+                    std::fprintf(stderr,"prefix_samples %llu\n",pathScope.hits);
                 localBeams.clear();
                 if (profileOrientation)
                     localPrepareSeconds += std::chrono::duration<double>(
@@ -6773,6 +6866,10 @@ void TracerPOTotal::TraceWeightedOrientations(
         if(collectPrefix)prefixCollected+=thisChunk;
 
         auto &chunkPrepared=block.prepared;
+        const bool sharedGpuFields=jointGpuDepth && !block.residentFull
+            && std::find(block.lowerIsSubset.begin(),block.lowerIsSubset.end(),1)!=block.lowerIsSubset.end();
+        if(sharedGpuFields || jointCpuDepth)
+            jointFieldOrientations+=std::count(block.lowerIsSubset.begin(),block.lowerIsSubset.end(),1);
         const auto &bodyFrames=block.frames;
         const auto &chunkEnergies=block.energies,&chunkOutputEnergies=block.outputEnergies;
         rotationCpuSeconds+=block.rotation;traceCpuSeconds+=block.trace;prepareCpuSeconds+=block.prepare;
@@ -6785,6 +6882,8 @@ void TracerPOTotal::TraceWeightedOrientations(
             handlerPO->m_outputEnergy += chunkOutputEnergies[i];
             handlerPO->m_extinctionCrossSectionOt +=
                 chunkPrepared[i].extinctionOt;
+            for(size_t level=0;level<coarseDepths.size();++level)
+                coarseExtinction[level]+=(collectExtinctions && !block.extByDepth[i].empty())?block.extByDepth[i][level]:handlerPO->ComputeForwardExtinctionOt(chunkPrepared[i],coarseDepths[level]);
             if(m_pairedDepth)pairedExtinctionOt+=block.lower[i].extinctionOt;
             handlerPO->m_hasExtinctionOt = true;
             count++;
@@ -6889,7 +6988,7 @@ void TracerPOTotal::TraceWeightedOrientations(
 #ifdef USE_CUDA
                 const auto &poses=bodyFrames;
                 std::string analyticError;
-                if(EnvEnabled("MBS_GPU_OVERLAP_ANALYTIC_PACK")&&!m_analyticFacetSamples&&!analyticControl
+                if(!sharedGpuFields && EnvEnabled("MBS_GPU_OVERLAP_ANALYTIC_PACK")&&!m_analyticFacetSamples&&!analyticControl
                     &&!m_analyticAzimuthGaussian&&!computeNoShadow&&!handlerPO->IsFftEnabled()){
                     AnalyticFacetGpuPending pending;bool supported=false;
                     if(!pending.Prepare(facetControl->GpuModel(),poses,weights,facetTheta,nAz,supported,&analyticError))
@@ -6936,8 +7035,18 @@ void TracerPOTotal::TraceWeightedOrientations(
             const auto diffractionStarted=std::chrono::steady_clock::now();
             for (int gpuStart = usedAnalyticPackOverlap?thisChunk:0; gpuStart < thisChunk; )
             {
-                int gpuBatchSize = handlerPO->SelectGpuOrientationBatchSize(
-                    chunkPrepared, gpuStart, thisChunk - gpuStart);
+                const bool jointBatch = sharedGpuFields && block.lowerIsSubset[gpuStart];
+                int runEnd=thisChunk;
+                if(sharedGpuFields){
+                    const auto next=std::find(block.lowerIsSubset.begin()+gpuStart+1,
+                                              block.lowerIsSubset.end(),jointBatch?0:1);
+                    runEnd=int(next-block.lowerIsSubset.begin());
+                }
+                int gpuBatchSize=handlerPO->SelectGpuOrientationBatchSize(
+                    chunkPrepared,gpuStart,runEnd-gpuStart,jointBatch);
+                if(sharedGpuFields && !jointBatch)
+                    gpuBatchSize=std::min(gpuBatchSize,handlerPO->SelectGpuOrientationBatchSize(
+                        block.lower,gpuStart,gpuBatchSize));
                 // Per-orientation raw diagnostics require a single-orientation
                 // batch. Normal production aggregation keeps the optimized batch
                 // size and multi-device backend. No precision/data is fabricated.
@@ -6956,13 +7065,28 @@ void TracerPOTotal::TraceWeightedOrientations(
                     }
                 }
                 int gpuEnd = std::min(gpuStart + gpuBatchSize, thisChunk);
-                bool ok = handlerPO->IsFftEnabled()
+                if(thirdDepth&&!jointBatch)throw std::runtime_error("unavailable shared CUDA depth pilot");
+                std::vector<Arr2D*> outputs;
+                for(auto& m:coarseMatrices)outputs.push_back(m.get());
+                bool ok =
+#ifdef USE_CUDA
+                    thirdDepth ? handlerPO->HandleDepthPacketGpu(chunkPrepared,gpuStart,gpuEnd-gpuStart,
+                        localM,localM_ns,1.,0.,m_pairedDepth,coarseDepths,outputs) :
+#endif
+                    handlerPO->IsFftEnabled()
                     ? handlerPO->HandleOrientationsToLocalGpuFftPhi(
                         chunkPrepared, gpuStart, gpuEnd - gpuStart,
                         localM, localM_ns)
                     : handlerPO->HandleOrientationsToLocalGpu(
                         chunkPrepared, gpuStart, gpuEnd - gpuStart,
-                        localM, localM_ns);
+                        localM, localM_ns, 1.0, 0.0, jointBatch ? m_pairedDepth : 0);
+                if(ok && sharedGpuFields && !jointBatch){
+                    // Some orientations have different cutoff maxima at the two
+                    // depths. Their separate lower preparation is authoritative.
+                    Arr2D unused(nAz+1,nZen+1,4,4);
+                    ok=handlerPO->HandleOrientationsToLocalGpu(block.lower,gpuStart,gpuEnd-gpuStart,
+                                                              localM_ns,unused);
+                }
                 if (!ok)
                 {
                     std::cerr << "ERROR: --gpu requested but GPU diffraction backend "
@@ -6998,7 +7122,10 @@ void TracerPOTotal::TraceWeightedOrientations(
                 {
                     handlerPO->M.insert(p, t, localM(p, t));
                     if(collectPrefix)prefixMatrices->insert(p,t,localM(p,t));
-                    if (computeNoShadow)
+                    if(sharedGpuFields){
+                        pairedMatrices->insert(p,t,localM_ns(p,t));
+                        if(collectPrefix)prefixLowerMatrices->insert(p,t,localM_ns(p,t));
+                    }else if (computeNoShadow)
                         handlerPO->M_noshadow.insert(
                             p, t, localM_ns(p, t));
                 }
@@ -7014,6 +7141,8 @@ void TracerPOTotal::TraceWeightedOrientations(
                 std::vector<Arr2DC> localJ, localJ_ns;
                 std::vector<double> localFacetRef(facetControl ? facetReflectionCells.size() : 0,0);
                 std::vector<double> localFacetShadow(localFacetRef.size(),0);
+                AnalyticFacetAverage::Control::Incident incident;
+                auto localCoarse=allocateCoarseMatrices();
                 std::unique_ptr<Arr2D> sampledIncoherent;
                 if(m_analyticFacetSamples&&!handlerPO->isCoh)
                     sampledIncoherent.reset(new Arr2D(nAz+1,nZen+1,4,4));
@@ -7021,23 +7150,44 @@ void TracerPOTotal::TraceWeightedOrientations(
                     Arr2DC tmp(nAz + 1, nZen + 1, 2, 2);
                     tmp.ClearArr();
                     localJ.push_back(tmp);
-                    Arr2DC tmp2(nAz + 1, nZen + 1, 2, 2);
-                    tmp2.ClearArr();
-                    localJ_ns.push_back(tmp2);
+                    if(computeNoShadow || (jointCpuDepth && !thirdDepth))localJ_ns.push_back(tmp);
                 }
 
                 #pragma omp for schedule(dynamic, 1)
                 for (int i = 0; i < thisChunk; ++i)
                 {
                     if(sampledIncoherent)sampledIncoherent->ClearArr();
-                    if (!chunkPrepared[i].beams.empty())
+                    const bool sameLower = jointCpuDepth && block.lowerIsSubset[i];
+                    if(thirdDepth){
+                        // Every beam contributes to exactly one band. Convert the
+                        // cumulative complex field, including its cross terms,
+                        // to Mueller at each requested physical depth.
+                        std::vector<PreparedOrientation> bands(coarseDepths.size()+2);
+                        const double weight=chunkPrepared[i].sinZenith;
+                        for(auto& band:bands)band.sinZenith=weight;
+                        for(auto& beam:chunkPrepared[i].beams){
+                            const int depth=beam.isExternal?0:beam.nActs;
+                            const size_t band=depth>m_pairedDepth?bands.size()-1:depthBand[std::max(0,depth)];
+                            bands[band].beams.push_back(std::move(beam));
+                        }
+                        for(size_t band=0;band<bands.size();++band){
+                            if(!bands[band].beams.empty())handlerPO->HandleBeamsToLocal(bands[band],localM,localJ,nullptr);
+                            if(band+1<bands.size())
+                                HandlerPO::AddToMuellerLocal(localJ,weight,band<localCoarse.size()?*localCoarse[band]:localM_ns,nAz,nZen);
+                        }
+                    }else                     if (!chunkPrepared[i].beams.empty())
                         handlerPO->HandleBeamsToLocal(chunkPrepared[i], sampledIncoherent?*sampledIncoherent:localM, localJ,
-                                                       handlerPO->isCoh ? &localJ_ns : nullptr);
+                            (sameLower||computeNoShadow)&&handlerPO->isCoh ? &localJ_ns : nullptr,
+                            sameLower ? m_pairedDepth : 0);
+                    // Unequal cutoff maxima require a separately prepared aperture.
+                    if(!thirdDepth && jointCpuDepth && !sameLower && !block.lower[i].beams.empty())
+                        handlerPO->HandleBeamsToLocal(block.lower[i],localM_ns,localJ_ns,nullptr);
                     // C is an intensity-valued orientation function. Sample it
                     // for both targets, before adding its known Haar mean.
                     if(facetControl)
                     {
                         const int index=iStart+i;const auto &frame=bodyFrames[i];
+                        if(prepareFacetIncident)facetControl->PrepareIncident(frame[2],incident,vertexFacetPhases);
                         const double weight=chunkPrepared[i].sinZenith;
                         for(int p=0;p<nAz;++p)
                         {
@@ -7049,7 +7199,7 @@ void TracerPOTotal::TraceWeightedOrientations(
                                     st*(cp*frame[0].x+sp*frame[1].x)-ct*frame[2].x,
                                     st*(cp*frame[0].y+sp*frame[1].y)-ct*frame[2].y,
                                     st*(cp*frame[0].z+sp*frame[1].z)-ct*frame[2].z);
-                                const auto control=facetControl->Evaluate(frame[2],observer);
+                                const auto control=prepareFacetIncident?facetControl->Evaluate(incident,observer):facetControl->Evaluate(frame[2],observer);
                                 const size_t cell=static_cast<size_t>(p)*facetRows+t;
                                 localFacetRef[cell]+=weight*control.reflection;
                                 localFacetShadow[cell]+=weight*control.shadow;
@@ -7087,9 +7237,11 @@ void TracerPOTotal::TraceWeightedOrientations(
                         }
                         double w = chunkPrepared[i].sinZenith;
                         HandlerPO::AddToMuellerLocal(localJ, w, localM, nAz, nZen);
-                        HandlerPO::AddToMuellerLocal(localJ_ns, w, localM_ns, nAz, nZen);
+                        if(!localJ_ns.empty()){
+                            HandlerPO::AddToMuellerLocal(localJ_ns, w, localM_ns, nAz, nZen);
+                            localJ_ns[0].ClearArr();
+                        }
                         localJ[0].ClearArr();
-                        localJ_ns[0].ClearArr();
                     }
                 }
 
@@ -7103,7 +7255,12 @@ void TracerPOTotal::TraceWeightedOrientations(
                         for (int t = 0; t <= nZen; ++t) {
                             handlerPO->M.insert(p, t, localM(p, t));
                             if(collectPrefix)prefixMatrices->insert(p,t,localM(p,t));
-                            if (computeNoShadow)
+                            if(jointCpuDepth){
+                                for(size_t level=0;level<coarseDepths.size();++level)
+                                    coarseMatrices[level]->insert(p,t,(*localCoarse[level])(p,t));
+                                pairedMatrices->insert(p,t,localM_ns(p,t));
+                                if(collectPrefix)prefixLowerMatrices->insert(p,t,localM_ns(p,t));
+                            }else if (computeNoShadow)
                                 handlerPO->M_noshadow.insert(
                                     p, t, localM_ns(p, t));
                         }
@@ -7113,7 +7270,8 @@ void TracerPOTotal::TraceWeightedOrientations(
         if(m_pairedDepth&&block.residentLower){
             for(int p=0;p<nAz;++p)for(int t=0;t<=nZen;++t){pairedMatrices->insert(p,t,(*block.residentLower)(p,t));
                 if(collectPrefix)prefixLowerMatrices->insert(p,t,(*block.residentLower)(p,t));}
-        }else if(m_pairedDepth){
+        }else if(m_pairedDepth && !jointCpuDepth && !sharedGpuFields){
+            if(reuseUpperStorage){accountPreparedBlock(block);materializeLower(block);}
             Arr2D lower(nAz+1,nZen+1,4,4),dummy(nAz+1,nZen+1,4,4);lower.ClearArr();dummy.ClearArr();
             if(handlerPO->IsGpuEnabled()){
                 const auto lowerStarted=std::chrono::steady_clock::now();
@@ -7223,6 +7381,7 @@ void TracerPOTotal::TraceWeightedOrientations(
                             first+=batch;
                         }
                         if(m_pairedDepth){
+                            if(reuseUpperStorage)materializeLower(block);
                             block.residentLower.reset(new Arr2D(nAz+1,nZen+1,4,4));block.residentLower->ClearArr();
                             Arr2D lowerNS(nAz+1,nZen+1,4,4);lowerNS.ClearArr();
                             for(int first=0;first<size;){
@@ -7396,6 +7555,8 @@ void TracerPOTotal::TraceWeightedOrientations(
             <<" cached_MiB="<<reuse.bytes/1048576.<<" limit_MiB="<<reuse.limit/1048576.;
         std::cout<<log.str()<<std::endl;AppendTextLog(log.str()+"\n");
     }
+    if(jointCpuDepth||jointGpuDepth)std::cout<<"Paired coherent "<<(jointCpuDepth?"CPU":"GPU")<<" fields: shared diffraction orientations="
+                             <<jointFieldOrientations<<"/"<<(myEnd-myStart)<<std::endl;
     const double processingWall=std::chrono::duration<double>(std::chrono::steady_clock::now()-processingStarted).count();
 
     if(m_orientationPrefixOutput){
@@ -7450,50 +7611,81 @@ void TracerPOTotal::TraceWeightedOrientations(
         }
     }
 
-    if(m_pairedDepth){
-        if(m_mirrorGamma)ApplyMirrorGammaMueller(*pairedMatrices,nAz,nZen);
-        std::string lowerName=m_resultDirName+"_depth"+std::to_string(m_pairedDepth);
+    const auto emitLower=[&](Arr2D& matrix,int depth,double extinction){
+        if(m_mirrorGamma)ApplyMirrorGammaMueller(matrix,nAz,nZen);
+        std::string lowerName=m_resultDirName+"_depth"+std::to_string(depth);
         if(facetControl){std::ofstream summary((lowerName+"_analytic_facets.tsv").c_str());summary<<std::setprecision(17)
             <<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n";
             for(int t=0;t<facetRows;++t){const auto known=facetControl->Mean(t);double raw=0,ref=0,shadow=0;const double wr=facetWeights[t][0],ws=facetWeights[t][1];
-                for(int p=0;p<nAz;++p){const size_t cell=static_cast<size_t>(p)*facetRows+t;raw+=(*pairedMatrices)(p,t,0,0)/nAz;ref+=facetReflectionCells[cell]/nAz;shadow+=facetShadowCells[cell]/nAz;
-                    (*pairedMatrices)(p,t,0,0)+=wr*(known.reflection-facetReflectionCells[cell])+(shadowOff?0:ws*(known.shadow-facetShadowCells[cell]));}
+                for(int p=0;p<nAz;++p){const size_t cell=static_cast<size_t>(p)*facetRows+t;raw+=(matrix)(p,t,0,0)/nAz;ref+=facetReflectionCells[cell]/nAz;shadow+=facetShadowCells[cell]/nAz;
+                    (matrix)(p,t,0,0)+=wr*(known.reflection-facetReflectionCells[cell])+(shadowOff?0:ws*(known.shadow-facetShadowCells[cell]));}
                 summary<<RadToDeg(facetTheta[t])<<'\t'<<raw<<'\t'<<known.reflection<<'\t'<<(shadowOff?0:known.shadow)<<'\t'<<ref<<'\t'<<(shadowOff?0:shadow)<<'\t'<<raw-wr*ref-(shadowOff?0:ws*shadow)<<'\t'<<raw+wr*(known.reflection-ref)+(shadowOff?0:ws*(known.shadow-shadow))<<'\t'<<facetControl->RefinementError()<<'\t'<<facetSetupSeconds<<'\t'<<wr<<'\t'<<ws<<'\n';}
             summary.flush();if(!summary)throw std::runtime_error("cannot write paired-depth control summary");}
         const double upperExtinction=handlerPO->m_extinctionCrossSectionOt;
-        handlerPO->m_extinctionCrossSectionOt=pairedExtinctionOt;
-        std::swap(handlerPO->M,*pairedMatrices);handlerPO->WriteMatricesToFile(lowerName,m_incomingEnergy);std::swap(handlerPO->M,*pairedMatrices);
+        handlerPO->m_extinctionCrossSectionOt=extinction;
+        std::swap(handlerPO->M,matrix);handlerPO->WriteMatricesToFile(lowerName,m_incomingEnergy);std::swap(handlerPO->M,matrix);
         handlerPO->m_extinctionCrossSectionOt=upperExtinction;
         std::ofstream revision((lowerName+"_integrals_revision.txt").c_str());revision<<"paired_extinction_v1\n";revision.close();
         if(!revision)throw std::runtime_error("cannot write paired-depth integral revision");
-        std::cout<<"Paired depth "<<m_pairedDepth<<": "<<(handlerPO->isCoh?"coherent field":"incoherent per-beam Mueller sum")<<" recomputed from shared convex trace; "<<lowerName<<".dat"<<std::endl;
+        std::cout<<"Paired depth "<<depth<<": "<<(handlerPO->isCoh?"coherent field":"incoherent per-beam Mueller sum")<<" recomputed from shared convex trace; "<<lowerName<<".dat"<<std::endl;
+    };
+    if(m_pairedDepth)emitLower(*pairedMatrices,m_pairedDepth,pairedExtinctionOt);
+    for(size_t level=0;level<coarseDepths.size();++level)
+        emitLower(*coarseMatrices[level],coarseDepths[level],coarseExtinction[level]);
+    std::vector<int> azimuthSubsets;
+    if (m_nestedPhiMin && m_mpiRank == 0) {
+        if (m_analyticAzimuthGaussian || analyticControl)
+            throw std::runtime_error("nested phi does not support conditional azimuth or pole controls");
+        for (int count = nAz; count > m_nestedPhiMin; ) {
+            count /= 2;
+            azimuthSubsets.push_back(count);
+        }
     }
     std::vector<double> facetRawMeans,facetHybridMeans;
     if(facetControl)
     {
         const std::string path=m_resultDirName+"_analytic_facets.tsv";
-        std::ofstream file(path.c_str());file << std::setprecision(17)
-            << "theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n";
-        facetRawMeans.resize(facetRows);facetHybridMeans.resize(facetRows);
-        for(int t=0;t<facetRows;++t)
-        {
-            const auto known=facetControl->Mean(t);const double wr=facetWeights[t][0],ws=facetWeights[t][1];double raw=0,ref=0,shadow=0;
-            for(int p=0;p<nAz;++p)
-            {
-                const size_t cell=static_cast<size_t>(p)*facetRows+t;
-                raw+=handlerPO->M(p,t,0,0)/nAz;ref+=facetReflectionCells[cell]/nAz;shadow+=facetShadowCells[cell]/nAz;
-                handlerPO->M(p,t,0,0)+=wr*(known.reflection-facetReflectionCells[cell])
-                    +(shadowOff ? 0:ws*(known.shadow-facetShadowCells[cell]));
-                if(computeNoShadow)handlerPO->M_noshadow(p,t,0,0)+=wr*(known.reflection-facetReflectionCells[cell]);
+        facetRawMeans.resize(facetRows);
+        facetHybridMeans.resize(facetRows);
+        const auto writeControlMean = [&](int count, const std::string &filePath) {
+            std::ofstream file(filePath);
+            file << std::setprecision(17)
+                 << "theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n";
+            const int stride = nAz / count;
+            for (int t = 0; t < facetRows; ++t) {
+                const auto known = facetControl->Mean(t);
+                const double wr = facetWeights[t][0], ws = facetWeights[t][1];
+                double raw = 0, ref = 0, shadow = 0;
+                for (int p = 0; p < nAz; p += stride) {
+                    const size_t cell = static_cast<size_t>(p) * facetRows + t;
+                    raw += handlerPO->M(p,t,0,0) / count;
+                    ref += facetReflectionCells[cell] / count;
+                    shadow += facetShadowCells[cell] / count;
+                    if (count == nAz) {
+                        handlerPO->M(p,t,0,0) += wr * (known.reflection - facetReflectionCells[cell])
+                            + (shadowOff ? 0 : ws * (known.shadow - facetShadowCells[cell]));
+                        if (computeNoShadow)
+                            handlerPO->M_noshadow(p,t,0,0) += wr * (known.reflection - facetReflectionCells[cell]);
+                    }
+                }
+                const double sampled = wr * ref + (shadowOff ? 0 : ws * shadow);
+                const double mean = wr * known.reflection + (shadowOff ? 0 : ws * known.shadow);
+                const double hybrid = raw + mean - sampled;
+                if (count == nAz) {
+                    facetRawMeans[t] = raw;
+                    facetHybridMeans[t] = hybrid;
+                }
+                file << RadToDeg(facetTheta[t]) << '\t' << raw << '\t' << known.reflection << '\t'
+                     << (shadowOff ? 0 : known.shadow) << '\t' << ref << '\t' << (shadowOff ? 0 : shadow)
+                     << '\t' << raw-sampled << '\t' << hybrid << '\t' << facetControl->RefinementError()
+                     << '\t' << facetSetupSeconds << '\t' << wr << '\t' << ws << '\n';
             }
-            const double sampled=wr*ref+(shadowOff ? 0:ws*shadow),mean=wr*known.reflection+(shadowOff ? 0:ws*known.shadow);
-            facetRawMeans[t]=raw;facetHybridMeans[t]=raw+mean-sampled;
-            file << RadToDeg(facetTheta[t]) << '\t' << raw << '\t' << known.reflection << '\t'
-                 << (shadowOff ? 0:known.shadow) << '\t' << ref << '\t' << (shadowOff ? 0:shadow)
-                 << '\t' << raw-sampled << '\t' << facetHybridMeans[t] << '\t'
-                 << facetControl->RefinementError() << '\t' << facetSetupSeconds << '\t' << wr << '\t' << ws << '\n';
-        }
-        file.flush();if(!file)throw std::runtime_error("cannot write analytic facet summary.\n  Fix: check output permissions and disk space.");
+            file.flush();
+            if (!file) throw std::runtime_error("cannot write analytic facet summary: " + filePath);
+        };
+        for (int count : azimuthSubsets)
+            writeControlMean(count, m_resultDirName + "_phi" + std::to_string(count) + "_analytic_facets.tsv");
+        writeControlMean(nAz, path);
         if(m_analyticFacetSamples)
         {
             std::ofstream samples((m_resultDirName+"_analytic_facet_samples.tsv").c_str());
@@ -7661,6 +7853,13 @@ void TracerPOTotal::TraceWeightedOrientations(
             profile.flush();if(!profile)throw std::runtime_error("cannot write phase timings");
         }
 
+        if (!azimuthSubsets.empty()) {
+            auto *writer = dynamic_cast<HandlerPOTotal *>(handlerPO);
+            if (!writer) throw std::runtime_error("nested phi output requires a total PO handler");
+            for (int count : azimuthSubsets)
+                writer->WriteAzimuthSubset(m_resultDirName + "_phi" + std::to_string(count),
+                                           m_incomingEnergy, count);
+        }
         m_handler->WriteTotalMatricesToFile(m_resultDirName);
         m_handler->WriteMatricesToFile(m_resultDirName, m_incomingEnergy);
 

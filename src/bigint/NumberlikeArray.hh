@@ -6,7 +6,7 @@
 #define NULL 0
 #endif
 
-/* A NumberlikeArray<Blk> object holds a heap-allocated array of Blk with a
+/* A NumberlikeArray<Blk> object holds a variable-sized array of Blk with a
  * length and a capacity and provides basic memory management features.
  * BigUnsigned and BigUnsignedInABase both subclass it.
  *
@@ -30,25 +30,40 @@ public:
 	Index cap;
 	// The actual length of the value stored in this NumberlikeArray (in blocks)
 	Index len;
-	// Heap-allocated array of the blocks (can be NULL if len == 0)
+	// Active storage (can be NULL if len == 0)
 	Blk *blk;
+private:
+	// A short facet history fits in two words on typical convex particles.
+	// Larger numbers retain arbitrary precision and the reported capacity.
+	Blk inlineBlocks[2];
+
+	Blk *storage(Index count) {
+		if (count == 0)
+			return NULL;
+		if (count <= 2)
+			return inlineBlocks;
+		return new Blk[count];
+	}
+
+	void release(Blk *pointer) {
+		if (pointer != inlineBlocks)
+			delete [] pointer;
+	}
+public:
 
 	// Constructs a ``zero'' NumberlikeArray with the given capacity.
 	NumberlikeArray(Index c) : cap(c), len(0) { 
-		blk = (cap > 0) ? (new Blk[cap]) : NULL;
+		blk = storage(cap);
 	}
 
-	/* Constructs a zero NumberlikeArray without allocating a backing array.
-	 * A subclass that doesn't know the needed capacity at initialization
-	 * time can use this constructor and then overwrite blk without first
-	 * deleting it. */
+	// Start with zero active blocks.
 	NumberlikeArray() : cap(0), len(0) {
 		blk = NULL;
 	}
 
-	// Destructor.  Note that `delete NULL' is a no-op.
+	// Only overflow storage is heap allocated.
 	~NumberlikeArray() {
-		delete [] blk;
+		release(blk);
 	}
 
 	/* Ensures that the array has at least the requested capacity; may
@@ -94,11 +109,11 @@ template <class Blk>
 void NumberlikeArray<Blk>::allocate(Index c) {
 	// If the requested capacity is more than the current capacity...
 	if (c > cap) {
-		// Delete the old number array
-		delete [] blk;
-		// Allocate the new array
+		// Acquire the new storage before releasing the old value.
+		Blk *next = storage(c);
+		release(blk);
+		blk = next;
 		cap = c;
-		blk = new Blk[cap];
 	}
 }
 
@@ -108,14 +123,14 @@ void NumberlikeArray<Blk>::allocateAndCopy(Index c) {
 	if (c > cap) {
 		Blk *oldBlk = blk;
 		// Allocate the new number array
+		blk = storage(c);
 		cap = c;
-		blk = new Blk[cap];
 		// Copy number blocks
 		Index i;
 		for (i = 0; i < len; i++)
 			blk[i] = oldBlk[i];
 		// Delete the old array
-		delete [] oldBlk;
+		release(oldBlk);
 	}
 }
 
@@ -124,7 +139,7 @@ NumberlikeArray<Blk>::NumberlikeArray(const NumberlikeArray<Blk> &x)
 		: len(x.len) {
 	// Create array
 	cap = len;
-	blk = new Blk[cap];
+	blk = storage(cap);
 	// Copy blocks
 	Index i;
 	for (i = 0; i < len; i++)
@@ -137,10 +152,8 @@ void NumberlikeArray<Blk>::operator=(const NumberlikeArray<Blk> &x) {
 	 * causes a problem */
 	if (this == &x)
 		return;
-	// Copy length
+	allocate(x.len);
 	len = x.len;
-	// Expand array if necessary
-	allocate(len);
 	// Copy number blocks
 	Index i;
 	for (i = 0; i < len; i++)
@@ -151,7 +164,7 @@ template <class Blk>
 NumberlikeArray<Blk>::NumberlikeArray(const Blk *b, Index blen)
 		: cap(blen), len(blen) {
 	// Create array
-	blk = new Blk[cap];
+	blk = storage(cap);
 	// Copy blocks
 	Index i;
 	for (i = 0; i < len; i++)

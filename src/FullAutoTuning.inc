@@ -177,7 +177,7 @@ void TuneRotations(const std::vector<double>& x){
     Require(pos!=std::string::npos,"missing verified rotation factors");std::istringstream factors(log.substr(pos+marker.size()));int beta,gamma;Require(bool(factors>>beta>>gamma),"invalid rotation factors");SetRotation(beta,gamma);
     const unsigned seeds[8]={8101,8111,8117,8123,8147,8161,8167,8171};std::ostringstream report;report<<"{\"geometry_beta_factor\":"<<beta<<",\"geometry_gamma_factor\":"<<gamma<<",\"checks\":[";bool first=true;
     for(const char* axis:{"gamma","beta"})if((std::string(axis)=="gamma"?rotationGamma:rotationBeta)>1){double worst=0;
-        std::set<int> depths={std::max(1,target-4),target};for(int depth:depths){auto reduced=DirectStage(std::min(pilot,128),seeds,8,depth,x,false);
+        std::set<int> depths={ProductionDepths().front(),target};for(int depth:depths){auto reduced=DirectStage(std::min(pilot,128),seeds,8,depth,x,false);
             base.push_back("--haar-rotation-audit");base.push_back(axis);auto paired=DirectStage(std::min(pilot,128),seeds,8,depth,x,false);RemoveOption("--haar-rotation-audit");
             worst=std::max(worst,RotationEquivalenceBound(Data(reduced),Data(paired),ratios));}
         const double bound=5*worst;report<<(first?"":",")<<"{\"axis\":"<<Quoted(axis)<<",\"paired_equivalence_bound\":"<<Number(bound)<<",\"safety_multiplier\":5}";first=false;
@@ -188,7 +188,7 @@ void TuneRotations(const std::vector<double>& x){
         <<",\"scope\":\"oriented-facet bijection plus all16 per-block relative equivalence and ratio perturbation bound; no production-convergence gate; fixed axes only\"}";Record(root+"/rotation_verification.json",report.str());
 }
 Samples ProfilePilot(const std::vector<double>& x,int n,const unsigned* seeds,double& cost){
-    std::vector<int> depths;for(int d:{std::max(1,target-4),std::max(1,target-2),target})if(depths.empty()||depths.back()!=d)depths.push_back(d);
+    const auto depths=ProductionDepths();
     std::vector<Job> final;cost=0;
     for(size_t l=0;l<depths.size();++l){std::vector<Job> upper;
         if(l&&depthSharing&&selectedCutoff=="off"){

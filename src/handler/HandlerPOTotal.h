@@ -9,6 +9,7 @@ public:
                    double wavelength);
     ~HandlerPOTotal() override { delete betaMueller; }
     void WriteMatricesToFile(std::string &destName, double nrg) override;
+    void WriteAzimuthSubset(const std::string &destName, double nrg, int count);
     void AddToMueller() override;
 
     void OutputContribution(double angle, double energy);

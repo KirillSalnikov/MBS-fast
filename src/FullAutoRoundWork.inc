@@ -9,12 +9,12 @@ struct RoundOutputPriority {double error;std::vector<size_t> nodes;};
 void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budgets& proposed,
         const std::vector<int>& depths,const std::vector<size_t>& ids,const Statistics& stats,
         const std::vector<size_t>& knots={},const std::vector<std::vector<size_t>>& cohorts={},const Budgets* residualCounts=nullptr,
-        const std::vector<RoundOutputPriority>& outputPriorities={}){
+        const std::vector<RoundOutputPriority>& outputPriorities={},double costFactor=1.,double* selectedRawForecast=nullptr){
     const bool separatePhi=residualCounts&&!knots.empty()&&MixedResidualPhi(e);
     WorkForecast residualForecast;
     if(separatePhi){ResidualPhiScope scope(e,true);AdditionalWork residualWork(e,e.seeds.data());
         residualForecast=residualWork.Forecast(AuditRequests(e,depths,*residualCounts,ids,knots));}
-    auto estimate=[&](const Budgets& counts){
+    auto rawEstimate=[&](const Budgets& counts){
         if(separatePhi){auto result=work.Forecast(BudgetRequests(e,depths,counts,ids));
             result.seconds+=residualForecast.seconds;result.jobs+=residualForecast.jobs;
             result.profiled=result.profiled&&residualForecast.profiled;return result;}
@@ -23,8 +23,14 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
             const auto residual=AuditRequests(e,depths,*residualCounts,ids,knots);
             requests.insert(requests.end(),residual.begin(),residual.end());return work.Forecast(requests);}
         return work.Forecast(knots.empty()?BudgetRequests(e,depths,counts,ids):AuditRequests(e,depths,counts,ids,knots));};
+    Require(costFactor>=.25&&costFactor<=1.,"invalid round work cost factor");
+    auto estimate=[&](const Budgets& counts){auto r=rawEstimate(counts);r.seconds*=costFactor;return r;};
+    if(selectedRawForecast)*selectedRawForecast=0;
     const auto original=estimate(proposed);const double budget=1800.*RoundPhysicalGpus(e);
-    if(original.profiled&&original.seconds<=budget)return;
+    if(original.profiled&&original.seconds<=budget){
+        if(selectedRawForecast)*selectedRawForecast=original.seconds/costFactor;
+        return;
+    }
     const Budgets wanted=proposed;Budgets step=current;
     std::set<size_t> coupled;for(const auto& group:cohorts)coupled.insert(group.begin(),group.end());
     for(const auto& group:outputPriorities)coupled.insert(group.nodes.begin(),group.nodes.end());
@@ -46,14 +52,45 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
     for(size_t id:ids)if(!coupled.count(id))score({id},0);
     std::sort(rank.rbegin(),rank.rend());
     auto selected=step;size_t active=rank.size();
-    if(!original.profiled&&e.local&&!rank.empty()){
+    // The 2x step can use measured native recipes even when the larger
+    // proposal requires a new cutoff-correction profile. Test the work we
+    // will actually dispatch before reducing it to a single cohort.
+    auto forecast=estimate(selected);
+    const bool initialStepProfiled=forecast.profiled;
+    const bool unknownCostFallback=!forecast.profiled&&e.local&&!rank.empty();
+    if(unknownCostFallback){
         // Missing measurements are not zero work. Advance only the highest
         // priority complete cohort until the real worker timings are known.
         // Keep its prescribed signed stencil and all eight seed prefixes.
         selected=current;active=1;
         for(size_t id:rank.front().second)for(size_t l=0;l<current.size();++l)selected[l][id]=step[l][id];
+        forecast=estimate(selected);
     }
-    auto forecast=estimate(selected);
+    size_t knownRecipeForecasts=0,knownRecipeCohorts=0;
+    // A missing recipe for one future correction must not serialize all the
+    // already measured 2x work. Group complete cohorts by their sampling
+    // transitions, then admit a group only after an exact union forecast.
+    // Cache coverage may differ inside a group: the representative is never
+    // used to assert that the whole group is measured or cheap.
+    if(unknownCostFallback&&forecast.profiled&&forecast.seconds<=budget){
+        std::map<std::vector<int>,std::vector<size_t>> groups;
+        std::vector<std::vector<int>> order;
+        for(size_t k=0;k<rank.size();++k){std::vector<int> key;bool grows=false;
+            for(size_t id:rank[k].second){key.push_back(e.PhiForTheta(id));
+                for(size_t l=0;l<current.size();++l){key.push_back(selected[l][id]);key.push_back(step[l][id]);
+                    grows=grows||step[l][id]>selected[l][id];}}
+            if(!grows)continue;
+            if(!groups.count(key))order.push_back(key);groups[key].push_back(k);
+        }
+        for(const auto& key:order){if(knownRecipeForecasts>=8)break;
+            auto candidate=selected;
+            for(size_t k:groups[key])for(size_t id:rank[k].second)for(size_t l=0;l<current.size();++l)
+                candidate[l][id]=std::max(candidate[l][id],step[l][id]);
+            const auto next=estimate(candidate);++knownRecipeForecasts;
+            if(next.profiled&&next.seconds<=budget){selected=std::move(candidate);forecast=next;
+                active+=groups[key].size();knownRecipeCohorts+=groups[key].size();}
+        }
+    }
     const double fullSeconds=forecast.seconds;bool preservedSharing=false;double partitionOverhead=0;
     // Several hours without feedback do not justify a small tracing saving.
     // Still reject partitions which duplicate most of the tracing work.
@@ -170,10 +207,14 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
     const bool accepted=selected!=current&&(original.profiled
         ?forecast.profiled&&forecast.seconds<original.seconds:selected!=wanted);
     if(accepted)proposed=selected;
+    const auto& chosen=accepted?forecast:original;
+    if(selectedRawForecast&&chosen.profiled)*selectedRawForecast=chosen.seconds/costFactor;
     size_t growing=0;for(size_t id:ids){bool grows=false;for(size_t l=0;l<current.size();++l)grows=grows||proposed[l][id]>current[l][id];growing+=grows;}
     e.Record(e.root+"/round_work_limit.json","{\"policy\":\"complete eight-seed prefix and output/residual cohort scheduling v7\",\"applied\":"+std::string(accepted?"true":"false")
-        +",\"unknown_cost_fallback\":"+(original.profiled?"false":"true")
-        +",\"original_forecast_profiled\":"+(original.profiled?"true":"false")
+        +",\"unknown_cost_fallback\":"+(unknownCostFallback?"true":"false")
+        +",\"worker_cost_factor\":"+Number(costFactor)+",\"original_forecast_profiled\":"+(original.profiled?"true":"false")
+        +",\"shorter_step_forecast_profiled\":"+(initialStepProfiled?"true":"false")
+        +",\"known_recipe_group_forecasts\":"+Number(knownRecipeForecasts)+",\"known_recipe_group_cohorts\":"+Number(knownRecipeCohorts)
         +",\"selected_forecast_profiled\":"+((accepted?forecast.profiled:original.profiled)?"true":"false")
         +",\"no_growing_cohorts\":"+(rank.empty()?"true":"false")
         +",\"cost_model\":\"native physical or balanced children; conservative three-leg correction (five legacy paired legs); no assembly views\""

@@ -32,6 +32,7 @@ __device__ double reflectance(double mu,double re,double im)
     return .5*(rs+(pr*pr+ps*ps)/(qr*qr+qs*qs));
 }
 __device__ double dot3(const double*a,const double*b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];}
+template<bool vertexForm>
 __device__ double fourier_norm(const AnalyticGpuPatch &p,const double*xy,double qx,double qy)
 {
     xy+=2*p.firstVertex;double maximum=0;
@@ -49,6 +50,30 @@ __device__ double fourier_norm(const AnalyticGpuPatch &p,const double*xy,double 
         }
         return sr*sr+si*si;
     }
+    if(vertexForm){
+        double firstS,firstC;
+        sincos(qx*xy[0]+qy*xy[1],&firstS,&firstC);
+        double s0=firstS,c0=firstC;
+        for(int i=0;i<p.vertices;++i){
+            const int j=i+1==p.vertices?0:i+1;
+            const double xi=xy[2*i],yi=xy[2*i+1],xj=xy[2*j],yj=xy[2*j+1];
+            const double dx=xj-xi,dy=yj-yi,dp=qx*dx+qy*dy,amp=qx*dy-qy*dx;
+            double s1=firstS,c1=firstC;
+            if(j)sincos(qx*xj+qy*yj,&s1,&c1);
+            // Use the midpoint form when endpoint subtraction loses digits.
+            if(fabs(dp)<.02 || fmax(fabs(qx*xi)+fabs(qy*yi),fabs(qx*xj)+fabs(qy*yj))>1e6){
+                const double value=amp*sinc_value(.5*dp);
+                double sm,cm;sincos(.5*(qx*(xi+xj)+qy*(yi+yj)),&sm,&cm);
+                sr+=value*cm;si+=value*sm;
+            }else{
+                const double scale=amp/dp;
+                sr+=(s1-s0)*scale;si+=(c0-c1)*scale;
+            }
+            s0=s1;c0=c1;
+        }
+        const double q2=qx*qx+qy*qy;
+        return (sr*sr+si*si)/(q2*q2);
+    }
     for(int i=0;i<p.vertices;++i)
     {
         int j=(i+1)%p.vertices;
@@ -59,14 +84,34 @@ __device__ double fourier_norm(const AnalyticGpuPatch &p,const double*xy,double 
     }
     double q2=qx*qx+qy*qy;return (sr*sr+si*si)/(q2*q2);
 }
+template<bool sharedIncidence,bool vertexForm=false>
 __global__ void controls_kernel(const AnalyticGpuPatch*patches,int count,const double*xy,
     const double*frames,const double*theta,int rows,int phi,int orientations,int firstCell,int tileCells,
     double nr,double ni,double wave,double radius,int shadowMode,double*reflection,double*shadow)
 {
+    extern __shared__ double incidence[];
     size_t index=static_cast<size_t>(blockIdx.x)*blockDim.x+threadIdx.x;
-    size_t total=static_cast<size_t>(tileCells)*orientations;if(index>=total)return;
-    int pose=index/tileCells,cell=firstCell+index%tileCells,row=cell%rows,p=cell/rows;
-    const double*f=frames+pose*9;const double*u=f+6;double angle=theta[row];
+    int pose,localCell;
+    if(sharedIncidence){
+        // Each block sees one incident direction and up to 128 detectors.
+        const size_t blocksPerPose=(size_t(tileCells)+blockDim.x-1)/blockDim.x;
+        pose=blockIdx.x/blocksPerPose;
+        localCell=(blockIdx.x%blocksPerPose)*blockDim.x+threadIdx.x;
+        if(int(threadIdx.x)<count){
+            const double mu=dot3(patches[threadIdx.x].normal,frames+size_t(pose)*9+6);
+            incidence[threadIdx.x]=mu;
+            incidence[count+threadIdx.x]=(mu>AnalyticFacetAverage::GrazingTolerance && !(nr==1 && ni==0))?reflectance(mu,nr,ni):0.;
+        }
+        __syncthreads();
+        if(localCell>=tileCells)return;
+        index=size_t(pose)*tileCells+localCell;
+    }else{
+        if(index>=size_t(tileCells)*orientations)return;
+        pose=index/tileCells;
+        localCell=index%tileCells;
+    }
+    const int cell=firstCell+localCell,row=cell%rows,p=cell/rows;
+    const double*f=frames+size_t(pose)*9;const double*u=f+6;double angle=theta[row];
     if(nr==1 && ni==0){reflection[index]=0;shadow[index]=0;return;}
     double st,ct,sp,cp;sincos(angle,&st,&ct);sincos(2*pi*p/phi,&sp,&cp);
     if(angle==0 || angle==pi)st=0;
@@ -83,15 +128,15 @@ __global__ void controls_kernel(const AnalyticGpuPatch*patches,int count,const d
     double r=0,s=0,area=0;
     for(int i=0;i<count;++i)
     {
-        const AnalyticGpuPatch &patch=patches[i];double mu=dot3(patch.normal,u);if(mu<=AnalyticFacetAverage::GrazingTolerance)continue;
+        const AnalyticGpuPatch &patch=patches[i];double mu=sharedIncidence?incidence[i]:dot3(patch.normal,u);if(mu<=AnalyticFacetAverage::GrazingTolerance)continue;
         area+=mu*patch.area;
         if(h2>0)
         {
-            double nu=dot3(patch.normal,v),weight=h2*fmax(0.,c2+mu*nu)*reflectance(mu,nr,ni);
-            r+=weight*fourier_norm(patch,xy,dot3(rq,patch.horizontal),dot3(rq,patch.vertical))/(wave*wave);
+            double nu=dot3(patch.normal,v),weight=h2*fmax(0.,c2+mu*nu)*(sharedIncidence?incidence[count+i]:reflectance(mu,nr,ni));
+            r+=weight*fourier_norm<vertexForm>(patch,xy,dot3(rq,patch.horizontal),dot3(rq,patch.vertical))/(wave*wave);
         }
         if(shadowMode==0 && c2>0 && h2>0)
-            s+=c2*c2*mu*mu*fourier_norm(patch,xy,dot3(sq,patch.horizontal),dot3(sq,patch.vertical))/(wave*wave);
+            s+=c2*c2*mu*mu*fourier_norm<vertexForm>(patch,xy,dot3(sq,patch.horizontal),dot3(sq,patch.vertical))/(wave*wave);
     }
     if(shadowMode!=2 && (h2==0 || shadowMode==1))
     {
@@ -217,7 +262,7 @@ struct FacetProfile
     bool active=enabled("MBS_CUDA_ANALYTIC_PROFILE");
     cudaEvent_t events[5]={};
     double controlsMs=0,sumMs=0,samplesMs=0,copyMs=0,hostSamplesMs=0;
-    size_t downloadedBytes=0,tiles=0;
+    size_t downloadedBytes=0,tiles=0,sharedIncidentTiles=0;
     Clock::time_point started=Clock::now();
     FacetProfile(){if(active)for(auto &event:events)if(cudaEventCreate(&event)!=cudaSuccess){active=false;break;}}
     ~FacetProfile(){for(auto event:events)if(event)cudaEventDestroy(event);}
@@ -236,23 +281,37 @@ struct FacetProfile
         if(!active)return;
         std::printf("CUDA analytic profile: orientations=%zu theta=%zu phi=%d sample_reducer=%s tiles=%zu "
             "controls_ms=%.6f weighted_sum_ms=%.6f sample_sum_ms=%.6f copy_ms=%.6f host_samples_ms=%.6f "
-            "wall_ms=%.6f d2h_bytes=%zu allocations=%zu releases=%zu scratch_bytes=%zu\n",count,rows,phi,
+            "wall_ms=%.6f d2h_bytes=%zu allocations=%zu releases=%zu scratch_bytes=%zu shared_incident_tiles=%zu\n",count,rows,phi,
             gpuSamples ? "gpu":"cpu",tiles,controlsMs,sumMs,samplesMs,copyMs,hostSamplesMs,
-            std::chrono::duration<double,std::milli>(Clock::now()-started).count(),downloadedBytes,allocations,releases,bytes);
+            std::chrono::duration<double,std::milli>(Clock::now()-started).count(),downloadedBytes,allocations,releases,bytes,sharedIncidentTiles);
     }
 };
 
+template<bool sharedIncidence,bool vertexForm=false>
+void LaunchControlCells(FacetWorkspace& cache,const AnalyticGpuModel& model,
+                        size_t rows,int phi,size_t count,size_t first,size_t length)
+{
+    const size_t threads=128;
+    const size_t blocks=sharedIncidence?count*((length+threads-1)/threads):(count*length+threads-1)/threads;
+    const size_t bytes=sharedIncidence?2*model.patches.size()*sizeof(double):0;
+    controls_kernel<sharedIncidence,vertexForm><<<blocks,threads,bytes>>>(cache.patch.pointer,model.patches.size(),cache.xy.pointer,
+        cache.frames.pointer,cache.angles.pointer,rows,phi,count,first,length,model.indexReal,model.indexImag,
+        model.wave,model.circleRadius,model.shadowMode,cache.reflection.pointer,cache.shadow.pointer);
+}
 // Shared launch sequence: synchronous evaluation and the overlap experiment
 // execute exactly the same kernels, arguments and orientation reduction.
 cudaError_t LaunchFacetTile(FacetWorkspace&cache,const AnalyticGpuModel&model,
     size_t rows,int phi,size_t count,size_t first,size_t length,
     FacetProfile*profile,const char*&operation)
 {
-    const size_t elements=count*length;
     if(profile)profile->Mark(0);
-    controls_kernel<<<(elements+127)/128,128>>>(cache.patch.pointer,model.patches.size(),cache.xy.pointer,
-        cache.frames.pointer,cache.angles.pointer,rows,phi,count,first,length,model.indexReal,model.indexImag,
-        model.wave,model.circleRadius,model.shadowMode,cache.reflection.pointer,cache.shadow.pointer);
+    const bool eligible=length>=128 && model.patches.size()<=128;
+    const bool vertex=eligible && enabled("MBS_CUDA_FACET_VERTEX_PHASE");
+    const bool share=vertex || (eligible && enabled("MBS_CUDA_FACET_INCIDENT_CACHE"));
+    if(share&&profile&&profile->active)++profile->sharedIncidentTiles;
+    if(vertex)LaunchControlCells<true,true>(cache,model,rows,phi,count,first,length);
+    else if(share)LaunchControlCells<true>(cache,model,rows,phi,count,first,length);
+    else LaunchControlCells<false>(cache,model,rows,phi,count,first,length);
     operation="launch analytic controls";cudaError_t status=cudaGetLastError();
     if(status!=cudaSuccess)return status;
     if(profile)profile->Mark(1);

@@ -22,6 +22,14 @@ HandlerPOTotal::HandlerPOTotal(Particle *particle, Light *incidentLight, int nTh
 
 void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
 {
+    WriteAzimuthSubset(destName, nrg, m_sphere.nAzimuth);
+}
+
+void HandlerPOTotal::WriteAzimuthSubset(const std::string &destName, double nrg, int count)
+{
+    if (count < 1 || m_sphere.nAzimuth % count != 0)
+        throw std::invalid_argument("azimuth subset must divide the observation grid");
+    const int stride = m_sphere.nAzimuth / count;
     std::ofstream outFile(destName + ".dat", std::ios::out);
 
     if (!outFile.is_open())
@@ -40,7 +48,7 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
     auto &Lp = *m_Lp;
 
     int &nZen = m_sphere.nZenith;
-    int &nAz = m_sphere.nAzimuth;
+
 
     double C_sca_integral = 0.0;
     std::vector<double> thetaRows;
@@ -57,7 +65,7 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
         const bool isBackwardPole = PoleMueller::IsBackward(radZen);
 //        double tt = RadToDeg(m_sphere.zenithEnd) - RadToDeg((t*dT));
 
-        for (int iAz = 0; iAz < nAz; ++iAz)
+        for (int iAz = 0; iAz < m_sphere.nAzimuth; iAz += stride)
         {
             double radAz = -iAz*m_sphere.azinuthStep;
             matrix m = M(iAz, iZen);
@@ -79,7 +87,7 @@ void HandlerPOTotal::WriteMatricesToFile(std::string &destName, double nrg)
 
         double _2Pi_dcos = m_sphere.Compute2PiDcos(iZen);
 
-        Msum /= m_sphere.nAzimuth;
+        Msum /= count;
         if (isBackwardPole)
         {
             PoleMueller::ApplyBackward(Msum);

@@ -1,3 +1,6 @@
+extern thread_local int mbsCoarseDepthOutput;
+extern thread_local int mbsDepthOutputLast;
+extern thread_local int mbsDepthOutputStep;
 #include <iostream>
 #include <fstream>
 #include <assert.h>
@@ -1691,7 +1694,7 @@ AngleRange GetRange(const ArgPP &parser, const std::string &key,
 
 static std::string PreparedRecipe(const ArgPP& args,bool memoryProfile=false){
     // Observation coordinates and output destinations cannot affect a beam.
-    const std::set<std::string> omit={"o","close","log","no_text_reports","profile_phases","grid","tgrid","nphi","trace_cache_mb","po_prepare_threads","threads","chunk","orientation_pipeline","orientation_prefix_output",
+    const std::set<std::string> omit={"o","close","log","no_text_reports","profile_phases","grid","tgrid","nphi","trace_cache_mb","po_prepare_threads","threads","chunk","orientation_pipeline","orientation_prefix_output","nested_phi_min",
         // These files/threads affect the control estimator after beam
         // preparation. In fullauto each angular packet has another weight
         // file; including its path discarded otherwise identical CPU traces.
@@ -2974,7 +2977,11 @@ int RunCalculation(int argc, const char* argv[])
             tracer->m_analyticReturnOrder = args.IsCatched("analytic_return_order")
                 ? args.GetIntValue("analytic_return_order",0) : 1;
             tracer->m_haarAlpha = args.IsCatched("haar_alpha") || args.IsCatched("so3_rule");
+            mbsDepthOutputLast=args.IsCatched("depth_output_last")?args.GetIntValue("depth_output_last"):0;
+            mbsDepthOutputStep=args.IsCatched("depth_output_step")?args.GetIntValue("depth_output_step"):0;
+            mbsCoarseDepthOutput=args.IsCatched("coarse_depth_output")?args.GetIntValue("coarse_depth_output"):0;
             tracer->m_pairedDepth = args.IsCatched("paired_depth")?args.GetIntValue("paired_depth"):0;
+            tracer->m_nestedPhiMin = args.IsCatched("nested_phi_min")?args.GetIntValue("nested_phi_min"):0;
             tracer->m_orientationPrefixOutput = args.IsCatched("orientation_prefix_output")?args.GetIntValue("orientation_prefix_output"):0;
             tracer->m_haarMirrorAudit = args.IsCatched("haar_mirror_audit");
             tracer->m_haarRotationAudit = args.IsCatched("haar_rotation_audit")?args.GetStringValue("haar_rotation_audit"):"";

@@ -1,3 +1,4 @@
+#include "PrefixPath.h"
 #include "ScatteringConvex.h"
 
 ScatteringConvex::ScatteringConvex(Particle *particle, Light *incidentLight,
@@ -125,8 +126,13 @@ bool ScatteringConvex::ScatterLight(double, double, const std::vector<std::vecto
 
 bool ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
 {
+    auto* ctx=PrefixPath::current();
+    if(ctx && (&ctx->output!=&outBeams || !m_unitFacetNormals || imag(splitting.GetRi())==0))ctx=nullptr;
+    std::vector<int> pending;
+    if(ctx){ctx->recording=true;pending.resize(m_beamTree.size(),-1);ctx->emitted.assign(outBeams.size(),-2);}
     while (m_treeSize != 0)
     {
+        int prefix=-2; if(ctx){prefix=pending.back();pending.pop_back();}
         Beam beam = m_beamTree.back();
         m_beamTree.pop_back();
         m_treeSize = (int)m_beamTree.size();
@@ -148,6 +154,7 @@ bool ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
                 continue;
             }
 
+            const auto oldSize=outBeams.size();
             bool isIncident = SplitSecondaryBeams(beam, id, inBeam, outBeams);
 
             if (!isIncident)
@@ -155,11 +162,21 @@ bool ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
                 continue;
             }
 
+            int entry=-2;
+            if(ctx){
+                entry=ctx->extend(prefix,beam.direction,m_facets[beam.lastFacetId].in_normal);
+                if(outBeams.size()!=oldSize){
+                    Splitting inverse=splitting;
+                    const auto reverse=inverse.ChangeBeamDirection(-outBeams.back().direction,m_facets[id].ex_normal,Location::Out,Location::In);
+                    ctx->bindExit(entry,reverse);
+                }
+            }
             inBeam.id = RecomputeTrackId(beam.id, id);
             inBeam.locations = beam.locations;
             // PushBeamToTree sets child depth before checking cutoff.
             if (!PushBeamToTree(inBeam, id, beam.nActs+1, Location::In))
                 return false;
+            if(ctx && m_beamTree.size()>pending.size())pending.push_back(entry);
         }
     }
 

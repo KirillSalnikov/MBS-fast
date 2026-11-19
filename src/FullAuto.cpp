@@ -1,9 +1,14 @@
+#include "FullAutoPhiRowCost.h"
+#include <list>
 #include "FullAutoBinaryProfile.h"
 #include "FullAutoRoundPath.h"
 #include <memory>
 #include <functional>
 #include <exception>
 #include "FullAuto.h"
+#include "FullAutoPhiPlateau.h"
+#include "FullAutoPairedAzimuth.h"
+#include "AnalyticFacetAverage.h"
 #include "FullAutoInterpolationPolicy.h"
 #include "FullAutoAngularPilotCost.h"
 #include "FullAutoAngularCohort.h"
@@ -471,7 +476,7 @@ std::vector<int> PrioritizeAllocation(const std::vector<Samples>& levels,
 namespace {
 struct Kernel {bool pipeline=false;int block=64;std::string warp="auto";};
 struct Job {
-    int offset=0,pairedDepth=0;
+    int offset=0,pairedDepth=0,nestedPhiMin=0,coarseDepth=0,coarseStep=0,coarseLast=0;
     std::string folder,data,summary,identity,weightHash,executionHash,indexMarkerHash;
     Matrix matrix;std::vector<double> angles,inputAngles;std::vector<std::array<double,5>> controls;
     int preparationThreads=0,dispatchChunk=0;double assemblySeconds=0;
@@ -881,6 +886,69 @@ struct Engine {
                     "explicit MBS_HOST_MEM_BUDGET_MB exceeds per-worker shared RAM budget or is invalid");}
         }
     }
+    bool directProductionDepth=false,chooseDepthEstimator=false;
+    enum class DepthLadder { Adjacent, Wide, WideEndpoints, AdjacentEndpoints };
+    DepthLadder depthLadder=DepthLadder::Adjacent;
+    bool rowPhiWork=false;
+    bool sparsePairedTiming=false,pairedPhiForecast=false,earlyDepthBands=false,depthPilotBands=false,usedDepthPilotBands=false;
+    bool overlapPairedPrefetch=false,threeDepthPrefetch=false,prefixAnglePlan=false;
+    int prefetchCoarse=0,prefetchMiddle=0;
+    std::map<double,int> coarseRequiredThrough;
+    bool completePhiSweep=false, correctionOnlyPrefix=false, planPrefixFloor=false, balancedInnerPrefix=false, componentwiseCutoffMeanBound=false, reuseMiddleDepth=false, reusePairedBase=false, nestedPhiPilots=false, boundedControlWeights=false;
+    bool referenceCutoffMeanBound=false, shareCancelledCutoffBound=false;
+    bool pairedThetaPilot=false,refitPhiWinner=false,highOrderThetaResidual=false;
+    bool circularShadowRefinement=false;
+    bool CustomDepthLadder()const {
+        if(depthLadder==DepthLadder::AdjacentEndpoints)return target>=6;
+        return depthLadder!=DepthLadder::Adjacent&&target>=12;
+    }
+    const char* DepthLadderName()const {
+        switch(depthLadder){
+        case DepthLadder::Wide:return "wide-v1";
+        case DepthLadder::WideEndpoints:return "endpoints-v1";
+        case DepthLadder::AdjacentEndpoints:return "adjacent-endpoints-v1";
+        default:return "standard";
+        }
+    }
+    std::set<std::tuple<int,int,int,bool,std::string>> verifiedWideDepthPairs;
+    bool RestoreDepthEstimator(){
+        const auto path=root+"/production_depth_estimator.tsv";
+        if(!Exists(path))return false;
+        const auto saved=Read(path);
+        for(bool direct:{false,true}){
+            const auto payload=signature+(direct?" target-only-v1\n":" multilevel\n");
+            if(saved==Hash(payload)+"\n"+payload){directProductionDepth=direct;return true;}
+        }
+        throw std::runtime_error("production depth estimator receipt changed");
+    }
+    void LoadProductionEstimator(){
+        if(chooseDepthEstimator&&!RestoreDepthEstimator())
+            Require(!Exists(root+"/adaptive_checkpoint.tsv")&&!Exists(root+"/final_outputs.fnv"),
+                "production checkpoint lacks its frozen depth estimator");
+    }
+    void FreezeDepthEstimator(bool direct){
+        if(!chooseDepthEstimator||RestoreDepthEstimator())return;
+        const auto payload=signature+(direct?" target-only-v1\n":" multilevel\n");
+        Atomic(root+"/production_depth_estimator.tsv",Hash(payload)+"\n"+payload);
+        directProductionDepth=direct;
+    }
+    bool UseCoherentGpuScheduling()const{
+        return config.useGpu&&coherent&&!go&&!config.adaptive.loadedFromFile;
+    }
+    std::vector<int> ProductionDepths()const{
+        if(directProductionDepth)return {target};
+        if(CustomDepthLadder()){
+            if(depthLadder==DepthLadder::AdjacentEndpoints)return {target-4,target};
+            const int coarse=6;
+            if(depthLadder==DepthLadder::WideEndpoints)return {coarse,target};
+            const int middle=2*int(std::round(std::sqrt(double(coarse)*target)/2));
+            return {coarse,middle,target};
+        }
+        std::vector<int> levels;
+        for(int depth:{std::max(1,target-4),std::max(1,target-2),target})
+            if(levels.empty()||levels.back()!=depth)levels.push_back(depth);
+        return levels;
+    }
     std::string WorkerIdentity(const std::string& gpu)const{
         return exe+"\n"+gpu+"\n"+Number(hostBudgetMb)+"\n"+Number(WorkersOnGpu(gpu))+"\n"+Number(WorkerGpuFraction(gpu));
     }
@@ -1013,6 +1081,17 @@ struct Engine {
     bool angularCache=true,sharedMeans=false;size_t assembledJobs=0,reusedRows=0,newRows=0;
     bool incremental=true;int orientationBlock=65536;size_t savedOrientationBlocks=0;
     std::string controlPolicy="auto";int thetaAuditCount=0;
+    bool targetPhiPilot=false,cardinalTheta=false,cardinalAuto=false;
+    bool extendCutoffChild=false;
+    std::vector<double> densePhiRisk;
+    std::set<double> startupPhiWitness;
+    struct PhiEvidence { double score=0,orientations=0,lowerCost=0,upperCost=0; bool resolved=false; };
+    std::map<int,PhiEvidence> measuredPhi;
+    bool TargetPhiEnabled(size_t rows)const{
+        return targetPhiPilot&&coherent&&!go&&!fixedPhi&&phiRecheck&&thetaAuditCount
+            &&theta.size()>2*rows&&theta.size()<=size_t(maxTheta)
+            &&!args.IsCatched("fullauto_pilot")&&!config.adaptive.loadedFromFile;
+    }
     bool local=true,ratios=true,phiRecheck=true,polarControls=true,finalChecks=false,finalAudit=false,physicsAudit=false;
     std::vector<std::array<Mueller,2>> polarWeights;
     double lastRatio=0,lastAnalyticError=0,lastCombined=-1,lastIndependentCombined=-1;bool independentPassed=false,independentNeedsSampling=true;
@@ -1083,6 +1162,8 @@ struct Engine {
         for(size_t i=0;i<base.size();++i)out<<(i?",":"")<<Quoted(base[i]);
         out<<"],\"epsilon\":"<<Number(eps)<<",\"interpolation_budget\":"<<Number(interpolation)<<",\"statistical_budget\":"<<Number(statistical)<<",\"error_budget_policy\":"<<Quoted(go?"fixed-go":BudgetPolicy())<<",\"statistical_budget_role\":\"conservative floor; PO uses component pointwise sums\""
             <<",\"pilot_count\":"<<pilot<<",\"kernel_pilot_count\":"<<kernelCount<<",\"dense_theta_pilot_count\":"<<thetaAuditCount
+            <<",\"production_depth_ladder\":"<<Quoted(!directProductionDepth&&CustomDepthLadder()?DepthLadderName():"standard")
+            <<",\"production_depth_estimator\":"<<Quoted(directProductionDepth?"target-only-v1":"multilevel")
             <<",\"initial_model\":"<<Quoted(initialModel)<<",\"estimated_final_orientation_count\":"<<Number(empiricalFinal)<<",\"depth_pilot_count\":"<<depthPilot<<",\"depth_search_order\":"<<Quoted(depthOrder)<<",\"initial_source\":"<<Quoted(initialSource)<<",\"maximum_edge_um\":"<<Number(maximumEdge)<<",\"maximum_diameter_um\":"<<Number(maximumDiameter)<<",\"oldauto_N_beta_estimate\":"<<Number(estimatedBeta)<<",\"oldauto_N_gamma_estimate\":"<<Number(estimatedGamma)<<",\"oldauto_orientation_estimate\":"<<Number(estimatedOrientations)<<",\"initial_count\":"<<initial<<",\"minimum_correction_count\":"<<minimum<<",\"max_count\":"<<maxCount<<",\"max_rounds\":"<<roundLimit
             <<",\"initial_theta_support\":"<<startTheta<<",\"max_theta_evaluations\":"<<maxTheta<<",\"min_phi\":"<<minPhi<<",\"max_phi\":"<<maxPhi
             <<",\"stable_passes\":"<<stablePasses<<",\"automatic_depth\":"<<(autoDepth?"true":"false")<<",\"depth_start\":"<<depthStart<<",\"depth_maximum\":"<<depthMaximum<<",\"depth_budget\":"<<Number(depthBudget)<<",\"physical_target_depth\":"<<target<<",\"phi\":"<<phi
@@ -1431,6 +1512,168 @@ struct Engine {
         fingerprint<<"host="<<host<<"\nthreads="<<workerThreads<<"\nanalytic_mean_threads="<<analyticMeanThreads<<'\n';
         const char* visible=getenv("CUDA_VISIBLE_DEVICES");fingerprint<<"visible="<<(visible?visible:"")<<'\n';
         for(const auto& gpu:gpus)fingerprint<<"gpu="<<gpu<<'\n';
+        if(const char* option=std::getenv("MBS_FULLAUTO_DEPTH_PILOT_BANDS")){
+            depthPilotBands=coherent&&!go&&std::string(option)=="1";
+            earlyDepthBands=coherent&&!go&&std::string(option)=="first-two";
+            if(earlyDepthBands){depthPilotBands=true;fingerprint<<"depth_band_first_two_v1=1\n";}
+            if(depthPilotBands)fingerprint<<"depth_pilot_bands_v1=1\n";
+        }
+        const auto cardinal=std::getenv("MBS_FULLAUTO_CARDINAL_THETA");
+        cardinalAuto=cardinal&&std::string(cardinal)=="auto";
+        cardinalTheta=cardinalAuto||(cardinal&&std::string(cardinal)=="1");
+        if(cardinalTheta)fingerprint<<"cardinal_dual_theta_pilot_v2="<<cardinal<<"\n";
+        const char* growth=std::getenv("MBS_FULLAUTO_EXTEND_CUTOFF_CHILD");
+        extendCutoffChild=growth&&std::string(growth)=="1";
+        if(extendCutoffChild)fingerprint<<"native-cutoff-shared-control-v3=1\n";
+        if(const char* option=std::getenv("MBS_FULLAUTO_TARGET_PHI")){
+            targetPhiPilot=std::string(option)=="1";
+            if(targetPhiPilot)fingerprint<<"target_phi_allrow_bounds_v6=1\n";
+        }
+        if(const char* option=std::getenv("MBS_FULLAUTO_THREE_DEPTH")){
+            threeDepthPrefetch=!config.useGpu&&coherent&&!go&&std::string(option)=="1";
+            if(threeDepthPrefetch)fingerprint<<"three_depth_prefetch_v1=1\n";
+        }
+        if(const char* opt=std::getenv("MBS_FULLAUTO_PREFIX_ANGLE_PLAN")){
+            prefixAnglePlan=std::string(opt)=="1";if(prefixAnglePlan)fingerprint<<"angular_prefix_plan_v1=1\n";
+        }
+        const char* baseReuse=std::getenv("MBS_FULLAUTO_PAIRED_BASE");
+        reusePairedBase=coherent&&!go&&depthSharing&&baseReuse&&std::string(baseReuse)=="1";
+        const char* deltaPrefix=std::getenv("MBS_FULLAUTO_CORRECTION_ONLY_PREFIX");
+        correctionOnlyPrefix=coherent&&!go&&deltaPrefix&&std::string(deltaPrefix)=="1";
+        if(correctionOnlyPrefix)fingerprint<<"correction_only_prefix_v1=1\n";
+        const char* floorPlan=std::getenv("MBS_FULLAUTO_PREFIX_FLOOR_PLAN");
+        planPrefixFloor=coherent&&!go&&floorPlan&&std::string(floorPlan)=="1";
+        if(planPrefixFloor)fingerprint<<"production_prefix_floor_plan_v1=1\n";
+        const char* innerPrefix=std::getenv("MBS_FULLAUTO_BALANCED_INNER_PREFIX");
+        balancedInnerPrefix=coherent&&!go&&innerPrefix&&std::string(innerPrefix)=="1";
+        if(balancedInnerPrefix){
+            Require(NativeWorkerCapabilities::OrientationPrefixOutput(),"balanced inner prefix requires native prefix output");
+            fingerprint<<"staged_balanced_inner_prefix_v1=1\n";
+        }
+        if(controls&&AnalyticFacetAverage::MeanRefinementTolerance()<1e-4)
+            fingerprint<<"analytic_mean_refinement_rtol_1e-5_v1=1\n";
+        if(const char* split=std::getenv("MBS_FULLAUTO_CIRCULAR_MEAN_BOUND")){
+            const std::string policy(split);
+            Require(policy=="0"||policy=="1","invalid MBS_FULLAUTO_CIRCULAR_MEAN_BOUND (0 or 1)");
+            circularShadowRefinement=policy=="1"&&controls&&coherent&&!go&&sharedMeans
+                &&(!args.IsCatched("analytic_shadow_control")||args.GetStringValue("analytic_shadow_control")=="circular");
+            if(circularShadowRefinement)fingerprint<<"circular_shadow_quadrature_independent_v1=1\n";
+        }
+        const char* preflight=std::getenv("MBS_FULLAUTO_CONTROL_PREFLIGHT");
+        controlPreflight=controls&&coherent&&!go&&controlPolicy=="auto"&&preflight&&std::string(preflight)=="1";
+        if(controlPreflight)fingerprint<<"production_control_preflight_v1=1\n";
+        if(const char* option=std::getenv("MBS_FULLAUTO_PAIRED_THETA_PILOT")){
+            const std::string policy(option);
+            Require(policy=="0"||policy=="1","invalid MBS_FULLAUTO_PAIRED_THETA_PILOT");
+            pairedThetaPilot=policy=="1"&&coherent&&!go&&!args.IsCatched("fullauto_theta_audit")
+                &&!args.IsCatched("fullauto_pilot")&&!config.adaptive.loadedFromFile;
+            if(pairedThetaPilot)fingerprint<<"paired_dense_theta_pilot_v1=1\n";
+        }
+        if(const char* option=std::getenv("MBS_FULLAUTO_THETA_RESIDUAL_ORDER")){
+            const std::string order(option);
+            Require(order=="3"||order=="7","invalid MBS_FULLAUTO_THETA_RESIDUAL_ORDER");
+            highOrderThetaResidual=pairedThetaPilot&&order=="7";
+            if(highOrderThetaResidual)fingerprint<<"bounded_theta_residual_degree7_v1=1\n";
+        }
+        if(const char* option=std::getenv("MBS_FULLAUTO_REFIT_PHI_WINNER")){
+            const std::string policy(option);
+            Require(policy=="0"||policy=="1","invalid MBS_FULLAUTO_REFIT_PHI_WINNER");
+            refitPhiWinner=policy=="1"&&coherent&&!go&&!fixedPhi&&controlPolicy=="auto"
+                &&!args.IsCatched("fullauto_pilot")&&!config.adaptive.loadedFromFile;
+            if(refitPhiWinner)fingerprint<<"refit_phi_winner_prefix_v1=1\n";
+        }
+        const char* cutoffMean=std::getenv("MBS_FULLAUTO_CUTOFF_MEAN_BOUND");
+        if(cutoffMean){
+            const std::string policy(cutoffMean);
+            Require(policy=="shared"||policy=="componentwise"||policy=="reference","invalid MBS_FULLAUTO_CUTOFF_MEAN_BOUND");
+            referenceCutoffMeanBound=(policy=="reference");
+            componentwiseCutoffMeanBound=(policy=="componentwise"||referenceCutoffMeanBound);
+            if(componentwiseCutoffMeanBound)fingerprint<<"componentwise_cutoff_mean_bound_v1=1\n";
+            const char* shareBound=std::getenv("MBS_FULLAUTO_SHARE_CANCELLED_BOUND");
+            shareCancelledCutoffBound=referenceCutoffMeanBound&&shareBound&&std::string(shareBound)=="1";
+            if(shareCancelledCutoffBound)fingerprint<<"shared-cancelled-cutoff-bound-v1=1\n";
+            if(referenceCutoffMeanBound)fingerprint<<"reference_staged_mean_budget_v1=1\n";
+        }
+        const char* middleReuse=std::getenv("MBS_FULLAUTO_REUSE_MIDDLE_DEPTH");
+        reuseMiddleDepth=coherent&&!go&&depthSharing&&middleReuse&&std::string(middleReuse)=="1";
+        if(reuseMiddleDepth)fingerprint<<"production_middle_from_top_pair_v1=1\n";
+        if(const char* value=std::getenv("MBS_FULLAUTO_PAIRED_ROW_PREFETCH")){
+            const std::string policy(value);
+            Require(policy=="0"||policy=="1","invalid MBS_FULLAUTO_PAIRED_ROW_PREFETCH");
+            overlapPairedPrefetch=coherent&&!go&&depthSharing&&policy=="1";
+            if(overlapPairedPrefetch)fingerprint<<"paired_row_prefetch_v1=1\n";
+        }
+        const char* nestedPolicy=std::getenv("MBS_FULLAUTO_NESTED_PHI");
+        nestedPhiPilots=coherent&&!go&&!fixedPhi&&nestedPolicy&&std::string(nestedPolicy)=="1";
+        const char* fullSweep=std::getenv("MBS_FULLAUTO_COMPLETE_PHI_SWEEP");
+        completePhiSweep=nestedPhiPilots&&fullSweep&&std::string(fullSweep)=="1";
+        if(completePhiSweep)fingerprint<<"complete_nested_phi_sweep_v1=1\n";
+        const char* weightPolicy=std::getenv("MBS_FULLAUTO_BOUND_CONTROL_WEIGHTS");
+        boundedControlWeights=coherent&&!go&&weightPolicy&&std::string(weightPolicy)=="1";
+        if(boundedControlWeights)fingerprint<<"bounded_control_weights_v1=1\n";
+        const char* rawPolicy=std::getenv("MBS_FULLAUTO_RAW_PHI_REUSE");
+        rawPhiPilots=coherent&&!go&&controlPolicy=="auto"&&rawPolicy&&std::string(rawPolicy)=="1";
+        if(rawPhiPilots)fingerprint<<"raw_phi_reuse_v1=1\n";
+        if(const char* value=std::getenv("MBS_FULLAUTO_PHI_TIMING_WAVE")){
+            const std::string policy(value);
+            Require(policy=="0"||policy=="1","invalid MBS_FULLAUTO_PHI_TIMING_WAVE");
+            phiTimingWave=coherent&&!go&&!fixedPhi&&policy=="1";
+            if(phiTimingWave)fingerprint<<"phi_timing_wave_v1="<<PhiTimingSeeds()<<'\n';
+        }
+        if(const char* mode=std::getenv("MBS_FULLAUTO_DENSE_PHI_PLATEAU")){
+            Require(std::string(mode)=="0"||std::string(mode)=="1","invalid dense phi plateau setting");
+            densePhiPlateau=std::string(mode)=="1"&&coherent&&!go&&!fixedPhi&&phiRecheck&&thetaAuditCount;
+            if(densePhiPlateau)fingerprint<<"dense_phi_plateau_v1=1\n";
+        }
+        if(const char* mode=std::getenv("MBS_FULLAUTO_PAIRED_PHI_FORECAST")){
+            const std::string v(mode);
+            Require(v=="0"||v=="1","invalid paired phi forecast setting");
+            pairedPhiForecast=nestedPhiPilots&&!fixedPhi&&v=="1";
+            if(pairedPhiForecast)fingerprint<<"paired_phi_forecast_v1=1\n";
+        }
+        if(const char* mode=std::getenv("MBS_FULLAUTO_SPARSE_PHI_TIMING")){
+            const std::string v(mode);
+            Require(v=="0"||v=="1","invalid sparse phi timing setting");
+            sparsePairedTiming=pairedPhiForecast&&completePhiSweep&&v=="1";
+            if(sparsePairedTiming)fingerprint<<"sparse_phi_timing_v2=1\n";
+        }
+        if(const char* option=std::getenv("MBS_FULLAUTO_PHI_ROW_COST")){
+            const std::string value(option);
+            Require(value=="0"||value=="1","invalid working row cost policy");
+            rowPhiWork=value=="1"&&coherent&&!go&&local&&!fixedPhi;
+            if(rowPhiWork)fingerprint<<"working_phi_local_rows_v1=1\n";
+        }
+        if(nestedPhiPilots)fingerprint<<"nested_phi_pilots_v1=1\n";
+        if(reusePairedBase)fingerprint<<"production_paired_base=1\n";
+        const char* ladder=std::getenv("MBS_FULLAUTO_DEPTH_LADDER");
+        if(ladder){
+            const std::string policy(ladder);
+            Require(policy=="wide"||policy=="endpoints"||policy=="adjacent-endpoints"||policy=="adjacent","invalid MBS_FULLAUTO_DEPTH_LADDER");
+            if(coherent&&!go){
+                if(policy=="wide")depthLadder=DepthLadder::Wide;
+                else if(policy=="endpoints")depthLadder=DepthLadder::WideEndpoints;
+                else if(policy=="adjacent-endpoints")depthLadder=DepthLadder::AdjacentEndpoints;
+            }
+            if(depthLadder!=DepthLadder::Adjacent)fingerprint<<"production_depth_ladder="<<DepthLadderName()<<"\n";
+        }
+        const char* directDepth=std::getenv("MBS_FULLAUTO_DIRECT_DEPTH");
+        const std::string directField="production_depth_estimator=target-only-v1\n";
+        const bool explicitLevels=args.IsCatched("fullauto_correction")||args.IsCatched("fullauto_depth_share");
+        const std::string autoField="production_depth_estimator=independent-depth-pilot-v1\n";
+        chooseDepthEstimator=UseCoherentGpuScheduling()&&!explicitLevels&&autoDepth
+            &&theta.front()==0&&theta.back()==180&&empiricalFinal>0&&empiricalFinal<=initial;
+        if(directDepth){
+            const std::string policy(directDepth);
+            Require(policy=="0"||policy=="1"||policy=="auto","invalid MBS_FULLAUTO_DIRECT_DEPTH (0, 1 or auto)");
+            directProductionDepth=!go&&coherent&&policy=="1";
+            chooseDepthEstimator=!go&&coherent&&autoDepth&&!explicitLevels&&policy=="auto";
+        }else if(Exists(root+"/configuration.txt")){
+            const auto saved=Read(root+"/configuration.txt");
+            directProductionDepth=saved==Hash(fingerprint.str()+directField)+"\n";
+            chooseDepthEstimator=saved==Hash(fingerprint.str()+autoField)+"\n";
+        }
+        if(directProductionDepth)fingerprint<<directField;
+        if(chooseDepthEstimator)fingerprint<<autoField;
         signature=Hash(fingerprint.str());
         // Old projected-shadow checkpoints predate the explicit model field.
         // Retain their exact identity and worker recipe only after numerical
@@ -1692,7 +1935,7 @@ struct Engine {
         }
         return selected;
     }
-    std::vector<Job> DirectStage(int n,unsigned const* seedSet,size_t ns,int depth,const std::vector<double>& x,bool weighted=true,bool pairedMirror=false,int offset=0,int pairedDepth=0) {
+    std::vector<Job> DirectStage(int n,unsigned const* seedSet,size_t ns,int depth,const std::vector<double>& x,bool weighted=true,bool pairedMirror=false,int offset=0,int pairedDepth=0,int nestedMin=0,int pilotCoarse=0,int pilotStep=0,int pilotLast=0) {
         Require(x.size()<=size_t(maxTheta)+(go?2:0),"explicit theta evaluation limit exceeded");Require(FileHash(exe)==binaryHash,"binary changed during run");std::ostringstream angles;for(double q:x)angles<<Number(q)<<'\n';std::string gridHash=Hash(angles.str());
         std::string grid=root+"/theta_"+gridHash+".csv";Atomic(grid,angles.str());std::string wf=weighted?WriteWeights(x):"";
         const int preparationThreads=AutoPrepareThreads(n,depth,pairedDepth,x.size());
@@ -1703,6 +1946,13 @@ struct Engine {
             else{for(const auto& v:std::vector<std::string>{"--haar-alpha","--theta-grid-file",grid,"--phi-points",std::to_string(phi)})command.push_back(v);}
             if(pairedMirror)command.push_back("--haar-mirror-audit");else if(mirror)command.push_back("--mirror-gamma");
             if(offset){command.push_back("--sobol-offset");command.push_back(std::to_string(offset));}
+            if(nestedMin){command.push_back("--nested-phi-min");command.push_back(Number(nestedMin));}
+            const bool hasCoarseRows=prefetchCoarse&&std::any_of(x.begin(),x.end(),[&](double angle){
+                const auto it=coarseRequiredThrough.find(angle);return it!=coarseRequiredThrough.end()&&offset+n<=it->second;});
+            const int coarse=pilotCoarse?pilotCoarse:(hasCoarseRows&&depth==target&&pairedDepth==prefetchMiddle&&!pairedMirror&&!nestedMin&&(!balancedCorrection||n<512))?prefetchCoarse:0;
+            if(pilotLast){command.push_back("--depth-output-last");command.push_back(Number(pilotLast));}
+            if(pilotStep){command.push_back("--depth-output-step");command.push_back(Number(pilotStep));}
+            if(coarse){command.push_back("--coarse-depth-output");command.push_back(Number(coarse));}
             if(pairedDepth){command.push_back("--paired-depth");command.push_back(std::to_string(pairedDepth));}
             if(!go)command.push_back("--profile-phases");
             if(controls){command.push_back("--analytic-mean-threads");command.push_back(Number(analyticMeanThreads));command.push_back("--analytic-facet-average");command.push_back("--analytic-shadow-control");command.push_back(args.IsCatched("analytic_shadow_control")?args.GetStringValue("analytic_shadow_control"):"circular");command.push_back("--analytic-mean-cache");command.push_back(MeanCache(gridHash));if(sharedMeans){command.push_back("--analytic-mean-reference-grid");command.push_back(MeanReferenceGrid());}}
@@ -1711,7 +1961,7 @@ struct Engine {
             if(!wf.empty()){command.push_back("--analytic-control-weights");command.push_back(wf);}
             std::ostringstream identity;identity<<signature<<ExecutionHash()<<'\n'<<kernel.block<<'\n'<<kernel.warp<<'\n';for(const auto& v:command)identity<<v<<'\n';if(!wf.empty())identity<<Read(wf);
             if(!kernelTrialNonce.empty())identity<<"\nfresh kernel timing request "<<kernelTrialNonce<<'\n';
-            Job j;SetSampling(j,n,seedSet[s],depth,x,pairedMirror);j.offset=offset;j.pairedDepth=pairedDepth;j.weightHash=Hash(wf.empty()?"":Read(wf));j.identity=Hash(identity.str());j.folder=root+(kernelTrialNonce.empty()?"/jobs/j":"/kernel_trials/t")+j.identity;j.data=j.folder+"/result/result.dat";j.summary=j.folder+"/result/result_analytic_facets.tsv";Directory(j.folder);
+            Job j;SetSampling(j,n,seedSet[s],depth,x,pairedMirror);j.offset=offset;j.pairedDepth=pairedDepth;j.coarseDepth=coarse;j.coarseStep=pilotStep;j.coarseLast=pilotLast;j.nestedPhiMin=nestedMin;j.weightHash=Hash(wf.empty()?"":Read(wf));j.identity=Hash(identity.str());j.folder=root+(kernelTrialNonce.empty()?"/jobs/j":"/kernel_trials/t")+j.identity;j.data=j.folder+"/result/result.dat";j.summary=j.folder+"/result/result_analytic_facets.tsv";Directory(j.folder);
             auto correctAngles=[&](const Job& job){Require(job.angles.size()==x.size(),"wrong theta count");for(size_t r=0;r<x.size();++r)Require(std::fabs(job.angles[r]-x[r])<1e-10,"worker theta grid differs");};
             if(cache.count(j.identity)){result[s]=Materialize(cache.at(j.identity));correctAngles(result[s]);continue;}
             const std::string meta=j.folder+"/complete.txt";
@@ -1887,6 +2137,82 @@ struct Engine {
     struct WorkRequest {int count,offset,depth,pairedDepth;std::vector<double> angles;};
     void Prefetch(const std::vector<WorkRequest>& requests,const unsigned* seedSet,size_t angleCap=0){
         if(!QueueEnabled()||requests.empty())return;
+        if((overlapPairedPrefetch||threeDepthPrefetch) && depthSharing && angularCache && (!controls||sharedMeans)
+                && PrefetchOverlappingLowerRows(requests,seedSet,angleCap))return;
+        PrefetchNative(requests,seedSet,angleCap);
+    }
+    // Compute the requested upper/lower pairs first when their lower outputs
+    // cover part of a standalone request. The second prefetch still checks
+    // every angle, prefix and seed and fills anything the first wave omitted.
+    bool PrefetchOverlappingLowerRows(const std::vector<WorkRequest>& requests,const unsigned* seeds,size_t angleCap){
+        std::map<int,std::vector<const WorkRequest*>> pairs;
+        const auto levels=ProductionDepths();
+        const bool triple=threeDepthPrefetch&&depthVerified&&coherent&&!go&&!config.useGpu
+            &&levels.size()==3&&selectedCutoff=="off";
+        for(const auto& r:requests){
+            if(r.offset!=0)return false;
+            if(triple&&r.depth==target&&r.pairedDepth==levels[1]&&(!balancedCorrection||(incremental?std::min(orientationBlock,r.count):r.count)<512))
+                pairs[levels.front()].push_back(&r);
+            if(r.pairedDepth && r.angles.size()<=size_t(maxTheta))pairs[r.pairedDepth].push_back(&r);
+        }
+        if(pairs.empty())return false;
+        std::vector<WorkRequest> first,late;
+        std::map<int,std::set<int>> upperDepths;
+        for(const auto& r:requests){
+            const auto group=pairs.find(r.depth);
+            bool overlap=false;
+            if(!r.pairedDepth && group!=pairs.end() && r.angles.size()>1){
+                std::set<double> angles(r.angles.begin(),r.angles.end());
+                for(const auto* pair:group->second){
+                    if(r.count!=pair->count && (!incremental||std::min(r.count,pair->count)<orientationBlock))continue;
+                    if(std::any_of(pair->angles.begin(),pair->angles.end(),[&](double theta){return angles.count(theta);})) {
+                        overlap=true;upperDepths[r.depth].insert(pair->depth);
+                    }
+                }
+            }
+            (overlap?late:first).push_back(r);
+        }
+        if(late.empty())return false;
+        const bool needCoarse=triple&&upperDepths.count(levels.front())&&upperDepths.at(levels.front()).count(target);
+        if(needCoarse){
+            prefetchCoarse=levels.front();prefetchMiddle=levels[1];
+            for(const auto& r:late)if(r.depth==prefetchCoarse)
+                for(double angle:r.angles)coarseRequiredThrough[angle]=std::max(coarseRequiredThrough[angle],r.count);
+        }
+        try{PrefetchNative(first,seeds,angleCap);}
+        catch(...){coarseRequiredThrough.clear();prefetchCoarse=prefetchMiddle=0;throw;}
+        coarseRequiredThrough.clear();prefetchCoarse=prefetchMiddle=0;
+        size_t published=0;
+        for(const auto& r:late){
+            const std::set<double> angles(r.angles.begin(),r.angles.end());
+            const int block=incremental?orientationBlock:r.count;
+            for(int offset=0;offset<r.count;offset+=block){
+                const int count=std::min(block,r.count-offset);
+                for(int upper:upperDepths.at(r.depth))for(size_t s=0;s<8;++s){
+                    // LowerView registers jobs at a different depth. The source
+                    // bucket and its std::map-owned Job records remain stable.
+                    for(const auto& entry:SamplingCandidates(count,seeds[s],upper,offset)){
+                        const auto& job=*entry.second;
+                        if(!SameSampling(job,count,seeds[s],upper,offset))continue;
+                        if(job.pairedDepth!=r.depth){
+                            if(!needCoarse||r.depth!=levels.front()||job.pairedDepth!=levels[1]||job.assembled)continue;
+                            const auto receipt=job.folder+"/paired_depth.tsv";
+                            if(!Exists(receipt))continue;
+                            const auto path=job.folder+"/result/result_depth"+Number(r.depth)+".dat";
+                            if(Read(receipt).find(path+" ")==std::string::npos)continue;
+                        }
+                        if(std::none_of(job.inputAngles.begin(),job.inputAngles.end(),[&](double t){return angles.count(t);}))continue;
+                        const auto size=cache.size();LowerView(job,r.depth,false);
+                        published+=cache.size()>size;
+                    }
+                }
+            }
+        }
+        PrefetchNative(late,seeds,angleCap);
+        Log("paired_lower_angular_prefetch","{\"deferred_requests\":"+Number(late.size())+",\"new_lower_views\":"+Number(published)+"}");
+        return true;
+    }
+    void PrefetchNative(const std::vector<WorkRequest>& requests,const unsigned* seedSet,size_t angleCap){
         int maximum=0;for(const auto& request:requests)maximum=std::max(maximum,request.count);
         const int block=incremental?orientationBlock:maximum;
         int nextOffset=0;size_t nextLeaf=0;std::vector<WorkRequest> leaves;
@@ -2065,9 +2391,16 @@ struct Engine {
             uppers.push_back(jobs);lowers.push_back(views);}
         return {AssemblePairParts(uppers,n,x,"upper paired prefix"),AssemblePairParts(lowers,n,x,"lower paired prefix")};
     }
-    void VerifyDepthSharing(const std::vector<double>& x){
-        if(!depthSharing||depthVerified||target<=1)return;
-        const unsigned seeds[2]={7001,7013};const int lower=std::max(1,target-2),n=std::min(pilot,64);double maximum=0,ratioError=0;
+    void VerifyDepthSharing(const std::vector<double>& x,int upper=0,int lower=0){
+        const bool specific=upper>0;
+        if(!depthSharing||target<=1)return;
+        if(specific){
+            if(verifiedWideDepthPairs.count({upper,lower,phi,controls,ExecutionHash()}))return;
+        }else{
+            if(depthVerified)return;
+            upper=target;lower=std::max(1,target-2);
+        }
+        const unsigned seeds[2]={7001,7013};const int n=std::min(pilot,64);double maximum=0,ratioError=0;
 #ifdef MBS_GPU_FP32
         // Shared lower-depth reductions may reorder FP32 sums. Match the
         // short-packet allowance, still below a quarter of execution reserve.
@@ -2075,9 +2408,9 @@ struct Engine {
 #else
         const double tolerance=std::min(1e-7,eps/1024);
 #endif
-        try{auto paired=DirectStage(n,seeds,2,target,x,true,false,0,lower);
-            for(int depth:{target,lower}){auto standalone=DirectStage(n,seeds,2,depth,x);
-                for(size_t s=0;s<2;++s){const Job view=depth==target?paired[s]:LowerView(paired[s],lower);
+        try{auto paired=DirectStage(n,seeds,2,upper,x,true,false,0,lower);
+            for(int depth:{upper,lower}){auto standalone=DirectStage(n,seeds,2,depth,x);
+                for(size_t s=0;s<2;++s){const Job view=depth==upper?paired[s]:LowerView(paired[s],lower);
                     const Matrix a=Data({view})[0],b=Data({standalone[s]})[0];Matrix reference=b;
                     if(controls)for(size_t r=0;r<reference.size();++r)reference[r][0]=standalone[s].controls[r][0];
                     maximum=std::max(maximum,Difference(a,b,reference));
@@ -2094,7 +2427,9 @@ struct Engine {
             if(log.find("paired-depth cache unsupported")==std::string::npos)throw;
             depthSharing=false;
         }
-        depthVerified=true;Record(root+"/depth_sharing_verification.json","{\"enabled\":"+std::string(depthSharing?"true":"false")+",\"max_all16_difference_scaled_M11\":"+Number(maximum)
+        if(specific)verifiedWideDepthPairs.insert({upper,lower,phi,controls,ExecutionHash()});else depthVerified=true;
+        const auto receipt=specific?"depth_sharing_"+Number(lower)+"_"+Number(upper)+".json":"depth_sharing_verification.json";
+        Record(root+"/"+receipt,"{\"enabled\":"+std::string(depthSharing?"true":"false")+",\"max_all16_difference_scaled_M11\":"+Number(maximum)
             +",\"max_ratio_difference\":"+Number(ratioError)+",\"numerical_tolerance\":"+Number(tolerance)+",\"probe_count\":"+Number(n)+",\"probe_seeds\":2,\"coherent\":"+(coherent?"true":"false")
             +",\"scope\":\"both depth matrices versus independent traces on identical orientations; unsupported shapes use independent traces\"}");
     }
@@ -2370,6 +2705,7 @@ struct Engine {
            &&log.find("analytic mean numerical budget")==std::string::npos
            &&log.find("analytic combined radial kernel exceeds memory budget")==std::string::npos)return false;
         const bool previousMirror=mirror;
+        rawPhiFallback=true;
         controls=false;sharedMeans=false;weights.clear();polarWeights.clear();SetMirror(false);verifiedMirrorGrids.clear();
         Record(root+"/analytic_control_fallback.json","{\"enabled\":false,\"reason\":\"analytic mean budget/convergence limit; full sampled PO retained\",\"exception\":"+Quoted(message)+",\"diagnostic\":"+Quoted(log)
             +",\"mirror_previously_enabled\":"+(previousMirror?"true":"false")+",\"mirror_policy\":"+Quoted(mirrorPolicy)
@@ -2427,7 +2763,7 @@ struct Engine {
         if(mirrorPolicy=="off")return;
         if(!symmetryChecks){SetMirror(true);RecordManualSymmetry();return;}
         SetMirror(true);unsigned seed=3001;
-        try{Stage(16,&seed,1,std::max(1,target-4),x,false);}
+        try{Stage(16,&seed,1,ProductionDepths().front(),x,false);}
         catch(const std::exception& error){
             const std::string message=error.what();size_t start=message.find("see ");
             bool geometryFailure=start!=std::string::npos&&Read(message.substr(start+4)).find("geometry has no verified body xz reflection")!=std::string::npos;
@@ -2461,7 +2797,7 @@ struct Engine {
         const std::string key=MirrorVerificationKey(x);
         if(verifiedMirrorGrids.count(key))return true;
         const int n=std::min(pilot,256);double worst=0,mirrorSeconds=0,pairedSeconds=0;std::ostringstream records;bool first=true;
-        std::vector<int> depths;for(int d:{std::max(1,target-4),std::max(1,target-2),target})if(depths.empty()||depths.back()!=d)depths.push_back(d);
+        const auto depths=ProductionDepths();
         auto finalPairs=Stage(n,mirrorValidation,8,target,x,true,true);Matrix reference=Mean(Data(finalPairs));
         bool positive=true;for(const auto& row:reference)positive=positive&&row[0]>0;
         if(!positive){Record(root+"/mirror_verification.json","{\"enabled\":false,\"geometry_verified\":true,\"paired_verified\":false,\"reason\":\"nonpositive corrected mirror pilot M11; full gamma selected\"}\n");
@@ -2487,6 +2823,76 @@ struct Engine {
         else if(mirrorPolicy=="on")throw std::runtime_error("fullauto: paired Haar mirror verification failed; use --fullauto-mirror off");
         return pass;
     }
+    size_t PruneDenseThetaSupport(std::vector<size_t>& knots,const Samples& data,const Matrix& reference,
+                                 double budget,const std::vector<size_t>& initialKnots)const{
+        std::list<size_t> kept(knots.begin(),knots.end());
+        // Cubic Hermite slopes use four adjacent knots. Four neighbors on
+        // each side cover all changed intervals (also at a clamped end);
+        // another four supply the same slopes as the full knot sequence.
+        for(auto candidate=std::next(kept.begin());candidate!=std::prev(kept.end())&&kept.size()>initialKnots.size();){
+            auto trial=candidate++;
+            if(std::binary_search(initialKnots.begin(),initialKnots.end(),*trial))continue;
+            auto left=trial,right=trial;
+            for(int i=0;i<4;++i){if(left!=kept.begin())--left;if(std::next(right)!=kept.end())++right;}
+            const size_t from=*left,to=*right;
+            for(int i=0;i<4;++i){if(left!=kept.begin())--left;if(std::next(right)!=kept.end())++right;}
+            std::vector<double> grid,query(theta.begin()+from,theta.begin()+to+1);
+            Samples support(8),delta(8);
+            for(auto it=left;it!=std::next(right);++it)if(it!=trial){
+                grid.push_back(theta[*it]);
+                for(int seed=0;seed<8;++seed)support[seed].push_back(data[seed][*it]);
+            }
+            for(int seed=0;seed<8;++seed){
+                delta[seed]=LocalCubicInterpolate(grid,support[seed],query);
+                for(size_t r=0;r<query.size();++r)for(int j=0;j<16;++j)delta[seed][r][j]-=data[seed][from+r][j];
+            }
+            const auto mean=Mean(delta),variance=Variance(delta);
+            bool passed=true;
+            for(size_t r=0;r<query.size()&&passed;++r)for(int j=0;j<16;++j){
+                const double bound=(std::fabs(mean[r][j])+t95*std::sqrt(variance[r][j]/8))/reference[from+r][0];
+                if(!(bound<=budget)){passed=false;break;}
+            }
+            if(passed)kept.erase(trial);
+        }
+        const size_t removed=knots.size()-kept.size();
+        knots.assign(kept.begin(),kept.end());return removed;
+    }
+    #include "FullAutoThetaResidual.inc"
+    void SelectPilotKnots(std::vector<size_t>& knots,const Samples& data,const Matrix& reference,double pilotBudget,
+                         bool matchOutput,bool publish,double& maximum,int& refinements){
+        const auto initialKnots=knots;
+        bool prune=matchOutput&&!args.IsCatched("fullauto_theta_start");
+        maximum=0;refinements=0;
+        for(;;){Samples support(8),predicted(8);std::vector<double> kx;
+            for(size_t k:knots){kx.push_back(theta[k]);for(int seed=0;seed<8;++seed)support[seed].push_back(data[seed][k]);}
+            for(int seed=0;seed<8;++seed){
+                if(matchOutput||UseLinearPOInterpolation(go,coherent))
+                    predicted[seed]=POOutputInterpolate(go,coherent,kx,support[seed],theta);
+                else predicted[seed]=CubicInterpolate(kx,support[seed],theta);
+            }
+            Samples delta=Subtract(predicted,data);Matrix mean=Mean(delta),variance=Variance(delta);std::vector<double> errors(theta.size());maximum=0;
+            for(size_t r=0;r<theta.size();++r)for(int j=0;j<16;++j){double v=(std::fabs(mean[r][j])+t95*std::sqrt(variance[r][j]/8))/reference[r][0];errors[r]=std::max(errors[r],v);maximum=std::max(maximum,v);}
+            std::ostringstream step;step<<"{\"iteration\":"<<refinements<<",\"max_residual95_scaled_M11\":"<<Number(maximum)<<",\"budget\":"<<Number(pilotBudget)<<",\"support_indices\":[";
+            for(size_t i=0;i<knots.size();++i)step<<(i?",":"")<<knots[i];
+            step<<"]}";
+            if(publish)Log("theta_pilot_refinement",step.str());
+            if(maximum<=pilotBudget||knots.size()==theta.size()){
+                if(prune){
+                    prune=false;
+                    const auto start=Seconds();
+                    const size_t removed=PruneDenseThetaSupport(knots,data,reference,pilotBudget,initialKnots);
+                    if(publish)Log("theta_pilot_pruning","{\"removed_knots\":"+Number(removed)+",\"remaining_knots\":"+Number(knots.size())
+                        +",\"seconds\":"+Number(Seconds()-start)+",\"production_accuracy_accepted\":false}");
+                    if(removed)continue; // Recheck all rows on the actual full-grid interpolant.
+                }
+                break;
+            }
+            std::set<size_t> next(knots.begin(),knots.end());for(size_t i=1;i<knots.size();++i){size_t worst=knots[i-1];for(size_t r=knots[i-1]+1;r<knots[i];++r)if(errors[r]>errors[worst])worst=r;
+                if(errors[worst]>pilotBudget)next.insert(worst);}
+            Require(next.size()>knots.size(),"theta audit cannot refine support");knots.assign(next.begin(),next.end());++refinements;
+        }
+    }
+    #include "FullAutoCardinalTheta.inc"
     std::vector<size_t> AuditThetaSupport(std::vector<size_t> knots){
         if(!thetaAuditCount)return knots;
         if(theta.size()>size_t(maxTheta)){
@@ -2497,38 +2903,49 @@ struct Engine {
         int actualCount=plannedCount;std::vector<Job> jobs;Samples data;Matrix reference;
         for(;;){
             std::cout<<"fullauto: independent dense theta pilot N="<<actualCount<<" rows="<<theta.size()<<std::endl;
-            jobs=DirectStage(actualCount,angularValidation,8,target,theta);data=Data(jobs);reference=Mean(data);
-            // A finite control-variate pilot is a signed estimator. A negative
-            // corrected mean does not make the underlying physical M11 negative.
-            // Scale interpolation checks by native positive M11 from the SAME
-            // independent jobs; retain the corrected matrices in the residual.
-            if(controls)for(size_t row=0;row<reference.size();++row){
-                double raw=0;for(const auto& job:jobs)raw+=job.controls.at(row)[0]/8;
-                reference[row][0]=raw;
+            if(!CardinalThetaPilot(actualCount,data,reference,knots)&&!PairedThetaPilot(actualCount,data,reference)){
+                jobs=DirectStage(actualCount,angularValidation,8,target,theta);data=Data(jobs);reference=Mean(data);
+                // A finite control-variate pilot is a signed estimator. A negative
+                // corrected mean does not make the underlying physical M11 negative.
+                // Scale interpolation checks by native positive M11 from the SAME
+                // independent jobs; retain the corrected matrices in the residual.
+                if(controls)for(size_t row=0;row<reference.size();++row){
+                    double raw=0;for(const auto& job:jobs)raw+=job.controls.at(row)[0]/8;
+                    reference[row][0]=raw;
+                }
             }
             bool positive=true;for(const auto& row:reference)positive=positive&&row[0]>0;
             if(positive)break;
             if(actualCount>=thetaAuditCount)throw std::runtime_error("mean M11 must be positive in theta pilot");
             actualCount=std::min(thetaAuditCount,actualCount*2);
         }
-        Log("dense_theta_pilot_work_budget","{\"requested_count_per_seed\":"+Number(thetaAuditCount)+",\"planned_count_per_seed\":"+Number(plannedCount)+",\"actual_count_per_seed\":"+Number(actualCount)+",\"theta_rows\":"+Number(theta.size())+",\"phi\":"+Number(phi)+",\"all_requested_angles_retained\":true,\"production_accuracy_accepted\":false}");
-        double maximum=0;int refinements=0;
-        for(;;){Samples support(8),predicted(8);std::vector<double> kx;
-            for(size_t k:knots){kx.push_back(theta[k]);for(int seed=0;seed<8;++seed)support[seed].push_back(data[seed][k]);}
-            for(int seed=0;seed<8;++seed)predicted[seed]=UseLinearPOInterpolation(go,coherent)
-                ?PiecewiseLinearInterpolate(kx,support[seed],theta):CubicInterpolate(kx,support[seed],theta);
-            Samples delta=Subtract(predicted,data);Matrix mean=Mean(delta),variance=Variance(delta);std::vector<double> errors(theta.size());maximum=0;
-            for(size_t r=0;r<theta.size();++r)for(int j=0;j<16;++j){double v=(std::fabs(mean[r][j])+t95*std::sqrt(variance[r][j]/8))/reference[r][0];errors[r]=std::max(errors[r],v);maximum=std::max(maximum,v);}
-            std::ostringstream step;step<<"{\"iteration\":"<<refinements<<",\"max_residual95_scaled_M11\":"<<Number(maximum)<<",\"budget\":"<<Number(interpolation*.5)<<",\"support_indices\":[";
-            for(size_t i=0;i<knots.size();++i)step<<(i?",":"")<<knots[i];
-            step<<"]}";
-            Log("theta_pilot_refinement",step.str());
-            if(maximum<=interpolation*.5||knots.size()==theta.size())break;
-            std::set<size_t> next(knots.begin(),knots.end());for(size_t i=1;i<knots.size();++i){size_t worst=knots[i-1];for(size_t r=knots[i-1]+1;r<knots[i];++r)if(errors[r]>errors[worst])worst=r;
-                if(errors[worst]>interpolation*.5)next.insert(worst);}
-            Require(next.size()>knots.size(),"theta audit cannot refine support");knots.assign(next.begin(),next.end());++refinements;
+        if(targetPhiPilot && coherent && !fixedPhi && phiRecheck){
+            // Rank possible azimuth challenge rows using the independent dense theta
+            // samples. This score is never reported as a production error estimate.
+            const auto mean=Mean(data);densePhiRisk.assign(theta.size(),0.);
+            for(size_t i=0;i<theta.size();++i){
+                const double scale=reference[i][0];
+                if(!(scale>0 && mean[i][0]>0 && std::isfinite(scale) && std::isfinite(mean[i][0]))){densePhiRisk[i]=1e100;continue;}
+                for(size_t element=0;element<16;++element){
+                    double raw=0,ratio=0;
+                    for(const auto& replica:data){
+                        const double delta=replica[i][element]-mean[i][element];
+                        raw+=delta*delta;
+                        const double residual=delta-(mean[i][element]/mean[i][0])*(replica[i][0]-mean[i][0]);
+                        ratio+=residual*residual;
+                    }
+                    densePhiRisk[i]=std::max(densePhiRisk[i],std::sqrt(std::max(raw,ratios?ratio:0.))/scale);
+                }
+            }
         }
-        std::ostringstream report;report<<"{\"count_per_seed\":"<<actualCount<<",\"requested_count_per_seed\":"<<thetaAuditCount<<",\"reference_rows\":"<<theta.size()<<",\"support_rows\":"<<knots.size()<<",\"refinements\":"<<refinements<<",\"max_paired_residual95_scaled_M11\":"<<Number(maximum)<<",\"pilot_budget\":"<<Number(interpolation*.5)<<",\"independent_production_seeds\":true}\n";
+        Log("dense_theta_pilot_work_budget","{\"requested_count_per_seed\":"+Number(thetaAuditCount)+",\"planned_count_per_seed\":"+Number(plannedCount)+",\"actual_count_per_seed\":"+Number(actualCount)+",\"theta_rows\":"+Number(theta.size())+",\"phi\":"+Number(phi)+",\"all_requested_angles_retained\":true,\"production_accuracy_accepted\":false}");
+        const char* thetaRule=std::getenv("MBS_FULLAUTO_MATCH_THETA_PILOT");
+        const bool matchOutput=thetaRule&&std::string(thetaRule)=="1"&&coherent&&!go
+            &&!args.IsCatched("fullauto_theta_audit")&&!config.adaptive.loadedFromFile;
+        const double pilotBudget=interpolation*(matchOutput?.75:.5);
+        double maximum=0;int refinements=0;
+        SelectPilotKnots(knots,data,reference,pilotBudget,matchOutput,true,maximum,refinements);
+        std::ostringstream report;report<<"{\"count_per_seed\":"<<actualCount<<",\"requested_count_per_seed\":"<<thetaAuditCount<<",\"reference_rows\":"<<theta.size()<<",\"support_rows\":"<<knots.size()<<",\"refinements\":"<<refinements<<",\"max_paired_residual95_scaled_M11\":"<<Number(maximum)<<",\"pilot_budget\":"<<Number(pilotBudget)<<",\"matches_output_interpolant\":"<<((matchOutput||UseLinearPOInterpolation(go,coherent))?"true":"false")<<",\"independent_production_seeds\":true}\n";
         Record(root+"/dense_theta_pilot.json",report.str());
         Log("theta_pilot_normalization","{\"native_M11\":"+std::string(controls?"true":"false")+",\"signed_control_residuals_retained\":"+(controls?"true":"false")+"}");return knots;
     }
@@ -2598,10 +3015,50 @@ struct Engine {
             <<",\"production_options_restored\":true,\"trial_matrices_retained\":false,\"samples\":"<<samples.str()<<"}";
         Record(root+"/kernel_calibration.json",report.str());Log("kernel_selection",report.str());
     }
-    void Calibrate(const std::vector<double>& x,bool working=false,bool kernelOnly=false) {
+    // Fit on training scrambles only. The production bound on its own grid
+    // remains authoritative if the sampled denominator or the weights change.
+    double ControlMeanRefinement(const Job& job,size_t row,double wr,double ws)const{
+        const auto& c=job.controls[row];
+        // For circular shadow the area-pair sum and Jinc have no quadrature
+        // parameter. Every refinement pass evaluates the identical expression.
+        // This budget measures successive quadrature changes, not FP roundoff.
+        const double reflection=std::fabs(wr*c[1]);
+        if(circularShadowRefinement)return job.controlRefinement*reflection;
+        return job.controlRefinement*(reflection+std::fabs(ws*c[2]));
+    }
+    double ControlWeightBudget(const std::vector<Job>& train,size_t row)const {
+        if(!boundedControlWeights)return 0.;
+        double mean=0.,variance=0.;
+        for(const auto& job:train)mean+=job.controls[row][0]/train.size();
+        for(const auto& job:train){
+            const double d=job.controls[row][0]-mean;
+            variance+=d*d/(train.size()*(train.size()-1));
+        }
+        return (.5*eps/64)*std::max(0.,mean-t95*std::sqrt(variance));
+    }
+    bool BoundControlWeights(std::array<double,2>& b,const std::vector<Job>& train,size_t row,double budget)const {
+        if(!boundedControlWeights)return false;
+        double bound=0.;
+        for(const auto& job:train){
+            bound=std::max(bound,ControlMeanRefinement(job,row,b[0],b[1]));
+        }
+        if(bound<=budget)return false;
+        const double scale=budget/bound;
+        b[0]*=scale;b[1]*=scale;return true;
+    }
+    #include "FullAutoNestedPhi.inc"
+    #include "FullAutoRawPhi.inc"
+    #include "FullAutoPhiSharedRows.inc"
+    #include "FullAutoControlPreflight.inc"
+    #include "FullAutoPhiWinner.inc"
+    bool densePhiPlateau=false;
+    void Calibrate(const std::vector<double>& x,bool working=false,bool kernelOnly=false,int soleRule=0,bool screening=false,bool deferTuning=false,size_t workRows=0,bool separateTimings=false) {
+        measuredPhi.clear();if(!working){startupPhiWitness.clear();startupPhiRows.clear();}
         const int previousPhi=phi;weightTheta=x;weights.clear();polarWeights.clear();phi=fixedPhi?fixedPhi:std::max(minPhi,std::min(maxPhi,4));
         if(config.useGpu&&!working&&!startupKernel)CalibrateKernel(x);
         if(kernelOnly){Log("startup_kernel_only","{\"phi\":"+Number(phi)+",\"full_phi_search_deferred\":true}");return;}
+        controlPreflightAngles.clear();controlPreflightPhi=0;
+        std::map<int,std::vector<double>> preflightCandidates;
         double best=std::numeric_limits<double>::max();bool bestResolved=false;int chosen=4;std::vector<std::array<double,2>> selected;
         std::vector<std::array<Mueller,2>> selectedPolar;std::vector<int> phiCandidates;
         for(int p:{1,2,4,8,16,32,64})if(p>=minPhi&&p<=maxPhi)phiCandidates.push_back(p);
@@ -2611,20 +3068,94 @@ struct Engine {
         }
         if(phiCandidates.empty())phiCandidates.push_back(std::max(1,minPhi));
         if(fixedPhi)phiCandidates={fixedPhi};
+        if(soleRule){Require(!fixedPhi&&working&&soleRule>=minPhi&&soleRule<=maxPhi,"invalid phi refit rule");phiCandidates={soleRule};}
         std::ostringstream candidatesJson;candidatesJson<<'[';bool first=true;
-        const int depth=working?target:std::max(1,target-4);
-        for(int candidate:phiCandidates){Require(candidate>=minPhi&&candidate<=maxPhi,"phi outside configured limits");phi=candidate;
-            int calibrationCount=pilot;
-            const int pilotLimit=FullAutoScheduling::PilotLimit(pilot,maxCount,fixedPhi||args.IsCatched("fullauto_pilot")||config.adaptive.loadedFromFile);
+        const int depth=(working||TargetPhiEnabled(x.size()))?target:ProductionDepths().front();
+        const char* stopPolicy=std::getenv("MBS_FULLAUTO_PHI_COST_STOP");
+        const bool allowCostStop=(stopPolicy?std::string(stopPolicy)=="1":UseCoherentGpuScheduling())&&coherent&&!go
+            &&!fixedPhi&&!args.IsCatched("fullauto_pilot")&&!config.adaptive.loadedFromFile;
+        int previousCandidate=0,measuredCandidates=0;
+        double previousUncertainty=0,previousCostFloor=0;
+        bool bestAtMinimumCount=false;
+        bool previousResolved=false,stopSearch=false;
+        // On expensive production grids a short Sobol prefix can rank phi
+        // differently from a longer prefix. Bound the cost of reranking two
+        // finalists by their measured sampling work and the winning forecast.
+        const char* confirmPolicy=std::getenv("MBS_FULLAUTO_PHI_FINALISTS");
+        const bool allowFinalists=working&&UseCoherentGpuScheduling()&&!fixedPhi
+            &&!args.IsCatched("fullauto_pilot")&&!config.adaptive.loadedFromFile
+            &&!std::getenv("MBS_FULLAUTO_PHI_PILOT")&&confirmPolicy&&std::string(confirmPolicy)=="1";
+        struct PhiTrial {int rule;double score,repeatWork;};
+        std::vector<PhiTrial> screened;
+        const bool canRefit=refitPhiWinner&&controls&&sharedMeans&&!phiCutoffPilot&&!allowFinalists;
+        bool refittingWinner=false;int selectedFitCount=0;
+        std::vector<Job> winnerTrain,winnerValid;
+        const bool selectDenseRule=densePhiPlateau&&!working&&!kernelOnly&&!soleRule
+            &&!allowFinalists&&!canRefit&&!screening&&phiCandidates.size()>1;
+        std::map<int,PhiPlateau::Observation> startupObservations;
+        struct DenseFit {decltype(selected) scalar;decltype(selectedPolar) polarized;double score;};
+        std::map<int,DenseFit> startupFits;
+        struct PairedTrial {
+            Samples raw;
+            decltype(selected) scalar;
+            decltype(selectedPolar) polar;
+            double cost, work, timing, setup;
+            int count;
+        };
+        std::map<int,PairedTrial> pairedTrials;
+        const bool comparePairs=pairedPhiForecast&&!working&&!kernelOnly&&!screening&&!fixedPhi
+            &&!soleRule&&!canRefit&&!selectDenseRule&&!allowFinalists&&phiCandidates.size()>1
+            &&x.size()<=8192/phiCandidates.size();
+        const bool deferMeasurements=comparePairs&&sparsePairedTiming&&!separateTimings&&!targetPhiPilot
+            &&!rawPhiFallback&&!phiCutoffPilot&&PhiTimingSeeds()<8&&phiCandidates.size()>=4;
+        NestedPhiSweep nested(phiCandidates);
+        NestedPhiSweep fullSweep(phiCandidates,completePhiSweep&&(!allowCostStop||deferMeasurements));
+
+        const std::string rawKey=RawPhiDomain(x,depth);
+        if(rawPhiPilots&&controls&&rawKey!=rawPhiDomain){
+            rawPhiSamples.clear();rawPhiBytes=0;rawPhiDomain=rawKey;
+        }
+        const auto measurePhi=[&](int candidate,bool confirming){Require(candidate>=minPhi&&candidate<=maxPhi,"phi outside configured limits");phi=candidate;
+            const bool fixedPilot=fixedPhi||args.IsCatched("fullauto_pilot")||config.adaptive.loadedFromFile;
+            int requestedPhiPilot=UseCoherentGpuScheduling()?128:0;
+            if(const char* value=std::getenv("MBS_FULLAUTO_PHI_PILOT")){
+                char* end=nullptr;const long parsed=std::strtol(value,&end,10);
+                Require(end!=value&&!*end&&parsed>=0&&parsed<=4096,"invalid MBS_FULLAUTO_PHI_PILOT (0..4096)");
+                requestedPhiPilot=int(parsed);
+            }
+            int calibrationCount=confirming?pilot:FullAutoScheduling::PhiPilotStart(pilot,requestedPhiPilot,fixedPilot);
+            const int pilotLimit=FullAutoScheduling::PilotLimit(pilot,maxCount,fixedPilot);
+            if(calibrationCount!=pilot)Log("phi_scheduling_pilot",
+                "{\"configured_count\":"+Number(pilot)+",\"initial_count\":"+Number(calibrationCount)
+                +",\"refinement_limit\":"+Number(pilotLimit)+",\"production_accuracy_accepted\":false}");
+            const int initialPilotCount=calibrationCount;
             for(;;){
             // Training fits control coefficients only. With controls disabled
             // its eight native solves were discarded; keep the independent
             // validation scrambles and the complete accuracy contract.
-            std::vector<Job> train;if(controls)train=Stage(calibrationCount,training,8,depth,x,false);
-            auto valid=Stage(calibrationCount,validation,8,depth,x,false);
+            // Expanding an unresolved pilot may affect only one candidate.
+            // Limit that extra work to the ordinary neighbouring-rule group.
+            auto& sweep=completePhiSweep&&(!allowCostStop||deferMeasurements)&&calibrationCount==initialPilotCount?fullSweep:nested;
+            const bool useNested=nestedPhiPilots&&!confirming&&!phiCutoffPilot&&sweep.Grouped(candidate);
+            std::vector<Job> train,valid;
+            const bool extending=refittingWinner&&calibrationCount==pilot;
+            const bool reusedRaw=!extending&&RestoreRawPhi(rawKey,calibrationCount,candidate,depth,x,valid);
+            if(extending){
+                train=ExtendPhiWinner(std::move(winnerTrain),training,pilot,depth,x);
+                valid=ExtendPhiWinner(std::move(winnerValid),validation,pilot,depth,x);
+            }else if(!reusedRaw&&useNested){
+                if(controls)train=NestedPhiJobs(sweep,candidate,calibrationCount,depth,x,true);
+                valid=NestedPhiJobs(sweep,candidate,calibrationCount,depth,x,false,deferMeasurements);
+            }else if(!reusedRaw){
+                if(controls)train=Stage(calibrationCount,training,8,depth,x,false);
+                valid=Stage(calibrationCount,validation,8,depth,x,false);
+            }
+            if(rawPhiPilots&&controls)RememberRawPhi(calibrationCount,candidate,valid);
             Samples adjusted=Data(valid,false);std::vector<std::array<double,2>> fitted(x.size(),{{0.,0.}});
             std::vector<std::array<Mueller,2>> fittedPolar(x.size());std::array<int,16> accepted{};
+            size_t limitedControlFits=0;
             if(controls)for(size_t r=0;r<x.size();++r){
+                const double weightBudget=ControlWeightBudget(train,r);
                 double cm[2]={};for(int seed=0;seed<8;++seed)for(int c=0;c<2;++c)cm[c]+=train[seed].controls[r][c+3]/8;
                 double scale[2]={};for(int seed=0;seed<8;++seed)for(int c=0;c<2;++c)scale[c]+=std::pow(train[seed].controls[r][c+3]-cm[c],2)/7;
                 for(double& v:scale)v=std::sqrt(v);
@@ -2638,20 +3169,28 @@ struct Engine {
                     if(active[0]&&active[1]){const double det=1.21-cov*cov;b[0]=(1.1*cy[0]-cov*cy[1])/det/scale[0];b[1]=(1.1*cy[1]-cov*cy[0])/det/scale[1];}
                     else {for(int c=0;c<2;++c)if(active[c])b[c]=cy[c]/1.1/scale[c];}
                     for(double& v:b)v=std::max(-4.,std::min(4.,v));
+                    std::array<double,2> defaultWeights={{1.,1.}};
+                    const bool limited=BoundControlWeights(b,train,r,weightBudget);
+                    const bool limitedDefault=!element&&BoundControlWeights(defaultWeights,train,r,weightBudget);
+                    if(limited||limitedDefault)++limitedControlFits;
                     double def[8],prop[8],rawValues[8],dm=0,pm=0,rm=0;
                     for(int seed=0;seed<8;++seed){const auto& c=valid[seed].controls[r];const double raw=element?valid[seed].matrix[r][element]:c[0];
                         rawValues[seed]=raw;rm+=raw/8;
-                        def[seed]=element?raw:raw+c[1]-c[3]+c[2]-c[4];prop[seed]=raw+b[0]*(c[1]-c[3])+b[1]*(c[2]-c[4]);dm+=def[seed]/8;pm+=prop[seed]/8;}
+                        def[seed]=element?raw:!limitedDefault?raw+c[1]-c[3]+c[2]-c[4]
+                            :raw+defaultWeights[0]*(c[1]-c[3])+defaultWeights[1]*(c[2]-c[4]);prop[seed]=raw+b[0]*(c[1]-c[3])+b[1]*(c[2]-c[4]);dm+=def[seed]/8;pm+=prop[seed]/8;}
                     double dv=0,pv=0,rv=0;for(int seed=0;seed<8;++seed){dv+=std::pow(def[seed]-dm,2);pv+=std::pow(prop[seed]-pm,2);rv+=std::pow(rawValues[seed]-rm,2);}
                     const bool useDefault=!element&&dm>0&&dv<.7*rv;
                     const bool accept=(element||pm>0)&&pv<.7*rv&&(!useDefault||pv<dv);
-                    if(accept||useDefault){++accepted[element];const auto chosen=accept?b:std::array<double,2>{{1.,1.}};
+                    if(accept||useDefault){++accepted[element];const auto chosen=accept?b:defaultWeights;
                         if(!element)fitted[r]=chosen;else for(int c=0;c<2;++c)fittedPolar[r][c][element]=chosen[c];}
                     for(int seed=0;seed<8;++seed)adjusted[seed][r][element]=accept?prop[seed]:(useDefault?def[seed]:rawValues[seed]);
                 }
             }
             Statistics stats=Estimate(adjusted);double seconds=0,setup=0;
-            for(const auto& job:valid){seconds+=std::max(1e-6,job.seconds-job.controlSetup);setup=std::max(setup,job.controlSetup);}
+            const size_t timedSeeds=(useNested||reusedRaw||extending)?PhiTimingSeeds():valid.size();
+            for(size_t i=0;i<timedSeeds;++i)seconds+=std::max(1e-6,valid[i].seconds-valid[i].controlSetup);
+            seconds*=double(valid.size())/timedSeeds;
+            for(const auto& job:valid)setup=std::max(setup,job.controlSetup);
             const double uncertainty=ratios?std::max(stats.maxInterval,stats.maxRatioInterval):stats.maxInterval;
             // Predict finite work to reach the requested budget. Once the
             // minimum production sample count suffices, lower variance
@@ -2683,7 +3222,55 @@ struct Engine {
             // Cache construction/lock waiting happens once, not N/pilot
             // times. Do not make the first cold phi/kernel candidate lose
             // solely because it prepared authoritative analytic rows.
-            const double score=seconds*multiplier+setup;
+            double score=seconds*multiplier+setup,lowerCost=score,upperCost=score;
+            bool measuredScale=true;
+            if(rowPhiWork&&working&&!screening&&resolved&&!fixedPhi&&x.size()>1){
+                double totalWork=0;
+                size_t peakRow=0;
+                double peakError=-1;
+                for(size_t row=0;row<x.size();++row){
+                    double error=0;
+                    for(size_t j=0;j<16;++j){
+                        error=std::max(error,stats.interval[row][j]);
+                        if(ratios&&j)error=std::max(error,stats.ratioInterval[row][j]);
+                    }
+                    if(error>peakError){peakRow=row;peakError=error;}
+                    totalWork+=std::max(double(initial)/calibrationCount,std::pow(error/statistical,2));
+                }
+                const double meanWork=std::min(pointwiseMultiplier,totalWork/x.size());
+                double cost=0;
+                for(size_t i=0;i<timedSeeds;++i){
+                    const auto& job=valid[i];
+                    cost+=FullAutoPhiRowCost::Project(std::max(1e-6,job.seconds-job.controlSetup),
+                        job.traceSeconds,job.diffractionSeconds,pointwiseMultiplier,meanWork);
+                }
+                const double oldScore=score;
+                score=lowerCost=upperCost=setup+cost*valid.size()/timedSeeds;
+                Log("phi_local_work_forecast","{\"phi\":"+Number(phi)+",\"peak_work\":"+Number(pointwiseMultiplier)
+                    +",\"peak_theta\":"+Number(x[peakRow])+",\"mean_work\":"+Number(meanWork)
+                    +",\"uniform_seconds\":"+Number(oldScore)+",\"local_seconds\":"+Number(score)
+                    +",\"accuracy_accepted\":false}");
+            }
+            if(screening&&workRows>x.size()){
+                // Tracing each incident orientation is independent of theta.
+                // Extrapolate only measured diffraction/controls. Preserve the
+                // range across timed scrambles to reject ambiguous short fits.
+                const double extra=double(workRows)/x.size()-1;
+                double sum=0,lo=std::numeric_limits<double>::max(),hi=0;
+                for(size_t i=0;i<timedSeeds;++i){
+                    const auto& job=valid[i];const double t=job.seconds-job.controlSetup;
+                    if(!(job.processingSeconds>0&&job.diffractionSeconds>0&&t>0)){
+                        measuredScale=false;break;
+                    }
+                    const double projected=t+extra*std::min(t,job.diffractionSeconds);
+                    if(!std::isfinite(projected)){measuredScale=false;break;}
+                    sum+=projected;lo=std::min(lo,projected);hi=std::max(hi,projected);
+                }
+                if(measuredScale){
+                    const double factor=valid.size()*multiplier;
+                    score=sum/timedSeeds*factor+setup;lowerCost=lo*factor+setup;upperCost=hi*factor+setup;
+                }
+            }
             const std::string angularDetails=",\"angular_pilot_finite\":"+std::string(angularCost.finite?"true":"false")
                 +",\"angular_max_noise95_scaled_M11\":"+Number(angularCostEnabled?angularCost.maximumNoise95:0.)
                 +",\"angular_worst_element\":"+Number(angularCost.worstElement)
@@ -2691,7 +3278,7 @@ struct Engine {
                 +",\"angular_worst_span\":"+Number(angularCost.worstSpan)
                 +",\"angular_worst_indices\":["+Number(angularCost.worstLeft)+","+Number(angularCost.worstCenter)+","+Number(angularCost.worstRight)+"]"
                 +",\"angular_fallback_reason\":"+Quoted(angularCost.reason);
-            Log("phi_candidate","{\"phi\":"+Number(phi)+",\"validation_seconds\":"+Number(seconds)+",\"projected_seconds\":"+Number(score)
+            Log("phi_candidate","{\"phi\":"+Number(phi)+",\"separate_timing_seeds\":"+Number(deferMeasurements?0:timedSeeds)+",\"shared_reference_timing\":"+(deferMeasurements?"true":"false")+",\"limited_control_fits\":"+Number(limitedControlFits)+",\"validation_seconds\":"+Number(seconds)+",\"projected_seconds\":"+Number(score)
                 +",\"analytic_setup_once_seconds\":"+Number(setup)+",\"statistical95_scaled_M11\":"+Number(stats.maxInterval)+",\"ratio95\":"+Number(stats.maxRatioInterval)+",\"pilot_count\":"+Number(calibrationCount)+",\"interval_resolved\":"+(resolved?"true":"false")
                 +",\"depth\":"+Number(depth)+",\"theta_rows\":"+Number(x.size())+",\"fixed_phi\":"+Number(fixedPhi)+",\"working_recheck\":"+(working?"true":"false")
                 +",\"angular_cost_enabled\":"+(angularCostEnabled?"true":"false")
@@ -2700,18 +3287,237 @@ struct Engine {
                 +",\"pointwise_multiplier\":"+Number(pointwiseMultiplier)+",\"angular_multiplier\":"+Number(angularMultiplier)
                 +",\"candidate_resolved\":"+(candidateResolved?"true":"false")
                 +angularDetails+",\"angular_extra_optical_jobs\":0,\"accuracy_accepted\":false}");
-            candidatesJson<<(first?"":",")<<"{\"phi\":"<<phi<<",\"native_seconds\":"<<Number(seconds)<<",\"analytic_setup_once_seconds\":"<<Number(setup)<<",\"score\":"<<Number(score)<<",\"validation95\":"<<Number(stats.maxInterval)<<",\"ratio95\":"<<Number(stats.maxRatioInterval)<<",\"count_per_seed\":"<<calibrationCount<<",\"interval_resolved\":"<<(resolved?"true":"false")<<",\"accepted_control_rows\":[";
+            candidatesJson<<(first?"":",")<<"{\"phi\":"<<phi<<",\"shared_reference_timing\":"<<(deferMeasurements?"true":"false")<<",\"native_seconds\":"<<Number(seconds)<<",\"analytic_setup_once_seconds\":"<<Number(setup)<<",\"score\":"<<Number(score)<<",\"validation95\":"<<Number(stats.maxInterval)<<",\"ratio95\":"<<Number(stats.maxRatioInterval)<<",\"count_per_seed\":"<<calibrationCount<<",\"interval_resolved\":"<<(resolved?"true":"false")<<",\"accepted_control_rows\":[";
             for(int j=0;j<16;++j)candidatesJson<<(j?",":"")<<accepted[j];
             candidatesJson<<"],\"angular_cost_enabled\":"<<(angularCostEnabled?"true":"false")
                 <<",\"angular_pilot_resolved\":"<<(angularCost.resolved?"true":"false")
                 <<",\"angular_noise_allowance_ratio\":"<<Number(angularCostEnabled?angularCost.maximumRatio:0.)
                 <<",\"pointwise_multiplier\":"<<Number(pointwiseMultiplier)<<",\"angular_multiplier\":"<<Number(angularMultiplier)
                 <<",\"candidate_resolved\":"<<(candidateResolved?"true":"false")<<angularDetails<<",\"angular_extra_optical_jobs\":0}";first=false;
-            if((candidateResolved&&!bestResolved)||(candidateResolved==bestResolved&&score<best)){best=score;bestResolved=candidateResolved;chosen=phi;selected=fitted;selectedPolar=fittedPolar;}
+            // The minimum orientation budget supplies a cost floor at this
+            // phi. Later rules may behave differently: this only schedules
+            // work, and the selected rule still has to pass production.
+            const double minimumMultiplier=double(initial)/calibrationCount;
+            const double costFloor=seconds*minimumMultiplier;
+            // Once the best rule reaches the orientation floor, even a zero
+            // pilot variance cannot reduce its sample count. Two consecutive
+            // higher floors justify ending this cost search on the initial grid.
+            const bool risingFloors=!working&&bestAtMinimumCount&&previousCostFloor>1.12*best
+                &&costFloor>=previousCostFloor;
+            ++measuredCandidates;
+            stopSearch=!deferMeasurements&&!confirming&&allowCostStop&&measuredCandidates>=3&&bestResolved&&candidateResolved&&previousResolved
+                &&candidate<phiCandidates.back()&&candidate>=8&&candidate==2*previousCandidate
+                &&costFloor>1.12*best&&(risingFloors||uncertainty>=.98*previousUncertainty);
+            previousCandidate=candidate;previousCostFloor=costFloor;
+            previousUncertainty=uncertainty;
+            previousResolved=candidateResolved;
+            if(stopSearch)Log("phi_cost_search_stopped","{\"measured_phi\":"+Number(candidate)
+                +",\"cost_floor_seconds\":"+Number(costFloor)+",\"best_score_seconds\":"+Number(best)
+                +",\"rising_minimum_costs\":"+std::string(risingFloors?"true":"false")
+                +",\"last_configured_phi\":"+Number(phiCandidates.back())+",\"production_accuracy_accepted\":false}");
+            if(allowFinalists && !confirming && candidateResolved && calibrationCount<pilot){
+                double measured=seconds;
+                if(useNested && !train.empty())measured+=seconds;
+                else for(const auto& job:train)measured+=std::max(1e-6,job.seconds-job.controlSetup);
+                screened.push_back({candidate,score,measured*double(pilot)/calibrationCount});
+            }
+            if(working&&controlPreflight&&sharedMeans&&controls&&candidateResolved)
+                preflightCandidates[candidate]=RankControlPreflight(x,valid,fitted,fittedPolar);
+            if(!working&&TargetPhiEnabled(x.size())&&candidateResolved)
+                RememberStartupPhiRows(candidate,depth,calibrationCount,x,stats,valid,timedSeeds,setup);
+            if(targetPhiPilot&&!working&&!fixedPhi&&x.size()>=2){
+                // Fitted controls can move the worst angle, independently for
+                // each azimuth rule and matrix element. Retain the actual
+                // training-stage extrema of the independent validation error.
+                // Their later use schedules work and never accepts its result.
+                for(size_t j=0;j<16;++j){
+                    size_t a=0,b=0;
+                    for(size_t i=1;i<x.size();++i){
+                        if(stats.interval[i][j]>stats.interval[a][j])a=i;
+                        if(j&&ratios&&stats.ratioInterval[i][j]>stats.ratioInterval[b][j])b=i;
+                    }
+                    if(stats.interval[a][j]>0)startupPhiWitness.insert(x[a]);
+                    if(j&&ratios&&stats.ratioInterval[b][j]>0)startupPhiWitness.insert(x[b]);
+                }
+            }
+            if(targetPhiPilot){
+                PhiEvidence value;value.score=score;value.orientations=calibrationCount*multiplier;
+                value.lowerCost=lowerCost;value.upperCost=upperCost;
+                value.resolved=measuredScale&&candidateResolved&&std::isfinite(score)&&score>0&&std::isfinite(value.orientations);
+                measuredPhi[candidate]=value;
+            }
+            if(comparePairs&&candidateResolved&&!confirming&&valid.size()==8){
+                Samples raw;
+                for(size_t s=0;s<8;++s){
+                    Require(valid[s].seed==validation[s],"paired azimuth validation scrambles changed order");
+                    raw.push_back(valid[s].matrix);
+                    if(valid[s].hasControls)for(size_t r=0;r<x.size();++r)raw.back()[r][0]=valid[s].controls[r][0];
+                }
+                pairedTrials[phi]={std::move(raw),fitted,fittedPolar,score,multiplier,seconds,setup,calibrationCount};
+            }
+            if(selectDenseRule && !confirming){
+                startupObservations[candidate]={calibrationCount,stats.maxInterval,stats.maxRatioInterval,candidateResolved};
+                startupFits[candidate]={fitted,fittedPolar,score};
+            }
+            if((candidateResolved&&!bestResolved)||(candidateResolved==bestResolved&&score<best)){
+                best=score;bestAtMinimumCount=multiplier==minimumMultiplier;bestResolved=candidateResolved;
+                chosen=phi;selected=fitted;selectedPolar=fittedPolar;selectedFitCount=calibrationCount;
+                if(canRefit&&!confirming){
+                    winnerTrain.clear();winnerValid.clear();
+                    if(calibrationCount<pilot&&pilot%calibrationCount==0&&
+                       ((pilot/calibrationCount)&(pilot/calibrationCount-1))==0){
+                        winnerTrain=std::move(train);winnerValid=std::move(valid);
+                    }
+                }
+            }
             break;
             }
+        };
+        for(int rule:phiCandidates){measurePhi(rule,false);if(stopSearch)break;}
+        if(screened.size()>=2){
+            std::stable_sort(screened.begin(),screened.end(),[](const PhiTrial& a,const PhiTrial& b){return a.score<b.score;});
+            const auto& firstRule=screened[0];
+            const auto& secondRule=screened[1];
+            const double repeatWork=firstRule.repeatWork+secondRule.repeatWork;
+            const bool confirm=firstRule.rule==chosen && repeatWork<=best/3;
+            Log("phi_finalist_plan","{\"first_phi\":"+Number(firstRule.rule)+",\"second_phi\":"+Number(secondRule.rule)
+                +",\"screen_best_forecast\":"+Number(best)+",\"repeat_work_forecast\":"+Number(repeatWork)
+                +",\"confirm\":"+(confirm?"true":"false")+",\"accuracy_accepted\":false}");
+            if(confirm){
+                auto shortWeights=std::move(selected);auto shortPolar=std::move(selectedPolar);
+                const double shortScore=best;best=std::numeric_limits<double>::max();bestResolved=false;
+                for(int rule:{firstRule.rule,secondRule.rule})measurePhi(rule,true);
+                if(!bestResolved){chosen=firstRule.rule;best=shortScore;bestResolved=true;
+                    selected=std::move(shortWeights);selectedPolar=std::move(shortPolar);}
+            }
+        }
+        if(canRefit&&!winnerTrain.empty()){
+            const int prefix=winnerTrain.front().count,ranked=chosen;
+            const auto seconds=Seconds();
+            best=std::numeric_limits<double>::max();bestResolved=false;refittingWinner=true;
+            measurePhi(ranked,true);
+            Log("phi_winner_full_fit","{\"phi\":"+Number(chosen)+",\"screened_prefix\":"+Number(prefix)
+                +",\"fit_count_per_seed\":"+Number(selectedFitCount)+",\"seconds\":"+Number(Seconds()-seconds)
+                +",\"independent_training_and_validation\":true,\"production_accuracy_accepted\":false}");
+        }
+        const auto fallbackTiming=[&](){
+            Log("sparse_phi_timing_fallback","{\"reason\":\"incomplete or inconsistent matched pilots\",\"production_accuracy_accepted\":false}");
+            Calibrate(x,working,kernelOnly,soleRule,screening,deferTuning,workRows,true);
+        };
+        if(deferMeasurements&&(!bestResolved||pairedTrials.size()!=phiCandidates.size())){
+            fallbackTiming();return;
+        }
+        if(comparePairs&&bestResolved&&pairedTrials.size()==phiCandidates.size()){
+            const auto& upper=pairedTrials.rbegin()->second;
+            const int original=chosen;
+            double cheapest=std::numeric_limits<double>::max();
+            int forecast=chosen;
+            bool usable=interpolation>0;
+            std::map<int,double> requiredWork;
+            for(const auto& candidate:pairedTrials){
+                const auto& trial=candidate.second;
+                if(trial.count!=upper.count){usable=false;break;}
+                const auto difference=FullAutoPairedAzimuth::Measure(trial.raw,upper.raw,ratios);
+                if(!difference.valid){usable=false;break;}
+                const double relative=difference.scale/interpolation;
+                requiredWork[candidate.first]=std::max(trial.work,relative*relative);
+                const double score=trial.timing*requiredWork.at(candidate.first)+trial.setup;
+                Log("paired_phi_cost","{\"phi\":"+Number(candidate.first)+",\"reference_phi\":"+Number(pairedTrials.rbegin()->first)
+                    +",\"paired_scale\":"+Number(difference.scale)+",\"theta\":"+Number(x.at(difference.row))
+                    +",\"element_index\":"+Number(difference.element)+",\"normalized\":"+(difference.ratio?"true":"false")
+                    +",\"original_cost\":"+Number(trial.cost)+",\"projected_cost\":"+Number(score)+"}");
+                if(score<cheapest){cheapest=score;forecast=candidate.first;}
+            }
+            if(deferMeasurements){
+                if(!usable){fallbackTiming();return;}
+                std::map<int,double> measured;
+                const auto timeRule=[&](int rule){
+                    phi=rule;
+                    const auto& trial=pairedTrials.at(rule);
+                    const size_t count=PhiTimingSeeds();
+                    const auto jobs=DirectStage(trial.count,validation,count,depth,x,false);
+                    double duration=0.,difference=0.;
+                    for(size_t s=0;s<count;++s){
+                        const auto& job=jobs[s];
+                        if(job.seed!=validation[s]||job.angles.size()!=x.size()||job.matrix.size()!=x.size()){
+                            Log("sparse_phi_timing_rejected","{\"reason\":\"scramble or row count\",\"phi\":"+Number(rule)+"}");
+                            return false;
+                        }
+                        for(size_t i=0;i<x.size();++i){
+                            // Native tables round-trip degrees through radians, exactly
+                            // as in DirectStage's existing sampling-coordinate check.
+                            if(!(std::fabs(job.angles[i]-x[i])<1e-10)){
+                                Log("sparse_phi_timing_rejected","{\"reason\":\"theta coordinate\",\"phi\":"+Number(rule)
+                                    +",\"row\":"+Number(i)+",\"actual\":"+Number(job.angles[i])+",\"expected\":"+Number(x[i])+"}");
+                                return false;
+                            }
+                        }
+                        duration+=std::max(1e-6,job.seconds-job.controlSetup);
+                        for(size_t i=0;i<x.size();++i){
+                            const auto& ref=trial.raw[s][i];
+                            const double m11=job.hasControls?job.controls[i][0]:job.matrix[i][0];
+                            if(!(m11>0&&ref[0]>0))return false;
+                            for(int j=0;j<16;++j){
+                                const double value=j?job.matrix[i][j]:m11;
+                                const double raw=std::abs(value-ref[j])/ref[0];
+                                const double ratio=std::abs(value/m11-ref[j]/ref[0]);
+                                if(!std::isfinite(raw)||!std::isfinite(ratio))return false;
+                                difference=std::max(difference,std::max(raw,ratio));
+                            }
+                        }
+                    }
+                    measured[rule]=duration*8./count;
+                    Log("sparse_phi_direct_timing","{\"phi\":"+Number(rule)+",\"native_seconds\":"+Number(measured[rule])
+                        +",\"direct_seeds\":"+Number(count)+",\"matched_difference\":"+Number(difference)+"}");
+                    return difference<=eps/1024;
+                };
+                const int first=pairedTrials.begin()->first,last=pairedTrials.rbegin()->first;
+                if(!timeRule(first)||!timeRule(last)){fallbackTiming();return;}
+                std::vector<std::pair<double,int>> predicted;
+                for(const auto& entry:pairedTrials){
+                    const int rule=entry.first;
+                    const double fraction=double(rule-first)/(last-first);
+                    const double time=measured[first]+fraction*(measured[last]-measured[first]);
+                    predicted.emplace_back(time*requiredWork.at(rule)+entry.second.setup,rule);
+                }
+                std::sort(predicted.begin(),predicted.end());
+                for(size_t i=0;i<predicted.size();++i){
+                    const int rule=predicted[i].second;
+                    if(i>=2&&predicted[i].first>1.30*predicted.front().first)break;
+                    if(!measured.count(rule)&&!timeRule(rule)){fallbackTiming();return;}
+                }
+                cheapest=std::numeric_limits<double>::max();
+                for(const auto& entry:measured){
+                    const int rule=entry.first;
+                    const double cost=entry.second*requiredWork.at(rule)+pairedTrials.at(rule).setup;
+                    if(cost<cheapest){cheapest=cost;forecast=rule;}
+                }
+                Log("sparse_phi_timing_decision","{\"selected_phi\":"+Number(forecast)+",\"direct_rules\":"+Number(measured.size())
+                    +",\"optical_rules\":"+Number(pairedTrials.size())+",\"projected_cost\":"+Number(cheapest)
+                    +",\"production_accuracy_accepted\":false}");
+            }
+            if(usable){
+                chosen=forecast;auto& trial=pairedTrials.at(chosen);
+                selected=std::move(trial.scalar);selectedPolar=std::move(trial.polar);
+                selectedFitCount=trial.count;best=cheapest;
+                Log("paired_phi_forecast","{\"timed_winner\":"+Number(original)+",\"selected_phi\":"+Number(chosen)
+                    +",\"budget\":"+Number(interpolation)+",\"extra_native_jobs\":0,\"production_accuracy_accepted\":false}");
+            }
+        }
+        if(selectDenseRule&&bestResolved){
+            const int measured=chosen;
+            chosen=PhiPlateau::DenseRule(measured,startupObservations,ratios);
+            if(chosen!=measured){
+                auto& fit=startupFits.at(chosen);
+                selected=std::move(fit.scalar);selectedPolar=std::move(fit.polarized);best=fit.score;
+            }
+            Log("dense_phi_plateau","{\"timed_winner\":"+Number(measured)+",\"dense_pilot_phi\":"+Number(chosen)
+                +",\"matched_relative_uncertainty\":0.0002,\"production_accuracy_accepted\":false}");
         }
         phi=chosen;if(controls){weights=selected;polarWeights=selectedPolar;}candidatesJson<<']';
+        if(bestResolved&&preflightCandidates.count(phi)){
+            controlPreflightAngles=std::move(preflightCandidates[phi]);controlPreflightPhi=phi;
+        }
         std::ostringstream polar;polar<<"theta_deg";for(int j=0;j<16;++j)polar<<" R_M"<<j/4+1<<j%4+1<<" S_M"<<j/4+1<<j%4+1;polar<<'\n'<<std::setprecision(17);
         for(size_t r=0;r<x.size();++r){polar<<x[r];for(int j=0;j<16;++j)polar<<' '<<(j?selectedPolar[r][0][j]:selected[r][0])<<' '<<(j?selectedPolar[r][1][j]:selected[r][1]);polar<<'\n';}
         Record(root+"/polarization_weights.tsv",polar.str());const std::string weightPath=WriteWeights(x);
@@ -2719,8 +3525,8 @@ struct Engine {
           <<",\"selection_resolved\":"<<(bestResolved?"true":"false")<<",\"score_model\":"<<Quoted(!go&&!coherent&&local?"bounded pointwise and angular-noise pilot; finite scheduling proxy for unresolved candidates":"bounded ratio pilot; raw-matrix proxy only if all candidates unresolved")<<",\"calibration_depth\":"<<depth<<",\"calibration_theta\":"<<x.size()<<",\"working_grid_recheck\":"<<(working?"true":"false")<<",\"score_includes_ratios\":"<<(ratios?"true":"false")<<",\"polarization_controls\":"<<(polarControls?"true":"false")
           <<",\"control_training_required\":"<<(controls?"true":"false")<<",\"training_scrambles_per_phi\":"<<(controls?8:0)
           <<",\"validation_scrambles_per_phi\":8,\"independent_training_validation\":true,\"mirror_gamma\":"<<(mirror?"true":"false")<<",\"mirror_policy\":"<<Quoted(mirrorPolicy)<<"}";
-        Record(root+"/calibration.json",c.str());
-        if(working)TuneTracing(x);
+        Record(root+(screening?"/phi_angular_screen.json":"/calibration.json"),c.str());
+        if(working&&!screening&&!deferTuning)TuneTracing(x);
     }
 };
 std::vector<size_t> Guards(const std::vector<size_t>& knots,size_t size) {
@@ -2747,8 +3553,9 @@ int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],do
     std::unique_ptr<Engine> controller(new Engine(args,config));controller->Init(argc,argv,maximumEdge,maximumDiameter,volume);
     Lock lock(controller->root+"/controller.lock");
     std::unique_ptr<Lock> refinementLock;
-    if(controller->refinementWindow){PrepareRefinementWindow(*controller);refinementLock.reset(new Lock(controller->root+"/controller.lock"));}
+    if(controller->refinementWindow){controller->LoadProductionEstimator();PrepareRefinementWindow(*controller);refinementLock.reset(new Lock(controller->root+"/controller.lock"));}
     controller->ConfigureMemoryStorage();
+    controller->LoadProductionEstimator();
     const std::string identity=controller->root+"/configuration.txt";
     controller->ConfigureIndex(!Exists(identity));
     if(Exists(identity))Require(Read(identity)==controller->signature+"\n","resume inputs/binary/environment changed; choose a new output directory");else Atomic(identity,controller->signature+"\n");

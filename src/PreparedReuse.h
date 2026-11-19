@@ -9,6 +9,7 @@
 namespace PreparedReuse {
 struct Value {
     PreparedOrientation upper,lower;double incoming=0,outgoing=0;
+    bool lowerIsSubset=false;
     static size_t PreparedBytes(const PreparedOrientation& p){
         size_t n=p.beams.capacity()*sizeof(PreparedBeam);
         for(const auto& b:p.beams){n+=b.absorptionPaths.capacity()*sizeof(double);

@@ -92,8 +92,7 @@ void PrepareRefinementWindow(Engine& e){
     const auto checkpointHash=FileHash(parent+"/adaptive_checkpoint.tsv");
     const auto tuningHash=FileHash(parent+"/execution_tuning.tsv");
     e.target=RefinementSelectedDepth(e);Require(e.RestoreTuning(),"parent execution tuning is missing");
-    std::vector<int> depths;for(int depth:{std::max(1,e.target-4),std::max(1,e.target-2),e.target})
-        if(depths.empty()||depths.back()!=depth)depths.push_back(depth);
+    const auto depths=AdaptiveDepths(e);
     AdaptiveState original;original.counts=Budgets(depths.size(),std::vector<int>(parentTheta.size(),e.minimum));
     original.counts[0].assign(parentTheta.size(),e.initial);original.previous=Matrix(parentTheta.size());
     original.valid.assign(parentTheta.size(),false);original.coarse.assign(parentTheta.size(),false);
@@ -170,7 +169,7 @@ void PrepareRefinementWindow(Engine& e){
             "working_phi_n14.tsv","working_phi_n16.tsv","working_phi_n18.tsv"})
         if(Exists(parent+"/"+file))CopyRefinementFile(parent+"/"+file,child+"/parent_snapshot/"+file);
     for(const char* file:{"configuration.txt","job_index_format.txt","completed_jobs.journal","execution_tuning.tsv",
-            "automatic_depth.tsv","depth_selection.json","depth_startup.tsv","depth_startup.json","fullauto_parameters.json",
+            "automatic_depth.tsv","automatic_depth_policy.tsv","production_depth_estimator.tsv","depth_selection.json","depth_startup.tsv","depth_startup.json","fullauto_parameters.json",
             "calibration.json","initial_calibration.json","polarization_weights.tsv","resource_calibration.json",
             "rotation_verification.json","cutoff_calibration.json","automatic_cutoff_validation.json","mirror_verification.json",
             "trace_backend_calibration.json","analytic_control_fallback.json"})

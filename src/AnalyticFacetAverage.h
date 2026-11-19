@@ -24,6 +24,9 @@ constexpr double GrazingTolerance=1.7763568394002505e-15;
 std::array<Vec,3> SourceFrame(const Vec &source,const Vec &azimuthReference);
 Vec Observer(const std::array<Vec,3> &frame,double theta,double azimuth);
 
+// Relative convergence criterion for the deterministic angular quadrature.
+double MeanRefinementTolerance();
+
 // Normalized SO(3) means of physical reflected-facet self intensities and
 // projected shadow apertures. Fresnel moments need one smooth 1D quadrature;
 // angular spin and all oscillatory orientation phases are integrated by the
@@ -43,6 +46,18 @@ public:
     Components Evaluate(const Vec&source,const Vec&observer) const;
     // Compatibility overload: rejects an angle inconsistent with directions.
     Components Evaluate(const Vec&source,const Vec&observer,double theta) const;
+    // Reuse the incidence geometry and Fresnel coefficients across detectors.
+    class Incident {
+        friend class Control;
+        struct Entry { size_t patch; double mu,reflectance; };
+        const Control* owner=nullptr;
+        bool vertexPhases=false;
+        Vec direction;
+        double projectedArea=0;
+        std::vector<Entry> visible;
+    };
+    void PrepareIncident(const Vec& source,Incident& incident,bool vertexPhases=false) const;
+    Components Evaluate(const Incident& incident,const Vec& observer) const;
     Components Mean(int row) const { return means.at(row); }
     double RefinementError() const { return refinementError; }
     bool SupportsDomain(double betaSym,double gammaSym) const;
@@ -65,7 +80,8 @@ private:
     std::string shadowMode;
     int meanThreads;
     bool gpuMeans;
-    Components EvaluateUnit(const Vec&source,const Vec&observer) const;
+    template<bool prepared,bool vertexForm=false>
+    Components EvaluateUnit(const Vec&source,const Vec&observer,const Incident* incident) const;
     void PrepareMeans(const std::vector<double>&theta);
     void PrepareCachedMeans(const std::vector<double>&theta,const std::string &path);
 };

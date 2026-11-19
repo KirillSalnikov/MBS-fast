@@ -7,6 +7,12 @@
 #include <string>
 
 namespace FullAutoScheduling {
+// Startup ranking only: process/context initialization is not recurring
+// orientation work. Older workers without a measured phase retain wall time.
+inline double StartupWorkerCost(double wall,double processing,bool useProcessing) {
+    return std::max(1e-6,useProcessing&&std::isfinite(processing)&&processing>=0?processing:wall);
+}
+
 // A startup work estimate, never an accuracy certificate. Incoherent PO
 // retains aperture diffraction and therefore is not scale-invariant like GO.
 // Bound the pilot so a large size does not spend the final sample budget
@@ -52,6 +58,12 @@ inline bool PreferNextDepth(double mean,double interval,double budget,int attemp
     // depth; the terminal candidate retains its complete sampling search.
     if(terminal||attempt<1||!(budget>0))return false;
     return !Resolved(mean)||!Resolved(interval)||mean>=budget||interval>2*(budget-mean);
+}
+// Explicit pilot/phi/config choices retain their complete fit. A smaller
+// automatic scheduling pilot never accepts production accuracy; unresolved
+// intervals still refine against the original PilotLimit.
+inline int PhiPilotStart(int configured,int requested,bool fixed) {
+    return fixed||requested<=0?configured:std::min(configured,std::max(64,requested));
 }
 inline int PilotLimit(int count,int maximum,bool fixed) {
     if(fixed)return count;

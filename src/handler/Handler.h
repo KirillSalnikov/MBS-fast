@@ -463,7 +463,7 @@ protected:
                                      Point3d &hor, Point3d &ver) const;
 
     void ComputeLengthIndices(const Beam &beam, BeamInfo &info,
-                              const int vertices[3]);
+                              const int vertices[3], bool fitLengths = true);
 
 protected:
     Scattering *m_scattering = nullptr;

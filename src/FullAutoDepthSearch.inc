@@ -3,13 +3,82 @@
 struct DepthCandidateReview {
     int depth=0,count=0;bool passed=false,rejected=false,referenceFailed=false;
     DepthResidual residual,referenceResidual;
-    double forecast=1e100;std::vector<int> counts;
+    double forecast=1e100,peakOrientationForecast=1e100;std::vector<int> counts;
 };
+void DepthPilotSeeds(const Engine& e,unsigned (&seeds)[8]){
+    for(int s=0;s<8;++s){seeds[s]=1700000000u+unsigned(e.depthStart)*1024u+unsigned(s)*17u;
+        Require(std::find(e.seeds.begin(),e.seeds.end(),seeds[s])==e.seeds.end(),"depth pilot/production seed overlap");}
+}
+// The reference and its guard are mandatory even if the first depth passes.
+// Use that unpruned trace to obtain the initial candidate samples as well.
+void PrefetchDepthPilotBands(Engine& e,const std::vector<double>& x,int first){
+    namespace DS=FullAutoDepthSelection;
+    if(!e.depthPilotBands||!e.depthSharing||!e.depthVerified||!e.angularCache||
+       !e.coherent||e.go||e.config.useFft||e.controls||e.balancedCorrection||e.phiCutoffPilot)return;
+    const auto profile=std::find(e.base.begin(),e.base.end(),"--cutoff-profile");
+    // Native legacy defaults leave all prepared relative thresholds disabled.
+    // Preserve the native trace recipe; the worker verifies the effective thresholds.
+    if(profile!=e.base.end()&&(std::next(profile)==e.base.end()||*std::next(profile)!="off"))return;
+    for(const auto& arg:e.base)
+        if(arg=="--beam-area-ratio"||arg.find("--beam-cutoff")==0||arg.find("--trace-cutoff")==0)return;
+    const int reference=DS::Reference(e.depthMaximum),anchor=DS::Anchor(e.depthMaximum);
+    if(first>=reference)return;
+    const auto candidates=DS::Candidates(first,e.depthMaximum,true);
+    const bool mixed=std::any_of(candidates.begin(),candidates.end(),[&](int d){return (d-first)%2!=0;});
+    const int step=mixed?1:2;
+    // Limit speculative matrix outputs. Later candidates retain the ordinary
+    // independent stage when the first two candidates fail.
+    const int last=e.earlyDepthBands&&candidates.size()>1?std::min(reference-1,candidates[1]):reference-1;
+    const size_t levels=(last-first)/step+1;
+    // Allow for the accumulated and thread-local matrices and per-cell storage.
+    const double bytes=double(levels)*(e.workerThreads+1)*(e.phi+1)*(x.size()+1)*512;
+    if(bytes>e.hostBudgetMb*1048576.0/4)return;
+    const int block=e.incremental?e.orientationBlock:e.depthPilot;
+    unsigned seeds[8];DepthPilotSeeds(e,seeds);
+    for(int offset=0;offset<e.depthPilot;offset+=block){
+        const int count=std::min(block,e.depthPilot-offset);
+        bool partial=false;
+        for(const unsigned seed:seeds){
+            for(const auto& entry:e.SamplingCandidates(count,seed,anchor,offset)){
+                const Job job=*entry.second;
+                if(!e.SameSampling(job,count,seed,anchor,offset))continue;
+                partial=true;
+                if(job.pairedDepth!=reference)continue;
+                for(int depth=first;depth<=last;depth+=step){
+                    const auto path=job.folder+"/result/result_depth"+Number(depth)+".dat";
+                    if(Exists(path)){e.LowerView(job,depth,false);e.usedDepthPilotBands=true;}
+                }
+            }
+            for(const int depth:candidates)
+                for(const auto& entry:e.SamplingCandidates(count,seed,depth,offset))
+                    if(e.SameSampling(*entry.second,count,seed,depth,offset))partial=true;
+        }
+        if(partial)continue;
+        const auto jobs=e.DirectStage(count,seeds,8,anchor,x,true,false,offset,reference,0,first,step,e.earlyDepthBands?last:0);
+        for(const auto& job:jobs){
+            e.LowerView(job,reference,false);
+            for(int depth=first;depth<=last;depth+=step)e.LowerView(job,depth,false);
+        }
+        e.usedDepthPilotBands=true;
+        e.Log("depth_pilot_shared_trace","{\"first_depth\":"+Number(first)+",\"last_depth\":"+Number(last)+",\"step\":"+Number(step)
+            +",\"reference\":"+Number(reference)+",\"anchor\":"+Number(anchor)+",\"count_per_seed\":"+Number(count)
+            +",\"offset\":"+Number(offset)+",\"theta_rows\":"+Number(x.size())+"}");
+    }
+}
+std::vector<Job> DepthPilotStage(Engine& e,int count,const unsigned* seeds,int depth,const std::vector<double>& angles){
+    if(!e.usedDepthPilotBands)return e.PrefixStage(count,seeds,8,depth,angles,true);
+    const int block=e.incremental?e.orientationBlock:count;
+    std::vector<std::vector<Job>> parts;
+    for(int offset=0;offset<count;offset+=block){
+        const int length=std::min(count-offset,block);
+        parts.push_back(e.Stage(length,seeds,8,depth,angles,true,false,offset));
+    }
+    return e.AssemblePairParts(parts,count,angles,"depth pilot prefix");
+}
 DepthCandidateReview ReviewDepthCandidate(Engine& e,int depth,const std::vector<double>& x,int limit){
     namespace DS=FullAutoDepthSelection;
     const int referenceDepth=DS::Reference(e.depthMaximum),anchorDepth=DS::Anchor(e.depthMaximum);
-    unsigned seeds[8];for(int s=0;s<8;++s){seeds[s]=1700000000u+unsigned(e.depthStart)*1024u+unsigned(s)*17u;
-        Require(std::find(e.seeds.begin(),e.seeds.end(),seeds[s])==e.seeds.end(),"depth pilot/production seed overlap");}
+    unsigned seeds[8];DepthPilotSeeds(e,seeds);
     DepthCandidateReview result;result.depth=depth;result.counts.assign(x.size(),0);
     Samples candidate(8,Matrix(x.size())),reference=candidate,anchor=candidate;
     std::vector<size_t> active;for(size_t i=0;i<x.size();++i)active.push_back(i);
@@ -35,7 +104,7 @@ DepthCandidateReview ReviewDepthCandidate(Engine& e,int depth,const std::vector<
             if(e.depthSharing&&e.depthVerified){const auto pair=e.SharedStage(count,seeds,8,anchorDepth,referenceDepth,query);b=e.Data(pair.second);c=e.Data(pair.first);}
             else{b=e.Data(e.PrefixStage(count,seeds,8,referenceDepth,query,true));c=e.Data(e.PrefixStage(count,seeds,8,anchorDepth,query,true));}
             if(depth==referenceDepth)a=b;
-            else {const auto jobs=e.PrefixStage(count,seeds,8,depth,query,true);a=e.Data(jobs);for(const auto& j:jobs)seconds+=std::max(0.,j.seconds-j.controlSetup);}
+            else {const auto jobs=DepthPilotStage(e,count,seeds,depth,query);a=e.Data(jobs);for(const auto& j:jobs)seconds+=std::max(0.,j.seconds-j.controlSetup);}
         }
         workerSeconds+=seconds;workerUnits+=double(count)*8*query.size();
         const auto scale=Mean(c);std::vector<DepthResidual> nextBounds,nextGuard;
@@ -91,13 +160,16 @@ DepthCandidateReview ReviewDepthCandidate(Engine& e,int depth,const std::vector<
     if(result.passed){
         // A scheduling proxy, never an acceptance criterion. Use each row's
         // actual prefix length. Phi/control tuning and MLMC costs follow later.
-        if(!e.go&&workerSeconds>0&&workerUnits>0){const auto stats=Estimate(candidate);double predicted=0;
+        if(!e.go&&workerSeconds>0&&workerUnits>0){const auto stats=Estimate(candidate);double predicted=0,peak=0;
             const double budget=std::max(e.eps/4,e.eps-e.depthBudget-e.interpolation);
             for(size_t r=0;r<x.size();++r){double error=0;for(int j=0;j<16;++j){error=std::max(error,stats.interval[r][j]);if(e.ratios)error=std::max(error,stats.ratioInterval[r][j]);}
-                predicted+=result.counts[r]*std::max(1.,std::pow(error/budget,2));}
-            if(DS::FiniteBound(predicted))result.forecast=workerSeconds/workerUnits*8*predicted;
+                const double n=result.counts[r]*std::max(1.,std::pow(error/budget,2));
+                predicted+=n;peak=std::max(peak,n);}
+            result.peakOrientationForecast=peak;
+            if(!e.usedDepthPilotBands&&DS::FiniteBound(predicted))result.forecast=workerSeconds/workerUnits*8*predicted;
         }
         e.Log("depth_candidate_cost","{\"candidate\":"+Number(depth)+",\"passed\":true,\"forecast_worker_seconds\":"+(DS::FiniteBound(result.forecast)?Number(result.forecast):"null")
+            +",\"peak_orientation_forecast\":"+(DS::FiniteBound(result.peakOrientationForecast)?Number(result.peakOrientationForecast):"null")
             +",\"scope\":\"pilot variance and measured candidate worker cost; excludes later phi, controls and MLMC tuning\"}");
     }
     return result;
@@ -123,6 +195,7 @@ bool SelectAutomaticDepth(Engine& e){
             &&report.find("\"fallback_maximum\":true")!=std::string::npos
             &&report.find("\"pilot_passed\":false")!=std::string::npos;
         if(((passed||fallback)&&verified)||(passed&&!newPolicy&&production)){
+            if(e.chooseDepthEstimator)Require(e.RestoreDepthEstimator(),"missing automatic depth estimator receipt");
             e.depthFallback=fallback&&verified;
             e.target=selected;e.SetMirror(false);e.WarmCache();
             e.Record(e.root+"/depth_selection_resume_policy.json","{\"selected_depth\":"+Number(selected)+",\"criterion\":"+Quoted(verified?DS::Policy():"legacy-neighbor-pilot-retained")
@@ -135,7 +208,7 @@ bool SelectAutomaticDepth(Engine& e){
         e.Log("depth_selection_resume_unresolved","{\"policy\":"+Quoted(DS::Policy())+",\"cached_worker_prefixes_retained\":true,\"production_blocked_until_pass\":true}");
     }
     std::vector<double> x;if(e.go)x=GoRows(e);
-    else{const size_t size=std::min(size_t(65),std::min(e.theta.size(),size_t(e.maxTheta)));for(size_t row=0;row<size;++row)x.push_back(e.theta[row*(e.theta.size()-1)/(size-1)]);}
+    else x=DepthPilotGrid(e,65);
     WriteGrid(e.root+"/depth_pilot_theta.csv",x);
     const int floor=DS::PilotFloor(e.depthPilot,e.maxCount),limit=DS::PilotLimit(e.depthPilot,e.maxCount);
     const int savedBlock=e.orientationBlock;
@@ -143,26 +216,38 @@ bool SelectAutomaticDepth(Engine& e){
     // pilot each time. This is a startup-only default; explicit blocks win.
     if(e.incremental&&!e.args.IsCatched("fullauto_orientation_block")&&!e.config.adaptive.loadedFromFile)
         e.orientationBlock=std::min(e.orientationBlock,std::max(512,e.depthPilot));
+    const char* depthChoice=std::getenv("MBS_FULLAUTO_LOWEST_PASSING_DEPTH");
+    const bool preferShallow=!e.go&&(depthChoice?std::string(depthChoice)=="1":e.UseCoherentGpuScheduling());
+    // An unresolved shallow depth may sit too close to the tolerance to
+    // classify cheaply. Give other depths one complete pilot first. Every
+    // selected candidate must still pass on every row, including the guard.
+    const int firstPassLimit=preferShallow?e.depthPilot:floor;
     e.Record(e.root+"/depth_selection_policy.json","{\"policy\":"+Quoted(DS::Policy())+",\"reference_depth\":"+Number(DS::Reference(e.depthMaximum))
         +",\"comparison_depth\":"+Number(DS::Anchor(e.depthMaximum))+",\"uncertain_pilot_floor\":"+Number(floor)+",\"pilot_limit\":"+Number(limit)
-        +",\"pilot_orientation_block\":"+Number(e.orientationBlock)+",\"depth_budget\":"+Number(e.depthBudget)+",\"reference_guard_budget\":"+Number(e.depthBudget)
-        +",\"search_start\":"+Number(searchStart)+",\"search\":\"doubling coarse depths then all skipped smaller depths; no monotonicity assumption\",\"local_theta_growth\":"+(e.go?"false":"true")
+        +",\"first_pass_limit\":"+Number(firstPassLimit)+",\"pilot_orientation_block\":"+Number(e.orientationBlock)+",\"depth_budget\":"+Number(e.depthBudget)+",\"reference_guard_budget\":"+Number(e.depthBudget)
+        +",\"search_start\":"+Number(searchStart)+",\"search\":"+Quoted(preferShallow?"ascending complete first-pass pilots until first passing depth":"doubling coarse depths then all skipped smaller depths; no monotonicity assumption")+",\"local_theta_growth\":"+(e.go?"false":"true")
         +",\"scope\":\"finite reference agreement; final checks remain a separate explicit policy\"}");
-    const bool savedControls=e.controls;e.controls=false;
+    const bool savedControls=e.controls;e.controls=false;e.usedDepthPilotBands=false;
     std::map<int,DepthCandidateReview> reviews;DepthCandidateReview chosen;chosen.depth=e.depthStart;int smallestPass=e.depthMaximum+1;bool referenceFailed=false;double failedReferenceUpper=0;
     auto remember=[&](const DepthCandidateReview& r){reviews[r.depth]=r;referenceFailed=referenceFailed||r.referenceFailed;
         if(r.referenceFailed)failedReferenceUpper=std::max(failedReferenceUpper,r.referenceResidual.upper);
-        if(r.passed){if(smallestPass>e.depthMaximum)smallestPass=r.depth;
-            if(!chosen.passed||r.forecast<chosen.forecast||(r.forecast==chosen.forecast&&r.depth<chosen.depth))chosen=r;}
+        if(r.passed){
+            if(preferShallow)smallestPass=std::min(smallestPass,r.depth);
+            else if(smallestPass>e.depthMaximum)smallestPass=r.depth;
+            const bool faster=r.forecast<chosen.forecast||(r.forecast==chosen.forecast&&r.depth<chosen.depth);
+            if(!chosen.passed||(preferShallow?r.depth<chosen.depth:faster))chosen=r;
+        }
         else if(!chosen.passed)chosen=r;};
     try{
         if(!e.go&&e.depthSharing){e.target=DS::Anchor(e.depthMaximum);e.VerifyDepthSharing(x);}
-        for(int depth:DS::Candidates(searchStart,e.depthMaximum)){
+        if(preferShallow)PrefetchDepthPilotBands(e,x,searchStart);
+        for(int depth:DS::Candidates(searchStart,e.depthMaximum,preferShallow)){
             if(referenceFailed)break;
             if(depth>smallestPass)continue;
-            remember(ReviewDepthCandidate(e,depth,x,floor));
+            remember(ReviewDepthCandidate(e,depth,x,firstPassLimit));
+            if(preferShallow&&chosen.passed)break;
         }
-        if(!chosen.passed&&!referenceFailed&&limit>floor){
+        if(!chosen.passed&&!referenceFailed&&limit>firstPassLimit){
             // Only unresolved candidates need larger pilots; confirmed failures
             // stay rejected. Review replays cached prefixes before extending the
             // remaining angles, including after an interrupted controller.
@@ -179,6 +264,10 @@ bool SelectAutomaticDepth(Engine& e){
     if(referenceFailed)chosen.passed=false;
     e.depthFallback=!chosen.passed;
     const int selected=DS::ProductionDepth(chosen.passed,chosen.depth,e.depthMaximum);
+    // Use independent, paired physical-depth pilots. Direct depth is attractive
+    // when the most demanding pilot row fits the mandatory first/half-prefix
+    // comparison; otherwise let MLMC allocate the expensive depths separately.
+    e.FreezeDepthEstimator(chosen.passed&&chosen.peakOrientationForecast<=2.*e.initial);
     SaveSelectedDepth(e,selected);
     std::ostringstream decisions;decisions<<"depth,passed,depth_insufficient,reference_failed,max_count_per_seed,residual_upper95,reference_upper95,forecast_worker_seconds,selected\n";
     for(const auto& item:reviews){const auto& r=item.second;decisions<<r.depth<<','<<r.passed<<','<<r.rejected<<','<<r.referenceFailed<<','<<r.count<<','<<Number(r.residual.upper)<<','<<Number(r.referenceResidual.upper)<<','
@@ -191,7 +280,7 @@ bool SelectAutomaticDepth(Engine& e){
         +",\"count_per_seed\":"+Number(chosen.count)+",\"count_scope\":\"maximum of local paired pilots\",\"residual_upper95\":"+Number(chosen.residual.upper)
         +",\"budget\":"+Number(e.depthBudget)+",\"reference_depth\":"+Number(DS::Reference(e.depthMaximum))+",\"comparison_depth\":"+Number(DS::Anchor(e.depthMaximum))
         +",\"reference_upper95\":"+Number(chosen.referenceResidual.upper)+",\"reference_budget\":"+Number(e.depthBudget)
-        +",\"reference_failed\":"+(referenceFailed?"true":"false")+",\"failed_reference_upper95\":"+Number(failedReferenceUpper)+",\"selection\":"+Quoted(e.depthFallback?"requested maximum; pilot did not pass":"lowest forecast cost among tested passing candidates")
+        +",\"reference_failed\":"+(referenceFailed?"true":"false")+",\"failed_reference_upper95\":"+Number(failedReferenceUpper)+",\"selection\":"+Quoted(e.depthFallback?"requested maximum; pilot did not pass":(preferShallow?"shallowest tested depth passing the paired reference and guard":"lowest forecast cost among tested passing candidates"))
         +",\"row_parameters\":"+Quoted(chosenSnapshot+"/parameters_accuracy.csv")+",\"candidate_comparison\":"+Quoted(e.root+"/depth_candidates.csv")
         +",\"forecast_worker_seconds\":"+(DS::FiniteBound(chosen.forecast)?Number(chosen.forecast):"null")+",\"fresh_final_audit_required\":true}";
     e.Record(e.root+"/depth_selection.json",report);
