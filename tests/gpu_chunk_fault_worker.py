@@ -29,6 +29,9 @@ else:request=words
 with marker.with_suffix('.requests.jsonl').open('a') as record:record.write(json.dumps({'pid':os.getpid(),'status':fault,'words':request})+'\n')
 log=request[0];folder=str(Path(log).parent)
 files={log:f'Injected typed GPU chunk retry status {fault}\n'.encode(),folder+'/result/result.dat':b'POISON INCOMPLETE MATRIX MUST NOT BE ACCEPTED\n'}
+if fault=='host':
+    files[log]=b'ERROR: calculation failed: host RAM reserve exhausted before preparing next orientation chunk;\n'
+    fault='1'
 if not stream:
     for path,data in files.items():p=Path(path);p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(data)
 if fault=='eof':channel.close();raise SystemExit(0)

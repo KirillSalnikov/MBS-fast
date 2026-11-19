@@ -12,9 +12,9 @@ refinement=code.index('if(controller->refinementWindow)PrepareRefinementWindow(*
 assert carry<reset<restore<refinement
 subprocess.run([str(a.probe.resolve()),'--promotion-lifecycle'],check=True,timeout=15)
 worker=root/'fault_worker.py';shutil.copy2(Path(__file__).with_name('gpu_chunk_fault_worker.py'),worker);worker.chmod(0o755)
-report=[];reference=None
+report=[];reference=None;single_reference=None
 for memory in (0,1):
- for name,sequence,chunk,success,retries in [('reference','',1024,True,0),('once','76',1024,True,1),('small_explicit','76',64,True,1),('implicit','76',0,True,1),('twice','76,76',1024,False,1),('memory_then_chunk','75,76',1024,False,0),('chunk_then_memory','76,75',1024,False,1),('unknown','77',1024,False,0),('physics','1',1024,False,0),('eof','eof',1024,False,0)]+([('partial_frame','partial76',1024,False,0)] if memory else []):
+ for name,sequence,chunk,success,retries in [('reference','',1024,True,0),('once','76',1024,True,1),('small_explicit','76',64,True,1),('implicit','76',0,True,1),('twice','76,76',1024,False,1),('single_reference','',1,True,0),('memory_once','75',1024,True,0),('host_once','host',1024,True,0),('memory_twice','75,75',1024,False,0),('memory_then_chunk','75,76',1024,False,0),('chunk_then_memory','76,75',1024,False,1),('unknown','77',1024,False,0),('physics','1',1024,False,0),('eof','eof',1024,False,0)]+([('partial_frame','partial76',1024,False,0)] if memory else []):
   case=root/f'{memory}_{name}';marker=root/(case.name+'.marker')
   env=dict(os.environ,TASK_REAL_WORKER=str(a.binary.resolve()),TASK_GPU_RETRY_MARKER=str(marker),TASK_GPU_RETRY_SEQUENCE=sequence)
   if success and retries:env['TASK_EXPECT_GPU_BACKOFF']='1'
@@ -32,7 +32,20 @@ for memory in (0,1):
   if success:
    values=[[float(v) for v in line.split()] for line in (case/'matrix.txt').read_text().splitlines()]
    if reference is None:reference=values
-   assert values==reference,(name,memory,'matrix changed')
+   if name=='single_reference' and single_reference is None:single_reference=values
+   expected=single_reference if name in ('single_reference','memory_once','host_once') else reference
+   assert values==expected,(name,memory,'matrix changed')
+   if name in ('memory_once','host_once'):
+    memory_events=[e['data'] for e in history if e['event']=='worker_memory_retry']
+    assert len(memory_events)==1 and len(attempts)==1
+    retry=memory_events[0]
+    assert retry['same_sampling'] and retry['system_ram_guard']==(name=='host_once')
+    assert int((case/'successful_worker.pid').read_text())!=attempts[0]['pid']
+    paths=((case/'virtual_paths.txt').read_text().splitlines() if memory else
+           [str(path) for path in (case/'jobs').rglob('*')])
+    assert any(path.endswith('stdout.memory-retry.result.failed/result.dat') for path in paths)
+    assert any(path.endswith('stdout.memory-retry.command.args') for path in paths)
+    assert all('/result(1)' not in path for path in paths)
    if retries:
     assert int((case/'successful_worker.pid').read_text())!=attempts[0]['pid'],(name,'failed worker reused')
     complete=[e['data'] for e in history if e['event']=='worker_gpu_chunk_retry_complete'];assert len(complete)==1

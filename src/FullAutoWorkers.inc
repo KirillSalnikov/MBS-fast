@@ -199,8 +199,19 @@ void ExecutePersistent(std::vector<Job>& result,std::vector<std::vector<std::str
                     const pid_t failedPid=services[slot]->pid;
                     services[slot].reset();slotJob[slot]=-1;j.pid=-1;
                     RemovePath(j.folder+"/worker.pid");
-                    const std::string savedLog=j.folder+"/stdout.memory-retry.log";
+                    const std::string prefix=j.folder+"/stdout.memory-retry";
+                    std::string stem=prefix;
+                    unsigned attempt=0;
+                    while(Exists(stem+".log")||Exists(stem+".command.args")||Exists(stem+".result.failed")){
+                        Require(attempt<1000000,"too many preserved memory retries");
+                        stem=prefix+"_"+Number(failedPid)+"_"+Number(++attempt);
+                    }
+                    const std::string savedLog=stem+".log";
                     Require(RenamePath(j.folder+"/stdout.log",savedLog)==0,"cannot preserve memory failure log");
+                    Require(RenamePath(j.folder+"/command.args",stem+".command.args")==0,"cannot preserve memory retry command");
+                    // The native writer selects result(1) if even an empty result directory survives.
+                    const std::string partial=j.folder+"/result";
+                    if(Exists(partial))Require(RenamePath(partial,stem+".result.failed")==0,"cannot preserve memory retry partial output");
                     Log("worker_memory_retry","{\"folder\":"+Quoted(j.folder)+",\"old_pid\":"+Number(failedPid)
                         +",\"retry\":1,\"system_ram_guard\":"+(hostReserve?"true":"false")+",\"same_sampling\":true,\"completed_blocks_preserved\":true,\"log\":"+Quoted(savedLog)+"}");
                     if(hostReserve)WaitAfterHostReserveFailure(j);
