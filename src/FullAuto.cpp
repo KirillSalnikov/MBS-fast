@@ -9,6 +9,7 @@
 #include <functional>
 #include <exception>
 #include "FullAuto.h"
+#include "FullAutoPoleBudget.h"
 #include "FullAutoPhiPlateau.h"
 #include "FullAutoPairedAzimuth.h"
 #include "AnalyticFacetAverage.h"
@@ -1681,6 +1682,13 @@ struct Engine {
             robustPhiPrices=workingPairedRows && flag=="1";
             if(robustPhiPrices)fingerprint<<"phi_relative_cost_v1=1\n";
         }
+        if(const char* setting=std::getenv("MBS_FULLAUTO_POLE_ORIENTATIONS")){
+            const std::string flag(setting);
+            Require(flag=="0"||flag=="1","invalid pole orientation mode");
+            poleOrientations=flag=="1"&&coherent&&!go&&local&&config.useGpu&&!fixedPhi
+                &&!args.IsCatched("fullauto_initial")&&!args.IsCatched("fullauto_pilot")&&!config.adaptive.loadedFromFile;
+            if(poleOrientations)fingerprint<<"pole_orientations_priced_v2=1\n";
+        }
         if(nestedPhiPilots)fingerprint<<"nested_phi_pilots_v1=1\n";
         if(reusePairedBase)fingerprint<<"production_paired_base=1\n";
         const char* ladder=std::getenv("MBS_FULLAUTO_DEPTH_LADDER");
@@ -3095,7 +3103,7 @@ struct Engine {
     #include "FullAutoPhiSharedRows.inc"
     #include "FullAutoControlPreflight.inc"
     #include "FullAutoPhiWinner.inc"
-    bool densePhiPlateau=false, robustPhiPrices=false, screenTheta=false;
+    bool densePhiPlateau=false, robustPhiPrices=false, screenTheta=false, poleOrientations=false;
     std::string seedKnotText;
     void Calibrate(const std::vector<double>& x,bool working=false,bool kernelOnly=false,int soleRule=0,bool screening=false,bool deferTuning=false,size_t workRows=0,bool separateTimings=false) {
         measuredPhi.clear();if(!working){startupPhiWitness.clear();startupPhiRows.clear();}

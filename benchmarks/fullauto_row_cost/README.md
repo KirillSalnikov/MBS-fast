@@ -40,3 +40,9 @@ The controller measures each azimuth rule on matched orientations. One forecast 
 The exact tested source is commit `0b49dba`. For the arbitrary 10 µm particle at 0.355 µm the baseline, candidate and repeat baseline took 780.74, 250.65 and 529.19 seconds on a shared RTX 3080 Ti. The complete profile gave 2.11× against the faster baseline. The background GPU workload changed during the sequence. The largest difference across 2454 angles and 16 elements was 0.859% of the local reference M11. The maximum difference in ratios was 0.604 percentage points. This timing covers the whole profile, including earlier optimizations.
 
 On the arbitrary 56.23 µm particle at 1.550 µm, the previously published dense angular screen (commit `25f2679`) gave 1.79× for the full calculation. Its M11 differed by 1.560% of the reference at 61.254°, exceeding the 1% comparison threshold. See the [whole-grid comparison](screened_arb56.json).
+
+## Orientation budget for exact forward and backward scattering
+
+The exact build at `a153c31` tested an extra base-depth orientation budget for 0° and 180° using `MBS_FULLAUTO_POLE_ORIENTATIONS=1`. The controller considers the size of the working grid, the azimuth count, the per-seed cap and the measured cost on the selected GPU. It retries the decision when measurements become available. Other angles keep their existing orientation budgets.
+
+For the arbitrary 31.62 µm particle at 1.550 µm on an RTX 3080 Ti, the baseline, candidate and repeat baseline took 1045.09, 340.62 and 992.42 seconds. The complete profile was **2.91×** faster than the faster baseline. Across all 1778 angles, the largest raw difference was 0.971% of the reference M11 at 172.61°. The largest difference for ratios was 0.505 percentage points. All runs selected eight internal reflections and 16 azimuth samples. [Run settings and comparisons to both baselines](priced_poles_31p62.json).

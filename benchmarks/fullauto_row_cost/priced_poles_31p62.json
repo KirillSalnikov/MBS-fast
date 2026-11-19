@@ -1,0 +1,173 @@
+{
+  "source_tgz_sha256": "7bf08bba16be3203267245854a2f917794a44cc41f49af5f20939da097f4be18",
+  "baseline_commit": "4294c7f56",
+  "geometry_sha256": "90e7e9f9de91e34b90332c9d292ae4b8764f53ae7f981b0de1dac2ad964360ab",
+  "argv": [
+    "--method",
+    "po",
+    "--backend",
+    "cuda",
+    "--particle-file",
+    "PARTICLE.dat",
+    "--resize-dmax-um",
+    "31.62",
+    "--wavelength-um",
+    "1.550",
+    "--ri",
+    "1.2906",
+    "0.00042407",
+    "--symmetry",
+    "1",
+    "1",
+    "--fullauto",
+    "0.04",
+    "--fullauto-max-rounds",
+    "512",
+    "--fullauto-theta-range",
+    "0",
+    "180",
+    "--fullauto-final-checks",
+    "off",
+    "--fullauto-symmetry-checks",
+    "off",
+    "--fullauto-rotation-symmetry",
+    "off",
+    "--fullauto-mirror",
+    "off",
+    "--fullauto-cutoffs",
+    "staged",
+    "--fullauto-resources",
+    "off",
+    "--fullauto-workers",
+    "persistent",
+    "--fullauto-memory-mib",
+    "1024",
+    "--fullauto-checkpoint-seconds",
+    "0",
+    "--po-trace-backend",
+    "cpu",
+    "--orientation-pipeline",
+    "--close",
+    "--allow-experimental-environment",
+    "--fullauto-gpus",
+    "0",
+    "--fullauto-dispatch-threads",
+    "4",
+    "--fullauto-gpu-workers",
+    "1"
+  ],
+  "environment": {
+    "LD_LIBRARY_PATH": "/usr/lib/wsl/lib:/usr/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu",
+    "MBS_CPU_TRACE_FINE_SCHEDULE": "1",
+    "MBS_GPU_RECYCLE_PREPARED": "1",
+    "MBS_HOST_MEM_BUDGET_MB": "16384",
+    "MBS_HOST_MEM_RESERVE_MB": "8192",
+    "MBS_GPU_MEM_FRACTION": "0.65",
+    "OMP_DYNAMIC": "FALSE",
+    "OMP_WAIT_POLICY": "PASSIVE"
+  },
+  "candidate_only_environment": {
+    "MBS_CONVEX_PATH_PREFIX": "1",
+    "MBS_PREFIX_EXTINCTION": "1",
+    "MBS_PREPARED_SAMPLED_ABSORPTION": "1",
+    "MBS_PAIRED_GPU_FIELDS": "1",
+    "MBS_PAIRED_REUSE_UPPER_STORAGE": "1",
+    "MBS_FULLAUTO_DIRECT_DEPTH": "0",
+    "MBS_FULLAUTO_LOWEST_PASSING_DEPTH": "1",
+    "MBS_FULLAUTO_CUTOFF_PREFIX": "0",
+    "MBS_FULLAUTO_PHI_PILOT": "128",
+    "MBS_FULLAUTO_STARTUP_PROCESSING_COST": "1",
+    "MBS_FULLAUTO_NESTED_PHI": "1",
+    "MBS_FULLAUTO_COMPLETE_PHI_SWEEP": "1",
+    "MBS_FULLAUTO_RAW_PHI_REUSE": "1",
+    "MBS_FULLAUTO_PHI_TIMING_WAVE": "1",
+    "MBS_FULLAUTO_DEPTH_PILOT_BANDS": "first-two",
+    "MBS_FULLAUTO_PAIRED_PHI_FORECAST": "1",
+    "MBS_FULLAUTO_SPARSE_PHI_TIMING": "1",
+    "MBS_FULLAUTO_PHI_ROW_COST": "1",
+    "MBS_FULLAUTO_PAIRED_BASE": "1",
+    "MBS_FULLAUTO_REUSE_MIDDLE_DEPTH": "1",
+    "MBS_FULLAUTO_PAIRED_ROW_PREFETCH": "1",
+    "MBS_ANALYTIC_SHARED_RADIAL": "1",
+    "MBS_FULLAUTO_WORKING_PAIRED_ROWS": "1",
+    "MBS_FULLAUTO_POLE_ORIENTATIONS": "1"
+  },
+  "comparison": {
+    "runs": {
+      "A": {
+        "seconds": 1045.0930902099935,
+        "n": 8,
+        "phi": 16,
+        "round": 7,
+        "rows": 1778,
+        "reported_error": 0.038265845925765894,
+        "integrals": {
+          "Cext": 848.3176561576785,
+          "Csca": 824.1504550338261,
+          "Cabs": 24.16720112385235
+        }
+      },
+      "B": {
+        "seconds": 340.61568903690204,
+        "n": 8,
+        "phi": 16,
+        "round": 8,
+        "rows": 1778,
+        "reported_error": 0.03736585532632042,
+        "integrals": {
+          "Cext": 848.3176561576785,
+          "Csca": 824.1308460809929,
+          "Cabs": 24.18681007668556
+        }
+      },
+      "A2": {
+        "seconds": 992.4249464289751,
+        "n": 8,
+        "phi": 16,
+        "round": 7,
+        "rows": 1778,
+        "reported_error": 0.03826584941903822,
+        "integrals": {
+          "Cext": 848.3176561576785,
+          "Csca": 824.1504521713894,
+          "Cabs": 24.16720398628911
+        }
+      }
+    },
+    "differences": {
+      "A_B": {
+        "raw": 0.009706452476334382,
+        "theta": 172.60551491277434,
+        "element": "M11",
+        "ratio": 0.005043467722149985,
+        "ratio_theta": 171.49127743387731,
+        "ratio_element": "M43"
+      },
+      "A2_B": {
+        "raw": 0.0097064747101073,
+        "theta": 172.60551491277434,
+        "element": "M11",
+        "ratio": 0.005043466254806705,
+        "ratio_theta": 171.49127743387731,
+        "ratio_element": "M43"
+      },
+      "A_A2": {
+        "raw": 8.275710563326219e-08,
+        "theta": 0.0,
+        "element": "M11",
+        "ratio": 1.241966658405147e-07,
+        "ratio_theta": 0.0,
+        "ratio_element": "M22"
+      }
+    },
+    "speedup": 2.913620770772707,
+    "passed_matrix": true,
+    "passed_time_and_matrix": true,
+    "background_unchanged": true,
+    "binary_sha256": {
+      "baseline": "5a1cbb46f8aeb5873b01a705d9da52a4ea4943616842bf662b859bc9e4dfe812",
+      "candidate": "2735ba5fefe7b8c689b7a63683455fc4bb5d080e046839c1e0aae1bb623cd697"
+    },
+    "archive_sha256": "2ededfa909ff4e78cad16b8ff3ae07c33d3f3d44620ed0e6e7059545c461a31a"
+  }
+}
