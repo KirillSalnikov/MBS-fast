@@ -50,6 +50,21 @@ int main(int argc,const char* argv[]){try{
     {ArgPP fixed;RegisterCliOptions(fixed);const char* av[]={"probe","--orientation-chunk","64"};fixed.Parse(3,av);
      Engine explicitEngine(fixed,config);explicitEngine.kernel.pipeline=true;
      Require(explicitEngine.ShortPacketChunk(shortJob)==0,"explicit orientation chunk was overridden");}
+    {
+        ArgPP flags;RegisterCliOptions(flags);const char* av[]={"probe","--particle","2","10","9.85"};flags.Parse(5,av);
+        Engine trace(flags,config);trace.gpus={"0"};trace.tracePolicy="auto";trace.shortPacketPolicy="auto";trace.workerThreads=4;
+        Job request;request.depth=14;request.count=8192;request.inputAngles={45,155};
+        std::vector<std::string> command={"--po-trace-backend","cpu"};
+        Require(trace.PacketTracingCandidate(request,command),"8192-orientation convex packet rejected");
+        const auto profile=trace.ShortPacketValidationKey(request,true);trace.root=std::string(argv[1])+"/unverified_packet";
+        Require(!trace.VerifyShortPacketChunk(request,command,true,profile,false)&&trace.shortPacketChecks.empty(),"small request incurred a pilot or cached a refusal");
+        trace.shortPacketChecks[profile]=true;
+        Require(trace.ApplyPacketTracing(request,command,profile,8192)&&command.back()=="packet-hybrid","eligible small packet failed to reuse verified recipe");
+        command={"--po-trace-backend","cpu","--orientation-prefix-output","1024"};
+        Require(!trace.PacketTracingCandidate(request,command),"unchecked prefix was rerouted");
+        command={"--po-trace-backend","cpu"};request.count=4096;
+        Require(!trace.PacketTracingCandidate(request,command),"tiny request admitted to trace calibration");
+    }
     // Measured epyc1 production values, seconds per complete native block.
     for(int i=0;i<4;++i)e.CacheJob(sample("comparable"+Number(i),26,1.890,.693));
     for(int i=0;i<20;++i)e.CacheJob(sample("old_two_row_stall"+Number(i),2,1.743,7.8));

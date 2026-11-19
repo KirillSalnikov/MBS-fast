@@ -1771,20 +1771,25 @@ struct Engine {
         }
         return (a>>x)||(b>>y)?1e100:error;
     }
-    bool VerifyShortPacketChunk(const Job& job,const std::vector<std::string>& actualCommand,bool traceTrial=false){
+    std::string ShortPacketValidationKey(const Job& job,bool traceTrial)const{
+        const int cap=traceTrial?workerChunk:ShortPacketCandidate(job.inputAngles.size());
+        const std::string policy=traceTrial?"packet-hybrid-v1 ":"short-packet-v5 ";
+        const std::string placement=traceTrial?Number(workerThreads)+" "+Number(dispatchThreads)+" "+Number(job.preparationThreads)+" "+WorkerGpus().front():"";
+        return Hash(policy+placement+job.executionHash+Number(workerChunk)+" "+Number(cap)+" "+Number(job.depth)+" "+Number(job.pairedDepth)+" "+Number(job.phi)+" "+Number(job.mirrored)+" "+Number(job.hasControls)
+            +" "+Number(FullAutoPreparation::Bucket(job.inputAngles.size()))+" "+Number(int(job.inputAngles.front()/15))+" "+Number(int(job.inputAngles.back()/15)));
+    }
+    bool VerifyShortPacketChunk(const Job& job,const std::vector<std::string>& actualCommand,bool traceTrial=false,const std::string& profile="",bool allowNew=true){
         // The pilot changes N to 2048. Retaining a larger requested prefix can
         // make M >= N, and testing only the full matrix does not validate the
         // separately accumulated prefix after changing chunk boundaries.
         if(std::find(actualCommand.begin(),actualCommand.end(),"--orientation-prefix-output")!=actualCommand.end())return false;
         const int cap=traceTrial?workerChunk:ShortPacketCandidate(job.inputAngles.size());
-        const std::string policy=traceTrial?"packet-hybrid-v1 ":"short-packet-v5 ";
-        const std::string placement=traceTrial?Number(workerThreads)+" "+Number(dispatchThreads)+" "+Number(job.preparationThreads)+" "+WorkerGpus().front():"";
-        const std::string key=Hash(policy+placement+job.executionHash+Number(workerChunk)+" "+Number(cap)+" "+Number(job.depth)+" "+Number(job.pairedDepth)+" "+Number(job.phi)+" "+Number(job.mirrored)+" "+Number(job.hasControls)
-            +" "+Number(FullAutoPreparation::Bucket(job.inputAngles.size()))+" "+Number(int(job.inputAngles.front()/15))+" "+Number(int(job.inputAngles.back()/15)));
+        const std::string key=profile.empty()?ShortPacketValidationKey(job,traceTrial):profile;
         auto known=shortPacketChecks.find(key);if(known!=shortPacketChecks.end())return known->second;
         const std::string path=root+"/short_packet_validation_"+key+".json";
         if(Exists(path)){const auto saved=CompactJson(Read(path));
             if(saved.find("\"binary_fnv1a64\":"+Quoted(binaryHash))!=std::string::npos){const bool passed=saved.find("\"passed\":true")!=std::string::npos;shortPacketChecks[key]=passed;return passed;}}
+        if(!allowNew)return false;
         const bool savedCollecting=collecting;const int savedChunk=workerChunk;collecting=false;shortPacketVerifying=true;
         double error=0,baselineSeconds=0,candidateSeconds=0,integralError=0;
         bool gpuExecuted=true;
@@ -1841,17 +1846,21 @@ struct Engine {
         const std::string receipt=traceTrial?report.substr(0,report.size()-1)+",\"gpu_execution_verified\":"+std::string(gpuExecuted?"true":"false")+",\"max_integral_difference\":"+Number(integralError)+"}":report;
         Record(path,receipt);Log(traceTrial?"packet_trace_validation":"short_packet_validation",receipt);shortPacketChecks[key]=passed;return passed;
     }
-    bool ApplyPacketTracing(Job& job,std::vector<std::string>& command){
+    bool PacketTracingCandidate(const Job& job,const std::vector<std::string>& command)const{
         if(tracePolicy!="auto"||shortPacketPolicy=="off"||shortPacketVerifying||!config.useGpu||go||args.IsCatched("incoh")
            ||config.refractiveImag!=0||config.geometry==GeometryClassification::Nonconvex
            ||!args.IsCatched("p")||(args.GetIntValue("p")!=2&&args.GetIntValue("p")!=4)
-           ||workerThreads<2||WorkerGpus().size()!=1||job.count<32768||job.depth<6||job.depth>18
+           ||workerThreads<2||WorkerGpus().size()!=1||job.count<8192||job.depth<6||job.depth>18
            ||job.inputAngles.empty()||job.inputAngles.size()>8||job.paired
            ||args.IsCatched("no_gpu_trace")||args.IsCatched("trace_cache_mb")
            ||getenv("MBS_GPU_TRACE_CONVEX_QUEUE")||getenv("MBS_GPU_TRACE_CONVEX_DIRECT")||getenv("MBS_GPU_TRACE_HYBRID"))return false;
         auto backend=std::find(command.begin(),command.end(),"--po-trace-backend");
         if(backend!=command.end()&&*(backend+1)!="cpu")return false;
-        if(!VerifyShortPacketChunk(job,command,true))return false;
+        return std::find(command.begin(),command.end(),"--orientation-prefix-output")==command.end();
+    }
+    bool ApplyPacketTracing(Job& job,std::vector<std::string>& command,const std::string& profile,long long planned){
+        if(!VerifyShortPacketChunk(job,command,true,profile,planned>=32768))return false;
+        auto backend=std::find(command.begin(),command.end(),"--po-trace-backend");
         if(backend!=command.end())*(backend+1)="packet-hybrid";
         else{command.push_back("--po-trace-backend");command.push_back("packet-hybrid");}
         return true;
@@ -1891,6 +1900,8 @@ struct Engine {
     void ExecutePrepared(std::vector<Job>& result,std::vector<std::vector<std::string>>& commands,const std::vector<size_t>& todo,const std::function<void(size_t)>& onComplete={}){
         if(balancedCorrection&&!correctionExecuting&&ExecuteCorrected(result,commands,todo,onComplete))return;
         Require(!forbidNativeWork||todo.empty(),"read-only probe would launch native optical work"+(todo.empty()?std::string():std::string(" N=")+Number(result[todo[0]].count)+" seed="+Number(result[todo[0]].seed)+" depth="+Number(result[todo[0]].depth)+" rows="+Number(result[todo[0]].inputAngles.size())+" execution="+result[todo[0]].executionHash+" folder="+result[todo[0]].folder));
+        std::map<size_t,std::string> packetProfiles;
+        std::map<std::string,long long> packetOrientations;
         for(size_t index:todo){
             // Presentation-only: add after cache identities are formed. Keep
             // the real recipe in command.args for forked and persistent jobs.
@@ -1898,7 +1909,16 @@ struct Engine {
             if(std::find(command.begin(),command.end(),"--no-text-reports")==command.end())
                 command.push_back("--no-text-reports");
             ApplyDispatchThreads(result[index],command);
-            if(!ApplyPacketTracing(result[index],command))ApplyShortPacketChunk(result[index],command);
+            if(PacketTracingCandidate(result[index],command)){
+                const auto profile=ShortPacketValidationKey(result[index],true);
+                packetProfiles.emplace(index,profile);
+                packetOrientations[profile]+=result[index].count;
+            }
+        }
+        for(size_t index:todo){
+            auto& command=commands[index];const auto profile=packetProfiles.find(index);
+            if(profile==packetProfiles.end()||!ApplyPacketTracing(result[index],command,profile->second,packetOrientations.at(profile->second)))
+                ApplyShortPacketChunk(result[index],command);
         }
         if(PersistentEnabled()){ExecutePersistent(result,commands,todo,onComplete);return;}
         for(auto& service:services)service.reset();
