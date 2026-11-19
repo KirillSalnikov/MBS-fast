@@ -1062,6 +1062,15 @@ int main()
     auto sharedGpu=localAuto;sharedGpu[3]="cuda";
     sharedGpu.insert(sharedGpu.end(),{"--fullauto-resume-compatible","/bin/true","--fullauto-dispatch-gpus","0,0","--fullauto-dispatch-threads","6"});
     try{(void)ParseConfig(sharedGpu,false,true);Pass("two bounded dispatch workers on one GPU");}catch(const std::exception& ex){FailTest("two bounded dispatch workers",ex.what());}
+    auto resumedQueue=sharedGpu;
+    resumedQueue.insert(resumedQueue.end(),{"--fullauto-dispatch-pipeline","on","--fullauto-cutoff-upgrade","staged"});
+    ExpectSuccessForBuild("resumed queue pipeline and staged cutoff",resumedQueue,false,true);
+    auto joinedQueue=localAuto;
+    joinedQueue[5]="3";
+    joinedQueue.insert(joinedQueue.end(),{"--rosette-joined","--symmetry","2","2","--fullauto-layout","compact","--fullauto-storage","memory",
+                                          "--fullauto-checkpoint-seconds","0","--fullauto-memory-mib","1024",
+                                          "--fullauto-symmetry-checks","off","--no-text-reports"});
+    ExpectSuccess("compact fullauto for joined rosettes",joinedQueue);
     auto tripleGpu=sharedGpu;*std::find(tripleGpu.begin(),tripleGpu.end(),"0,0")="0,0,0,0,0";
     ExpectFailureForBuild("five dispatch workers rejected",tripleGpu,false,true,"too many worker slots");
     auto unboundedGpu=sharedGpu;unboundedGpu.resize(unboundedGpu.size()-2);

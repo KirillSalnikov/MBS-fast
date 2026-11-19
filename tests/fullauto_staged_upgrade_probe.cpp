@@ -21,7 +21,7 @@ int main(int argc,char** argv){try{
   e.forbidNativeWork=true;auto replay=e.DirectStage(512,e.seeds.data(),8,8,e.theta);Require(replay[0].matrix==before[0].matrix&&FileHash(replay[0].folder+"/complete.txt")==marker,"upgrade reran or changed completed blocks");e.forbidNativeWork=false;
   Require(e.CutoffChildIdentity(partial,4096,8,0,true,512)!=oldChild,"upgrade mixed native pruning profiles");
   const auto added=e.DirectStage(512,e.seeds.data(),8,8,e.theta,true,false,512);
-  for(const auto& j:added){std::istringstream in(Read(j.folder+"/cutoff_sources.tsv"));int depth,sign,terms=0;std::string path;while(in>>depth>>sign>>path)++terms;Require(terms==5,"new block not staged");}
+  for(const auto& j:added){std::istringstream in(Read(j.folder+"/cutoff_sources.tsv"));int depth,sign,terms=0;std::string path;while(in>>depth>>sign>>path)++terms;Require(terms==3&&e.StagedCutoff(),"equal staged prefixes did not cancel");}
   auto mixed=e.PrefixStage(1024,e.seeds.data(),8,8,e.theta);for(size_t i=0;i<8;++i)for(size_t r=0;r<e.theta.size();++r)for(int k=0;k<16;++k)Close(mixed[i].matrix[r][k],.5*(before[i].matrix[r][k]+added[i].matrix[r][k]),"mixed old/new prefix changed expectation weights");
   auto recovered=e.DirectStage(4096,e.seeds.data(),1,8,e.theta,true,false,8192);Require(recovered[0].folder==partial.folder,"physical parent recipe changed");
   Require(Read(partial.folder+"/cutoff_prefix_recipe.txt")=="embedded-prefix-v1\n"&&Exists(e.CutoffPrefixRecipePath(partial)),"old partial prefix recipe overwritten");
