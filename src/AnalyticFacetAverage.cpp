@@ -422,6 +422,12 @@ AnalyticGpuModel Control::GpuModel() const
     return result;
 }
 
+static bool BinnedEdgesEnabled()
+{
+    const char* setting=std::getenv("MBS_ANALYTIC_BINNED_EDGES");
+    return setting && std::string(setting)=="1";
+}
+
 Control::Control(const std::vector<Face>&input,C refractive,double wavelength,
                  const std::vector<double>&theta,const std::string &mode,const std::string &meanCache,const std::string &referenceGrid,int setupThreads,bool useGpuMeans)
     :faces(input),index(refractive),wave(wavelength),refinementError(0),forwardShadowMean(0),circleRadius(0),shadowMode(mode),meanThreads(setupThreads),gpuMeans(useGpuMeans)
@@ -469,17 +475,16 @@ Control::Control(const std::vector<Face>&input,C refractive,double wavelength,
         // Canonical reference angles define cache keys; only requested rows
         // are computed. Per-row refinement is independent of the subset.
         std::vector<double> canonical;for(size_t i:ids)canonical.push_back(all.at(i));
-        PrepareCachedMeans(canonical,meanCache);
+        const char* lazy=std::getenv("MBS_ANALYTIC_LAZY_REFERENCE");
+        // The reference fixes the numerical rule. Individual packets can then
+        // append only missing angles to a shared cache in any request order.
+        const bool useReference=BinnedEdgesEnabled() && lazy && std::string(lazy)=="1"
+            && !meanCache.empty() && all.size()>=96;
+        PrepareCachedMeans(canonical,meanCache,useReference?&all:nullptr);
     }
 }
 
-static bool BinnedEdgesEnabled()
-{
-    const char* setting=std::getenv("MBS_ANALYTIC_BINNED_EDGES");
-    return setting && std::string(setting)=="1";
-}
-
-void Control::PrepareCachedMeans(const std::vector<double>&theta,const std::string &path)
+void Control::PrepareCachedMeans(const std::vector<double>&theta,const std::string &path,const std::vector<double>* reference)
 {
     if(path.empty()){PrepareMeans(theta);return;}
     // Cache EXACT physical inputs and algorithm revision. Never use a fitted
@@ -491,12 +496,15 @@ void Control::PrepareCachedMeans(const std::vector<double>&theta,const std::stri
         for(size_t i=0;i<bytes;++i){fingerprint^=p[i];fingerprint*=1099511628211ULL;}
     };
     const bool binned=BinnedEdgesEnabled();
-    const std::string version=binned ? "MBS_PHYSICAL_FACET_MEAN_V3_BINNED_EDGES_V1"
+    const std::string version=reference ? "MBS_PHYSICAL_FACET_MEAN_V4_REFERENCE_LAZY" : binned ? "MBS_PHYSICAL_FACET_MEAN_V3_BINNED_EDGES_V1"
                                      : "MBS_PHYSICAL_FACET_MEAN_V3_COMPACT_ROWS";
     mix(version.c_str(),version.size()+1);
     // Grouping depends on the radial extent and on how many angles share a pass.
     // Isolate its roundoff from the grid-independent scalar row cache.
-    if(binned)for(double angle:theta)mix(&angle,sizeof(angle));
+    if(binned){
+        const auto& signatureGrid=reference ? *reference : theta;
+        for(double angle:signatureGrid)mix(&angle,sizeof(angle));
+    }
     double re=index.real(),im=index.imag();mix(&re,sizeof(re));mix(&im,sizeof(im));mix(&wave,sizeof(wave));
     mix(shadowMode.data(),shadowMode.size());
     const size_t count=faces.size();mix(&count,sizeof(count));
@@ -536,7 +544,7 @@ void Control::PrepareCachedMeans(const std::vector<double>&theta,const std::stri
     if(meanThreads>0)std::clog<<"Analytic mean cache: requested="<<theta.size()<<" missing="<<missing.size()
         <<" lock_wait_seconds="<<lockSeconds<<std::endl;
     if(!missing.empty()){
-        PrepareMeans(missing);
+        PrepareMeans(missing,reference);
         for(size_t i=0;i<missing.size();++i)stored[missing[i]]=Cached{means[i],meanErrors[i]};
     }
     means.clear();meanErrors.clear();refinementError=0;
@@ -613,7 +621,7 @@ Components Control::EvaluateUnit(const Vec&u,const Vec&v)const
     return result;
 }
 
-void Control::PrepareMeans(const std::vector<double>&theta)
+void Control::PrepareMeans(const std::vector<double>&theta,const std::vector<double>* reference)
 {
     if(index==C(1,0)){means.assign(theta.size(),Components{0,0});meanErrors.assign(theta.size(),0);refinementError=0;return;}
     int setupThreads=1;
@@ -629,7 +637,10 @@ void Control::PrepareMeans(const std::vector<double>&theta)
     if(meanThreads>0)std::clog<<"Analytic mean radial backend: "<<(meanDevice>=0?"CUDA FP64 bounded tiles":"CPU")<<std::endl;
     double maxDiameter=0,maxQ=0;
     for(const Patch&p:patches)maxDiameter=std::max(maxDiameter,p.diameter);
-    for(double angle:theta)maxQ=std::max(maxQ,4*pi/wave*std::sin(angle/2));
+    // Use the same radial extent, bin width and primitive table for a row
+    // regardless of which other angles were already cached.
+    const auto& radialGrid=reference ? *reference : theta;
+    for(double angle:radialGrid)maxQ=std::max(maxQ,4*pi/wave*std::sin(angle/2));
     // Haar self means depend only on the ordered polygon's pair distances.
     // Congruent facets share one boundary integral; point controls and the
     // coherent projected-area mean still retain every physical facet normal.
@@ -681,7 +692,7 @@ void Control::PrepareMeans(const std::vector<double>&theta)
         const double radialIntervals=maxDiameter*maxQ/step;
         const double quadraturePairs=double(edgePairs)*nodes*nodes;
         const auto pendingRows=std::count(converged.begin(),converged.end(),0);
-        if(BinnedEdgesEnabled() && pendingRows>=96 && radialIntervals>0 && quadraturePairs>=8*radialIntervals)
+        if(BinnedEdgesEnabled() && (reference||pendingRows>=96) && radialIntervals>0 && quadraturePairs>=8*radialIntervals)
             measure.Build(patches,representatives,multiplicity,edgeX,edgeW,step,maxQ,maxDiameter);
         const size_t measureBytes=measure.bins.capacity()*sizeof(BinnedEdgeMeasure::Bin)
             +measure.diagonal.capacity()*sizeof(std::pair<double,double>);
@@ -689,8 +700,8 @@ void Control::PrepareMeans(const std::vector<double>&theta)
         const char* shareRadial=std::getenv("MBS_ANALYTIC_SHARED_RADIAL");
         if(shareRadial ? std::string(shareRadial)=="1" : !measure.bins.empty()){
             std::vector<size_t> ends;
-            for(size_t row=0;row<theta.size();++row)if(!converged[row]){
-                double h2,c2;Angles(theta[row],h2,c2);
+            for(size_t row=0;row<radialGrid.size();++row)if(reference||!converged[row]){
+                double h2,c2;Angles(radialGrid[row],h2,c2);
                 const double extent=4*pi/wave*std::sqrt(h2)*maxDiameter+step;
                 const double required=std::max(4.,std::ceil(extent/step)+2);
                 if(!std::isfinite(required)||required>8388608)continue;

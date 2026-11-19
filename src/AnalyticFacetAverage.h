@@ -66,7 +66,7 @@ private:
     int meanThreads;
     bool gpuMeans;
     Components EvaluateUnit(const Vec&source,const Vec&observer) const;
-    void PrepareMeans(const std::vector<double>&theta);
-    void PrepareCachedMeans(const std::vector<double>&theta,const std::string &path);
+    void PrepareMeans(const std::vector<double>&theta,const std::vector<double>* reference=nullptr);
+    void PrepareCachedMeans(const std::vector<double>&theta,const std::string &path,const std::vector<double>* reference=nullptr);
 };
 }

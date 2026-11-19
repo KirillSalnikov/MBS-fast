@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Lazy authoritative rows and grid-independent refinement of real facets."""
 from pathlib import Path
+import os
 import subprocess
 import tempfile
 import numpy as np
@@ -36,3 +37,29 @@ with tempfile.TemporaryDirectory(prefix='mbs_mean_rows_')as directory:
     assert not np.array_equal(changed,subset)
     assert int(cache.read_text().splitlines()[0].split()[2])==3
     print('PASS: only3/4097 reference rows computed; subset append/reuse; bitwise per-row refinement; geometry invalidation')
+
+    # Independent cold caches must produce exactly the same shared angles
+    # when the caller changes the size and the order of the angular packets.
+    env=dict(os.environ,MBS_ANALYTIC_BINNED_EDGES='1',MBS_ANALYTIC_LAZY_REFERENCE='1')
+    angles=np.linspace(0,180,257)
+    np.savetxt(reference,angles,fmt='%.17g')
+    def grouped(path,ids):
+        output=subprocess.check_output([str(probe),'mean-cached','rectangle','12','1.31','0',
+            'circular',str(path),str(reference),*map(str,angles[ids])],env=env,text=True)
+        return np.atleast_2d(np.loadtxt(output.splitlines()))
+    selected=np.array([0,3,16,45,99,154,209,256])
+    partial=work/'partial.cache'
+    cold=grouped(partial,selected)
+    fields=partial.read_text().splitlines()[0].split()
+    assert fields[0]=='MBS_PHYSICAL_FACET_MEAN_V4_REFERENCE_LAZY' and int(fields[2])==len(selected)
+    dense=grouped(work/'dense.cache',np.arange(len(angles)))
+    np.testing.assert_array_equal(cold,dense[selected])
+    combined=np.union1d(selected,np.arange(0,257,2))
+    np.testing.assert_array_equal(grouped(partial,combined),dense[combined])
+    assert int(partial.read_text().splitlines()[0].split()[2])==len(combined)
+    # A different reference invalidates the stored physical rows.
+    np.savetxt(reference,angles[:201],fmt='%.17g')
+    grouped(partial,[0,16])
+    changed=partial.read_text().splitlines()[0].split()
+    assert changed[1]!=fields[1] and int(changed[2])==2
+    print('PASS: fixed-reference binned rows, cold-cache identity, incremental fill and invalidation')
