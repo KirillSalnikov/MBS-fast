@@ -1014,7 +1014,25 @@ struct Engine {
     bool angularCache=true,sharedMeans=false;size_t assembledJobs=0,reusedRows=0,newRows=0;
     bool incremental=true;int orientationBlock=65536;size_t savedOrientationBlocks=0;
     std::string controlPolicy="auto";int thetaAuditCount=0;
+    bool extendCutoffChild=false,reuseCutoffDepth=false,shareMiddleDepth=false;
+    bool phiScoreFloor=false,unknownRoundFeedback=false,pricedSubround=false;
     bool costedInterpolationKnots=false;
+
+    static bool PlanningOption(const char* name,bool fallback){
+        const char* mode=std::getenv(name);
+        if(!mode)return fallback;
+        const std::string value(mode);
+        Require(value=="0"||value=="1",std::string("invalid planning option ")+name);
+        return value=="1";
+    }
+    void ConfigurePlanning(bool defaults){
+        extendCutoffChild=PlanningOption("MBS_FULLAUTO_EMBEDDED_PREFIX_GROWTH",defaults)&&coherent&&!go&&incremental&&angularCache;
+        reuseCutoffDepth=PlanningOption("MBS_FULLAUTO_CUTOFF_DEPTH_WINDOWS",defaults)&&extendCutoffChild&&depthSharing;
+        shareMiddleDepth=PlanningOption("MBS_FULLAUTO_SHARE_MIDDLE_DEPTH",defaults)&&reuseCutoffDepth;
+        phiScoreFloor=PlanningOption("MBS_FULLAUTO_PHI_SCORE_FLOOR",defaults)&&coherent&&!go&&!fixedPhi;
+        unknownRoundFeedback=PlanningOption("MBS_FULLAUTO_UNKNOWN_ROUND_FEEDBACK",defaults);
+        pricedSubround=PlanningOption("MBS_FULLAUTO_PRICED_SUBROUND",defaults)&&unknownRoundFeedback;
+    }
     bool local=true,ratios=true,phiRecheck=true,polarControls=true,finalChecks=false,finalAudit=false,physicsAudit=false;
     std::vector<std::array<Mueller,2>> polarWeights;
     double lastRatio=0,lastAnalyticError=0,lastCombined=-1,lastIndependentCombined=-1;bool independentPassed=false,independentNeedsSampling=true;
@@ -1384,12 +1402,20 @@ struct Engine {
                 "compatible resume requires identical CUDA architecture, precision, phase math, compiler, OpenMP and MPI profiles");
         }
         std::ostringstream fingerprint;fingerprint<<(compatibleHash.empty()?binaryHash:compatibleHash)<<'\n';
+        const auto planningReceipt=root+"/coherent_cuda_planning_v1.txt";
+        const bool newDefaults=config.useGpu&&coherent&&!go&&(compatibleHash.empty()
+            ||(Exists(planningReceipt)&&Read(planningReceipt)=="1\n"));
+        ConfigurePlanning(newDefaults);
+        if(extendCutoffChild)fingerprint<<"native-cutoff-window-extension-v2\n";
+        if(reuseCutoffDepth)fingerprint<<"paired-native-cutoff-window-v1\n";
+        if(shareMiddleDepth)fingerprint<<"shared-middle-depth-v1\n";
         if(const char* setting=std::getenv("MBS_FULLAUTO_INTERPOLATION_KNOT_COST")){
             const std::string value(setting);
             Require(value=="0"||value=="1","invalid interpolation knot cost mode");
             costedInterpolationKnots=value=="1"&&coherent&&!go&&local;
             if(costedInterpolationKnots)fingerprint<<"interpolation_knot_work_v1=1\n";
         }
+        if(phiScoreFloor)fingerprint<<"phi_validation_score_floor_v1=1\n";
         const bool fingerprintMemory=MemoryPath(root)||Exists(root+"/memory_storage_v1.txt")
             ||((!args.IsCatched("fullauto_storage")||args.GetStringValue("fullauto_storage")!="legacy")
                 &&((args.IsCatched("fullauto_storage")&&args.GetStringValue("fullauto_storage")=="memory")
@@ -1480,6 +1506,9 @@ struct Engine {
         s<<"],\"seeds\":[";
         for(size_t i=0;i<seeds.size();++i)s<<(i?",":"")<<seeds[i];
         s<<"],\"phi\":"<<phi<<",\"phi_scope\":"<<Quoted(thetaPhi.empty()?"uniform":"default with per-theta exceptions")<<",\"retained_phi_theta_rows\":"<<thetaPhi.size()<<",\"target_depth\":"<<target<<",\"requested_theta\":"<<theta.size()<<",\"evaluated_theta\":"<<nodes
+            <<",\"extend_cutoff_windows\":"<<(extendCutoffChild?"true":"false")<<",\"reuse_cutoff_depth\":"<<(reuseCutoffDepth?"true":"false")
+            <<",\"share_middle_depth\":"<<(shareMiddleDepth?"true":"false")<<",\"phi_score_floor\":"<<(phiScoreFloor?"true":"false")
+            <<",\"round_timing_feedback\":"<<(unknownRoundFeedback?"true":"false")<<",\"priced_subround\":"<<(pricedSubround?"true":"false")
             <<",\"automatic_depth\":"<<(autoDepth?"true":"false")<<",\"depth_budget\":"<<depthBudget<<",\"statistical_budget\":"<<statistical<<",\"error_budget_policy\":"<<Quoted(go?"fixed-go":BudgetPolicy())<<",\"interpolation_budget\":"<<interpolation<<",\"max_pointwise95_scaled_M11\":"<<ci
             <<",\"combined_error95\":"<<(lastCombined>=0?Number(lastCombined):"null")<<",\"independent_combined_error95\":"<<(lastIndependentCombined>=0?Number(lastIndependentCombined):"null")<<",\"max_guard_residual95_scaled_M11\":"<<ie<<",\"pass_streak\":"<<streak<<",\"pipeline\":"<<((kernel.pipeline||dispatchPipeline)?"true":"false")<<",\"saved_pipeline\":"<<(kernel.pipeline?"true":"false")<<",\"dispatch_pipeline\":"<<(dispatchPipeline?"true":"false")
             <<",\"block\":"<<kernel.block<<",\"warp\":"<<Quoted(kernel.warp)
@@ -2044,16 +2073,23 @@ struct Engine {
         if(workerChunk>0){command.push_back("--orientation-chunk");command.push_back(Number(workerChunk));}
         command.push_back("--output");command.push_back(job.folder+"/result");std::ostringstream recipe;recipe<<exe<<'\n';for(const auto& v:command)recipe<<v<<'\n';return recipe.str();
     }
-    Job LowerView(const Job& source,int depth,bool materialize=true){
-        const std::string identity=Hash(signature+"\npaired view\n"+source.identity+" "+Number(depth));
+    Job LowerView(const Job& source,int depth,bool materialize=true,const std::vector<std::string>* nativeReplay=nullptr){
+        const std::string identity=Hash(signature+(nativeReplay?"\nraw paired cutoff view v1\n":"\npaired view\n")+source.identity+" "+Number(depth));
         // SharedStage registers all available lower views before selecting
         // rows. Do not read matrices for discarded candidates. The selected
         // rows still pass Payload's complete dependency validation.
         const auto resident=cache.find(identity);if(resident!=cache.end())return materialize?Materialize(resident->second):resident->second;
-        Job job=source;job.depth=depth;job.pairedDepth=0;job.assembled=true;job.identity=Hash(signature+"\npaired view\n"+source.identity+" "+Number(depth));job.folder=root+"/jobs/d"+job.identity;
+        Job job=source;job.depth=depth;job.pairedDepth=0;job.assembled=true;job.identity=identity;job.folder=root+"/jobs/d"+job.identity;
         job.data=job.folder+"/result/result.dat";job.summary=job.folder+"/result/result_analytic_facets.tsv";job.matrix.clear();job.controls.clear();job.angles.clear();job.seconds=source.seconds*.5;
         if(!Exists(job.folder+"/complete.txt")){DerivedFileBatch outputFiles(job.folder,PrepareDerivedPublication(),false);Directory(job.folder+"/result");const auto name=source.folder+"/result/result_depth"+Number(depth);
-            Atomic(job.data,Read(name+".dat"));if(controls)Atomic(job.summary,Read(name+"_analytic_facets.tsv"));Atomic(job.folder+"/command.args",Replay(job,job.inputAngles));
+            Atomic(job.data,Read(name+".dat"));if(controls)Atomic(job.summary,Read(name+"_analytic_facets.tsv"));if(nativeReplay){
+                auto replay=*nativeReplay;
+                auto output=std::find(replay.begin(),replay.end(),"--output");
+                Require(output!=replay.end()&&++output!=replay.end(),"missing raw lower window output");
+                *output=job.folder+"/result";
+                std::ostringstream text;text<<exe<<'\n';for(const auto& word:replay)text<<word<<'\n';
+                Atomic(job.folder+"/command.args",text.str());
+            }else Atomic(job.folder+"/command.args",Replay(job,job.inputAngles));
             Atomic(job.folder+"/stdout.log","Validated paired-depth view; standalone replay recipe.\nHard tree-limit hits: 0\nOrientations still incomplete: 0\n");
             const std::string sources=source.folder+"\t"+FileHash(source.folder+"/complete.txt")+"\n";Atomic(job.folder+"/angular_sources.tsv",sources);
             PublishDerivedComplete(job,job.identity+" "+Number(job.seconds)+" "+FileHash(job.data)+" "+(controls?FileHash(job.summary):"none")+" "+Hash(sources)+"\n",outputFiles);}
@@ -2594,8 +2630,7 @@ struct Engine {
         double maximum=0;int refinements=0;
         for(;;){Samples support(8),predicted(8);std::vector<double> kx;
             for(size_t k:knots){kx.push_back(theta[k]);for(int seed=0;seed<8;++seed)support[seed].push_back(data[seed][k]);}
-            for(int seed=0;seed<8;++seed)predicted[seed]=UseLinearPOInterpolation(go,coherent)
-                ?PiecewiseLinearInterpolate(kx,support[seed],theta):CubicInterpolate(kx,support[seed],theta);
+            for(int seed=0;seed<8;++seed)predicted[seed]=POOutputInterpolate(go,coherent,kx,support[seed],theta);
             Samples delta=Subtract(predicted,data);Matrix mean=Mean(delta),variance=Variance(delta);std::vector<double> errors(theta.size());maximum=0;
             for(size_t r=0;r<theta.size();++r)for(int j=0;j<16;++j){double v=(std::fabs(mean[r][j])+t95*std::sqrt(variance[r][j]/8))/reference[r][0];errors[r]=std::max(errors[r],v);maximum=std::max(maximum,v);}
             std::ostringstream step;step<<"{\"iteration\":"<<refinements<<",\"max_residual95_scaled_M11\":"<<Number(maximum)<<",\"budget\":"<<Number(interpolation*.5)<<",\"support_indices\":[";
@@ -2677,6 +2712,7 @@ struct Engine {
             <<",\"production_options_restored\":true,\"trial_matrices_retained\":false,\"samples\":"<<samples.str()<<"}";
         Record(root+"/kernel_calibration.json",report.str());Log("kernel_selection",report.str());
     }
+#include "FullAutoPhiScoreFloor.inc"
     void Calibrate(const std::vector<double>& x,bool working=false,bool kernelOnly=false) {
         const int previousPhi=phi;weightTheta=x;weights.clear();polarWeights.clear();phi=fixedPhi?fixedPhi:std::max(minPhi,std::min(maxPhi,4));
         if(config.useGpu&&!working&&!startupKernel)CalibrateKernel(x);
@@ -2687,6 +2723,11 @@ struct Engine {
         if(working&&!fixedPhi){
             std::vector<int> nearby;for(int p:phiCandidates)if(p==previousPhi||p==previousPhi/2||p==previousPhi*2||p==minPhi)nearby.push_back(p);
             if(!nearby.empty())phiCandidates=nearby;
+        }
+        const bool scoreFloor=phiScoreFloor&&controls;
+        if(scoreFloor&&working){
+            const auto prior=std::find(phiCandidates.begin(),phiCandidates.end(),previousPhi);
+            if(prior!=phiCandidates.end())std::rotate(phiCandidates.begin(),prior,prior+1);
         }
         if(phiCandidates.empty())phiCandidates.push_back(std::max(1,minPhi));
         if(fixedPhi)phiCandidates={fixedPhi};
@@ -2699,8 +2740,24 @@ struct Engine {
             // Training fits control coefficients only. With controls disabled
             // its eight native solves were discarded; keep the independent
             // validation scrambles and the complete accuracy contract.
-            std::vector<Job> train;if(controls)train=Stage(calibrationCount,training,8,depth,x,false);
+            const bool screen=scoreFloor&&bestResolved;
+            std::vector<Job> train;
+            if(controls&&!screen)train=Stage(calibrationCount,training,8,depth,x,false);
             auto valid=Stage(calibrationCount,validation,8,depth,x,false);
+            if(screen){
+                double seconds=0,setup=0,errorFloor=0;
+                for(const Job& j:valid){seconds+=std::max(1e-6,j.seconds-j.controlSetup);setup=std::max(setup,j.controlSetup);}
+                const bool finite=PhiValidationErrorFloor(valid,errorFloor);
+                const double floor=seconds*std::max(double(initial)/calibrationCount,std::pow(errorFloor/statistical,2))+setup;
+                if(finite&&floor>best*(1+1e-8)){
+                    const std::string info="{\"phi\":"+Number(phi)+",\"pilot_count\":"+Number(calibrationCount)
+                        +",\"depth\":"+Number(depth)+",\"score_lower_bound\":"+Number(floor)
+                        +",\"incumbent_score\":"+Number(best)+",\"training_skipped\":true}";
+                    Log("phi_score_floor",info);candidatesJson<<(first?"":",")<<info;first=false;
+                    break;
+                }
+                train=Stage(calibrationCount,training,8,depth,x,false);
+            }
             Samples adjusted=Data(valid,false);std::vector<std::array<double,2>> fitted(x.size(),{{0.,0.}});
             std::vector<std::array<Mueller,2>> fittedPolar(x.size());std::array<int,16> accepted{};
             if(controls)for(size_t r=0;r<x.size();++r){
@@ -2831,6 +2888,8 @@ int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],do
     const std::string identity=controller->root+"/configuration.txt";
     controller->ConfigureIndex(!Exists(identity));
     if(Exists(identity))Require(Read(identity)==controller->signature+"\n","resume inputs/binary/environment changed; choose a new output directory");else Atomic(identity,controller->signature+"\n");
+    if(controller->config.useGpu&&controller->coherent&&controller->compatibleHash.empty())
+        controller->Record(controller->root+"/coherent_cuda_planning_v1.txt","1\n");
     controller->RecordFinalChecksPolicy();
     controller->Record(controller->root+"/worker_output_policy.json",
         "{\"policy\":\"no-duplicate-worker-text-v1\",\"new_workers_only\":true,"

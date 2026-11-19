@@ -158,11 +158,25 @@ std::string PublishMemoryMatrixGeneration(const std::string& source){
         try{
             {PhysicalStorageScope disk;Atomic(stage+"/.mbs-public-pending-v1","mbs_public_pending_v1\n"+root+"\n"+Number(getpid())+"\n");
                 AtomicFileBatch::FlushPath(stage,true);}
+            // This directory is private until its final rename. Queue all writes
+            // before the durability barrier so small members can share journal IO.
+            std::set<std::string> directories;
             for(const auto& path:files){const auto bytes=Read(path),target=stage+path.substr(source.size());
-                {PhysicalStorageScope disk;Directory(target.substr(0,target.find_last_of('/')));Atomic(target,bytes);}
+                {PhysicalStorageScope disk;
+                    auto folder=target.substr(0,target.find_last_of('/'));
+                    Directory(folder);
+                    while(folder!=stage && directories.insert(folder).second)
+                        folder=folder.substr(0,folder.find_last_of('/'));
+                    std::ofstream file(target,std::ios::binary);
+                    file.write(bytes.data(),bytes.size());file.close();
+                    Require(bool(file),"cannot stage public matrix member "+target);
+                }
                 MBS_MEMORY_PUBLICATION_EVENT("member",target);
             }
-            {PhysicalStorageScope disk;Atomic(stage+"/.mbs-public-v1",manifest.str());
+            {PhysicalStorageScope disk;
+                for(const auto& path:files)AtomicFileBatch::FlushPath(stage+path.substr(source.size()),false);
+                for(auto dir=directories.rbegin();dir!=directories.rend();++dir)AtomicFileBatch::FlushPath(*dir,true);
+                Atomic(stage+"/.mbs-public-v1",manifest.str());
                 AtomicFileBatch::FlushPath(stage,true);
                 Require(rename(stage.c_str(),destination.c_str())==0,"cannot publish matrix generation");
                 AtomicFileBatch::FlushPath(parent,true);}

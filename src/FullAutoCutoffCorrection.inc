@@ -1,3 +1,10 @@
+struct CutoffSampleCounts {
+    explicit CutoffSampleCounts(int orientations)
+        : correction(std::max(64, orientations/8)), off(std::max(64, orientations/64)) {}
+    bool BalancedTermsCancel() const { return correction == off; }
+    int correction, off;
+};
+
 // Included inside Engine. A fixed control-variate estimator for beam pruning:
 // C_N + (O_m - C_m), m=max(64,N/8), on the SAME scramble and prefix offset.
 // C is balanced by default or fast when explicitly requested.
@@ -245,6 +252,7 @@ bool RestoreCutoffPrefixRecipe(const Job& parent,int prefix){
     Record(parent.folder+"/cutoff_prefix_fallback.json",receipt);
     Atomic(path,"three-leg-v1\n");Log("cutoff_prefix_recipe_fallback",receipt);return false;
 }
+#include "FullAutoCutoffGrowth.inc"
 bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::string>>& commands,const std::vector<size_t>& todo,const std::function<void(size_t)>& onComplete){
     bool any=false;for(size_t i:todo)any=any||CorrectCutoffJob(result[i]);if(!any)return false;
     IndexAppendBatch indexWrites(*this);
@@ -286,9 +294,10 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
 #endif
     for(size_t i:todo){const auto& j=result[i];
         if(!CorrectCutoffJob(j)){direct[i]=native.size();launch.push_back(native.size());native.push_back(j);nativeCommands.push_back(commands[i]);continue;}
-        Recipe recipe;recipe.parent=i;recipe.staged=StagedCutoff();const int m=std::max(64,j.count/8);
-        const int k=std::max(64,j.count/64);
-        recipe.equalBalancedTerms=recipe.staged&&m==k;
+        Recipe recipe;recipe.parent=i;recipe.staged=StagedCutoff();
+        const CutoffSampleCounts counts(j.count);
+        const int m=counts.correction,k=counts.off;
+        recipe.equalBalancedTerms=recipe.staged&&counts.BalancedTermsCancel();
         bool pairedBalanced=j.pairedDepth!=0;
         // Resume any existing five-leg transaction with its original children.
         // New transactions share both balanced depth traces and need three legs.
@@ -302,6 +311,18 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
         // Existing interrupted transactions retain their exact native recipe.
         // The durable choice is written before dispatching any of its children.
         const auto prefixRecipe=CutoffPrefixRecipePath(j);
+        if(prefixEligible&&extendCutoffChild&&(!controls||sharedMeans)&&coherent&&!go&&
+           !j.paired&&!Exists(prefixRecipe)&&j.count>=128){
+            // A measured, complete native half can supply the first half of F_N.
+            // Look only at metadata. Honour any explicit or durable prefix choice.
+            Job fast=j;fast.pairedDepth=pairedBalanced?j.pairedDepth:0;
+            fast.executionHash=Hash(j.executionHash+(StagedCutoff()?" staged-fast-child-v1":" balanced-child-v1"));
+            const auto cmd=CutoffChildCommand(commands[i],j.count,j.depth,fast.pairedDepth,true,j.folder+"/result");
+            if(CutoffWindowSource(fast,j.count/2,cmd)){
+                prefixEligible=false;
+                Log("cutoff_reuse_prior_half","{\"count\":"+Number(j.count)+",\"paired_depth\":"+Number(fast.pairedDepth)+"}");
+            }
+        }
         if(Exists(prefixRecipe))recipe.embeddedPrefix=RestoreCutoffPrefixRecipe(j,m);
         else if(prefixEligible&&(!j.pairedDepth||pairedBalanced)){
             bool existing=false;
@@ -368,6 +389,8 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
         std::set<std::string> verified;ValidateStoredJob(j.folder,verified);j=Load(j);CacheJob(j);
         Log("cutoff_correction_complete","{\"folder\":"+Quoted(j.folder)+",\"seconds\":"+Number(j.seconds)+",\"assembly_seconds\":"+Number(Seconds()-assemblyBegin)+",\"streaming_assembly\":true,\"combined_replica_enters_accuracy_estimate\":true,\"old_off_blocks_compatible\":true}");
     };
+    std::map<size_t,CutoffGrowth> growth;
+    PlanCutoffGrowth(native,nativeCommands,launch,growth);
     std::vector<bool> ready(native.size(),true),assembled(recipes.size(),false);
     for(size_t i:launch)ready[i]=false;
     for(const auto& recipe:recipes)if(recipe.embeddedPrefix)ready[recipe.children[2]]=false;
@@ -383,9 +406,12 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
         for(size_t child:recipe.children)if(!ready[child])return;
         assemble(recipes[parent]);assembled[parent]=true;
     };
+    for(const auto& step:growth)if(ready[step.first])native[step.first]=CommitCutoffGrowth(step.second,&native[step.first]);
     for(size_t i=0;i<recipes.size();++i)finish(i); // interrupted assembly: children already durable
     const bool wasCollecting=collecting;collecting=false;correctionExecuting=true;
     try{ExecutePrepared(native,nativeCommands,launch,[&](size_t index){
+        const auto step=growth.find(index);
+        if(step!=growth.end())native[index]=CommitCutoffGrowth(step->second,&native[index]);
         ready[index]=true;for(size_t parent:dependents[index])finish(parent);
         // This is a progress pump, not a parent-completion notification. It may
         // prepare the next bounded batch while current native work runs.

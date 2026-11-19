@@ -23,8 +23,11 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
             const auto residual=AuditRequests(e,depths,*residualCounts,ids,knots);
             requests.insert(requests.end(),residual.begin(),residual.end());return work.Forecast(requests);}
         return work.Forecast(knots.empty()?BudgetRequests(e,depths,counts,ids):AuditRequests(e,depths,counts,ids,knots));};
+    const bool observe=e.unknownRoundFeedback&&!e.go&&e.executionRound>=0&&RoundPhysicalGpus(e)==1;
+    if(observe)e.FinishTimedCohort(Seconds());
+    else{e.unknownRound={};e.recentCohortTimes.clear();}
     const auto original=estimate(proposed);const double budget=1800.*RoundPhysicalGpus(e);
-    if(original.profiled&&original.seconds<=budget)return;
+    if(original.profiled&&original.seconds<=budget){e.unknownRound={};return;}
     const Budgets wanted=proposed;Budgets step=current;
     std::set<size_t> coupled;for(const auto& group:cohorts)coupled.insert(group.begin(),group.end());
     for(const auto& group:outputPriorities)coupled.insert(group.nodes.begin(),group.nodes.end());
@@ -46,12 +49,94 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
     for(size_t id:ids)if(!coupled.count(id))score({id},0);
     std::sort(rank.rbegin(),rank.rend());
     auto selected=step;size_t active=rank.size();
+    double measuredSecondsPerRow=0;
+    size_t empiricalLimit=1,backfilled=0;
+    std::string timedRecipe;
+    std::set<size_t> timedRows;
     if(!original.profiled&&e.local&&!rank.empty()){
-        // Missing measurements are not zero work. Advance only the highest
-        // priority complete cohort until the real worker timings are known.
-        // Keep its prescribed signed stencil and all eight seed prefixes.
+        // Start with one complete cohort. Repeated short rounds on the same
+        // optical recipe provide a bounded way out of an incomplete cost model.
         selected=current;active=1;
-        for(size_t id:rank.front().second)for(size_t l=0;l<current.size();++l)selected[l][id]=step[l][id];
+        if(observe&&rank.front().second.size()==1){
+            auto rowKey=[&](size_t id){
+                std::ostringstream key;
+                key<<e.PhiForTheta(id)<<' '<<(e.theta[id]<=1?-1:e.theta[id]>=179?1:0);
+                for(size_t l=0;l<current.size();++l){
+                    key<<' '<<depths[l]<<' '<<current[l][id]<<' '<<step[l][id];
+                    if(residualCounts)key<<' '<<residualCounts->at(l).at(id);
+                }
+                return key.str();
+            };
+            const auto first=rowKey(rank.front().second.front());
+            std::ostringstream signature;signature<<e.ExecutionHash()<<' '<<e.target<<' '<<separatePhi<<' '<<first;
+            for(size_t id:ids)signature<<' '<<id;
+            signature<<" /";for(size_t id:knots)signature<<' '<<id;
+            signature<<" resources "<<e.kernel.block<<' '<<e.kernel.pipeline<<' '<<e.kernel.warp<<' '<<e.controls
+                     <<' '<<e.sharedMeans<<' '<<e.mirror<<' '<<e.dispatchThreads<<' '<<e.orientationBlock;
+            if(residualCounts)for(const auto& level:*residualCounts){
+                signature<<" residual";for(size_t id:ids)signature<<' '<<level.at(id);
+            }
+            timedRecipe=Hash(signature.str());
+            const auto measured=e.recentCohortTimes.find(timedRecipe);
+            if(measured!=e.recentCohortTimes.end()){
+                const auto& t=measured->second;measuredSecondsPerRow=t.latest;
+                if(t.previous>0){
+                    const double unit=std::max(t.previous,t.latest);
+                    empiricalLimit=size_t(std::max(1.,std::min(double(std::min(size_t(32),2*t.rows)),budget/(8*unit))));
+                }
+            }
+            if(empiricalLimit==1){
+                timedRows.insert(rank.front().second.front());
+            }else{
+                decltype(rank) admitted,deferred;
+                admitted.reserve(empiricalLimit);deferred.reserve(rank.size());
+                for(auto& item:rank){
+                    const auto& group=item.second;
+                    if(admitted.size()<empiricalLimit&&group.size()==1&&rowKey(group.front())==first
+                            &&timedRows.insert(group.front()).second){
+                        if(!deferred.empty())++backfilled;
+                        admitted.push_back(std::move(item));
+                    }else deferred.push_back(std::move(item));
+                }
+                active=admitted.size();
+                admitted.insert(admitted.end(),std::make_move_iterator(deferred.begin()),std::make_move_iterator(deferred.end()));
+                rank.swap(admitted);
+            }
+        }
+        for(size_t k=0;k<active;++k)for(size_t id:rank[k].second)
+            for(size_t l=0;l<current.size();++l)selected[l][id]=step[l][id];
+    }else e.unknownRound={};
+    // An expensive unpriced future upgrade need not serialize already priced
+    // dyadic steps. Try the full nearest step first, then complete cohorts in
+    // priority order. Admit only fully priced work, with time headroom.
+    size_t pricedProbes=0,pricedAdmissions=0;
+    if(observe&&e.pricedSubround&&!original.profiled&&active<rank.size()&&!rank.empty()){
+        const double limit=budget*.5;
+        auto test=[&](const Budgets& proposal){
+            ++pricedProbes;
+            const auto value=estimate(proposal);
+            return value.profiled&&value.seconds<=limit;
+        };
+        if(test(step)){
+            selected=step;pricedAdmissions=rank.size()-active;active=rank.size();
+        }else{
+            // Non-monotonic costs are possible when two sets share traces.
+            // Failure only stops speculation; it never changes a known estimate.
+            const size_t ceiling=std::min(rank.size(),size_t(32));
+            size_t upper=ceiling;
+            bool failed=false;
+            while(active<upper){
+                const size_t next=failed?active+(upper-active+1)/2:std::min(upper,2*active);
+                auto trial=selected;
+                for(size_t k=active;k<next;++k)for(size_t id:rank[k].second)
+                    for(size_t l=0;l<current.size();++l)trial[l][id]=step[l][id];
+                if(!test(trial)){failed=true;upper=next-1;continue;}
+                selected=std::move(trial);pricedAdmissions+=next-active;active=next;
+            }
+        }
+        // These rounds have measured component profiles. They must not be
+        // recorded as observations of the empirically timed singleton recipe.
+        if(pricedAdmissions)timedRows.clear();
     }
     auto forecast=estimate(selected);
     const double fullSeconds=forecast.seconds;bool preservedSharing=false;double partitionOverhead=0;
@@ -171,7 +256,17 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
         ?forecast.profiled&&forecast.seconds<original.seconds:selected!=wanted);
     if(accepted)proposed=selected;
     size_t growing=0;for(size_t id:ids){bool grows=false;for(size_t l=0;l<current.size();++l)grows=grows||proposed[l][id]>current[l][id];growing+=grows;}
+    if(!timedRows.empty()&&growing==timedRows.size()){
+        bool same=true;
+        for(size_t id:timedRows)for(size_t l=0;l<current.size();++l)same=same&&proposed[l][id]==step[l][id];
+        if(same){
+            e.unknownRound.recipe=timedRecipe;e.unknownRound.round=e.executionRound;
+            e.unknownRound.rows=growing;e.unknownRound.started=Seconds();
+            e.unknownRound.workerSeconds=e.nativeWorkerSeconds;e.unknownRound.nativeBlocks=e.nativeCommitted;
+        }
+    }
     e.Record(e.root+"/round_work_limit.json","{\"policy\":\"complete eight-seed prefix and output/residual cohort scheduling v7\",\"applied\":"+std::string(accepted?"true":"false")
+        +",\"observed_previous_seconds_per_row\":"+Number(measuredSecondsPerRow)+",\"priced_subround_probes\":"+Number(pricedProbes)+",\"priced_cohort_admissions\":"+Number(pricedAdmissions)+",\"empirical_cohort_limit\":"+Number(empiricalLimit)+",\"timed_cohorts_backfilled\":"+Number(backfilled)
         +",\"unknown_cost_fallback\":"+(original.profiled?"false":"true")
         +",\"original_forecast_profiled\":"+(original.profiled?"true":"false")
         +",\"selected_forecast_profiled\":"+((accepted?forecast.profiled:original.profiled)?"true":"false")

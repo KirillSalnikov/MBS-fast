@@ -7,6 +7,34 @@ struct LiveNativeRequest {
 std::map<pid_t,LiveNativeRequest> liveNative;
 std::string executionPhase="native_execution";
 int executionRound=-1;
+struct UnknownRoundObservation {
+    std::string recipe;
+    int round=-1;
+    size_t rows=0;
+    double started=0,workerSeconds=0;
+    uint64_t nativeBlocks=0;
+} unknownRound;
+struct CohortTime {
+    int round=-1;
+    size_t rows=0;
+    double updated=0,latest=0,previous=0;
+};
+std::map<std::string,CohortTime> recentCohortTimes;
+void FinishTimedCohort(double now) {
+    const auto last=unknownRound;
+    unknownRound={};
+    for(auto it=recentCohortTimes.begin();it!=recentCohortTimes.end();) {
+        if(executionRound-it->second.round>12||now-it->second.updated>900.)
+            it=recentCohortTimes.erase(it);
+        else ++it;
+    }
+    if(!last.rows||last.round+1!=executionRound||nativeCommitted<=last.nativeBlocks)return;
+    const double elapsed=std::max(now-last.started,nativeWorkerSeconds-last.workerSeconds);
+    if(!std::isfinite(elapsed)||elapsed<=0)return;
+    auto& time=recentCohortTimes[last.recipe];
+    time.previous=time.latest;time.latest=elapsed/last.rows;
+    time.rows=last.rows;time.round=executionRound;time.updated=now;
+}
 double executionPhaseStarted=Seconds(),executionProgressWritten=-1,lastNativeCommit=-1;
 uint64_t nativeSubmitted=0,nativeReturned=0,nativeCommitted=0,nativeRetries=0,nativeOrientations=0;
 double nativeWorkerSeconds=0,nativeCheckpointSeconds=0;

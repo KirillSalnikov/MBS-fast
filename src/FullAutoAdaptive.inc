@@ -88,7 +88,30 @@ std::vector<size_t> AdaptiveGuards(const std::vector<size_t>& knots,size_t size,
     for(size_t i=1;i<knots.size();++i){size_t q=(knots[i-1]+knots[i])/2;if(q>knots[i-1]&&q<knots[i])all.insert(q);}return {all.begin(),all.end()};
 }
 AdaptiveData EvaluateUniformBudget(Engine& e,const std::vector<int>& depths,const Budgets& counts,const std::vector<size_t>& ids,const unsigned* seeds,bool prefetch=true){
-    const auto x=Angles(e.theta,ids);AdaptiveData result;result.analytic.assign(ids.size(),0);std::ostringstream sources;
+    const auto x=Angles(e.theta,ids);AdaptiveData result;result.analytic.assign(ids.size(),0);std::vector<std::ostringstream> sources(depths.size());
+    // A verified paired run publishes its lower depth with the same orientations,
+    // fitted controls and cutoff correction. Use that exact population for the
+    // base level when both levels request identical windows on this angular grid.
+    const bool canReuseBase=e.reuseCutoffDepth&&e.depthVerified&&e.depthSharing&&e.angularCache
+        &&(!e.controls||e.sharedMeans)&&!e.go&&e.coherent&&depths.size()>1;
+    std::set<int> matchingCounts;
+    if(canReuseBase){
+        std::set<int> mismatched;
+        for(size_t id:ids){
+            const int count=counts[0][id];
+            const int pairedCount=counts[1][id];
+            const bool suppliesPrefix=pairedCount>=512&&count%2==0&&count/2==pairedCount&&e.StagedCutoff();
+            if(pairedCount==count||suppliesPrefix)matchingCounts.insert(count);
+            else mismatched.insert(count);
+        }
+        for(int count:mismatched)matchingCounts.erase(count);
+    }
+    const bool pairedBase=!matchingCounts.empty();
+    // For (D0,D1,D2) with the same upper two sample populations, the D1
+    // matrix in (D2-D1) is exactly the one needed in (D1-D0).
+    const bool sharedMiddle=ShareMiddleWindow(e,depths,counts,ids);
+
+    result.levels.resize(depths.size());result.costs.resize(depths.size());
     auto subsetFor=[&](size_t level,int count,const std::vector<size_t>& rows){
         std::vector<double> subset;for(size_t r:rows)subset.push_back(x[r]);
         if(subset.size()==1){double padding;
@@ -100,30 +123,42 @@ AdaptiveData EvaluateUniformBudget(Engine& e,const std::vector<int>& depths,cons
     if(prefetch){std::vector<Engine::WorkRequest> requests;
         for(size_t level=0;level<depths.size();++level){std::map<int,std::vector<size_t>> groups;
             for(size_t r=0;r<ids.size();++r)groups[counts[level][ids[r]]].push_back(r);
-            for(const auto& group:groups){const auto subset=subsetFor(level,group.first,group.second);
+            for(const auto& group:groups){
+                if(level==0&&matchingCounts.count(group.first))continue;
+                const auto subset=subsetFor(level,group.first,group.second);
+                if(sharedMiddle&&level==1){
+                    if(!CompleteCachedPrefix(e,group.first,depths[0],subset,seeds))
+                        requests.push_back({group.first,0,depths[0],0,subset});
+                    continue;
+                }
                 if(CompleteCachedPrefix(e,group.first,depths[level],subset,seeds)
                         &&(!level||CompleteCachedPrefix(e,group.first,depths[level-1],subset,seeds)))continue;
                 requests.push_back({group.first,0,depths[level],level&&e.depthSharing?depths[level-1]:0,subset});
                 if(level&&!e.depthSharing)requests.push_back({group.first,0,depths[level-1],0,subset});}}
         if(!requests.empty())e.Prefetch(requests,seeds);
     }
-    for(size_t level=0;level<depths.size();++level){Samples data(8,Matrix(ids.size()));std::vector<double> cost(ids.size());std::map<int,std::vector<size_t>> groups;
+    for(size_t pass=0;pass<depths.size();++pass){
+        const size_t level=sharedMiddle?2-pass:(pairedBase&&pass<2?1-pass:pass);
+        Samples data(8,Matrix(ids.size()));std::vector<double> cost(ids.size());std::map<int,std::vector<size_t>> groups;
         for(size_t r=0;r<ids.size();++r)groups[counts[level][ids[r]]].push_back(r);
         for(const auto& group:groups){const auto subset=subsetFor(level,group.first,group.second);
             const bool complete=CompleteCachedPrefix(e,group.first,depths[level],subset,seeds)
                 &&(!level||CompleteCachedPrefix(e,group.first,depths[level-1],subset,seeds));
-            std::vector<Job> upper,lower;if(level&&e.depthSharing&&!complete){auto pair=e.SharedStage(group.first,seeds,8,depths[level],depths[level-1],subset);upper=pair.first;lower=pair.second;}else upper=e.Stage(group.first,seeds,8,depths[level],subset);
+            std::vector<Job> upper,lower;if(level&&e.depthSharing&&!complete&&!(sharedMiddle&&level==1)){auto pair=e.SharedStage(group.first,seeds,8,depths[level],depths[level-1],subset);upper=pair.first;lower=pair.second;}else upper=e.Stage(group.first,seeds,8,depths[level],subset);
             Samples value=e.Data(upper);double seconds=e.Cost(upper,group.first);
-            for(size_t s=0;s<8;++s)sources<<level<<" 1 "<<group.first<<' '<<seeds[s]<<' '<<upper[s].folder<<'\n';
+            for(size_t s=0;s<8;++s)sources[level]<<level<<" 1 "<<group.first<<' '<<seeds[s]<<' '<<upper[s].folder<<'\n';
             if(level){if(lower.empty())lower=e.Stage(group.first,seeds,8,depths[level-1],subset);value=Subtract(value,e.Data(lower));seconds+=e.Cost(lower,group.first);
-                for(size_t s=0;s<8;++s)sources<<level<<" -1 "<<group.first<<' '<<seeds[s]<<' '<<lower[s].folder<<'\n';}
+                for(size_t s=0;s<8;++s)sources[level]<<level<<" -1 "<<group.first<<' '<<seeds[s]<<' '<<lower[s].folder<<'\n';}
             for(size_t r:group.second){const size_t row=std::lower_bound(subset.begin(),subset.end(),x[r])-subset.begin();cost[r]=seconds;for(int s=0;s<8;++s)data[s][r]=value[s][row];
                 if(!level&&e.controls){const auto polar=e.Polar(x[r]);const auto scalar=e.ScalarWeights(x[r]);for(const auto& job:upper)for(int j=0;j<16;++j){const double wr=j?polar[0][j]:scalar[0],ws=j?polar[1][j]:scalar[1];const auto& c=job.controls[row];result.analytic[r]=std::max(result.analytic[r],job.controlRefinement*(std::fabs(wr*c[1])+std::fabs(ws*c[2])));}}
             }
         }
-        result.levels.push_back(data);result.costs.push_back(cost);
+        result.levels[level]=std::move(data);result.costs[level]=std::move(cost);
     }
-    result.sources=sources.str();return result;
+    for(const auto& level:sources)result.sources+=level.str();
+    if(sharedMiddle)e.Log("shared_middle_depth","{\"depth\":"+Number(depths[1])+",\"theta_rows\":"+Number(ids.size())+"}");
+    if(pairedBase)e.Log("paired_base_schedule","{\"theta_rows\":"+Number(ids.size())+",\"base_depth\":"+Number(depths.front())+"}");
+    return result;
 }
 AdaptiveData EvaluateBudgetImpl(Engine& e,const std::vector<int>& depths,const Budgets& counts,const std::vector<size_t>& ids,const unsigned* seeds,bool prefetch=true){
     if(e.thetaPhi.empty())return EvaluateUniformBudget(e,depths,counts,ids,seeds,prefetch);

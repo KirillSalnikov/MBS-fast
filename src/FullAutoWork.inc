@@ -35,17 +35,30 @@ class AdditionalWork {
         // The off child runs the same physical command. Reuse its timings,
         // never its samples, for a small uncorrected production block.
         if(profile==profiles.end()&&role==0)profile=profiles.find(Depth{depth,paired,2});
+        // With correction enabled the physical command and its unpruned
+        // correction child trace the same rays. Prefer the role's own timings.
+        if(profile==profiles.end()&&role==2&&e.balancedCorrection&&e.selectedCutoff=="off")
+            profile=profiles.find(Depth{depth,paired,0});
         ++result.jobs;
         if(profile==profiles.end()){result.profiled=false;return;}
         const auto& p=profile->second;const double trace=count*p.trace,diffraction=count*p.diffraction*rows;
         result.seconds+=p.setup+trace+diffraction-p.overlap*std::min(trace,diffraction);
     }
     void CorrectedCost(WorkForecast& result,int count,int depth,int paired,size_t rows)const{
-        const int m=std::max(64,count/8);
-        if(e.StagedCutoff()){const int k=std::max(64,count/64);
-            NativeCost(result,count,depth,paired,rows,1);NativeCost(result,m,depth,paired,rows,1);
-            NativeCost(result,m,depth,paired,rows,3);NativeCost(result,k,depth,paired,rows,2);
-            if(k!=m)NativeCost(result,k,depth,paired,rows,3);return;
+        const Engine::CutoffSampleCounts samples(count);
+        const int m=samples.correction;
+        if(e.StagedCutoff()){
+            // Charge both fast runs conservatively when the prefix is embedded.
+            // The balanced difference disappears identically at equal counts;
+            // there is then no balanced worker to supply a timing profile.
+            NativeCost(result,count,depth,paired,rows,1);
+            NativeCost(result,m,depth,paired,rows,1);
+            NativeCost(result,samples.off,depth,paired,rows,2);
+            if(!samples.BalancedTermsCancel()){
+                NativeCost(result,m,depth,paired,rows,3);
+                NativeCost(result,samples.off,depth,paired,rows,3);
+            }
+            return;
         }
         // Conservatively charge all three legs, including B_m when a verified
         // embedded prefix could save it. No native pilot or filesystem scan
@@ -237,11 +250,25 @@ public:
         forecasts.emplace(requests,result);return result;
     }
 };
+bool ShareMiddleWindow(const Engine& e,const std::vector<int>& depths,const Budgets& counts,const std::vector<size_t>& ids){
+    if(!e.shareMiddleDepth||!e.reuseCutoffDepth||!e.depthVerified||!e.depthSharing||!e.angularCache||
+       (e.controls&&!e.sharedMeans)||e.go||!e.coherent||depths.size()!=3)return false;
+    return std::all_of(ids.begin(),ids.end(),[&](size_t id){return counts[1][id]==counts[2][id];});
+}
 std::vector<Engine::WorkRequest> BudgetRequests(const Engine& e,const std::vector<int>& depths,const Budgets& counts,const std::vector<size_t>& ids,bool uniform=false){
     std::vector<Engine::WorkRequest> requests;
+    const bool shareMiddle=ShareMiddleWindow(e,depths,counts,ids);
     for(size_t l=0;l<depths.size();++l){std::map<int,std::vector<double>> groups;
         for(size_t id:ids)groups[counts[l][id]].push_back(e.theta[id]);
         for(auto& g:groups){auto& x=g.second;if(x.size()==1&&(uniform||e.thetaPhi.empty())){x.push_back(ids.size()>1?(e.theta[ids.front()]==x[0]?e.theta[ids.back()]:e.theta[ids.front()]):(e.theta.front()==x[0]?e.theta.back():e.theta.front()));std::sort(x.begin(),x.end());}
+            // The top pair supplies the middle output. A separate base-depth
+            // window is needed only where this count differs from the base budget.
+            if(l==1&&shareMiddle){
+                const bool sameBase=std::all_of(ids.begin(),ids.end(),[&](size_t id){
+                    return counts[1][id]!=g.first||counts[0][id]==g.first;});
+                if(!sameBase)requests.push_back({g.first,0,depths[0],0,x});
+                continue;
+            }
             requests.push_back(Engine::WorkRequest{g.first,0,depths[l],l&&e.depthSharing?depths[l-1]:0,x});
             if(l&&!e.depthSharing)requests.push_back(Engine::WorkRequest{g.first,0,depths[l-1],0,x});}}
     return requests;
