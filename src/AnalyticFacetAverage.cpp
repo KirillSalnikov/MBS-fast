@@ -1,3 +1,4 @@
+#include <limits>
 #include "AnalyticFacetAverage.h"
 #include "cuda/GpuAnalyticFacet.h"
 #include <algorithm>
@@ -186,6 +187,8 @@ struct Green
         return 2/z*(H-J/z);
     }
 };
+#include "AnalyticBinnedEdgeMeasure.inc"
+
 struct Basis
 {
     int degree;size_t count,terms;double step;
@@ -212,7 +215,8 @@ struct Basis
             for(size_t i=0;i<count;++i){g[i*terms+l]=values[i];d[i*terms+l]=f[i];}
         }
     }
-    std::array<double,2> Exact(double z,const std::vector<double>&factor)const
+    template<class Consume>
+    void ExactTerms(double z,Consume consume)const
     {
         // Ci(z) asymptotics at z>=64. Stop before the divergent tail; the
         // omitted term is below FP64 precision in this domain.
@@ -226,16 +230,42 @@ struct Basis
         const double g0=.5772156649015328606065120900824024+std::log(z)
             -(std::sin(z)/z*a-std::cos(z)/(z*z)*b);
         const auto j=AnalyticBackscatter::SphericalBessel(degree,z);
-        double value=factor[0]*g0,derivative=factor[0]*(1-std::cos(z))/z;
+        consume(0,g0,1-std::cos(z));
         // H_q = integral_0^z j_q(t) dt for odd q. Its exact recurrence gives
         // F_l=integral_0^z t*j_l(t)dt and G_l=integral_0^z F_l(t)/t dt.
         double H=1-j[0],A=1,T=0;const double K=g0-1+j[0];
         for(int l=2;l<=degree;l+=2){
             if(l>2){const int q=l-1;const double next=double(q-1)/q*H-double(2*q-1)/q*j[q-1];
                 T=double(q-1)/q*T-(H+next)/q;A*=double(q-1)/q;H=next;}
-            value+=factor[l/2]*(l*A*K+l*T-H);
-            derivative+=factor[l/2]*(l*H/z-j[l-1]);
+            consume(l/2,l*A*K+l*T-H,l*H/z-j[l-1]);
         }
+    }
+    // Exact radial primitives depend on degree, radius and step. Only the
+    // contraction coefficients vary across theta within this refinement pass.
+    std::vector<double> exactTable;
+    size_t exactTableEnd=0;
+    void PrepareExactTable(std::vector<size_t>& ends,size_t byteLimit){
+        if(ends.size()<4)return;
+        std::nth_element(ends.begin(),ends.begin()+3,ends.end(),std::greater<size_t>());
+        const size_t first=count-1;
+        exactTableEnd=std::min(ends[3],first+byteLimit/(2*terms*sizeof(double)));
+        if(exactTableEnd<=count){exactTableEnd=0;return;}
+        exactTable.resize((exactTableEnd-first)*2*terms);
+        for(size_t i=first;i<exactTableEnd;++i){
+            double* row=exactTable.data()+(i-first)*2*terms;
+            ExactTerms(i*step,[row](size_t l,double g,double d){row[2*l]=g;row[2*l+1]=d;});
+        }
+    }
+    std::array<double,2> Exact(double z,const std::vector<double>&factor,size_t i=std::numeric_limits<size_t>::max())const{
+        double value=0,derivative=0;
+        const auto contract=[&](size_t l,double g,double d){
+            if(l==0){value=factor[0]*g;derivative=factor[0]*d/z;}
+            else{value+=factor[l]*g;derivative+=factor[l]*d;}
+        };
+        if(i<exactTableEnd && i>=count-1){
+            const double* row=exactTable.data()+(i-(count-1))*2*terms;
+            for(size_t l=0;l<terms;++l)contract(l,row[2*l],row[2*l+1]);
+        }else ExactTerms(z,contract);
         return {{value,derivative}};
     }
     Green Combine(const std::vector<double>&a,double maxz,int gpuDevice=-1)const
@@ -255,7 +285,7 @@ struct Basis
             for(size_t l=0;l<terms;++l)
             {values[i]+=factor[l]*g[i*terms+l];derivatives[i]+=factor[l]*d[i*terms+l];}
         if(core<n){
-            const double z0=(core-1)*step;const auto anchor=Exact(z0,factor);
+            const double z0=(core-1)*step;const auto anchor=Exact(z0,factor,core-1);
             const double offset=values[core-1]-anchor[0],fluxOffset=z0*(derivatives[core-1]-anchor[1]);
             size_t cpuEnd=n;
 #ifdef USE_CUDA
@@ -272,7 +302,7 @@ struct Basis
 #else
             (void)gpuDevice;
 #endif
-            for(size_t i=core;i<cpuEnd;++i){const double z=i*step;const auto primitive=Exact(z,factor);
+            for(size_t i=core;i<cpuEnd;++i){const double z=i*step;const auto primitive=Exact(z,factor,i);
                 // Preserve the integrated small-z core, including its tiny
                 // Simpson error, with continuous value and derivative.
                 values[i]=primitive[0]+offset+fluxOffset*std::log(z/z0);
@@ -443,6 +473,12 @@ Control::Control(const std::vector<Face>&input,C refractive,double wavelength,
     }
 }
 
+static bool BinnedEdgesEnabled()
+{
+    const char* setting=std::getenv("MBS_ANALYTIC_BINNED_EDGES");
+    return setting && std::string(setting)=="1";
+}
+
 void Control::PrepareCachedMeans(const std::vector<double>&theta,const std::string &path)
 {
     if(path.empty()){PrepareMeans(theta);return;}
@@ -454,7 +490,13 @@ void Control::PrepareCachedMeans(const std::vector<double>&theta,const std::stri
         const unsigned char *p=static_cast<const unsigned char*>(data);
         for(size_t i=0;i<bytes;++i){fingerprint^=p[i];fingerprint*=1099511628211ULL;}
     };
-    const char version[]="MBS_PHYSICAL_FACET_MEAN_V3_COMPACT_ROWS";mix(version,sizeof(version));
+    const bool binned=BinnedEdgesEnabled();
+    const std::string version=binned ? "MBS_PHYSICAL_FACET_MEAN_V3_BINNED_EDGES_V1"
+                                     : "MBS_PHYSICAL_FACET_MEAN_V3_COMPACT_ROWS";
+    mix(version.c_str(),version.size()+1);
+    // Grouping depends on the radial extent and on how many angles share a pass.
+    // Isolate its roundoff from the grid-independent scalar row cache.
+    if(binned)for(double angle:theta)mix(&angle,sizeof(angle));
     double re=index.real(),im=index.imag();mix(&re,sizeof(re));mix(&im,sizeof(im));mix(&wave,sizeof(wave));
     mix(shadowMode.data(),shadowMode.size());
     const size_t count=faces.size();mix(&count,sizeof(count));
@@ -628,6 +670,38 @@ void Control::PrepareMeans(const std::vector<double>&theta)
         std::vector<double> edgeX,edgeW;Gauss(nodes,edgeX,edgeW);
         for(int i=0;i<nodes;++i){edgeX[i]=(edgeX[i]+1)/2;edgeW[i]/=2;}
         size_t edgeBudget=64*size_t(1024)*1024;
+        BinnedEdgeMeasure measure;
+        // Construct the distance table only when many active rows share
+        // enough Gauss nodes to amortize one scan of its radial intervals.
+        size_t edgePairs=0;
+        for(size_t g:representatives){
+            const auto m=patches[g].x.size();
+            edgePairs+=m*(m-1)/2;
+        }
+        const double radialIntervals=maxDiameter*maxQ/step;
+        const double quadraturePairs=double(edgePairs)*nodes*nodes;
+        const auto pendingRows=std::count(converged.begin(),converged.end(),0);
+        if(BinnedEdgesEnabled() && pendingRows>=96 && radialIntervals>0 && quadraturePairs>=8*radialIntervals)
+            measure.Build(patches,representatives,multiplicity,edgeX,edgeW,step,maxQ,maxDiameter);
+        const size_t measureBytes=measure.bins.capacity()*sizeof(BinnedEdgeMeasure::Bin)
+            +measure.diagonal.capacity()*sizeof(std::pair<double,double>);
+        edgeBudget-=std::min(edgeBudget,measureBytes);
+        const char* shareRadial=std::getenv("MBS_ANALYTIC_SHARED_RADIAL");
+        if(shareRadial ? std::string(shareRadial)=="1" : !measure.bins.empty()){
+            std::vector<size_t> ends;
+            for(size_t row=0;row<theta.size();++row)if(!converged[row]){
+                double h2,c2;Angles(theta[row],h2,c2);
+                const double extent=4*pi/wave*std::sqrt(h2)*maxDiameter+step;
+                const double required=std::max(4.,std::ceil(extent/step)+2);
+                if(!std::isfinite(required)||required>8388608)continue;
+                size_t end=size_t(required);
+                const size_t gpuFirst=std::max(basis.count,size_t(std::ceil((degree+11.)/step)));
+                if(meanDevice>=0 && end>gpuFirst+16384)end=gpuFirst;
+                if(end>basis.count)ends.push_back(end);
+            }
+            basis.PrepareExactTable(ends,measure.bins.empty()?edgeBudget/4:edgeBudget);
+            edgeBudget-=basis.exactTable.size()*sizeof(double);
+        }
         std::vector<EdgeDistances> edgeGeometry;edgeGeometry.reserve(representatives.size());
         for(size_t g=0;g<representatives.size();++g){const Patch& p=patches[representatives[g]];
             edgeGeometry.emplace_back(p.x,p.y,edgeX,edgeBudget);}
@@ -646,7 +720,8 @@ void Control::PrepareMeans(const std::vector<double>&theta)
             if(Q>0)
             {
                 Green green=basis.Combine(moments.At(theta[row]),Q*maxDiameter+step,meanDevice);
-                for(size_t g=0;g<representatives.size();++g)
+                if(measure.Evaluate(green,Q,reflection)){reflection/=(wave*wave);}
+                else for(size_t g=0;g<representatives.size();++g)
                 {
                     const Patch &p=patches[representatives[g]];
                     reflection+=multiplicity[g]*EdgeMean(p.x,p.y,Q,edgeX,edgeW,edgeGeometry[g],[&green](double z){return green.Value(z);},[&green](double z){return green.Same(z);})/(wave*wave);

@@ -74,7 +74,9 @@ int main(int argc,char** argv){
   for(int pose=0;pose<24;++pose){
   const double beta=pose==0?0:pose==1?std::acos(-1.)/2:u(rng)*std::acos(-1.);
   const double gamma=pose<2?0:u(rng)*2*std::acos(-1.),alpha=pose<2?0:u(rng)*2*std::acos(-1.);
+  setenv("MBS_CONVEX_FACET_BOUNDS","0",1);
   const auto a=Trace(false,scale,beta,gamma,alpha,absorption,shape);
+  setenv("MBS_CONVEX_FACET_BOUNDS","1",1);
   const auto& b=steady.Run(beta,gamma,alpha);
   assert(a.size()==b.size());beams+=a.size();
   for(size_t k=0;k<a.size();++k){const auto& x=a[k];const auto& y=b[k];

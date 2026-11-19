@@ -24,3 +24,9 @@ with tempfile.TemporaryDirectory(prefix='mbs_radial_') as directory:
         assert error<3e-8,(degree,z,actual,value,derivative,error)
         worst=max(worst,error)
     print('PASS: 30 long-phase primitives/derivatives, degrees0..320, z64..8192; max absolute error',worst)
+
+    edge_probe=Path(directory)/'edge_probe'
+    subprocess.run(['g++','-std=gnu++11','-O3','-fopenmp','-I'+str(ROOT/'src'),
+        str(ROOT/'tests/analytic_binned_edges_probe.cpp'),str(ROOT/'src/AnalyticBackscatter.cpp'),
+        '-o',str(edge_probe)],check=True)
+    subprocess.run([str(edge_probe)],check=True)

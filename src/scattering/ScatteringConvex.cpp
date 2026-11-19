@@ -1,4 +1,6 @@
 #include "ScatteringConvex.h"
+#include "FacetRayBounds.h"
+#include <cstdlib>
 
 ScatteringConvex::ScatteringConvex(Particle *particle, Light *incidentLight,
                                    bool isOpticalPath, int nActs)
@@ -125,6 +127,23 @@ bool ScatteringConvex::ScatterLight(double, double, const std::vector<std::vecto
 
 bool ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
 {
+    const char* setting=std::getenv("MBS_CONVEX_FACET_BOUNDS");
+    const int faceCount=m_particle->nFacets;
+    std::vector<double> storage;
+    std::vector<unsigned char> eligible;
+    if(setting && std::string(setting)=="1" && faceCount>0){
+        storage.resize(size_t(faceCount)*10);
+        eligible.resize(faceCount);
+        for(int f=0;f<faceCount;++f){
+            const auto box=FacetRayBounds::Limits(m_facets[f]);
+            for(int j=0;j<3;++j){
+                storage[j*faceCount+f]=box.center.coordinates[j];
+                storage[(3+j)*faceCount+f]=box.half.coordinates[j];
+                storage[(6+j)*faceCount+f]=m_facets[f].ex_normal.coordinates[j];
+            }
+            storage[9*faceCount+f]=box.usable?box.margin:std::numeric_limits<double>::infinity();
+        }
+    }
     while (m_treeSize != 0)
     {
         Beam beam = m_beamTree.back();
@@ -141,6 +160,23 @@ bool ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
         // instead of constructing its Jones matrix and track id for every
         // candidate facet. SplitSecondaryBeams overwrites it on every hit.
         Beam inBeam;
+        if(!eligible.empty()){
+            const FacetRayBounds::Footprint w(beam);
+            const double* centerU=&storage[faceCount*w.u], *centerV=&storage[faceCount*w.v], *centerK=&storage[faceCount*w.k];
+            const double* ex=&storage[faceCount*(3+w.u)],*ey=&storage[faceCount*(3+w.v)],*ez=&storage[faceCount*(3+w.k)];
+            const double* nx=&storage[6*faceCount],*ny=&storage[7*faceCount],*nz=&storage[8*faceCount],*pad=&storage[9*faceCount];
+            const double dx=beam.direction.cx,dy=beam.direction.cy,dz=beam.direction.cz;
+            const double sx=std::abs(w.du),sy=std::abs(w.dv);
+            unsigned char* mask=eligible.data();
+            #pragma omp simd
+            for(int f=0;f<faceCount;++f){
+                const double cos=dx*nx[f]+dy*ny[f]+dz*nz[f];
+                const double pu=centerU[f]-w.du*centerK[f],pv=centerV[f]-w.dv*centerK[f];
+                const double a=ex[f]+sx*ez[f]+pad[f]+w.scale,b=ey[f]+sy*ez[f]+pad[f]+w.scale;
+                const bool miss=(pu+a<w.loU)|(pu-a>w.hiU)|(pv+b<w.loV)|(pv-b>w.hiV);
+                mask[f]=!((cos < -1.e-8)|((cos>.001)&miss));
+            }
+        }
         for (int id = 0; id < m_particle->nFacets; ++id)
         {
             if (id == beam.lastFacetId)
@@ -148,6 +184,7 @@ bool ScatteringConvex::TraceInternalBeams(std::vector<Beam> &outBeams)
                 continue;
             }
 
+            if(!eligible.empty() && !eligible[id])continue;
             bool isIncident = SplitSecondaryBeams(beam, id, inBeam, outBeams);
 
             if (!isIncident)
