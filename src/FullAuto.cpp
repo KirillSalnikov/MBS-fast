@@ -1,3 +1,4 @@
+#include "FullAutoSeedKnots.h"
 #include "FullAutoKnotWork.h"
 #include "FullAutoPhiRowCost.h"
 #include <list>
@@ -1650,6 +1651,23 @@ struct Engine {
             costedInterpolationKnots=value=="1"&&coherent&&!go&&local;
             if(costedInterpolationKnots)fingerprint<<"interpolation_knot_work_v1=1\n";
         }
+        if(const char* option=std::getenv("MBS_FULLAUTO_SCREEN_THETA")){
+            const std::string value(option);
+            Require(value=="0"||value=="1","invalid dense theta screen option");
+            screenTheta=value=="1" && coherent && !go && !targetPhiPilot && !pairedThetaPilot && !cardinalTheta
+                && !args.IsCatched("fullauto_theta_audit") && !args.IsCatched("fullauto_theta_start")
+                && !args.IsCatched("fullauto_pilot") && !args.IsCatched("grid") && !args.IsCatched("tgrid")
+                && !config.adaptive.loadedFromFile;
+            if(screenTheta){
+                fingerprint<<"screen_dense_theta_v1=1\n";
+                if(const char* hint=std::getenv("MBS_FULLAUTO_SEED_KNOTS")){
+                    if(*hint){
+                        seedKnotText=Read(hint);Require(!seedKnotText.empty(),"empty theta proposal");
+                        fingerprint<<"seed_knots_v2="<<Hash(seedKnotText)<<"\n";
+                    }
+                }
+            }
+        }
         if(nestedPhiPilots)fingerprint<<"nested_phi_pilots_v1=1\n";
         if(reusePairedBase)fingerprint<<"production_paired_base=1\n";
         const char* ladder=std::getenv("MBS_FULLAUTO_DEPTH_LADDER");
@@ -2867,7 +2885,7 @@ struct Engine {
     #include "FullAutoThetaResidual.inc"
     void SelectPilotKnots(std::vector<size_t>& knots,const Samples& data,const Matrix& reference,double pilotBudget,
                          bool matchOutput,bool publish,double& maximum,int& refinements){
-        const auto initialKnots=knots;
+        const auto initialKnots=screenTheta?std::vector<size_t>{knots.front(),knots.back()}:knots;
         bool prune=matchOutput&&!args.IsCatched("fullauto_theta_start");
         maximum=0;refinements=0;
         for(;;){Samples support(8),predicted(8);std::vector<double> kx;
@@ -2906,7 +2924,13 @@ struct Engine {
             Require(!args.IsCatched("fullauto_theta_audit"),"explicit dense theta pilot exceeds explicit theta limit");
             Record(root+"/dense_theta_pilot.json","{\"enabled\":false,\"reason\":\"explicit theta limit\"}\n");return knots;
         }
-        const int plannedCount=FullAutoThetaPilotPlan::Count(thetaAuditCount,theta.size(),phi,args.IsCatched("fullauto_theta_audit")||args.IsCatched("fullauto_pilot")||config.adaptive.loadedFromFile);
+        if(screenTheta&&!seedKnotText.empty()){
+            knots=FullAutoSeedKnots::Parse(seedKnotText,theta);
+            Log("transferred_theta_proposal","{\"support_rows\":"+Number(knots.size())
+                +",\"proposal_hash\":"+Quoted(Hash(seedKnotText))+",\"all_angle_scan_required\":true}");
+        }
+        const int ordinaryCount=FullAutoThetaPilotPlan::Count(thetaAuditCount,theta.size(),phi,args.IsCatched("fullauto_theta_audit")||args.IsCatched("fullauto_pilot")||config.adaptive.loadedFromFile);
+        const int plannedCount=screenTheta?std::min(ordinaryCount,32):ordinaryCount;
         int actualCount=plannedCount;std::vector<Job> jobs;Samples data;Matrix reference;
         for(;;){
             std::cout<<"fullauto: independent dense theta pilot N="<<actualCount<<" rows="<<theta.size()<<std::endl;
@@ -2947,9 +2971,9 @@ struct Engine {
         }
         Log("dense_theta_pilot_work_budget","{\"requested_count_per_seed\":"+Number(thetaAuditCount)+",\"planned_count_per_seed\":"+Number(plannedCount)+",\"actual_count_per_seed\":"+Number(actualCount)+",\"theta_rows\":"+Number(theta.size())+",\"phi\":"+Number(phi)+",\"all_requested_angles_retained\":true,\"production_accuracy_accepted\":false}");
         const char* thetaRule=std::getenv("MBS_FULLAUTO_MATCH_THETA_PILOT");
-        const bool matchOutput=thetaRule&&std::string(thetaRule)=="1"&&coherent&&!go
-            &&!args.IsCatched("fullauto_theta_audit")&&!config.adaptive.loadedFromFile;
-        const double pilotBudget=interpolation*(matchOutput?.75:.5);
+        const bool matchOutput=screenTheta || (thetaRule&&std::string(thetaRule)=="1"&&coherent&&!go
+            &&!args.IsCatched("fullauto_theta_audit")&&!config.adaptive.loadedFromFile);
+        const double pilotBudget=interpolation*(matchOutput&&!screenTheta?.75:.5);
         double maximum=0;int refinements=0;
         SelectPilotKnots(knots,data,reference,pilotBudget,matchOutput,true,maximum,refinements);
         std::ostringstream report;report<<"{\"count_per_seed\":"<<actualCount<<",\"requested_count_per_seed\":"<<thetaAuditCount<<",\"reference_rows\":"<<theta.size()<<",\"support_rows\":"<<knots.size()<<",\"refinements\":"<<refinements<<",\"max_paired_residual95_scaled_M11\":"<<Number(maximum)<<",\"pilot_budget\":"<<Number(pilotBudget)<<",\"matches_output_interpolant\":"<<((matchOutput||UseLinearPOInterpolation(go,coherent))?"true":"false")<<",\"independent_production_seeds\":true}\n";
@@ -3058,7 +3082,7 @@ struct Engine {
     #include "FullAutoPhiSharedRows.inc"
     #include "FullAutoControlPreflight.inc"
     #include "FullAutoPhiWinner.inc"
-    bool densePhiPlateau=false;
+    bool densePhiPlateau=false;bool screenTheta=false;std::string seedKnotText;
     void Calibrate(const std::vector<double>& x,bool working=false,bool kernelOnly=false,int soleRule=0,bool screening=false,bool deferTuning=false,size_t workRows=0,bool separateTimings=false) {
         measuredPhi.clear();if(!working){startupPhiWitness.clear();startupPhiRows.clear();}
         const int previousPhi=phi;weightTheta=x;weights.clear();polarWeights.clear();phi=fixedPhi?fixedPhi:std::max(minPhi,std::min(maxPhi,4));
