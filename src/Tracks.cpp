@@ -1,6 +1,7 @@
 #include "Tracks.h"
 
 #include <climits>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
@@ -150,6 +151,73 @@ void Tracks::ImportTracks(int nFacets, const std::string &filename)
 	}
 }
 
+#ifndef _DEBUG
+namespace {
+int FacetFromDigit(int digit)
+{
+	if (digit < 1)
+		throw std::runtime_error(
+			"beam trajectory ID cannot be decoded for the loaded particle.\n"
+			"Fix: unset MBS_DISABLE_TRACK_IDS when using absorption or "
+			"--trajectories; if it is already unset, report this command as a bug.");
+	return digit - 1;
+}
+
+#if ULONG_MAX == 0xffffffffffffffffUL
+void DecodeGroupedTrack(const IdType &id, uint32_t base, size_t begin, std::vector<int> &track)
+{
+	// Group base-N digits so a single long division yields several facet indices.
+	uint32_t divisor = base;
+	unsigned digitsPerGroup = 1;
+	while (uint64_t(divisor) * base <= UINT32_MAX)
+	{
+		divisor *= base;
+		++digitsPerGroup;
+	}
+
+	uint32_t limbs[8];
+	unsigned count = 2 * id.getLength();
+	for (unsigned i = 0; i < id.getLength(); ++i)
+	{
+		const unsigned long block = id.getBlock(i);
+		limbs[2*i] = static_cast<uint32_t>(block);
+		limbs[2*i+1] = static_cast<uint32_t>(block >> 32);
+	}
+
+	size_t end = track.size();
+	bool firstGroup = true;
+	while (end > begin)
+	{
+		uint64_t remainder = 0;
+		for (unsigned i = count; i > 0; --i)
+		{
+			const uint64_t numerator = (remainder << 32) | limbs[i-1];
+			limbs[i-1] = static_cast<uint32_t>(numerator / divisor);
+			remainder = numerator % divisor;
+		}
+		while (count && limbs[count-1] == 0)
+			--count;
+		uint32_t group = static_cast<uint32_t>(remainder);
+		unsigned digits = digitsPerGroup;
+		if (firstGroup)
+		{
+			// The track encoder appends one trailing factor of base.
+			group /= base;
+			--digits;
+			firstGroup = false;
+		}
+		while (digits > 0 && end > begin)
+		{
+			track[--end] = FacetFromDigit(group % base);
+			group /= base;
+			--digits;
+		}
+	}
+}
+#endif
+}
+#endif
+
 void Tracks::RecoverTrack(const Beam &beam, int facetNum,
 						  std::vector<int> &track)
 {
@@ -159,42 +227,26 @@ void Tracks::RecoverTrack(const Beam &beam, int facetNum,
 	track.resize(oldSize + trackLength);
 
 #ifndef _DEBUG
-	// Most practical trajectories fit in at most two BigInteger blocks. Decode
-	// those with native integer arithmetic instead of repeated arbitrary-
-	// precision quotient/remainder operations in the diffraction hot path.
-#if defined(__SIZEOF_INT128__)
-	__extension__ typedef unsigned __int128 NativeTrackId;
-	const BigInteger::Index nativeBlockLimit = 2;
-#else
-	using NativeTrackId = unsigned long;
-	const BigInteger::Index nativeBlockLimit = 1;
-#endif
-	if (beam.id.getSign() != BigInteger::negative
-		&& beam.id.getLength() <= nativeBlockLimit)
+	if (beam.id.getSign() != BigInteger::negative && coef > 1)
 	{
-		NativeTrackId tmpId = beam.id.isZero()
-			? NativeTrackId(0) : NativeTrackId(beam.id.getBlock(0));
-#if defined(__SIZEOF_INT128__)
-		if (beam.id.getLength() == 2)
+		const unsigned blocks = beam.id.getLength();
+		if (blocks <= 1)
 		{
-			tmpId |= NativeTrackId(beam.id.getBlock(1))
-				<< (sizeof(unsigned long) * CHAR_BIT);
+			unsigned long id = beam.id.getBlock(0) / static_cast<unsigned long>(coef);
+			for (size_t end = track.size(); end > oldSize; --end)
+			{
+				track[end - 1] = FacetFromDigit(id % coef);
+				id /= coef;
+			}
+			return;
+		}
+#if ULONG_MAX == 0xffffffffffffffffUL
+		if (blocks <= 4)
+		{
+			DecodeGroupedTrack(beam.id, coef, oldSize, track);
+			return;
 		}
 #endif
-		tmpId /= static_cast<NativeTrackId>(coef);
-		for (int i = 0; i <= beam.nActs; ++i)
-		{
-			const int tmp = static_cast<int>(
-				tmpId % static_cast<NativeTrackId>(coef));
-			tmpId /= static_cast<NativeTrackId>(coef);
-			if (tmp < 1 || tmp > facetNum)
-				throw std::runtime_error(
-					"beam trajectory ID cannot be decoded for the loaded particle.\n"
-					"Fix: unset MBS_DISABLE_TRACK_IDS when using absorption or "
-					"--trajectories; if it is already unset, report this command as a bug.");
-			track[oldSize + trackLength - 1 - static_cast<size_t>(i)] = tmp - 1;
-		}
-		return;
 	}
 #endif
 

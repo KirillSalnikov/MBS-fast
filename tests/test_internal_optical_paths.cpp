@@ -10,6 +10,7 @@
 #include <iostream>
 #include <limits>
 #include <cmath>
+#include <random>
 class Convex:public ScatteringConvex {public:using ScatteringConvex::ScatteringConvex;void General(){m_unitFacetNormals=false;}};
 class NonConvex:public ScatteringNonConvex {public:using ScatteringNonConvex::ScatteringNonConvex;void General(){m_unitFacetNormals=false;}};
 static size_t checked=0,different=0;static double worst=0;
@@ -17,7 +18,38 @@ void Check(Scattering&s,const Beam&b,const std::vector<int>&track,std::array<Poi
  double actual[4],three[3];s.ComputeInternalOpticalPaths4(b,points.data(),track,actual);s.ComputeInternalOpticalPaths3(b,points.data(),track,three);
  for(int j=0;j<4;++j){double ref=s.ComputeInternalOpticalPath(b,points[j],track);assert(std::isfinite(ref)==std::isfinite(actual[j]));if(std::isfinite(ref)){++checked;if(ref!=actual[j])++different;worst=std::max(worst,std::fabs(ref-actual[j])/std::max(1.,std::fabs(ref)));}if(j<3){assert(std::isfinite(ref)==std::isfinite(three[j]));if(std::isfinite(ref)){++checked;if(ref!=three[j])++different;worst=std::max(worst,std::fabs(ref-three[j])/std::max(1.,std::fabs(ref)));}}}
 }
+#ifndef _DEBUG
+static void CheckTrackDecoding()
+{
+    std::mt19937 generator(396157);
+    for (int facets : {3, 6, 13, 78, 128, 256, 65535})
+    {
+        Beam beam;
+        const unsigned long base = facets + 1;
+        std::vector<int> expected{71, 93};
+        for (int length = 1; length <= 128; ++length)
+        {
+            const int facet = generator() % facets;
+            expected.push_back(facet);
+            beam.nActs = length - 1;
+            beam.id.multiplyAddNonnegative(base, (facet + 1) * base);
+            std::vector<int> actual{71, 93};
+            Tracks::RecoverTrack(beam, facets, actual);
+            assert(actual == expected);
+
+            ++beam.nActs;
+            bool rejected = false;
+            try { Tracks::RecoverTrack(beam, facets, actual); }
+            catch (const std::runtime_error &) { rejected = true; }
+            assert(rejected);
+        }
+    }
+}
+#endif
 int main(int argc,char**argv){assert(argc==2);
+#ifndef _DEBUG
+ CheckTrackDecoding();
+#endif
  for(int shape=0;shape<4;++shape)for(double absorption:{0.,.001})for(int pose=0;pose<3;++pose){
   std::unique_ptr<Particle> p;
   if(shape==0)p.reset(new Hexagonal(complex(1.31,absorption),35,100));
