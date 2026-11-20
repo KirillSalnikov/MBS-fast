@@ -7,7 +7,7 @@ struct DepthCandidateReview {
 };
 DepthCandidateReview ReviewDepthCandidate(Engine& e,int depth,const std::vector<double>& x,int limit,bool tryOtherDepth=false){
     namespace DS=FullAutoDepthSelection;
-    const int referenceDepth=DS::Reference(e.depthMaximum),anchorDepth=DS::Anchor(e.depthMaximum);
+    const int referenceDepth=e.ReferenceDepth(),anchorDepth=e.AnchorDepth();
     unsigned seeds[8];for(int s=0;s<8;++s){seeds[s]=1700000000u+unsigned(e.depthStart)*1024u+unsigned(s)*17u;
         Require(std::find(e.seeds.begin(),e.seeds.end(),seeds[s])==e.seeds.end(),"depth pilot/production seed overlap");}
     DepthCandidateReview result;result.depth=depth;result.counts.assign(x.size(),0);
@@ -58,7 +58,8 @@ DepthCandidateReview ReviewDepthCandidate(Engine& e,int depth,const std::vector<
             rows<<x[r]<<','<<result.counts[r]<<','<<bounds[r].upper<<','<<bounds[r].lower<<','<<guardBounds[r].upper<<','<<guardBounds[r].lower<<','
                 <<(decision==DS::Pass?"pass":decision==DS::Fail?"depth_insufficient":decision==DS::ReferenceFail?"reference_unresolved":"sampling_unresolved")<<'\n';
         }
-        result.passed=active.empty()&&!result.rejected&&!result.referenceFailed;
+        const bool atCeiling=e.capNonconvexDepth && depth==anchorDepth;
+        result.passed=!atCeiling&&active.empty()&&!result.rejected&&!result.referenceFailed;
         const std::string tag="n"+Number(depth)+"_reference"+Number(anchorDepth)+"_N"+Number(count);
         const std::string snapshot=e.root+"/depth_pilot_snapshots/"+tag;Directory(snapshot);
         if(e.go){GoOutputs(e,snapshot,EstimateGO(candidate,e.theta.size(),e.ratios),count);}
@@ -76,8 +77,8 @@ DepthCandidateReview ReviewDepthCandidate(Engine& e,int depth,const std::vector<
             +",\"accuracy_and_parameters\":"+Quoted(snapshot+"/parameters_accuracy.csv")+",\"paired_depth_residual95\":"+Number(result.residual.upper)+"}");
         const bool defer=tryOtherDepth && !result.rejected && !result.referenceFailed &&
             DS::DeferSparsePilot(count,limit,active.size(),result.referenceResidual.upper,e.depthBudget);
-        const bool stop=defer||result.passed||result.rejected||result.referenceFailed||count>=limit;
-        const std::string action=result.passed?"accept_candidate":result.referenceFailed?"reference_unresolved":result.rejected?"depth_insufficient":defer?"try_next_depth":stop?"defer_unresolved_candidate":"double_unresolved_angles";
+        const bool stop=atCeiling||defer||result.passed||result.rejected||result.referenceFailed||count>=limit;
+        const std::string action=atCeiling?"no_deeper_reference_at_ceiling":result.passed?"accept_candidate":result.referenceFailed?"reference_unresolved":result.rejected?"depth_insufficient":defer?"try_next_depth":stop?"defer_unresolved_candidate":"double_unresolved_angles";
         std::ostringstream report;report<<"{\"policy\":"<<Quoted(DS::Policy())<<",\"automatic\":true,\"candidate\":"<<depth<<",\"comparison_depth\":"<<anchorDepth
             <<",\"reference_depth\":"<<referenceDepth<<",\"count_per_seed\":"<<count<<",\"count_scope\":\"maximum; paired per-angle counts in CSV\",\"theta_rows\":"<<x.size()
             <<",\"sampled_theta_rows\":"<<query.size()<<",\"unresolved_theta_rows\":"<<active.size()<<",\"phi\":"<<e.phi
@@ -149,8 +150,8 @@ bool SelectAutomaticDepth(Engine& e){
     // pilot each time. This is a startup-only default; explicit blocks win.
     if(e.incremental&&!e.args.IsCatched("fullauto_orientation_block")&&!e.config.adaptive.loadedFromFile)
         e.orientationBlock=std::min(e.orientationBlock,std::max(512,e.depthPilot));
-    e.Record(e.root+"/depth_selection_policy.json","{\"policy\":"+Quoted(DS::Policy())+",\"reference_depth\":"+Number(DS::Reference(e.depthMaximum))
-        +",\"comparison_depth\":"+Number(DS::Anchor(e.depthMaximum))+",\"uncertain_pilot_floor\":"+Number(firstPass)+",\"pilot_limit\":"+Number(limit)
+    e.Record(e.root+"/depth_selection_policy.json","{\"policy\":"+Quoted(DS::Policy())+",\"reference_depth\":"+Number(e.ReferenceDepth())
+        +",\"comparison_depth\":"+Number(e.AnchorDepth())+",\"uncertain_pilot_floor\":"+Number(firstPass)+",\"pilot_limit\":"+Number(limit)
         +",\"pilot_orientation_block\":"+Number(e.orientationBlock)+",\"depth_budget\":"+Number(e.depthBudget)+",\"reference_guard_budget\":"+Number(e.depthBudget)
         +",\"search_start\":"+Number(searchStart)+",\"search\":\"doubling coarse depths then all skipped smaller depths; no monotonicity assumption\",\"local_theta_growth\":"+(e.go?"false":"true")
         +",\"scope\":\"finite reference agreement; final checks remain a separate explicit policy\"}");
@@ -162,10 +163,10 @@ bool SelectAutomaticDepth(Engine& e){
             if(!chosen.passed||r.forecast<chosen.forecast||(r.forecast==chosen.forecast&&r.depth<chosen.depth))chosen=r;}
         else if(!chosen.passed)chosen=r;};
     try{
-        if(!e.go&&e.depthSharing){e.target=DS::Anchor(e.depthMaximum);e.VerifyDepthSharing(x);}
+        if(!e.go&&e.depthSharing){e.target=e.AnchorDepth();e.VerifyDepthSharing(x);}
         for(int depth:DS::Candidates(searchStart,e.depthMaximum)){
             if(referenceFailed)break;
-            if(depth>smallestPass)continue;
+            if(depth>smallestPass || (e.capNonconvexDepth && depth==e.AnchorDepth() && !reviews.empty()))continue;
             remember(ReviewDepthCandidate(e,depth,x,firstPass,joinedRosette && depth<e.depthMaximum));
         }
         if(!chosen.passed&&!referenceFailed){
@@ -174,7 +175,7 @@ bool SelectAutomaticDepth(Engine& e){
             // remaining angles, including after an interrupted controller.
             for(int depth:DS::Candidates(searchStart,e.depthMaximum)){
                 const auto old=reviews.find(depth);if(old==reviews.end()||old->second.rejected||old->second.referenceFailed||old->second.count>=limit)continue;
-                if(depth>smallestPass)continue;
+                if(depth>smallestPass || (e.capNonconvexDepth && depth==e.AnchorDepth() && !reviews.empty()))continue;
                 remember(ReviewDepthCandidate(e,depth,x,limit));if(referenceFailed)break;
             }
         }
@@ -190,12 +191,12 @@ bool SelectAutomaticDepth(Engine& e){
     for(const auto& item:reviews){const auto& r=item.second;decisions<<r.depth<<','<<r.passed<<','<<r.rejected<<','<<r.referenceFailed<<','<<r.count<<','<<Number(r.residual.upper)<<','<<Number(r.referenceResidual.upper)<<','
         <<(DS::FiniteBound(r.forecast)?Number(r.forecast):"")<<','<<(r.depth==selected)<<'\n';}
     Atomic(e.root+"/depth_candidates.csv",decisions.str());
-    const std::string chosenSnapshot=e.root+"/depth_pilot_snapshots/n"+Number(chosen.depth)+"_reference"+Number(DS::Anchor(e.depthMaximum))+"_N"+Number(chosen.count);
+    const std::string chosenSnapshot=e.root+"/depth_pilot_snapshots/n"+Number(chosen.depth)+"_reference"+Number(e.AnchorDepth())+"_N"+Number(chosen.count);
     const std::string report="{\"policy\":"+Quoted(DS::Policy())+",\"automatic\":true,\"target_depth\":"+Number(selected)
         +",\"fallback_maximum\":"+(e.depthFallback?"true":"false")+",\"pilot_candidate_depth\":"+Number(chosen.depth)+e.DepthAccuracyFields()
         +",\"start\":"+Number(e.depthStart)+",\"maximum\":"+Number(e.depthMaximum)+",\"pilot_passed\":"+(chosen.passed?"true":"false")
         +",\"count_per_seed\":"+Number(chosen.count)+",\"count_scope\":\"maximum of local paired pilots\",\"residual_upper95\":"+Number(chosen.residual.upper)
-        +",\"budget\":"+Number(e.depthBudget)+",\"reference_depth\":"+Number(DS::Reference(e.depthMaximum))+",\"comparison_depth\":"+Number(DS::Anchor(e.depthMaximum))
+        +",\"budget\":"+Number(e.depthBudget)+",\"reference_depth\":"+Number(e.ReferenceDepth())+",\"comparison_depth\":"+Number(e.AnchorDepth())
         +",\"reference_upper95\":"+Number(chosen.referenceResidual.upper)+",\"reference_budget\":"+Number(e.depthBudget)
         +",\"reference_failed\":"+(referenceFailed?"true":"false")+",\"failed_reference_upper95\":"+Number(failedReferenceUpper)+",\"selection\":"+Quoted(e.depthFallback?"requested maximum; pilot did not pass":"lowest forecast cost among tested passing candidates")
         +",\"row_parameters\":"+Quoted(chosenSnapshot+"/parameters_accuracy.csv")+",\"candidate_comparison\":"+Quoted(e.root+"/depth_candidates.csv")

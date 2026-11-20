@@ -723,15 +723,15 @@ bool PhysicsAudit(Engine& e,const AdaptiveState& state,const std::vector<size_t>
     const auto original=e.base;const auto savedCutoff=e.selectedCutoff;bool pass=false;double depthError=0,cutoffError=0;
     for(int attempt=0;attempt<5;++attempt){
         std::vector<Job> target,deeper;
-        if(e.depthSharing&&e.depthVerified){const auto pair=e.SharedStage(count,seeds.data(),8,e.target+2,e.target,x);deeper=pair.first;target=pair.second;}
-        else{target=e.PrefixStage(count,seeds.data(),8,e.target,x);deeper=e.PrefixStage(count,seeds.data(),8,e.target+2,x);}
+        if(e.depthSharing&&e.depthVerified&&e.AuditDepth()>e.target){const auto pair=e.SharedStage(count,seeds.data(),8,e.AuditDepth(),e.target,x);deeper=pair.first;target=pair.second;}
+        else{target=e.PrefixStage(count,seeds.data(),8,e.target,x);deeper=e.PrefixStage(count,seeds.data(),8,e.AuditDepth(),x);}
         depthError=PhysicalDepthBound(e.Data(target),e.Data(deeper),scale,false,e.theta.size(),e.ratios);
         if(e.physicsAudit){e.SetCutoff("off");
         try{const auto uncut=e.DirectStage(count,seeds.data(),8,e.target,x);e.base=original;e.selectedCutoff=savedCutoff;e.SetMirror(e.mirror);cutoffError=PhysicalDepthBound(e.Data(target),e.Data(uncut),scale,false,e.theta.size(),e.ratios);}
         catch(...){e.base=original;e.selectedCutoff=savedCutoff;e.SetMirror(e.mirror);throw;}}
         pass=depthError<=(e.autoDepth?e.depthBudget:e.eps)&&cutoffError<=e.eps;if(pass||count>=e.maxCount||attempt==4)break;count=std::min(e.maxCount,count>e.maxCount/2?e.maxCount:2*count);
     }
-    e.Record(e.root+"/physics_validation.json","{\"enabled\":true,\"passed\":"+std::string(pass?"true":"false")+",\"depth_plus2_residual95_scaled_M11\":"+Number(depthError)+",\"cutoffs_off_residual95_scaled_M11\":"+Number(cutoffError)+",\"depth_pass\":"+std::string(depthError<=(e.autoDepth?e.depthBudget:e.eps)?"true":"false")+",\"cutoff_pass\":"+std::string(cutoffError<=e.eps?"true":"false")+",\"cutoffs_checked\":"+std::string(e.physicsAudit?"true":"false")+",\"depth_budget\":"+Number(e.autoDepth?e.depthBudget:e.eps)+",\"count_per_seed\":"+Number(count)+",\"checked_theta\":"+Number(x.size())+",\"requested_physics_retained\":true,\"scope\":\"requested evaluated angles (up to 4097 in automatic depth); depth+2 and optional cutoff sensitivity estimates; no ADDA or infinite-depth guarantee\"}");return pass;
+    e.Record(e.root+"/physics_validation.json","{\"enabled\":true,\"passed\":"+std::string(pass?"true":"false")+",\"comparison_depth\":"+Number(e.AuditDepth())+(e.AuditDepth()==e.target+2?",\"depth_plus2_residual95_scaled_M11\":":",\"depth_comparison_residual95_scaled_M11\":")+Number(depthError)+",\"cutoffs_off_residual95_scaled_M11\":"+Number(cutoffError)+",\"depth_pass\":"+std::string(depthError<=(e.autoDepth?e.depthBudget:e.eps)?"true":"false")+",\"cutoff_pass\":"+std::string(cutoffError<=e.eps?"true":"false")+",\"cutoffs_checked\":"+std::string(e.physicsAudit?"true":"false")+",\"depth_budget\":"+Number(e.autoDepth?e.depthBudget:e.eps)+",\"count_per_seed\":"+Number(count)+",\"checked_theta\":"+Number(x.size())+",\"requested_physics_retained\":true,\"scope\":\"requested evaluated angles (up to 4097 in automatic depth); depth+2 and optional cutoff sensitivity estimates; no ADDA or infinite-depth guarantee\"}");return pass;
 }
 #include "FullAutoLevelStability.inc"
 #include "FullAutoResumeRound.inc"

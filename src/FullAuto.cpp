@@ -1047,6 +1047,10 @@ struct Engine {
     int PhiForTheta(size_t id)const{const auto p=thetaPhi.find(id);return p==thetaPhi.end()?phi:p->second;}
     bool depthSharing=true,depthVerified=false;
     bool completedCheckpoint=false;
+    bool capNonconvexDepth=false;
+    int AnchorDepth()const{return capNonconvexDepth?std::min(12,FullAutoDepthSelection::Anchor(depthMaximum)):FullAutoDepthSelection::Anchor(depthMaximum);}
+    int ReferenceDepth()const{return capNonconvexDepth?std::min(10,FullAutoDepthSelection::Reference(depthMaximum)):FullAutoDepthSelection::Reference(depthMaximum);}
+    int AuditDepth()const{return capNonconvexDepth?(target==12?10:std::min(12,target+2)):target+2;}
     bool autoDepth=false,depthFallback=false;int depthStart=6,depthMaximum=18;double depthBudget=0,maximumEdge=0,maximumDiameter=0,particleVolume=0;
     double estimatedOrientations=0,estimatedBeta=0,estimatedGamma=0,empiricalFinal=0;
     int depthPilot=512;std::string initialModel="empirical",depthOrder="auto";bool startupKernel=false;std::string initialSource="explicit";
@@ -1150,7 +1154,7 @@ struct Engine {
             +",\"production_passes_explicit\":"+((args.IsCatched("convergence_passes")||config.adaptive.stablePassesExplicit)?"true":"false")
             +",\"production_convergence_retained\":true,\"startup_depth_selection_retained\":true,\"skipped_checks_are_unverified\":true}");
     }
-    void Init(int argc,const char* argv[],double edge=0,double diameter=0,double volume=0) {
+    void Init(int argc,const char* argv[],double edge=0,double diameter=0,double volume=0,bool nonconvex=false) {
         maximumEdge=edge;maximumDiameter=diameter;particleVolume=volume;
         go=config.method==RunMethod::GeometricalOptics;Require(!config.useFft,"requires a direct solver");
         for(const char* key:{"analytic_mean_reference","haar_mirror_audit","multigrid","multikeq","multikeq_list","orientfile_dedup","analytic_facet_samples","analytic_control_weights","analytic_backscatter","analytic_azimuth_gaussian","owen_avg"})
@@ -1239,8 +1243,9 @@ struct Engine {
         initial=Power2(initial);minimum=Power2(minimum);Require(initial<=maxCount&&minimum<=maxCount,"rounded counts exceed max-orientations");
         for(int v:{pilot,kernelCount,initial,minimum,maxCount})Require(v>0&&v<2147483647,"invalid configured counts");
         Require(roundLimit>0&&startTheta>=2&&maxTheta>=2&&minPhi>0&&maxPhi>=minPhi,"invalid configured limits");
-        depthStart=Int("fullauto_depth_start",6);depthMaximum=Int("fullauto_depth_max",18);
+        depthStart=Int("fullauto_depth_start",6);depthMaximum=Int("fullauto_depth_max",nonconvex?12:18);
         autoDepth=!args.IsCatched("n")&&On("fullauto_depth_search");
+        capNonconvexDepth=nonconvex&&autoDepth&&depthMaximum<=12;
         target=args.IsCatched("n")?config.maxReflections:depthStart;depthBudget=autoDepth?eps/4:0;
         Require(target>0&&depthStart>0&&depthMaximum>=depthStart&&depthMaximum<=28,"invalid depth search range");
         if(maximumEdge>0||(args.IsCatched("p")&&args.GetIntValue("p")==1)){
@@ -1470,6 +1475,7 @@ struct Engine {
         fingerprint<<"host="<<host<<"\nthreads="<<workerThreads<<"\nanalytic_mean_threads="<<analyticMeanThreads<<'\n';
         const char* visible=getenv("CUDA_VISIBLE_DEVICES");fingerprint<<"visible="<<(visible?visible:"")<<'\n';
         for(const auto& gpu:gpus)fingerprint<<"gpu="<<gpu<<'\n';
+        if(capNonconvexDepth)fingerprint<<"\nnonconvex-finite-ceiling-12";
         signature=Hash(fingerprint.str());
         // Old projected-shadow checkpoints predate the explicit model field.
         // Retain their exact identity and worker recipe only after numerical
@@ -1750,6 +1756,7 @@ struct Engine {
         return selected;
     }
     std::vector<Job> DirectStage(int n,unsigned const* seedSet,size_t ns,int depth,const std::vector<double>& x,bool weighted=true,bool pairedMirror=false,int offset=0,int pairedDepth=0) {
+        Require(!capNonconvexDepth||(depth<=12&&pairedDepth<=12),"nonconvex trace exceeds 12 reflections");
         Require(x.size()<=size_t(maxTheta)+(go?2:0),"explicit theta evaluation limit exceeded");Require(FileHash(exe)==binaryHash,"binary changed during run");std::ostringstream angles;for(double q:x)angles<<Number(q)<<'\n';std::string gridHash=Hash(angles.str());
         std::string grid=root+"/theta_"+gridHash+".csv";Atomic(grid,angles.str());std::string wf=weighted?WriteWeights(x):"";
         const int preparationThreads=AutoPrepareThreads(n,depth,pairedDepth,x.size());
@@ -2904,8 +2911,8 @@ namespace { double PhysicalDepthBound(const Samples&,const Samples&,const Matrix
 #include "FullAutoPhysics.inc"
 #include "FullAutoWindow.inc"
 
-int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],double maximumEdge,double maximumDiameter,double volume) {
-    std::unique_ptr<Engine> controller(new Engine(args,config));controller->Init(argc,argv,maximumEdge,maximumDiameter,volume);
+int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],double maximumEdge,double maximumDiameter,double volume,bool nonconvex) {
+    std::unique_ptr<Engine> controller(new Engine(args,config));controller->Init(argc,argv,maximumEdge,maximumDiameter,volume,nonconvex);
     Lock lock(controller->root+"/controller.lock");
     std::unique_ptr<Lock> refinementLock;
     if(controller->refinementWindow){PrepareRefinementWindow(*controller);refinementLock.reset(new Lock(controller->root+"/controller.lock"));}
@@ -2988,7 +2995,7 @@ int Run(const ArgPP& args,const RunConfig& config,int argc,const char* argv[],do
         const size_t checkpointCount=e.memoryCheckpoints;
         auto workingStore=std::move(e.memoryStore);auto workingScope=std::move(e.memoryScope);
         auto workingGpuChunkCaps=std::move(e.gpuChunkRetryCaps);
-        controller.reset(new Engine(args,config));controller->Init(argc,argv,maximumEdge,maximumDiameter,volume);
+        controller.reset(new Engine(args,config));controller->Init(argc,argv,maximumEdge,maximumDiameter,volume,nonconvex);
         controller->gpuChunkRetryCaps=std::move(workingGpuChunkCaps);
         if(wasMemory){controller->memoryMode=true;controller->checkpointInterval=interval;controller->memoryCheckpointAt=checkpointAt;
             controller->memoryCheckpoints=checkpointCount;controller->memoryStore=std::move(workingStore);controller->memoryScope=std::move(workingScope);

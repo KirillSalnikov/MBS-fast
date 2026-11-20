@@ -14,6 +14,7 @@ GoStatistics EstimateGO(const Samples& samples,size_t bins,bool ratios){
 std::vector<double> GoRows(const Engine& e){auto x=e.theta;x.push_back(0);x.push_back(180);return x;}
 Samples GoSample(Engine& e,int count,const unsigned* seeds,int depth=-1,std::string* integralSources=nullptr){
     if(depth<0)depth=e.target;
+    Require(!e.capNonconvexDepth||depth<=12,"nonconvex GO depth exceeds ceiling");
     const auto x=GoRows(e);
     Samples data(8,Matrix(x.size()));
     // Dyadic contiguous windows preserve every completed prefix without
@@ -121,7 +122,7 @@ int RunGO(Engine& e){
                 if(e.PhysicalAuditEnabled()){
                     unsigned fresh[8];for(int i=0;i<8;++i){fresh[i]=1400000000u+unsigned(round)*1024u+unsigned(i)*17u;
                         Require(std::find(e.seeds.begin(),e.seeds.end(),fresh[i])==e.seeds.end(),"GO physics/production seed overlap");}
-                    auto original=GoSample(e,count,fresh),deep=GoSample(e,count,fresh,e.target+2);
+                    auto original=GoSample(e,count,fresh),deep=GoSample(e,count,fresh,e.AuditDepth());
                     auto bound=[&](const Samples& other){return PhysicalDepthBound(original,other,result.stats.mean,true,bins,e.ratios);};
                     const double depthError=bound(deep);const auto savedBase=e.base;const auto savedCutoff=e.selectedCutoff;const bool savedMirror=e.mirror;double cutoffError=0;
                     if(e.physicsAudit){e.SetCutoff("off");try{cutoffError=bound(GoSample(e,count,fresh));}
@@ -130,7 +131,7 @@ int RunGO(Engine& e){
                     e.cutoffError=cutoffError;
                     const double cutoffBudget=e.selectedCutoff=="balanced" ? e.eps/8 : e.eps;
                     physics=depthError<=(e.autoDepth?e.depthBudget:e.eps)&&cutoffError<=cutoffBudget;
-                    e.Record(e.root+"/physics_validation.json","{\"enabled\":true,\"passed\":"+(physics?std::string("true"):"false")+",\"depth_plus2_residual95_scaled_M11\":"+Number(depthError)+",\"cutoffs_off_residual95_scaled_M11\":"+Number(cutoffError)+",\"depth_pass\":"+std::string(depthError<=(e.autoDepth?e.depthBudget:e.eps)?"true":"false")+",\"cutoff_pass\":"+std::string(cutoffError<=cutoffBudget?"true":"false")+",\"cutoffs_checked\":"+std::string(e.physicsAudit?"true":"false")+",\"cutoff_budget\":"+Number(cutoffBudget)+",\"depth_budget\":"+Number(e.autoDepth?e.depthBudget:e.eps)+",\"count_per_seed\":"+Number(count)+",\"requested_physics_retained\":true}");
+                    e.Record(e.root+"/physics_validation.json","{\"enabled\":true,\"passed\":"+(physics?std::string("true"):"false")+",\"comparison_depth\":"+Number(e.AuditDepth())+(e.AuditDepth()==e.target+2?",\"depth_plus2_residual95_scaled_M11\":":",\"depth_comparison_residual95_scaled_M11\":")+Number(depthError)+",\"cutoffs_off_residual95_scaled_M11\":"+Number(cutoffError)+",\"depth_pass\":"+std::string(depthError<=(e.autoDepth?e.depthBudget:e.eps)?"true":"false")+",\"cutoff_pass\":"+std::string(cutoffError<=cutoffBudget?"true":"false")+",\"cutoffs_checked\":"+std::string(e.physicsAudit?"true":"false")+",\"cutoff_budget\":"+Number(cutoffBudget)+",\"depth_budget\":"+Number(e.autoDepth?e.depthBudget:e.eps)+",\"count_per_seed\":"+Number(count)+",\"requested_physics_retained\":true}");
                 }else e.Record(e.root+"/physics_validation.json","{\"enabled\":false,\"passed\":false,\"requested_physics_retained\":true}");
                 if(!physics){e.State("physics_validation_failed",round,{count},bins,result.maximum,0,streak);return 4;}
                 GoOutputs(e,e.root,result,count);Atomic(e.root+"/mueller_fullauto.dat",Read(e.root+"/mueller_evaluated.dat"));

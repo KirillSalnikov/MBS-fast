@@ -38,5 +38,5 @@ std::vector<int> AllocateCovariant(const std::vector<Samples>& levels,
                           const std::vector<double>& costs,const std::vector<int>& counts,
                           const Matrix& reference,double tolerance,bool ratios,int maximum,double decisionTolerance=0);
 int Run(const ArgPP& args, const RunConfig& config, int argc, const char* argv[],
-        double maximumEdge=0,double maximumDiameter=0,double particleVolume=0);
+        double maximumEdge=0,double maximumDiameter=0,double particleVolume=0,bool nonconvex=false);
 }

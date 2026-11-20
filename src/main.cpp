@@ -1817,7 +1817,9 @@ int RunCalculation(int argc, const char* argv[])
         try {
             std::string shapeSummary;
             auto shape=CreateConfiguredParticle(args,::complex(config.refractiveReal,config.refractiveImag),config.wavelengthUm,shapeSummary);
-            return FullAuto::Run(args,config,argc,argv,shape->MaximumEdgeLength(),shape->MaximalDimention(),shape->Volume());
+            return FullAuto::Run(args,config,argc,argv,shape->MaximumEdgeLength(),shape->MaximalDimention(),shape->Volume(),
+                config.geometry==GeometryClassification::Nonconvex ||
+                (config.geometry!=GeometryClassification::Convex && shape->isConcave));
         }
         catch (const std::exception& error)
         {
