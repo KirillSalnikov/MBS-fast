@@ -4,6 +4,8 @@
 #include <functional>
 #include <exception>
 #include "FullAuto.h"
+#include "TraceCachePolicy.h"
+#include "FullAutoPhiTileMemory.h"
 #include "FullAutoInterpolationPolicy.h"
 #include "FullAutoKnotWork.h"
 #include "FullAutoAngularPilotCost.h"
@@ -2729,6 +2731,7 @@ struct Engine {
         Record(root+"/kernel_calibration.json",report.str());Log("kernel_selection",report.str());
     }
 #include "FullAutoPhiScoreFloor.inc"
+#include "FullAutoTiledPhi.inc"
     void Calibrate(const std::vector<double>& x,bool working=false,bool kernelOnly=false) {
         const int previousPhi=phi;weightTheta=x;weights.clear();polarWeights.clear();phi=fixedPhi?fixedPhi:std::max(minPhi,std::min(maxPhi,4));
         if(config.useGpu&&!working&&!startupKernel)CalibrateKernel(x);
@@ -2749,6 +2752,8 @@ struct Engine {
         if(fixedPhi)phiCandidates={fixedPhi};
         std::ostringstream candidatesJson;candidatesJson<<'[';bool first=true;
         const int depth=working?target:std::max(1,target-4);
+        PhiPilotTable tiled;
+        const bool useTiles=CanTilePhi(phiCandidates) && BuildTiledPhi(phiCandidates,depth,x,tiled);
         for(int candidate:phiCandidates){Require(candidate>=minPhi&&candidate<=maxPhi,"phi outside configured limits");phi=candidate;
             int calibrationCount=pilot;
             const int pilotLimit=FullAutoScheduling::PilotLimit(pilot,maxCount,fixedPhi||args.IsCatched("fullauto_pilot")||config.adaptive.loadedFromFile);
@@ -2756,13 +2761,16 @@ struct Engine {
             // Training fits control coefficients only. With controls disabled
             // its eight native solves were discarded; keep the independent
             // validation scrambles and the complete accuracy contract.
+            const bool prepared=useTiles&&calibrationCount==pilot;
             const bool screen=scoreFloor&&bestResolved;
+            const bool trained=prepared && !tiled.fit.empty();
             std::vector<Job> train;
-            if(controls&&!screen)train=Stage(calibrationCount,training,8,depth,x,false);
-            auto valid=Stage(calibrationCount,validation,8,depth,x,false);
+            if(controls&&!screen)train=trained?tiled.fit.at(candidate):Stage(calibrationCount,training,8,depth,x,false);
+            auto valid=prepared?tiled.validation.at(candidate):Stage(calibrationCount,validation,8,depth,x,false);
             if(screen){
                 double seconds=0,setup=0,errorFloor=0;
                 for(const Job& j:valid){seconds+=std::max(1e-6,j.seconds-j.controlSetup);setup=std::max(setup,j.controlSetup);}
+                if(prepared)seconds=tiled.standaloneSeconds.at(candidate);
                 const bool finite=PhiValidationErrorFloor(valid,errorFloor);
                 const double floor=seconds*std::max(double(initial)/calibrationCount,std::pow(errorFloor/statistical,2))+setup;
                 if(finite&&floor>best*(1+1e-8)){
@@ -2804,6 +2812,7 @@ struct Engine {
             }
             Statistics stats=Estimate(adjusted);double seconds=0,setup=0;
             for(const auto& job:valid){seconds+=std::max(1e-6,job.seconds-job.controlSetup);setup=std::max(setup,job.controlSetup);}
+            if(prepared)seconds=tiled.standaloneSeconds.at(candidate);
             const double uncertainty=ratios?std::max(stats.maxInterval,stats.maxRatioInterval):stats.maxInterval;
             // Predict finite work to reach the requested budget. Once the
             // minimum production sample count suffices, lower variance

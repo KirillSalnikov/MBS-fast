@@ -1,4 +1,5 @@
 #include "TraceCachePolicy.h"
+#include "FullAutoPhiTileMemory.h"
 #include "cuda/GpuTraceCapacity.h"
 #include <cassert>
 #include <cstdlib>
@@ -13,6 +14,13 @@ static void expect(bool persistent, bool explicitLimit, long long requested,
     assert(limits.hostMiB == expectedHost && limits.gpuRawMiB == expectedGpu);
 }
 int main() {
+    const std::string memoryReport =
+        "Orientation average adaptive memory: measured 1 MiB / 1 orientations, conservative 16000 KiB/orientation, budget 10 MiB\n"
+        "Orientation average adaptive memory: measured 1 MiB / 1 orientations, conservative 32000 KiB/orientation, budget 10 MiB\n";
+    assert(FullAutoPhiTileMemory::Peak(memoryReport) == 32000);
+    assert(FullAutoPhiTileMemory::Peak("unrelated conservative 32000 KiB/orientation") == 0);
+    assert(FullAutoPhiTileMemory::Fit(256, 32000, 16) == 8);
+    assert(FullAutoPhiTileMemory::Fit(256, 16000, 16) == 16);
     const long long ampleRam = 64LL * 1024 * 1024;
     // Implicit persistent CPU preparation stays 256MiB. Only GPU raw storage
     // changes under the opt-in; a standalone native run still defaults to 0.

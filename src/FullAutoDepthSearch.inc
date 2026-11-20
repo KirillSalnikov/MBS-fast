@@ -5,7 +5,7 @@ struct DepthCandidateReview {
     DepthResidual residual,referenceResidual;
     double forecast=1e100;std::vector<int> counts;
 };
-DepthCandidateReview ReviewDepthCandidate(Engine& e,int depth,const std::vector<double>& x,int limit){
+DepthCandidateReview ReviewDepthCandidate(Engine& e,int depth,const std::vector<double>& x,int limit,bool tryOtherDepth=false){
     namespace DS=FullAutoDepthSelection;
     const int referenceDepth=DS::Reference(e.depthMaximum),anchorDepth=DS::Anchor(e.depthMaximum);
     unsigned seeds[8];for(int s=0;s<8;++s){seeds[s]=1700000000u+unsigned(e.depthStart)*1024u+unsigned(s)*17u;
@@ -74,8 +74,10 @@ DepthCandidateReview ReviewDepthCandidate(Engine& e,int depth,const std::vector<
         e.Record(e.root+"/intermediate_current.json","{\"converged\":false,\"phase\":\"depth_selection\",\"policy\":"+Quoted(DS::Policy())
             +",\"candidate\":"+Number(depth)+",\"snapshot_folder\":"+Quoted(snapshot)+",\"matrix\":"+Quoted(snapshot+"/mueller_evaluated.dat")
             +",\"accuracy_and_parameters\":"+Quoted(snapshot+"/parameters_accuracy.csv")+",\"paired_depth_residual95\":"+Number(result.residual.upper)+"}");
-        const bool stop=result.passed||result.rejected||result.referenceFailed||count>=limit;
-        const std::string action=result.passed?"accept_candidate":result.referenceFailed?"reference_unresolved":result.rejected?"depth_insufficient":stop?"defer_unresolved_candidate":"double_unresolved_angles";
+        const bool defer=tryOtherDepth && !result.rejected && !result.referenceFailed &&
+            DS::DeferSparsePilot(count,limit,active.size(),result.referenceResidual.upper,e.depthBudget);
+        const bool stop=defer||result.passed||result.rejected||result.referenceFailed||count>=limit;
+        const std::string action=result.passed?"accept_candidate":result.referenceFailed?"reference_unresolved":result.rejected?"depth_insufficient":defer?"try_next_depth":stop?"defer_unresolved_candidate":"double_unresolved_angles";
         std::ostringstream report;report<<"{\"policy\":"<<Quoted(DS::Policy())<<",\"automatic\":true,\"candidate\":"<<depth<<",\"comparison_depth\":"<<anchorDepth
             <<",\"reference_depth\":"<<referenceDepth<<",\"count_per_seed\":"<<count<<",\"count_scope\":\"maximum; paired per-angle counts in CSV\",\"theta_rows\":"<<x.size()
             <<",\"sampled_theta_rows\":"<<query.size()<<",\"unresolved_theta_rows\":"<<active.size()<<",\"phi\":"<<e.phi
@@ -137,14 +139,18 @@ bool SelectAutomaticDepth(Engine& e){
     std::vector<double> x;if(e.go)x=GoRows(e);
     else{const size_t size=std::min(size_t(65),std::min(e.theta.size(),size_t(e.maxTheta)));for(size_t row=0;row<size;++row)x.push_back(e.theta[row*(e.theta.size()-1)/(size-1)]);}
     WriteGrid(e.root+"/depth_pilot_theta.csv",x);
-    const int floor=DS::PilotFloor(e.depthPilot,e.maxCount),limit=DS::PilotLimit(e.depthPilot,e.maxCount);
+    const int limit=DS::PilotLimit(e.depthPilot,e.maxCount);
+    // A marginal shallow depth can spend hours on one more doubling. Try the
+    // other candidate depths first; the same bounds still decide acceptance.
+    const bool joinedRosette=!e.go && e.args.IsCatched("rosette_joined");
+    const int firstPass=DS::PilotFloor(e.depthPilot,e.maxCount);
     const int savedBlock=e.orientationBlock;
     // Doubling must append native prefixes, not retrace a larger monolithic
     // pilot each time. This is a startup-only default; explicit blocks win.
     if(e.incremental&&!e.args.IsCatched("fullauto_orientation_block")&&!e.config.adaptive.loadedFromFile)
         e.orientationBlock=std::min(e.orientationBlock,std::max(512,e.depthPilot));
     e.Record(e.root+"/depth_selection_policy.json","{\"policy\":"+Quoted(DS::Policy())+",\"reference_depth\":"+Number(DS::Reference(e.depthMaximum))
-        +",\"comparison_depth\":"+Number(DS::Anchor(e.depthMaximum))+",\"uncertain_pilot_floor\":"+Number(floor)+",\"pilot_limit\":"+Number(limit)
+        +",\"comparison_depth\":"+Number(DS::Anchor(e.depthMaximum))+",\"uncertain_pilot_floor\":"+Number(firstPass)+",\"pilot_limit\":"+Number(limit)
         +",\"pilot_orientation_block\":"+Number(e.orientationBlock)+",\"depth_budget\":"+Number(e.depthBudget)+",\"reference_guard_budget\":"+Number(e.depthBudget)
         +",\"search_start\":"+Number(searchStart)+",\"search\":\"doubling coarse depths then all skipped smaller depths; no monotonicity assumption\",\"local_theta_growth\":"+(e.go?"false":"true")
         +",\"scope\":\"finite reference agreement; final checks remain a separate explicit policy\"}");
@@ -160,14 +166,14 @@ bool SelectAutomaticDepth(Engine& e){
         for(int depth:DS::Candidates(searchStart,e.depthMaximum)){
             if(referenceFailed)break;
             if(depth>smallestPass)continue;
-            remember(ReviewDepthCandidate(e,depth,x,floor));
+            remember(ReviewDepthCandidate(e,depth,x,firstPass,joinedRosette && depth<e.depthMaximum));
         }
-        if(!chosen.passed&&!referenceFailed&&limit>floor){
+        if(!chosen.passed&&!referenceFailed){
             // Only unresolved candidates need larger pilots; confirmed failures
             // stay rejected. Review replays cached prefixes before extending the
             // remaining angles, including after an interrupted controller.
             for(int depth:DS::Candidates(searchStart,e.depthMaximum)){
-                const auto old=reviews.find(depth);if(old==reviews.end()||old->second.rejected||old->second.referenceFailed)continue;
+                const auto old=reviews.find(depth);if(old==reviews.end()||old->second.rejected||old->second.referenceFailed||old->second.count>=limit)continue;
                 if(depth>smallestPass)continue;
                 remember(ReviewDepthCandidate(e,depth,x,limit));if(referenceFailed)break;
             }

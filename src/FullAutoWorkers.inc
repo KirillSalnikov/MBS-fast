@@ -32,6 +32,7 @@ void WaitAfterHostReserveFailure(const Job& job){
     if(waited)Record(root+"/resource_wait.json","{\"waiting\":false,\"folder\":"+Quoted(job.folder)+",\"same_sampling\":true}");
 }
 void CompleteNative(Job& j) {
+    if(measuringPhiMemory)ObservePhiMemory(j);
     j=Load(j);Require(j.matrix.size()==j.inputAngles.size(),"worker returned wrong theta count");
     for(size_t r=0;r<j.inputAngles.size();++r)Require(std::fabs(j.angles[r]-j.inputAngles[r])<1e-10,"worker returned wrong theta coordinates");
     // Packed native jobs stay private: manifests are atomically visible but

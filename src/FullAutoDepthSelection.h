@@ -12,6 +12,12 @@ inline bool FiniteBound(double v){return std::isfinite(v)&&v>=0&&v<1e50;}
 inline int Reference(int maximum){return std::min(28,maximum+2);}
 inline int Anchor(int maximum){return std::min(30,maximum+4);}
 inline int PilotFloor(int initial,int maximum){return std::min(maximum,std::max(initial,4096));}
+// A couple of marginal directions can make a shallow candidate cost more
+// to certify than testing the next depth. Only the first search pass defers.
+inline bool DeferSparsePilot(int count,int limit,size_t unresolved,double referenceUpper,double budget){
+    return count>=2048 && count<limit && unresolved>0 && unresolved<=2 &&
+           FiniteBound(referenceUpper) && referenceUpper<=budget;
+}
 inline int PilotLimit(int initial,int maximum){
     return std::min(maximum,std::max(4096,initial>maximum/256?maximum:initial*256));
 }

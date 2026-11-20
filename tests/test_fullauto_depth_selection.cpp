@@ -114,6 +114,13 @@ void CandidateOrder(){
 }
 void BoundedSampling(){
     Check(D::PilotFloor(512,1<<24)==4096,"default ambiguity floor not4096");
+    Check(D::DeferSparsePilot(2048,4096,2,.0012,.01),"sparse marginal pilot did not defer");
+    Check(!D::DeferSparsePilot(1024,4096,2,.0012,.01) && !D::DeferSparsePilot(2048,4096,3,.0012,.01)
+          && !D::DeferSparsePilot(2048,2048,2,.0012,.01) && !D::DeferSparsePilot(2048,4096,2,.011,.01),
+          "sparse scheduling masked a broad, exhausted or reference-limited pilot");
+    // D10 at 0.400 um, n=12: the 2048-orientation interval crosses the 1% depth budget.
+    Check(D::Classify(.01093615842806193,.009173024272923566,.0011733071643922363,0,.01)
+          ==D::Unresolved,"trying another depth must not turn an ambiguous result into a pass");
     Check(D::PilotLimit(512,1<<24)==131072,"default pilot cap not512x256");
     Check(D::PilotFloor(8,64)==64&&D::PilotLimit(8,64)==64,
           "explicit max64 silently raised to4096");
