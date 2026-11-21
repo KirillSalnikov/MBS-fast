@@ -164,6 +164,7 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
     }
     Budgets packingStep=step;
     bool boundedPrefixStep=false;size_t prefixStepForecasts=0,sharingForecasts=0,sharingCohorts=0;
+    size_t batchForecasts=0,batchCohorts=0;
     std::ostringstream sharingDecisions;sharingDecisions<<'[';
     // A whole output/stencil cohort can prescribe 4x (or more) samples. Merely
     // reducing the number of cohorts leaves even a single angle above the
@@ -256,7 +257,40 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
                 <<",\"added_padded_row_work_ratio\":"<<Number(bestCost)
                 <<",\"forecast_worker_seconds\":"<<(next.profiled?Number(next.seconds):"null")
                 <<",\"accepted\":"<<(admit?"true":"false")<<'}';
-            if(admit){selected=candidate;forecast=next;++active;++sharingCohorts;}
+            if(admit){
+                selected=candidate;forecast=next;++active;++sharingCohorts;
+                // A trace-bound nonconvex round can have hundreds of singleton
+                // rows requesting the same next prefix. After eight successful
+                // admissions, price a group against the complete native schedule.
+                // Stop at the first incompatible row so error priority is retained.
+                if(e.go||!e.nonconvexGeometry||paddingOnly||sharingCohorts!=8||rank[best].second.size()!=1
+                        ||bestShared!=bestTotal||forecast.seconds>=budget)continue;
+                const size_t sample=rank[best].second.front();
+                std::vector<size_t> batch;
+                for(size_t k=0;k<rank.size()&&batch.size()<32;++k){
+                    const auto& group=rank[k].second;
+                    bool grows=false;
+                    for(size_t id:group)for(size_t l=0;l<current.size();++l)
+                        grows=grows||packingStep[l][id]>selected[l][id];
+                    if(!grows)continue;
+                    if(group.size()!=1)break;
+                    const size_t id=group.front();
+                    bool same=e.PhiForTheta(id)==e.PhiForTheta(sample);
+                    for(size_t l=0;l<current.size();++l)
+                        same=same&&current[l][id]==current[l][sample]&&selected[l][id]==current[l][id]
+                            &&packingStep[l][id]==packingStep[l][sample];
+                    if(!same)break;
+                    if(std::find(batch.begin(),batch.end(),id)==batch.end())batch.push_back(id);
+                }
+                for(size_t width=batch.size();width>=2&&batchForecasts<4;width/=2){
+                    auto widened=selected;
+                    for(size_t i=0;i<width;++i)for(size_t l=0;l<current.size();++l)
+                        widened[l][batch[i]]=packingStep[l][batch[i]];
+                    const auto cost=estimate(widened);++batchForecasts;
+                    if(!cost.profiled||cost.seconds>budget||cost.jobs>forecast.jobs)continue;
+                    selected=std::move(widened);forecast=cost;active+=width;batchCohorts=width;break;
+                }
+            }
         }
     }
     sharingDecisions<<']';
@@ -273,7 +307,7 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
             e.unknownRound.workerSeconds=e.nativeWorkerSeconds;e.unknownRound.nativeBlocks=e.nativeCommitted;
         }
     }
-    e.Record(e.root+"/round_work_limit.json","{\"policy\":\"complete eight-seed prefix and output/residual cohort scheduling v8\",\"applied\":"+std::string(accepted?"true":"false")
+    e.Record(e.root+"/round_work_limit.json","{\"policy\":\"complete eight-seed prefix and output/residual cohort scheduling v9\",\"applied\":"+std::string(accepted?"true":"false")
         +",\"observed_previous_seconds_per_row\":"+Number(measuredSecondsPerRow)+",\"priced_subround_probes\":"+Number(pricedProbes)+",\"priced_cohort_admissions\":"+Number(pricedAdmissions)+",\"empirical_cohort_limit\":"+Number(empiricalLimit)+",\"timed_cohorts_backfilled\":"+Number(backfilled)
         +",\"unknown_cost_fallback\":"+(original.profiled?"false":"true")
         +",\"original_forecast_profiled\":"+(original.profiled?"true":"false")
@@ -286,6 +320,7 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
         +",\"advisory_worker_seconds\":"+Number(budget)+",\"selected_growing_rows\":"+Number(growing)+",\"selected_cohorts\":"+Number(active)
         +",\"bounded_prefix_step_applied\":"+(boundedPrefixStep?"true":"false")+",\"prefix_step_forecasts\":"+Number(prefixStepForecasts)
         +",\"sharing_backfill_forecasts\":"+Number(sharingForecasts)+",\"sharing_backfill_cohorts\":"+Number(sharingCohorts)
+        +",\"matching_batch_forecasts\":"+Number(batchForecasts)+",\"matching_batch_cohorts\":"+Number(batchCohorts)
         +",\"sharing_backfill_admissions\":"+sharingDecisions.str()
         +",\"shared_trace_efficiency_preserved\":"+(boundedPrefixStep?"null":(preservedSharing?"true":"false"))
         +",\"partition_overhead_scope\":"+Quoted(boundedPrefixStep?"before_prefix_step":"selected_partition")

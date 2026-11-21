@@ -26,6 +26,7 @@ void CheckBounds(const Budgets& before,const Budgets& wanted,const Budgets& afte
 }
 void Run(const std::string& root,double timing,bool pair,bool expectWithin){
     ArgPP args;RunConfig config;Engine e(args,config);Init(e,root);
+    e.nonconvexGeometry=true;
     if(timing>0)Coverage(e,timing);
     std::vector<size_t> ids;Statistics stats;stats.interval.resize(e.theta.size());stats.ratioInterval.resize(e.theta.size());
     std::vector<RoundOutputPriority> groups;
@@ -102,6 +103,32 @@ void CompatibleBackfill(const std::string& root){
         &&receipt.find("\"selected_cohorts\":3")!=std::string::npos,"non-prefix admissions omitted from receipt");
     std::cout<<"PASS blocked-rank backfill: worst cohort retained, free padding replacement then three useful rows, "<<forecast.seconds<<" forecast seconds\n";
 }
+
+void TraceSharingBatch(const std::string& root){
+    ArgPP args;RunConfig config;Engine e(args,config);Init(e,root);
+    const size_t rows=192;e.theta.clear();std::vector<size_t> ids;Statistics stats;
+    stats.interval.resize(rows);stats.ratioInterval.resize(rows);
+    for(size_t i=0;i<rows;++i){ids.push_back(i);e.theta.push_back(i*.5);stats.interval[i][0]=1.+double(rows-i)/rows;}
+    for(unsigned seed:e.seeds){
+        Job j;e.SetSampling(j,256,seed,6,e.theta,false);j.identity=Number(seed);j.folder=root+"/"+j.identity;
+        j.seconds=750;j.traceSeconds=60;j.diffractionSeconds=690;e.CacheJob(j);
+    }
+    Budgets current(1,std::vector<int>(rows,256)),wanted(1,std::vector<int>(rows,512));
+    AdditionalWork work(e,e.seeds.data());
+    auto narrow=wanted;BoundRoundWork(e,work,current,narrow,{6},ids,stats);
+    e.nonconvexGeometry=true;auto wide=wanted;BoundRoundWork(e,work,current,wide,{6},ids,stats);
+    const auto before=work.Forecast(BudgetRequests(e,{6},narrow,ids));
+    const auto after=work.Forecast(BudgetRequests(e,{6},wide,ids));
+    const auto oldRows=std::count(narrow[0].begin(),narrow[0].end(),512);
+    const auto newRows=std::count(wide[0].begin(),wide[0].end(),512);
+    std::cout<<"compatible rows "<<oldRows<<" -> "<<newRows<<" forecast "<<before.seconds<<" -> "<<after.seconds
+             <<" jobs "<<before.jobs<<" -> "<<after.jobs<<'\n';
+    CheckBounds(current,wanted,wide);
+    Require(newRows>oldRows&&before.profiled&&after.profiled&&after.jobs==before.jobs&&after.seconds<=1800,
+            "same-prefix batch failed to widen within the existing jobs and time budget");
+    for(size_t id:ids)Require(wide[0][id]==(id<size_t(newRows)?512:256),"compatible rows lost ranked order");
+}
+
 }
 int main(int argc,char** argv){try{
     Require(argc==2,"OUTPUT");const std::string root=argv[1];
@@ -109,6 +136,7 @@ int main(int argc,char** argv){try{
     Run(root+"/irreducible",840,false,false);Run(root+"/unknown",0,true,false);
     UnchangedCases(root+"/nonlocal",false);UnchangedCases(root+"/already2x",true);
     CompatibleBackfill(root+"/compatible_backfill");
+    TraceSharingBatch(root+"/trace_sharing_batch");
     std::cout<<"PASS: oversized 4x cohort becomes bounded 2x; measured breadth; whole cohorts; eight seeds; no rollback; deterministic; unknown/irreducible costs honest\n";
     return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}
