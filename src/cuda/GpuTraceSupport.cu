@@ -598,9 +598,13 @@ static bool upload_trace_facets_if_needed(const Facet *facets, int maxFacetId,
     for (GpuTraceFacetRecord &record : hostFacets)
         record.margin = margin;
 
-    if (!trace_cuda_ok(cudaMemcpy(g_traceWorkspace.facets, hostFacets.data(),
-                                  hostFacets.size() * sizeof(GpuTraceFacetRecord),
-                                  cudaMemcpyHostToDevice), "copy trace facets"))
+    // The consuming kernels may use a nonblocking stream. Order the upload
+    // on that stream and finish reading the local host vector before return.
+    const cudaStream_t stream = trace_stream();
+    if (!trace_cuda_ok(cudaMemcpyAsync(g_traceWorkspace.facets, hostFacets.data(),
+                                      hostFacets.size() * sizeof(GpuTraceFacetRecord),
+                                      cudaMemcpyHostToDevice, stream), "copy trace facets")
+        || !trace_cuda_ok(cudaStreamSynchronize(stream), "finish trace facet upload"))
         return false;
     g_traceWorkspace.facetOwner = facets;
     g_traceWorkspace.copiedMaxFacetId = maxFacetId;
