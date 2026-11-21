@@ -20,8 +20,9 @@ bool CanTilePhi(const std::vector<int>& rules) const {
         && !args.IsCatched("trace_cache_mb") && !args.IsCatched("chunk") && workerChunk==0 && !mirror && (!controls||sharedMeans);
 }
 
-void FillTiledPhi(std::map<int,std::vector<Job>>& table,const unsigned* seedSet,int first,int end,
-                  const std::vector<int>& rules,int depth,const std::vector<double>& x) {
+bool FillTiledPhi(std::map<int,std::vector<Job>>& table,const unsigned* seedSet,int first,int end,
+                  const std::vector<int>& rules,int depth,const std::vector<double>& x,
+                  const std::function<bool()>& stopReplay={}) {
     // Restrict the temporary cache to the existing host memory allowance. The worker
     // also clamps the actual cache to the live per-process budget and available RAM.
     const char* cap=std::getenv("MBS_HOST_MEM_BUDGET_MB");
@@ -50,6 +51,7 @@ void FillTiledPhi(std::map<int,std::vector<Job>>& table,const unsigned* seedSet,
             const double weight=double(length)/pilot;
             unsigned tileHits=0,tileMisses=0;
             for(int rule:rules){
+                if(stopReplay && stopReplay())return false;
                 phi=rule;kernelTrialNonce=Hash(session+" "+Number(++serial));
                 Job part=DirectStage(length,seedSet+seedIndex,1,depth,x,false,false,offset).front();
                 if(rule!=rules.front()){
@@ -83,6 +85,7 @@ void FillTiledPhi(std::map<int,std::vector<Job>>& table,const unsigned* seedSet,
     Log("phi_tile_reuse","{\"seed_start\":"+Number(first)+",\"hits\":"+Number(hitCount)+",\"misses\":"+Number(missCount)
         +",\"safe_kib_per_orientation\":"+Number(phiPeakKiB)+",\"cache_mib\":"+Number(limits.hostMiB)
         +",\"first_tile\":"+Number(initialTile)+",\"final_tile\":"+Number(tileSize)+"}");
+    return true;
 }
 
 bool BuildTiledPhi(const std::vector<int>& rules,int depth,const std::vector<double>& x,PhiPilotTable& t) {
@@ -120,7 +123,18 @@ bool BuildTiledPhi(const std::vector<int>& rules,int depth,const std::vector<dou
     // before choosing this schedule for the six remaining validation seeds.
     std::map<int,std::vector<Job>> replay;
     const double replayStart=Seconds();
-    FillTiledPhi(replay,validation,1,2,rules,depth,x);
+    // Once elapsed time alone fails the final cost test, further tiles cannot
+    // change the decision. All standalone validation samples remain available.
+    const auto replaySubmitted=nativeSubmitted;
+    if(!FillTiledPhi(replay,validation,1,2,rules,depth,x,[&]{
+        return 7*(Seconds()-replayStart)>=6*baselineSeconds;
+    })){
+        Log("phi_reuse_decision","{\"depth\":"+Number(depth)+",\"orientations\":"+Number(pilot)
+            +",\"baseline_seconds\":"+Number(baselineSeconds)+",\"replay_seconds\":"+Number(Seconds()-replayStart)
+            +",\"replay_requests\":"+Number(nativeSubmitted-replaySubmitted)
+            +",\"reason\":\"replay exceeded cost limit\",\"use_tiled_phi\":false}");
+        return false;
+    }
     const double replaySeconds=Seconds()-replayStart;
     bool consistent=true;
     double difference=0,ratioDifference=0;
