@@ -228,7 +228,18 @@ void IndivisibleTraceBatch(const std::string& root,bool traceLimited=false){
         Require(SelectMandatoryPacket(e,work,current,wanted,requirement,{6},ids,stats,{},nullptr,packet,3600.),
                 "compatible mandatory rows did not share the trace");
         CheckBounds(current,requirement,packet);
-        Require(std::count(packet[0].begin(),packet[0].end(),512)==128,"incorrect compatible packet width");
+        Require(std::count(packet[0].begin(),packet[0].end(),512)==256,"incorrect compatible packet width");
+        // With 196 eligible rows the wide trial is too expensive. Preserve the
+        // 128-row candidate even though 196/2 would leave only 98 rows.
+        auto partial=current;
+        for(size_t id=0;id<196;++id)partial[0][id]=wanted[0][id];
+        auto first128=base;
+        for(size_t id=0;id<128;++id)first128[0][id]=wanted[0][id];
+        const double limit128=work.Forecast(BudgetRequests(e,{6},first128,ids)).seconds;
+        packet=base;
+        Require(SelectMandatoryPacket(e,work,current,wanted,partial,{6},ids,stats,{},nullptr,packet,limit128),
+                "affordable narrower packet missing");
+        Require(packet==first128,"oversized candidate displaced the affordable 128-row packet");
         for(const auto& requirements:{current,Budgets(1,std::vector<int>(rows,255))}){
             auto other=wanted;
             BoundRoundWork(e,work,current,other,{6},ids,stats,{}, {},nullptr,{},&requirements);

@@ -66,7 +66,8 @@ bool SelectMandatoryPacket(Engine& e,AdditionalWork& work,const Budgets& current
     size_t selectedRows=0,selectedLevel=0,firstId=0;long long selectedGain=0;WorkForecast chosen;
     for(size_t g=0;g<std::min(size_t(6),packets.size());++g){
         const auto& packet=packets[g];
-        for(size_t width=std::min(size_t(128),packet.rows.size());width;width/=2){
+        // Price one larger group, then compare the original bounded candidates.
+        for(size_t width=std::min(size_t(256),packet.rows.size());width;width=width>128?128:width/2){
             auto trial=current;
             for(size_t i=0;i<width;++i)trial[packet.level][packet.rows[i]]+=packet.increase;
             const auto cost=price(trial);
@@ -77,7 +78,7 @@ bool SelectMandatoryPacket(Engine& e,AdditionalWork& work,const Budgets& current
                 best=efficiency;chosen=cost;selected=std::move(trial);selectedRows=width;
                 selectedLevel=packet.level;selectedGain=gain;firstId=packet.rows.front();
             }
-            break;
+            if(width<=128)break;
         }
     }
     if(!selectedRows)return false;
