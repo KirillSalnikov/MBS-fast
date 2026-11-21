@@ -200,7 +200,7 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
         }
     }
     // Fill spare capacity for ordinary 2x steps too, not only shortened 4x steps.
-    if(e.local&&original.profiled&&forecast.profiled&&forecast.seconds<=budget&&!rank.empty()){
+    if(e.local&&original.profiled&&forecast.profiled&&!rank.empty()&&(forecast.seconds<=budget||active==1)){
         // A costly next-ranked cohort must not hide a compatible
         // later one. Prefer replacing singleton endpoint padding by
         // useful rows, then sharing already scheduled Sobol offsets.
@@ -209,7 +209,8 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
         using Events=std::map<int,std::pair<int,int>>;
         using SamplingGroup=std::pair<size_t,int>; // level and phi
         std::set<size_t> tried;
-        for(;forecast.seconds<=budget&&sharingForecasts<8;){
+        for(;sharingForecasts<8;){
+            const bool paddingOnly=forecast.seconds>budget;
             std::map<SamplingGroup,Events> baseEvents;
             for(size_t l=0;l<current.size();++l)for(size_t id:ids)if(selected[l][id]>current[l][id]){
                 auto& events=baseEvents[{l,e.PhiForTheta(id)}];
@@ -237,12 +238,19 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
                 if(best==rank.size()||cost<bestCost||(cost==bestCost&&fraction>bestFraction)){
                     best=k;bestCost=cost;bestShared=shared;bestTotal=total;bestFraction=fraction;}
             }
-            if(best==rank.size())break;tried.insert(best);auto candidate=selected;
+            // An indivisible over-budget prefix already pays for two native rows.
+            // Replace padding only when every added orientation shares that trace.
+            if(best==rank.size()||(paddingOnly&&(bestCost!=0||bestShared!=bestTotal)))break;
+            tried.insert(best);auto candidate=selected;
             for(size_t id:rank[best].second)for(size_t l=0;l<current.size();++l)
                 candidate[l][id]=std::max(candidate[l][id],packingStep[l][id]);
-            const auto next=estimate(candidate);const bool admit=next.profiled&&next.seconds<=budget;
+            const auto next=estimate(candidate);const bool admit=next.profiled&&(paddingOnly
+                ?next.seconds<=forecast.seconds&&next.jobs<=forecast.jobs:next.seconds<=budget);
             if(sharingForecasts++)sharingDecisions<<',';
             sharingDecisions<<"{\"cohort_rank\":"<<best<<",\"error_priority\":"<<Number(rank[best].first)
+                <<",\"over_budget_padding_only\":"<<(paddingOnly?"true":"false")
+                <<",\"previous_forecast_worker_seconds\":"<<Number(forecast.seconds)
+                <<",\"previous_forecast_jobs\":"<<Number(forecast.jobs)<<",\"candidate_forecast_jobs\":"<<Number(next.jobs)
                 <<",\"shared_orientation_fraction\":"<<Number(bestFraction)
                 <<",\"shared_orientations\":"<<Number(bestShared)<<",\"additional_orientations\":"<<Number(bestTotal)
                 <<",\"added_padded_row_work_ratio\":"<<Number(bestCost)
@@ -265,7 +273,7 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
             e.unknownRound.workerSeconds=e.nativeWorkerSeconds;e.unknownRound.nativeBlocks=e.nativeCommitted;
         }
     }
-    e.Record(e.root+"/round_work_limit.json","{\"policy\":\"complete eight-seed prefix and output/residual cohort scheduling v7\",\"applied\":"+std::string(accepted?"true":"false")
+    e.Record(e.root+"/round_work_limit.json","{\"policy\":\"complete eight-seed prefix and output/residual cohort scheduling v8\",\"applied\":"+std::string(accepted?"true":"false")
         +",\"observed_previous_seconds_per_row\":"+Number(measuredSecondsPerRow)+",\"priced_subround_probes\":"+Number(pricedProbes)+",\"priced_cohort_admissions\":"+Number(pricedAdmissions)+",\"empirical_cohort_limit\":"+Number(empiricalLimit)+",\"timed_cohorts_backfilled\":"+Number(backfilled)
         +",\"unknown_cost_fallback\":"+(original.profiled?"false":"true")
         +",\"original_forecast_profiled\":"+(original.profiled?"true":"false")

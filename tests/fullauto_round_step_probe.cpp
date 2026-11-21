@@ -49,6 +49,12 @@ void Run(const std::string& root,double timing,bool pair,bool expectWithin){
         Require(receipt.find("\"bounded_prefix_step_applied\":true")!=std::string::npos,"shortened-prefix receipt absent");
         if(expectWithin&&!pair)Require(selected[0][1]==4096&&selected[0][2]==4096,
             "remaining budget did not widen to other whole ranked cohorts");
+        if(!expectWithin&&!pair){
+            auto singleton=current;singleton[0][0]=4096;
+            const auto one=work.Forecast(BudgetRequests(e,{6},singleton,ids));
+            Require(selected[0][1]==4096&&selected[0][2]==2048&&forecast.jobs<=one.jobs&&forecast.seconds<=one.seconds,
+                "irreducible prefix wasted its second native row or increased forecast cost");
+        }
         for(int count:selected[0])Require(count==2048||count==4096,"one-step growth bound lost");
         std::cout<<"known_timing="<<timing<<" paired_cohort="<<pair<<" forecast_seconds="<<forecast.seconds<<'\n';
     }
