@@ -58,4 +58,17 @@ public:
         while(position<rowEnd&&Space(*position))++position;
         return position==rowEnd;
     }
+    // Bound the diagnostic even if a worker returned a binary or truncated row.
+    std::string ColumnPreview()const{
+        const char* p=position;
+        while(p&&p<rowEnd&&Space(*p))++p;
+        if(!p||p==rowEnd)return "<end of row>";
+        std::string sample;
+        while(p<rowEnd&&!Space(*p)&&sample.size()<32){
+            const unsigned char ch=static_cast<unsigned char>(*p++);
+            sample+=ch>=32&&ch<127?static_cast<char>(ch):'?';
+        }
+        if(p<rowEnd&&!Space(*p))sample+="...";
+        return sample;
+    }
 };

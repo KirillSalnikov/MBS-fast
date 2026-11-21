@@ -1599,9 +1599,25 @@ struct Engine {
     }
     Job Load(Job j,bool publishIndex=true) {
         if(Exists(j.folder+"/cutoff_sources.tsv"))j.assembled=true;
-        CheckpointTableReader r(Read(j.data));while(r.Next()){double thetaValue,area;Require(r.Number(thetaValue)&&r.Number(area),"invalid worker angle");j.angles.push_back(thetaValue);Mueller m;
-            for(double& v:m)Require(r.Number(v),"invalid worker matrix "+j.data);
-            Require(r.End(),"extra worker columns");j.matrix.push_back(m);}
+        CheckpointTableReader r(Read(j.data));
+        size_t row=0;
+        while(r.Next()){
+            ++row;
+            double thetaValue,area;
+            if(!r.Number(thetaValue)||!r.Number(area))
+                Require(false,"invalid worker angle or weight in "+j.data+" at data row "+std::to_string(row)+", got "+r.ColumnPreview());
+            j.angles.push_back(thetaValue);
+            Mueller m;
+            for(size_t k=0;k<m.size();++k){
+                if(!r.Number(m[k]))
+                    Require(false,"invalid worker matrix "+j.data+" at data row "+std::to_string(row)
+                        +", theta="+Number(thetaValue)+", M"+std::to_string(k/4+1)+std::to_string(k%4+1)
+                        +", got "+r.ColumnPreview());
+            }
+            if(!r.End())
+                Require(false,"extra worker columns in "+j.data+" at data row "+std::to_string(row)+", got "+r.ColumnPreview());
+            j.matrix.push_back(m);
+        }
         LoadDiagnostics(j,true);
         j.indexMarkerHash.clear();
 

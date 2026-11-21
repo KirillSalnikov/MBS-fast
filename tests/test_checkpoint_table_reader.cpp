@@ -31,10 +31,14 @@ int main(){
     assert(lines.Next()&&lines.Number(v)&&v==1&&lines.Number(v)&&std::signbit(v)&&lines.End());
     assert(lines.Next()&&lines.Number(v)&&v==2&&lines.Number(v)&&v==.5&&lines.End()&&!lines.Next());
     CheckpointTableReader truncated("header\n1\n2 3\n");assert(truncated.Next()&&truncated.Number(v)&&!truncated.Number(v));
+    assert(truncated.ColumnPreview()=="<end of row>");
     assert(truncated.Next()&&truncated.Number(v)&&v==2);
     for(const auto& bad:std::vector<std::string>{"nan","inf","1e9999","1e","0x1p0","+",".","1oops","1,5",std::string("1\0 2",4)}){
         CheckpointTableReader reader("header\n"+bad+"\n");assert(reader.Next());assert(!reader.Number(v));
+        assert(reader.ColumnPreview()==(bad.find('\0')==std::string::npos?bad:"1?"));
     }
+    CheckpointTableReader longToken("header\n"+std::string(64,'x')+"\n");
+    assert(longToken.Next()&&!longToken.Number(v)&&longToken.ColumnPreview()==std::string(32,'x')+"...");
     CheckpointTableReader extra("header\n1 2 trailing\n");assert(extra.Next()&&extra.Number(v)&&extra.Number(v)&&!extra.End());
     CheckpointTableReader empty("header only");assert(!empty.Next());
     std::cout<<"PASS checkpoint reader: 120000 decimal conversions bit-exact; row boundaries, signed zero, subnormals and malformed rows checked\n";
