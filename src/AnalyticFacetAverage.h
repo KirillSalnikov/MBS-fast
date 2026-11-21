@@ -1,12 +1,27 @@
 #pragma once
 #include "AnalyticBackscatter.h"
 #include <array>
+#include <cstdlib>
 #include <string>
 
 struct AnalyticGpuModel;
 
 namespace AnalyticFacetAverage
 {
+inline bool BinnedEdgesEnabled()
+{
+    const char* setting=std::getenv("MBS_ANALYTIC_BINNED_EDGES");
+    return setting && std::string(setting)=="1";
+}
+
+// The optional shared radial table and binned edge rules may depend on
+// the other rows in a packet. Preserve the original grid in those modes.
+inline bool IndependentRefinementRows()
+{
+    const char* radial=std::getenv("MBS_ANALYTIC_SHARED_RADIAL");
+    return !BinnedEdgesEnabled() && !(radial && std::string(radial)=="1");
+}
+
 using AnalyticBackscatter::Vec;
 using AnalyticBackscatter::Face;
 struct Components { double reflection,shadow; };
@@ -45,6 +60,7 @@ public:
     Components Evaluate(const Vec&source,const Vec&observer,double theta) const;
     Components Mean(int row) const { return means.at(row); }
     double RefinementError() const { return refinementError; }
+    double RowRefinementError(int row) const { return meanErrors.at(row); }
     bool SupportsDomain(double betaSym,double gammaSym) const;
     AnalyticGpuModel GpuModel() const;
     static std::vector<double> ReflectionMoments(std::complex<double> index,int degree,

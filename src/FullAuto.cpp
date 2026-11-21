@@ -4,6 +4,7 @@
 #include <functional>
 #include <exception>
 #include "FullAuto.h"
+#include "AnalyticFacetAverage.h"
 #include "TraceCachePolicy.h"
 #include "FullAutoPhiTileMemory.h"
 #include "FullAutoInterpolationPolicy.h"
@@ -477,6 +478,7 @@ struct Job {
     int offset=0,pairedDepth=0;
     std::string folder,data,summary,identity,weightHash,executionHash,indexMarkerHash;
     Matrix matrix;std::vector<double> angles,inputAngles;std::vector<std::array<double,5>> controls;
+    std::vector<double> rowRefinement; // Optional native facet-mean bounds in input-angle order.
     int preparationThreads=0,dispatchChunk=0;double assemblySeconds=0;
     double seconds=0,controlRefinement=0,controlSetup=0,traceSeconds=0,diffractionSeconds=0,processingSeconds=-1,preparedWaitSeconds=-1,producerWaitSeconds=-1;
     double gpuDiffractionSeconds=-1,analyticControlSeconds=-1;uint64_t pipelineChunks=0;pid_t pid=-1;
@@ -921,10 +923,10 @@ struct Engine {
         Record(root+"/resource_stop.json",detail);Log("host_memory_stop",detail);
         Require(false,"host RAM reserve exhausted; completed checkpoints are preserved. Free RAM or reduce concurrent jobs, then resume this output directory.");
     }
-    static void DropPayload(Job& job){Matrix().swap(job.matrix);std::vector<double>().swap(job.angles);std::vector<std::array<double,5>>().swap(job.controls);}
+    static void DropPayload(Job& job){Matrix().swap(job.matrix);std::vector<double>().swap(job.angles);std::vector<std::array<double,5>>().swap(job.controls);std::vector<double>().swap(job.rowRefinement);}
     static size_t JobBytes(const Job& job){
         size_t bytes=sizeof(Job)+job.matrix.capacity()*sizeof(Mueller)+job.angles.capacity()*sizeof(double)
-            +job.inputAngles.capacity()*sizeof(double)+job.controls.capacity()*sizeof(std::array<double,5>);
+            +(job.inputAngles.capacity()+job.rowRefinement.capacity())*sizeof(double)+job.controls.capacity()*sizeof(std::array<double,5>);
         for(const auto* value:{&job.folder,&job.data,&job.summary,&job.identity,&job.weightHash,&job.executionHash,&job.warp,&job.indexMarkerHash})bytes+=value->capacity();
         return bytes;
     }
@@ -1562,12 +1564,30 @@ struct Engine {
     }
     void LoadDiagnostics(Job& j,bool loadControls) const {
         if(Exists(j.folder+"/cutoff_sources.tsv"))j.assembled=true;
-        if(j.hasControls){CheckpointTableReader r(Read(j.summary));while(r.Next()){double angle;std::array<double,5> a;
+        j.rowRefinement.clear();
+        if(j.hasControls){
+            auto table=Read(j.summary);
+            const auto end=table.find('\n');
+            const std::string column="\trow_refinement";
+            const bool hasRowBounds=end!=std::string::npos&&end>=column.size()
+                &&table.compare(end-column.size(),column.size(),column)==0;
+            CheckpointTableReader r(std::move(table));while(r.Next()){double angle;std::array<double,5> a;
             Require(r.Number(angle),"invalid controls");for(double& v:a)Require(r.Number(v),"invalid control summary");if(loadControls)j.controls.push_back(a);
             double residual,hybrid,refinement,setup,wr,ws;
             Require(r.Number(residual)&&r.Number(hybrid)&&r.Number(refinement)&&r.Number(setup)&&r.Number(wr)&&r.Number(ws),"invalid control diagnostic fields");
+            if(hasRowBounds&&loadControls){
+                const size_t i=j.rowRefinement.size();double bound;
+                Require((i<j.angles.size()&&std::fabs(angle-j.angles[i])<1e-9)&&r.Number(bound)
+                        &&r.End()&&bound>=0&&bound<=refinement,"invalid angle-specific analytic refinement");
+                j.rowRefinement.push_back(bound);
+            }
             j.controlRefinement=refinement;j.controlSetup=setup;
-        }if(loadControls)Require(j.controls.size()==j.matrix.size(),"incomplete controls");}
+        }if(loadControls){
+            Require(j.controls.size()==j.matrix.size(),"incomplete controls");
+            if(hasRowBounds)Require(!j.rowRefinement.empty()&&j.rowRefinement.size()==j.matrix.size()&&
+                    *std::max_element(j.rowRefinement.begin(),j.rowRefinement.end())==j.controlRefinement,
+                    "angle-specific analytic refinement differs from the native bound");
+        }}
         const std::string log=Read(j.folder+"/stdout.log");const auto preparation=log.find("PO preparation threads: ");
         if(preparation!=std::string::npos){std::istringstream count(log.substr(preparation+24));count>>j.preparationThreads;}
         for(const char* label:{"Hard tree-limit hits:","Orientations still incomplete:"}){

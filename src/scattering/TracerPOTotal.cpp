@@ -6104,6 +6104,8 @@ void TracerPOTotal::TraceWeightedOrientations(
     double gaussianSeconds=0;
     double facetSetupSeconds=0;
     const int facetRows=handlerPO->m_sphere.nZenith+1;
+    const char* boundColumn=AnalyticFacetAverage::IndependentRefinementRows()
+        ? "\trow_refinement\n" : "\tgrid_dependent_row_refinement\n";
     const int facetAz=handlerPO->m_sphere.nAzimuth;
     const auto makeBodyFrame=[](const WeightedOrientation &o)
     {
@@ -7418,13 +7420,13 @@ void TracerPOTotal::TraceWeightedOrientations(
             std::string name=m_resultDirName+"_prefix"+std::to_string(m_orientationPrefixOutput)+suffix;
             if(facetControl){
                 std::ofstream summary((name+"_analytic_facets.tsv").c_str());summary<<std::setprecision(17)
-                    <<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n";
+                    <<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight"<<boundColumn;
                 for(int t=0;t<facetRows;++t){const auto known=facetControl->Mean(t);const double wr=facetWeights[t][0],ws=facetWeights[t][1];double raw=0,ref=0,shadow=0;
                     for(int p=0;p<nAz;++p){const size_t cell=size_t(p)*facetRows+t;raw+=matrix(p,t,0,0)/nAz;ref+=prefixReflection[cell]/nAz;shadow+=prefixShadow[cell]/nAz;
                         matrix(p,t,0,0)+=wr*(known.reflection-prefixReflection[cell])+(shadowOff?0:ws*(known.shadow-prefixShadow[cell]));}
                     summary<<RadToDeg(facetTheta[t])<<'\t'<<raw<<'\t'<<known.reflection<<'\t'<<(shadowOff?0:known.shadow)<<'\t'<<ref<<'\t'<<(shadowOff?0:shadow)
                         <<'\t'<<raw-wr*ref-(shadowOff?0:ws*shadow)<<'\t'<<raw+wr*(known.reflection-ref)+(shadowOff?0:ws*(known.shadow-shadow))
-                        <<'\t'<<facetControl->RefinementError()<<'\t'<<facetSetupSeconds<<'\t'<<wr<<'\t'<<ws<<'\n';}
+                        <<'\t'<<facetControl->RefinementError()<<'\t'<<facetSetupSeconds<<'\t'<<wr<<'\t'<<ws<<'\t'<<facetControl->RowRefinementError(t)<<'\n';}
                 summary.flush();if(!summary)throw std::runtime_error("cannot write orientation prefix controls");
             }
             const double savedExtinction=handlerPO->m_extinctionCrossSectionOt,savedOutgoing=handlerPO->m_outputEnergy;
@@ -7458,11 +7460,11 @@ void TracerPOTotal::TraceWeightedOrientations(
         if(m_mirrorGamma)ApplyMirrorGammaMueller(*pairedMatrices,nAz,nZen);
         std::string lowerName=m_resultDirName+"_depth"+std::to_string(m_pairedDepth);
         if(facetControl){std::ofstream summary((lowerName+"_analytic_facets.tsv").c_str());summary<<std::setprecision(17)
-            <<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n";
+            <<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight"<<boundColumn;
             for(int t=0;t<facetRows;++t){const auto known=facetControl->Mean(t);double raw=0,ref=0,shadow=0;const double wr=facetWeights[t][0],ws=facetWeights[t][1];
                 for(int p=0;p<nAz;++p){const size_t cell=static_cast<size_t>(p)*facetRows+t;raw+=(*pairedMatrices)(p,t,0,0)/nAz;ref+=facetReflectionCells[cell]/nAz;shadow+=facetShadowCells[cell]/nAz;
                     (*pairedMatrices)(p,t,0,0)+=wr*(known.reflection-facetReflectionCells[cell])+(shadowOff?0:ws*(known.shadow-facetShadowCells[cell]));}
-                summary<<RadToDeg(facetTheta[t])<<'\t'<<raw<<'\t'<<known.reflection<<'\t'<<(shadowOff?0:known.shadow)<<'\t'<<ref<<'\t'<<(shadowOff?0:shadow)<<'\t'<<raw-wr*ref-(shadowOff?0:ws*shadow)<<'\t'<<raw+wr*(known.reflection-ref)+(shadowOff?0:ws*(known.shadow-shadow))<<'\t'<<facetControl->RefinementError()<<'\t'<<facetSetupSeconds<<'\t'<<wr<<'\t'<<ws<<'\n';}
+                summary<<RadToDeg(facetTheta[t])<<'\t'<<raw<<'\t'<<known.reflection<<'\t'<<(shadowOff?0:known.shadow)<<'\t'<<ref<<'\t'<<(shadowOff?0:shadow)<<'\t'<<raw-wr*ref-(shadowOff?0:ws*shadow)<<'\t'<<raw+wr*(known.reflection-ref)+(shadowOff?0:ws*(known.shadow-shadow))<<'\t'<<facetControl->RefinementError()<<'\t'<<facetSetupSeconds<<'\t'<<wr<<'\t'<<ws<<'\t'<<facetControl->RowRefinementError(t)<<'\n';}
             summary.flush();if(!summary)throw std::runtime_error("cannot write paired-depth control summary");}
         const double upperExtinction=handlerPO->m_extinctionCrossSectionOt;
         handlerPO->m_extinctionCrossSectionOt=pairedExtinctionOt;
@@ -7477,7 +7479,7 @@ void TracerPOTotal::TraceWeightedOrientations(
     {
         const std::string path=m_resultDirName+"_analytic_facets.tsv";
         std::ofstream file(path.c_str());file << std::setprecision(17)
-            << "theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n";
+            << "theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight"<<boundColumn;
         facetRawMeans.resize(facetRows);facetHybridMeans.resize(facetRows);
         for(int t=0;t<facetRows;++t)
         {
@@ -7495,7 +7497,7 @@ void TracerPOTotal::TraceWeightedOrientations(
             file << RadToDeg(facetTheta[t]) << '\t' << raw << '\t' << known.reflection << '\t'
                  << (shadowOff ? 0:known.shadow) << '\t' << ref << '\t' << (shadowOff ? 0:shadow)
                  << '\t' << raw-sampled << '\t' << facetHybridMeans[t] << '\t'
-                 << facetControl->RefinementError() << '\t' << facetSetupSeconds << '\t' << wr << '\t' << ws << '\n';
+                 << facetControl->RefinementError() << '\t' << facetSetupSeconds << '\t' << wr << '\t' << ws << '\t' << facetControl->RowRefinementError(t) << '\n';
         }
         file.flush();if(!file)throw std::runtime_error("cannot write analytic facet summary.\n  Fix: check output permissions and disk space.");
         if(m_analyticFacetSamples)

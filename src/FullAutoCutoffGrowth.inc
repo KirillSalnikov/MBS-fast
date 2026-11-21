@@ -92,10 +92,22 @@ const Job* CutoffWindowSource(const Job& target,int count,const std::vector<std:
         const auto previous=CutoffWindowPhysics(saved);
         if(previous!=physics&&!(s.assembled&&previous==original))return nullptr;
         if(target.hasControls&&CutoffWindowWeights(saved,target.inputAngles,s.weightHash)!=CutoffWindowWeights(cmd,target.inputAngles,target.weightHash))return nullptr;
-        if(!project)return &s;
-        std::set<std::string> verified;ValidateStoredJob(s.folder,verified);
-        const auto view=LowerView(s,target.depth,false,&saved);
-        return &cache.at(view.identity);
+        const Job* candidate=&s;
+        if(project){
+            std::set<std::string> verified;ValidateStoredJob(s.folder,verified);
+            const auto view=LowerView(s,target.depth,false,&saved);
+            candidate=&cache.at(view.identity);
+        }
+        // A legacy table only proves the maximum on its original grid.
+        // Growing a window has a fresh suffix on the target grid; an equal
+        // window must already prove the bound for every retained direction.
+        if(target.hasControls&&candidate->inputAngles!=target.inputAngles
+                &&!AnalyticFacetAverage::IndependentRefinementRows())return nullptr;
+        if(count==target.count&&target.hasControls&&candidate->inputAngles!=target.inputAngles){
+            if(Payload(*candidate)->rowRefinement.empty())return nullptr;
+            if(target.pairedDepth&&LowerView(*candidate,target.pairedDepth).rowRefinement.empty())return nullptr;
+        }
+        return candidate;
     };
     for(const auto& item:SamplingCandidates(count,target.seed,target.depth,target.offset))
         if(const auto* found=match(*item.second,false))return found;
@@ -114,8 +126,12 @@ Job CutoffWindowRows(const Job& source,const std::vector<double>& x){
     std::set<std::string> visited;ValidateStoredJob(source.folder,visited);
     auto s=Materialize(source);if(s.angles==x)return s;
     Matrix selected;selected.reserve(x.size());std::vector<std::array<double,5>> cv;
+    std::vector<double> bounds;
     for(double t:x){auto at=std::lower_bound(s.inputAngles.begin(),s.inputAngles.end(),t);
-        Require(at!=s.inputAngles.end()&&*at==t,"cutoff child missing requested angle");const size_t index=at-s.inputAngles.begin();selected.push_back(s.matrix[index]);if(s.hasControls)cv.push_back(s.controls.at(index));}
+        Require(at!=s.inputAngles.end()&&*at==t,"cutoff child missing requested angle");const size_t index=at-s.inputAngles.begin();selected.push_back(s.matrix[index]);if(s.hasControls)cv.push_back(s.controls.at(index));
+        if(!s.rowRefinement.empty())bounds.push_back(s.rowRefinement.at(index));}
+    if(!bounds.empty())s.controlRefinement=*std::max_element(bounds.begin(),bounds.end());
+    s.rowRefinement.swap(bounds);
     s.matrix.swap(selected);s.controls.swap(cv);s.angles=x;return s;
 }
 void PlanCutoffGrowth(std::vector<Job>& jobs,std::vector<std::vector<std::string>>& commands,
@@ -130,7 +146,7 @@ void PlanCutoffGrowth(std::vector<Job>& jobs,std::vector<std::vector<std::string
             pending.push_back(i);continue;
         }
         const Job* equal=CutoffWindowSource(j,j.count,cmd);
-        if(equal&&(!j.hasControls||equal->inputAngles==j.inputAngles)){
+        if(equal){
             if(equal->inputAngles==j.inputAngles)j=CutoffWindowRows(*equal,j.inputAngles);
             else j=CommitCutoffGrowth(CutoffGrowth{j,*equal,cmd},nullptr);
             ++aliases;savedSamples+=j.count;continue;
@@ -175,7 +191,10 @@ Job CommitCutoffGrowth(const CutoffGrowth& g,const Job* suffix){
     auto meanAt=[&](int depth){
         const auto view=[&](const Job& src){return CutoffWindowRows(depth==j.depth?src:LowerView(src,depth),j.inputAngles);};
         Job left=view(prefix);
-        if(!extend)return left;
+        if(!extend){
+            Require(!j.hasControls||!left.rowRefinement.empty(),"missing projected analytic bound");
+            return left;
+        }
         const auto right=view(*suffix);
         for(size_t r=0;r<left.matrix.size();++r){
             for(int k=0;k<16;++k)left.matrix[r][k]=.5*left.matrix[r][k]+.5*right.matrix[r][k];
@@ -185,6 +204,7 @@ Job CommitCutoffGrowth(const CutoffGrowth& g,const Job* suffix){
         // analytic reference defines the bound as their maximum, independent
         // of the orientation window. A larger source grid can have a larger maximum.
         left.controlRefinement=right.controlRefinement;
+        left.rowRefinement=right.rowRefinement;
         left.controlSetup+=right.controlSetup;
         return left;
     };
@@ -194,11 +214,15 @@ Job CommitCutoffGrowth(const CutoffGrowth& g,const Job* suffix){
     auto publish=[&](const Job& view,const std::string& stem){
         WriteMatrix(stem+".dat",j.angles,view.matrix);
         if(!j.hasControls)return;
-        std::ostringstream os;os<<std::setprecision(17)<<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n";
+        std::ostringstream os;os<<std::setprecision(17)<<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight";
+        if(!view.rowRefinement.empty())os<<"\trow_refinement";
+        os<<'\n';
         for(size_t r=0;r<j.angles.size();++r){
             const auto& c=view.controls[r];const auto& w=weights[r];os<<j.angles[r];
             for(double v:c)os<<'\t'<<v;
-            os<<'\t'<<c[0]-w[0]*c[3]-w[1]*c[4]<<'\t'<<view.matrix[r][0]<<'\t'<<view.controlRefinement<<'\t'<<view.controlSetup<<'\t'<<w[0]<<'\t'<<w[1]<<'\n';
+            os<<'\t'<<c[0]-w[0]*c[3]-w[1]*c[4]<<'\t'<<view.matrix[r][0]<<'\t'<<view.controlRefinement<<'\t'<<view.controlSetup<<'\t'<<w[0]<<'\t'<<w[1];
+            if(!view.rowRefinement.empty())os<<'\t'<<view.rowRefinement.at(r);
+            os<<'\n';
         }
         Atomic(stem+"_analytic_facets.tsv",os.str());
     };

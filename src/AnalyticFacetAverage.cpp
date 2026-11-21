@@ -422,12 +422,6 @@ AnalyticGpuModel Control::GpuModel() const
     return result;
 }
 
-static bool BinnedEdgesEnabled()
-{
-    const char* setting=std::getenv("MBS_ANALYTIC_BINNED_EDGES");
-    return setting && std::string(setting)=="1";
-}
-
 Control::Control(const std::vector<Face>&input,C refractive,double wavelength,
                  const std::vector<double>&theta,const std::string &mode,const std::string &meanCache,const std::string &referenceGrid,int setupThreads,bool useGpuMeans)
     :faces(input),index(refractive),wave(wavelength),refinementError(0),forwardShadowMean(0),circleRadius(0),shadowMode(mode),meanThreads(setupThreads),gpuMeans(useGpuMeans)
