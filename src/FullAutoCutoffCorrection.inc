@@ -311,17 +311,16 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
         // Existing interrupted transactions retain their exact native recipe.
         // The durable choice is written before dispatching any of its children.
         const auto prefixRecipe=CutoffPrefixRecipePath(j);
-        if(prefixEligible&&extendCutoffChild&&(!controls||sharedMeans)&&coherent&&!go&&
-           !j.paired&&!Exists(prefixRecipe)&&j.count>=128){
-            // A measured, complete native half can supply the first half of F_N.
-            // Look only at metadata. Honour any explicit or durable prefix choice.
-            Job fast=j;fast.pairedDepth=pairedBalanced?j.pairedDepth:0;
+        const bool canReuse=extendCutoffChild&&(!controls||sharedMeans)&&coherent&&!go&&!j.paired;
+        const auto prunedWindow=[&](int requested,int saved){
+            Job fast=j;fast.count=requested;fast.pairedDepth=pairedBalanced?j.pairedDepth:0;
             fast.executionHash=Hash(j.executionHash+(StagedCutoff()?" staged-fast-child-v1":" balanced-child-v1"));
-            const auto cmd=CutoffChildCommand(commands[i],j.count,j.depth,fast.pairedDepth,true,j.folder+"/result");
-            if(CutoffWindowSource(fast,j.count/2,cmd)){
-                prefixEligible=false;
-                Log("cutoff_reuse_prior_half","{\"count\":"+Number(j.count)+",\"paired_depth\":"+Number(fast.pairedDepth)+"}");
-            }
+            const auto cmd=CutoffChildCommand(commands[i],requested,j.depth,fast.pairedDepth,true,j.folder+"/result");
+            return CutoffWindowSource(fast,saved,cmd);
+        };
+        if(prefixEligible&&canReuse&&!Exists(prefixRecipe)&&j.count>=128&&prunedWindow(j.count,j.count/2)){
+            prefixEligible=false;
+            Log("cutoff_reuse_prior_half","{\"count\":"+Number(j.count)+",\"paired_depth\":"+Number(pairedBalanced?j.pairedDepth:0)+"}");
         }
         if(Exists(prefixRecipe))recipe.embeddedPrefix=RestoreCutoffPrefixRecipe(j,m);
         else if(prefixEligible&&(!j.pairedDepth||pairedBalanced)){
@@ -333,7 +332,17 @@ bool ExecuteCorrected(std::vector<Job>& result,std::vector<std::vector<std::stri
             const auto key=prefixKeys.find(i);
             const std::string profile=key==prefixKeys.end()?"":key->second;
             const long long demand=key==prefixKeys.end()?-1:plannedPrefixOrientations.at(profile);
-            if(!existing&&VerifyCutoffPrefix(j,commands[i],profile,demand)){Atomic(prefixRecipe,"embedded-prefix-v1\n");recipe.embeddedPrefix=true;}
+            if(!existing&&VerifyCutoffPrefix(j,commands[i],profile,demand)){
+                // Both pruned windows can already supply the requested rows.
+                // An embedded side output would force a duplicate native pass.
+                // This branch follows the same FP32 validation as a new prefix.
+                if(canReuse&&prunedWindow(j.count,j.count)&&prunedWindow(m,m))
+                    Log("cutoff_reuse_native_pair","{\"count\":"+Number(j.count)+",\"prefix_count\":"+Number(m)+"}");
+                else{
+                    Atomic(prefixRecipe,"embedded-prefix-v1\n");
+                    recipe.embeddedPrefix=true;
+                }
+            }
         }
         // An embedded recipe was created only with paired balanced depths.
         // Unrelated incomplete ordinary children must not change that identity.

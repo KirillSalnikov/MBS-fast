@@ -25,6 +25,7 @@ int main(int argc,char** argv){
         Configure(direct,std::string(argv[1])+"/reference",argv[2]);
         wide.DirectStage(512,wide.seeds.data(),1,8,wide.theta,true,false,0,6).at(0);
         const std::vector<double> subset={0,180};
+        wide.forbidNativeWork=modern;
         const auto part=wide.DirectStage(512,wide.seeds.data(),1,8,subset,true,false,0,6).at(0);
         const auto fresh=direct.DirectStage(512,direct.seeds.data(),1,8,subset,true,false,0,6).at(0);
         int projections=0;
@@ -40,7 +41,7 @@ int main(int argc,char** argv){
             Require(used.rowRefinement.size()==2&&used.controlRefinement<parent.controlRefinement,"projection did not narrow analytic bound");
             ++projections;
         }
-        Require(modern?projections>0:projections==0,"wrong policy for native table schema");
+        Require(modern?projections==3:projections==0,"wrong policy for native table schema");
         IntegralReader ir;
         for(int n:{8,6}){
             const Job a=n==8?part:wide.LowerView(part,n),b=n==8?fresh:direct.LowerView(fresh,n);
