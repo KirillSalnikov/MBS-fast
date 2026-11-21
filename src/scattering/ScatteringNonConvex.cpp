@@ -3014,19 +3014,32 @@ void ScatteringNonConvex::FindVisibleFacets(const Beam &beam, IntArray &facetIds
     const double bx = beam.direction.cx;
     const double by = beam.direction.cy;
     const double bz = beam.direction.cz;
-    for (size_t idx = 0; idx < count; ++idx)
+    const int *candidates = cache.m_visibleFacetCache[locInt][beam.lastFacetId];
+    const auto facesBeam = [&](int id)
     {
-        int i = cache.m_visibleFacetCache[locInt][beam.lastFacetId][idx];
-        const double *facetNormal = facetNormals[i];
+        const double *facetNormal = facetNormals[id];
         const double cosFB = bx*facetNormal[0]
                            + by*facetNormal[1]
                            + bz*facetNormal[2];
-
-        if (cosFB >= -EPS_PROJECTION) // conservative candidate filter
+        return cosFB >= -EPS_PROJECTION;
+    };
+    if (facetIds.size <= MAX_FACET_NUM && count <= MAX_FACET_NUM - facetIds.size)
+    {
+        // There is room for every candidate. A rejected facet leaves its slot
+        // available for the next one. Only the accepted prefix is consumed.
+        size_t next = facetIds.size;
+        for (size_t idx = 0; idx < count; ++idx)
         {
-            facetIds.Add(i);
+            const int id = candidates[idx];
+            facetIds.arr[next] = id;
+            next += facesBeam(id);
         }
+        facetIds.size = next;
+        return;
     }
+    for (size_t idx = 0; idx < count; ++idx)
+        if (facesBeam(candidates[idx]))
+            facetIds.Add(candidates[idx]);
 }
 
 /* TODO: Разобраться с параметром 'n' (кол-во вн. столкновений)
