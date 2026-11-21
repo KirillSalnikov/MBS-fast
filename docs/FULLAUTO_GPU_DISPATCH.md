@@ -15,3 +15,9 @@ A thread count does not reserve cores. For four queues on a 64-core EPYC, assign
 For three simultaneous queues on a 12-core host, start by budgeting four physical cores per queue. Do not give each queue the entire host. An explicit saved `--threads 2` disables automatic enlargement; changing only the service's affinity will not enlarge that preparation pool. Conversely, requesting eight preparation threads while retaining an affinity mask covering two cores will not provide eight cores. Check both the native command and `/proc/PID/status` (`Cpus_allowed_list`). Compare aggregate completed orientations per second and numerical differences, not GPU utilization alone.
 
 The 2026-11-04 benchmark used a copied production block for a 125.9 µm column, two theta rows and 64 phi points. Keeping `--threads 2` and changing only preparation from two to four threads reduced processing time from 1.101 to 0.607 seconds for 4096 orientations, and from 0.190 to 0.096 seconds for 512. The maximum difference over all 16 elements was 2.85e-8 times M11. These are isolated block measurements under the observed background load, not a measured whole-campaign speedup.
+
+### Reuse the second direction of a short CUDA request
+
+Set `MBS_FULLAUTO_PRODUCTIVE_PADDING=1` to enable this scheduling option for coherent PO on nonconvex particles. It defaults to off. When all eight production scrambles already contain one direction of a two-direction request, the controller can use the second slot for another direction that still needs orientations to reach the required minimum. The two directions must have the same current orientation count, depth and azimuth sampling, and must be within one degree of each other.
+
+The controller logs the selected directions as `prefix_padding`. It assembles the requested matrix from sample-matched rows. Paired-depth requests, analytic controls, and partially completed scramble sets use their original grid.

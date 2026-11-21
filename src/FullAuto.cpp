@@ -1031,6 +1031,8 @@ struct Engine {
         return value=="1";
     }
     void ConfigurePlanning(bool defaults){
+        productivePadding=PlanningOption("MBS_FULLAUTO_PRODUCTIVE_PADDING",false)&&config.useGpu
+            &&nonconvexGeometry&&coherent&&!go&&angularCache;
         extendCutoffChild=PlanningOption("MBS_FULLAUTO_EMBEDDED_PREFIX_GROWTH",defaults)&&coherent&&!go&&incremental&&angularCache;
         reuseCutoffDepth=PlanningOption("MBS_FULLAUTO_CUTOFF_DEPTH_WINDOWS",defaults)&&extendCutoffChild&&depthSharing;
         shareMiddleDepth=PlanningOption("MBS_FULLAUTO_SHARE_MIDDLE_DEPTH",defaults)&&reuseCutoffDepth;
@@ -2061,6 +2063,36 @@ struct Engine {
     }
     bool QueueEnabled()const{return (go||angularCache)&&workQueuePolicy!="off"&&(workQueuePolicy=="on"||config.useGpu||gpus.size()>1);}
     struct WorkRequest {int count,offset,depth,pairedDepth;std::vector<double> angles;};
+    // Rebuilt from required prefix work after each publication.
+    struct PaddingDemand {
+        std::map<double,int> counts;
+        std::map<int,std::vector<double>> angles;
+    };
+    bool productivePadding=false;
+    std::map<std::pair<int,int>,PaddingDemand> paddingDemand;
+    double PrefixPadding(const WorkRequest& request,const std::vector<std::set<double>>& covered,
+                         double target,double fallback,const unsigned* seedSet)const{
+        if(!productivePadding||controls||covered.size()!=8||request.pairedDepth||request.angles.size()!=2||seeds.size()!=8
+                ||!std::equal(seeds.begin(),seeds.end(),seedSet))return fallback;
+        const auto group=paddingDemand.find({request.depth,phi});
+        if(group==paddingDemand.end())return fallback;
+        // Preserve an existing exact request on partially completed seed sets.
+        for(const auto& rows:covered)if(rows.count(target)||!rows.count(fallback))return fallback;
+        const auto at=group->second.counts.find(target);
+        if(at==group->second.counts.end())return fallback;
+        const auto& candidates=group->second.angles.at(at->second);
+        auto right=std::upper_bound(candidates.begin(),candidates.end(),target);
+        auto left=std::lower_bound(candidates.begin(),candidates.end(),target);
+        while(left!=candidates.begin()||right!=candidates.end()){
+            const bool useLeft=left!=candidates.begin()&&(right==candidates.end()
+                ||target-*std::prev(left)<=*right-target);
+            const double angle=useLeft?*--left:*right++;
+            if(std::fabs(angle-target)>1.)break;
+            if(std::none_of(covered.begin(),covered.end(),[&](const std::set<double>& rows){return rows.count(angle);}))
+                return angle;
+        }
+        return fallback;
+    }
     void Prefetch(const std::vector<WorkRequest>& requests,const unsigned* seedSet,size_t angleCap=0){
         if(!QueueEnabled()||requests.empty())return;
         int maximum=0;for(const auto& request:requests)maximum=std::max(maximum,request.count);
@@ -2100,7 +2132,14 @@ struct Engine {
                 if(request.pairedDepth&&job.pairedDepth!=request.pairedDepth)continue;
                 covered[seed].insert(job.inputAngles.begin(),job.inputAngles.end());}
             std::vector<double> missing;for(double angle:x){bool complete=true;for(const auto& rows:covered)complete=complete&&rows.count(angle);if(!complete)missing.push_back(angle);}
-            if(missing.size()==1){missing.push_back(x.front()==missing.front()?x.back():x.front());std::sort(missing.begin(),missing.end());}
+            if(missing.size()==1){
+                const double target=missing.front(),fallback=x.front()==target?x.back():x.front();
+                const double padding=PrefixPadding(request,covered,target,fallback,seedSet);
+                if(padding!=fallback)Log("prefix_padding","{\"target\":"+Number(target)+",\"previous_padding\":"+Number(fallback)
+                    +",\"theta\":"+Number(padding)+",\"depth\":"+Number(request.depth)+",\"phi\":"+Number(phi)
+                    +",\"orientations\":"+Number(request.count)+",\"offset\":"+Number(request.offset)+"}");
+                missing.push_back(padding);std::sort(missing.begin(),missing.end());
+            }
             if(!missing.empty()){
                 boundedRequest=WorkRequest{request.count,request.offset,request.depth,request.pairedDepth,{}};
                 angleBatches=FullAutoScheduling::AngleBatches(missing,angleCap);nextAngleBatch=0;

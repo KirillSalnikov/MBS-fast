@@ -12,6 +12,21 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
         const std::vector<int>& depths,const std::vector<size_t>& ids,const Statistics& stats,
         const std::vector<size_t>& knots={},const std::vector<std::vector<size_t>>& cohorts={},const Budgets* residualCounts=nullptr,
         const std::vector<RoundOutputPriority>& outputPriorities={},const Budgets* requiredPrefixes=nullptr){
+    e.paddingDemand.clear();
+    if(e.productivePadding&&!e.controls&&requiredPrefixes){
+        for(size_t l=0;l<depths.size();++l){
+            const auto floor=PrefixMinimumCount(e,l);
+            if(floor>e.maxCount)continue;
+            for(size_t id:ids){
+                const int count=current[l][id];
+                if(count>=floor||(*requiredPrefixes)[l][id]<=count)continue;
+                auto& group=e.paddingDemand[{depths[l],e.PhiForTheta(id)}];
+                if(group.counts.emplace(e.theta[id],count).second)group.angles[count].push_back(e.theta[id]);
+            }
+        }
+        for(auto& group:e.paddingDemand)for(auto& bucket:group.second.angles)
+            std::sort(bucket.second.begin(),bucket.second.end());
+    }
     const bool separatePhi=residualCounts&&!knots.empty()&&MixedResidualPhi(e);
     WorkForecast residualForecast;
     if(separatePhi){ResidualPhiScope scope(e,true);AdditionalWork residualWork(e,e.seeds.data());
