@@ -213,6 +213,32 @@ void IndivisibleTraceBatch(const std::string& root,bool traceLimited=false){
     Require(joint.jobs==mandatory.jobs&&joint.seconds<=mandatory.seconds+std::min(45.,.02*mandatory.seconds),
         "trace-sharing expansion exceeded the indivisible request allowance");
     CheckBounds(current,wanted,selected);
+    if(traceLimited){
+        auto packet=wanted;
+        BoundRoundWork(e,work,current,packet,{6},ids,stats,{}, {},nullptr,{},&wanted);
+        CheckBounds(current,wanted,packet);
+        // The 64-direction plan already exceeds the advisory limit. Additional
+        // directions in the same costly trace may not increase that latency.
+        Require(work.Forecast(BudgetRequests(e,{6},packet,ids)).seconds<=joint.seconds,
+                "mandatory packet extended an already over-budget round");
+        // When time is available, a packet can cover a larger compatible group.
+        packet=base;
+        auto requirement=current;
+        for(size_t id=0;id<rows/2;++id)requirement[0][id]=wanted[0][id];
+        Require(SelectMandatoryPacket(e,work,current,wanted,requirement,{6},ids,stats,{},nullptr,packet,3600.),
+                "compatible mandatory rows did not share the trace");
+        CheckBounds(current,requirement,packet);
+        Require(std::count(packet[0].begin(),packet[0].end(),512)==128,"incorrect compatible packet width");
+        for(const auto& requirements:{current,Budgets(1,std::vector<int>(rows,255))}){
+            auto other=wanted;
+            BoundRoundWork(e,work,current,other,{6},ids,stats,{}, {},nullptr,{},&requirements);
+            Require(other==selected,"an unrequested prefix entered the packet");
+        }
+        auto normalStencil=wanted,requiredStencil=wanted;
+        BoundRoundWork(e,work,current,normalStencil,{6},ids,stats,{},{{0,17}});
+        BoundRoundWork(e,work,current,requiredStencil,{6},ids,stats,{},{{0,17}},nullptr,{},&wanted);
+        Require(normalStencil==requiredStencil,"mandatory planning changed a coupled stencil");
+    }
     // A singleton belonging to a coupled stencil cannot enter through this path.
     auto guarded=wanted;
     BoundRoundWork(e,work,current,guarded,{6},ids,stats,{},{{0,17}});

@@ -1036,7 +1036,7 @@ int RunAdaptive(Engine& e){
         if(!(phiPlan.oldPhi&&phiPlan.phase==0)&&TryCorrectionProbe(e,state,depths,stage,ids,stats,proposed,lastInterpolation)){--state.round;continue;}
         if(TryWorkingPhi(e,state,depths,stage,ids,stats,lastInterpolation,&interp)){--state.round;continue;}
         GateLocalCost(e,work,proposed,depths,ids);
-        BoundRoundWork(e,work,state.counts,proposed,depths,ids,stats,state.knots,{},state.interpolationCounts.empty()?nullptr:&state.interpolationCounts,outputPriorities);
+        BoundRoundWork(e,work,state.counts,proposed,depths,ids,stats,state.knots,{},state.interpolationCounts.empty()?nullptr:&state.interpolationCounts,outputPriorities,&prefixCheck.required);
         if(proposed==state.counts)break;
         state.counts=proposed;SaveAdaptive(e,state);
     }

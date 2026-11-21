@@ -7,10 +7,11 @@ size_t RoundPhysicalGpus(const Engine& e){
 }
 struct RoundOutputPriority {double error;std::vector<size_t> nodes;};
 long long PrefixMinimumCount(const Engine&,size_t);
+#include "FullAutoMandatoryPacket.inc"
 void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budgets& proposed,
         const std::vector<int>& depths,const std::vector<size_t>& ids,const Statistics& stats,
         const std::vector<size_t>& knots={},const std::vector<std::vector<size_t>>& cohorts={},const Budgets* residualCounts=nullptr,
-        const std::vector<RoundOutputPriority>& outputPriorities={}){
+        const std::vector<RoundOutputPriority>& outputPriorities={},const Budgets* requiredPrefixes=nullptr){
     const bool separatePhi=residualCounts&&!knots.empty()&&MixedResidualPhi(e);
     WorkForecast residualForecast;
     if(separatePhi){ResidualPhiScope scope(e,true);AdditionalWork residualWork(e,e.seeds.data());
@@ -441,6 +442,12 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
         ?forecast.profiled&&forecast.seconds<original.seconds:selected!=wanted);
     if(accepted&&partitionPackingRows&&!boundedPrefixStep&&fullSeconds>0)
         partitionOverhead=std::max(0.,partitionAfterPacking/fullSeconds-1);
+    if(accepted&&requiredPrefixes&&original.profiled&&e.coherent&&!e.go&&e.nonconvexGeometry&&e.local
+        &&e.config.useGpu&&RoundPhysicalGpus(e)==1&&e.executionRound<e.roundLimit-2
+        &&cohorts.empty()&&outputPriorities.empty()&&!separatePhi&&(knots.empty()||residualCounts)
+        &&SelectMandatoryPacket(e,work,current,wanted,*requiredPrefixes,depths,ids,stats,knots,residualCounts,selected,budget)){
+        proposed=std::move(selected);e.unknownRound={};return;
+    }
     if(accepted)proposed=selected;
     size_t growing=0;for(size_t id:ids){bool grows=false;for(size_t l=0;l<current.size();++l)grows=grows||proposed[l][id]>current[l][id];growing+=grows;}
     if(!timedRows.empty()&&growing==timedRows.size()){
