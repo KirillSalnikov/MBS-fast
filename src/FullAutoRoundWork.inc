@@ -293,6 +293,60 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
             }
         }
     }
+    // An irreducible prefix may already exceed the feedback target at one
+    // direction. Reuse it on other failing singleton rows of the same recipe
+    // only when separate launches would repeat substantial work. Anchor the
+    // latency allowance to the original indivisible request, never compound it.
+    size_t indivisibleExtraRows=0,indivisibleTrials=0;
+    const double indivisibleBase=forecast.seconds;
+    double indivisibleSeparate=0;
+    if(e.local&&e.config.useGpu&&e.coherent&&!e.go&&e.nonconvexGeometry&&RoundPhysicalGpus(e)==1
+        &&original.profiled&&forecast.profiled&&forecast.seconds>budget&&active<=2
+        &&!rank.empty()&&rank.front().second.size()==1){
+        const size_t anchor=rank.front().second.front();
+        auto sameRecipe=[&](size_t id){
+            if(e.PhiForTheta(id)!=e.PhiForTheta(anchor))return false;
+            for(size_t l=0;l<current.size();++l){
+                if(current[l][id]!=current[l][anchor]||packingStep[l][id]!=selected[l][anchor])return false;
+                if(residualCounts&&residualCounts->at(l)[id]!=residualCounts->at(l)[anchor])return false;
+            }
+            return true;
+        };
+        const auto fixed=estimate(current);
+        if(fixed.profiled&&fixed.jobs==0&&fixed.seconds==0&&sameRecipe(anchor)){
+            std::set<size_t> occupied;
+            for(size_t id:ids)for(size_t l=0;l<current.size();++l)
+                if(selected[l][id]>current[l][id])occupied.insert(id);
+            // Multi-row stencils stay on the existing path, including overlapping
+            // singleton priorities which also belong to such a stencil.
+            std::set<size_t> stencil;
+            for(const auto& item:rank)if(item.second.size()>1)
+                stencil.insert(item.second.begin(),item.second.end());
+            const bool compatible=!occupied.empty()&&occupied.size()<=2
+                &&std::all_of(occupied.begin(),occupied.end(),[&](size_t id){return sameRecipe(id)&&!stencil.count(id);});
+            std::vector<size_t> extra;
+            auto seen=occupied;
+            if(compatible)for(const auto& item:rank){
+                if(item.second.size()!=1)continue;
+                const auto id=item.second.front();
+                if(!stencil.count(id)&&sameRecipe(id)&&seen.insert(id).second)extra.push_back(id);
+                if(seen.size()>=16)break;
+            }
+            const double limit=indivisibleBase+std::min(45.,.02*indivisibleBase);
+            for(size_t width=extra.size();width; width/=2){
+                auto joint=selected,independent=current;
+                for(size_t i=0;i<width;++i)for(size_t l=0;l<current.size();++l)
+                    joint[l][extra[i]]=independent[l][extra[i]]=packingStep[l][extra[i]];
+                ++indivisibleTrials;
+                const auto joined=estimate(joint);
+                if(!joined.profiled||joined.jobs!=forecast.jobs||joined.seconds>limit||joined.seconds>=original.seconds)continue;
+                const auto apart=estimate(independent);
+                if(!apart.profiled||!apart.jobs||joined.seconds>.7*(indivisibleBase+apart.seconds))continue;
+                selected=std::move(joint);forecast=joined;active+=width;indivisibleExtraRows=width;
+                indivisibleSeparate=apart.seconds;break;
+            }
+        }
+    }
     sharingDecisions<<']';
     const bool accepted=selected!=current&&(original.profiled
         ?forecast.profiled&&forecast.seconds<original.seconds:selected!=wanted);
@@ -307,7 +361,7 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
             e.unknownRound.workerSeconds=e.nativeWorkerSeconds;e.unknownRound.nativeBlocks=e.nativeCommitted;
         }
     }
-    e.Record(e.root+"/round_work_limit.json","{\"policy\":\"complete eight-seed prefix and output/residual cohort scheduling v9\",\"applied\":"+std::string(accepted?"true":"false")
+    e.Record(e.root+"/round_work_limit.json","{\"policy\":\"complete eight-seed prefix and output/residual cohort scheduling v10\",\"applied\":"+std::string(accepted?"true":"false")
         +",\"observed_previous_seconds_per_row\":"+Number(measuredSecondsPerRow)+",\"priced_subround_probes\":"+Number(pricedProbes)+",\"priced_cohort_admissions\":"+Number(pricedAdmissions)+",\"empirical_cohort_limit\":"+Number(empiricalLimit)+",\"timed_cohorts_backfilled\":"+Number(backfilled)
         +",\"unknown_cost_fallback\":"+(original.profiled?"false":"true")
         +",\"original_forecast_profiled\":"+(original.profiled?"true":"false")
@@ -320,6 +374,9 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
         +",\"advisory_worker_seconds\":"+Number(budget)+",\"selected_growing_rows\":"+Number(growing)+",\"selected_cohorts\":"+Number(active)
         +",\"bounded_prefix_step_applied\":"+(boundedPrefixStep?"true":"false")+",\"prefix_step_forecasts\":"+Number(prefixStepForecasts)
         +",\"sharing_backfill_forecasts\":"+Number(sharingForecasts)+",\"sharing_backfill_cohorts\":"+Number(sharingCohorts)
+        +",\"indivisible_batch_trials\":"+Number(indivisibleTrials)+",\"indivisible_extra_rows\":"+Number(indivisibleExtraRows)
+        +",\"indivisible_base_worker_seconds\":"+(indivisibleTrials?Number(indivisibleBase):"null")
+        +",\"indivisible_extra_separate_worker_seconds\":"+(indivisibleExtraRows?Number(indivisibleSeparate):"null")
         +",\"matching_batch_forecasts\":"+Number(batchForecasts)+",\"matching_batch_cohorts\":"+Number(batchCohorts)
         +",\"sharing_backfill_admissions\":"+sharingDecisions.str()
         +",\"shared_trace_efficiency_preserved\":"+(boundedPrefixStep?"null":(preservedSharing?"true":"false"))

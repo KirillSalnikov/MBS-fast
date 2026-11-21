@@ -128,6 +128,41 @@ void TraceSharingBatch(const std::string& root){
             "same-prefix batch failed to widen within the existing jobs and time budget");
     for(size_t id:ids)Require(wide[0][id]==(id<size_t(newRows)?512:256),"compatible rows lost ranked order");
 }
+void IndivisibleTraceBatch(const std::string& root){
+    ArgPP args;RunConfig config;config.useGpu=true;Engine e(args,config);Init(e,root);
+    const size_t rows=2048;e.theta.clear();e.nonconvexGeometry=true;e.coherent=true;
+    Statistics stats;stats.interval.resize(rows);stats.ratioInterval.resize(rows);
+    std::vector<size_t> ids;
+    for(size_t i=0;i<rows;++i){
+        e.theta.push_back(.01*i);ids.push_back(i);stats.interval[i][0]=1.+double(rows-i)/rows;
+    }
+    for(unsigned seed:e.seeds){
+        Job j;e.SetSampling(j,256,seed,6,e.theta,false);j.identity=Number(seed);j.folder=root+"/"+j.identity;
+        j.traceSeconds=300;j.diffractionSeconds=.5*rows;j.seconds=j.traceSeconds+j.diffractionSeconds;e.CacheJob(j);
+    }
+    Budgets current(1,std::vector<int>(rows,256)),wanted(1,std::vector<int>(rows,512)),base=current;
+    base[0][0]=base[0][1]=512;
+    AdditionalWork work(e,e.seeds.data());
+    const auto mandatory=work.Forecast(BudgetRequests(e,{6},base,ids));
+    auto selected=wanted;
+    BoundRoundWork(e,work,current,selected,{6},ids,stats);
+    auto grown=std::count(selected[0].begin(),selected[0].end(),512);
+    const auto joint=work.Forecast(BudgetRequests(e,{6},selected,ids));
+    Require(mandatory.profiled&&joint.profiled&&mandatory.seconds>1800&&grown>2&&grown<=16,
+        "trace-dominated indivisible round failed to share additional directions");
+    Require(joint.jobs==mandatory.jobs&&joint.seconds<=mandatory.seconds+std::min(45.,.02*mandatory.seconds),
+        "trace-sharing expansion exceeded the indivisible request allowance");
+    CheckBounds(current,wanted,selected);
+    // A singleton belonging to a coupled stencil cannot enter through this path.
+    auto guarded=wanted;
+    BoundRoundWork(e,work,current,guarded,{6},ids,stats,{},{{0,17}});
+    const auto receipt=Read(root+"/round_work_limit.json");
+    Require(receipt.find("\"indivisible_extra_rows\":0")!=std::string::npos&&guarded[0][0]==guarded[0][17],
+        "a coupled stencil entered the singleton latency allowance");
+    std::cout<<"PASS indivisible nonconvex trace: "<<grown<<" useful rows at "<<joint.seconds
+        <<" seconds, mandatory two rows "<<mandatory.seconds<<", same "<<joint.jobs<<" native jobs\n";
+}
+
 
 }
 int main(int argc,char** argv){try{
@@ -137,6 +172,7 @@ int main(int argc,char** argv){try{
     UnchangedCases(root+"/nonlocal",false);UnchangedCases(root+"/already2x",true);
     CompatibleBackfill(root+"/compatible_backfill");
     TraceSharingBatch(root+"/trace_sharing_batch");
+    IndivisibleTraceBatch(root+"/indivisible_trace_batch");
     std::cout<<"PASS: oversized 4x cohort becomes bounded 2x; measured breadth; whole cohorts; eight seeds; no rollback; deterministic; unknown/irreducible costs honest\n";
     return 0;
 }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}
