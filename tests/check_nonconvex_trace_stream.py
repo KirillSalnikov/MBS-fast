@@ -26,9 +26,16 @@ def solve(binary, root, name, mode, env):
     ]
     log = subprocess.check_output(command, cwd=str(root), env=env,
                                   stderr=subprocess.STDOUT, universal_newlines=True)
-    used_gpu_trace = 'submitted first trace kernel' in log
-    if used_gpu_trace != (mode == '--gpu-trace-prefilter'):
-        raise RuntimeError('requested trace backend did not execute')
+    # The submission notice precedes memory allocation. Timing records are
+    # emitted only after the kernel and the result transfer have completed.
+    records = [dict(item.split('=', 1) for item in line.split() if '=' in item)
+               for line in log.splitlines() if line.startswith('GPU trace timing:')]
+    timed_kernel = any(int(r['items']) > 0 and int(r['candidates']) > 0
+                       and float(r['small_ms']) + float(r['large_ms']) > 0 for r in records)
+    if (mode == '--gpu-trace-prefilter' and not timed_kernel
+            or mode == '--no-gpu-trace-prefilter' and records):
+        raise RuntimeError('completed CUDA trace batches do not match requested backend')
+    print('%s: %d completed CUDA trace batches' % (name, len(records)), flush=True)
     with (target / (name + '_phase_timings.tsv')).open() as stream:
         times = {r['phase']: float(r['seconds']) for r in csv.DictReader(stream, delimiter='\t')}
     if times.get('gpu_diffraction_including_packing', 0) <= 0:
@@ -42,7 +49,8 @@ def check(binary):
     angles = (0, 5, 32, 78, 142, 160, 170, 176, 180)
     env = {k: v for k, v in os.environ.items() if not k.startswith('MBS_GPU_TRACE_')}
     env.update(OMP_NUM_THREADS='4', OMP_THREAD_LIMIT='4', OMP_DYNAMIC='FALSE',
-               MBS_GPU_TRACE_NONBLOCKING_STREAM='1', MBS_GPU_TRACE_BATCH_BEAMS='128')
+               MBS_GPU_TRACE_NONBLOCKING_STREAM='1', MBS_GPU_TRACE_BATCH_BEAMS='128',
+               MBS_GPU_TRACE_TIMING='1')
     with tempfile.TemporaryDirectory(prefix='mbs-trace-stream-') as directory:
         root = Path(directory)
         (root / 'theta').write_text(''.join(str(a) + '\n' for a in angles))
