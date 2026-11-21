@@ -7,9 +7,13 @@ struct GpuTraceExactHit;
 #endif
 
 /** NOTE: пучки выходят со случайно ориентированным порядком вершин */
+class ReturnedBeams;
 class ScatteringNonConvex : public Scattering
 {
+    ReturnedBeams *returnedSink = nullptr;
+    void AppendOutgoingBeam(std::vector<Beam> &beams, const Beam &beam);
 public:
+    bool ScatterLightPacked(std::vector<Beam> &shadow, ReturnedBeams &destination);
     ScatteringNonConvex(Particle *particle, Light *incidentLight,
                         bool isOpticalPath, int nActs);
 

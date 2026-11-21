@@ -1,3 +1,4 @@
+#include "../scattering/ReturnedBeams.h"
 #include "HandlerPO.h"
 #include "HandlerPO_fast.h"
 #include "HandlerPO_avx.h"
@@ -1801,6 +1802,17 @@ static double PreparedMueller00(const Matrix2x2c& j)
 }
 void HandlerPO::PrepareBeams(std::vector<Beam> &beams, double sinZenith,
                               PreparedOrientation &out)
+{
+    PrepareBeamRange(beams, sinZenith, out);
+}
+
+void HandlerPO::PrepareBeams(ReturnedBeams &beams, double sinZenith, PreparedOrientation &out)
+{
+    PrepareBeamRange(beams, sinZenith, out);
+}
+
+template<class Range>
+void HandlerPO::PrepareBeamRange(Range &beams, double sinZenith, PreparedOrientation &out)
 {
     // Particle size is invariant during this call but can change between
     // calls in multi-size workflows.  Cache the O(V^2) diameter once rather

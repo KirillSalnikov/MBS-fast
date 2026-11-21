@@ -283,6 +283,7 @@ struct GpuPackingWork
 };
 #endif
 
+class ReturnedBeams;
 class HandlerPO : public Handler
 {
 public:
@@ -311,6 +312,7 @@ public:
     /// Must be called sequentially (uses m_isBadBeam, modifies beams).
     void PrepareBeams(std::vector<Beam> &beams, double sinZenith,
                       PreparedOrientation &out);
+    void PrepareBeams(ReturnedBeams &beams, double sinZenith, PreparedOrientation &out);
     double ComputeForwardExtinctionOt(const PreparedOrientation &prepared) const;
 #ifdef USE_CUDA
     // Native-request boundary only, before producers start. Frees capacity
@@ -540,5 +542,7 @@ protected:
 public:
     void SetTracks(Tracks *tracks) override;
 private:
+    template<class Range>
+    void PrepareBeamRange(Range &beams, double sinZenith, PreparedOrientation &out);
     void WriteGroupMatrices(Arr2D &matrices, const std::string &name);
 };

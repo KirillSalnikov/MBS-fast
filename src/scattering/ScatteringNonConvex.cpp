@@ -1,3 +1,4 @@
+#include "ReturnedBeams.h"
 #include "ScatteringNonConvex.h"
 
 #include "macro.h"
@@ -542,13 +543,35 @@ void ScatteringNonConvex::FormShadowBeam(std::vector<Beam>& beams)
     }
 }
 
+void ScatteringNonConvex::AppendOutgoingBeam(std::vector<Beam> &beams, const Beam &beam)
+{
+    if (returnedSink)
+        returnedSink->Append(beam);
+    else
+        beams.push_back(beam);
+}
+
+bool ScatteringNonConvex::ScatterLightPacked(std::vector<Beam> &shadow, ReturnedBeams &destination)
+{
+    destination.Clear();
+    for (const Beam &beam : shadow)
+        destination.Append(beam);
+    shadow.clear();
+    struct ResetSink {
+        ReturnedBeams *&slot;
+        ~ResetSink() { slot = nullptr; }
+    } reset{returnedSink};
+    returnedSink = &destination;
+    return ScatterLight(0, 0, shadow);
+}
+
 bool ScatteringNonConvex::ScatterLight(double /*beta*/, double /*gamma*/,
                                        std::vector<Beam> &scaterredBeams)
 {
     const auto traceStarted = std::chrono::high_resolution_clock::now();
     // m_particle->Rotate(beta, gamma, 0);
-    scaterredBeams.reserve(scaterredBeams.size()
-                           + std::max(8192, 4 * m_particle->nFacets));
+    if (!returnedSink)
+        scaterredBeams.reserve(scaterredBeams.size() + std::max(8192, 4 * m_particle->nFacets));
     m_traceSortCalls = 0;
     m_traceSortCandidates = 0;
     m_traceSortOverlapCalls = 0;
@@ -1036,7 +1059,7 @@ void ScatteringNonConvex::CutExternalBeam(const Beam &beam,
         tmp.SetPolygon(m_polygonResultBuffer.arr[i]);
         if (debugCut)
             cutArea += tmp.Area();
-        scaterredBeams.push_back(tmp);
+        AppendOutgoingBeam(scaterredBeams, tmp);
     }
     if (debugCut)
     {
@@ -1844,7 +1867,7 @@ bool ScatteringNonConvex::SplitBeams(std::vector<Beam> &scaterredBeams)
     if (beam.lastFacetId == 6)
         int fff = 0;
 #endif
-                scaterredBeams.push_back(beam);
+                AppendOutgoingBeam(scaterredBeams, beam);
             }
         }
         else if (beam.location == Location::Out)

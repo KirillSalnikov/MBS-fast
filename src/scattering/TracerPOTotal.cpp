@@ -1,3 +1,6 @@
+#include "ReturnedBeams.h"
+#include "BulletRosette.h"
+#include "ScatteringNonConvex.h"
 #include "PreparedReuse.h"
 #include "PreparedMemoryProfile.h"
 #include "HostMemoryReserve.h"
@@ -6319,6 +6322,12 @@ void TracerPOTotal::TraceWeightedOrientations(
         {PreparedBlock released=std::move(block);}
         seconds+=std::chrono::duration<double>(std::chrono::steady_clock::now()-started).count();
     };
+    // The single-depth PO pass consumes terminal rays sequentially. Paired
+    // depths need the mutable raw upper/lower lists for cutoff comparisons.
+    const char *compactSetting = std::getenv("MBS_PO_COMPACT_RETURNED_BEAMS");
+    const bool compactRosette = !m_pairedDepth && handlerPO->isCoh
+        && dynamic_cast<const BulletRosette *>(m_particle)
+        && (!compactSetting || std::strcmp(compactSetting, "0") != 0);
     auto prepareBlock = [&](int iStart,int thisChunk,bool allowResident,int prepareThreads)
     {
         PreparedBlock block;block.start=iStart;block.count=thisChunk;
@@ -6525,6 +6534,9 @@ void TracerPOTotal::TraceWeightedOrientations(
             localHandler.ConfigureForThreadLocalPrepare(*handlerPO, localScatter);
 
             std::vector<Beam> localBeams;
+            ReturnedBeams packed;
+            ScatteringNonConvex *nonconvex = compactRosette
+                ? dynamic_cast<ScatteringNonConvex *>(localScatter) : nullptr;
             double localRotationSeconds = 0.0;
             double localTraceSeconds = 0.0;
             double localPrepareSeconds = 0.0;
@@ -6567,6 +6579,7 @@ void TracerPOTotal::TraceWeightedOrientations(
                     profileStart = now;
                 }
                 bool ok;
+                bool packedOutput = false;
 #ifdef USE_CUDA
                 if(residentReady[i])
                 {
@@ -6641,7 +6654,9 @@ void TracerPOTotal::TraceWeightedOrientations(
 #endif
                 {
                     if (!shadowOff) localScatter->FormShadowBeam(localBeams);
-                    ok = localScatter->ScatterLight(0, 0, localBeams);
+                    packedOutput = nonconvex != nullptr;
+                    ok = packedOutput ? nonconvex->ScatterLightPacked(localBeams, packed)
+                                   : localScatter->ScatterLight(0, 0, localBeams);
                 }
                 if (profileOrientation)
                 {
@@ -6673,7 +6688,10 @@ void TracerPOTotal::TraceWeightedOrientations(
                                     lowerRaw.push_back(beam);
                             localHandler.PrepareBeams(lowerRaw,weight,block.lower[i]);}}
                     double beforeOutput = localHandler.m_outputEnergy;
-                    localHandler.PrepareBeams(localBeams, weight, chunkPrepared[i]);
+                    if (packedOutput)
+                        localHandler.PrepareBeams(packed, weight, chunkPrepared[i]);
+                    else
+                        localHandler.PrepareBeams(localBeams, weight, chunkPrepared[i]);
                     if(m_pairedDepth&&reusePrepared){auto& lower=block.lower[i];lower.sinZenith=weight;
                         for(const auto& beam:chunkPrepared[i].beams)if(beam.nActs<=m_pairedDepth||beam.isExternal)lower.beams.push_back(beam);
                         lower.extinctionOt=localHandler.ComputeForwardExtinctionOt(lower);}
@@ -6746,6 +6764,7 @@ void TracerPOTotal::TraceWeightedOrientations(
                 <<" thread_cpu_sum_s="<<(s.cpuAvailable?s.cpu:-1)
                 <<" rss_before_MiB="<<rssBefore/1024.<<" rss_after_MiB="<<ReadProcessRssKb()/1024.
                 <<" hwm_MiB="<<ReadProcessStatusKb("VmHWM:")/1024.
+                <<" compact_returned_beams="<<(compactRosette?1:0)
                 <<" scratch_estimate_MiB="<<scratchEstimate/1048576.<<" scratch_budget_MiB="<<scratchBudget/1048576.
                 <<" task_semantics=assigned_including_cache_or_failed_skip cpu_clock_scope=thread_region_including_barrier"
                 <<" scratch_policy="<<(fineSchedule?"admission_estimate_not_growth_limit":"legacy");
