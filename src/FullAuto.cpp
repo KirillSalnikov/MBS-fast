@@ -1045,7 +1045,10 @@ struct Engine {
     // estimator (all depths and seeds); never average unlike phi prefixes.
     std::map<size_t,int> thetaPhi;
     int PhiForTheta(size_t id)const{const auto p=thetaPhi.find(id);return p==thetaPhi.end()?phi:p->second;}
-    bool depthSharing=true,depthVerified=false;
+    bool depthSharing=true,depthVerified=false,nonconvexGeometry=false;
+    bool DepthSharingRequested(){
+        return !go&&!nonconvexGeometry&&On("fullauto_depth_share");
+    }
     bool completedCheckpoint=false;
     bool capNonconvexDepth=false;
     int AnchorDepth()const{return capNonconvexDepth?std::min(12,FullAutoDepthSelection::Anchor(depthMaximum)):FullAutoDepthSelection::Anchor(depthMaximum);}
@@ -1120,6 +1123,7 @@ struct Engine {
         out<<"],\"active_worker_slots\":"<<std::min(WorkerGpus().size(),size_t(8))<<",\"resource_policy\":"<<Quoted(resourcePolicy)<<",\"rotation_policy\":"<<Quoted(rotationPolicy)<<",\"cutoff_policy\":"<<Quoted(cutoffPolicy)
             <<",\"symmetry_numerical_checks\":"<<(symmetryChecks?"true":"false")<<",\"mirror_policy\":"<<Quoted(mirrorPolicy)<<",\"controls_policy\":"<<Quoted(controlPolicy)<<",\"local_policy\":"<<Quoted(localPolicy)
             <<",\"work_queue_policy\":"<<Quoted(workQueuePolicy)<<",\"angular_cache\":"<<(angularCache?"true":"false")<<",\"incremental\":"<<(incremental?"true":"false")
+            <<",\"nonconvex_geometry\":"<<(nonconvexGeometry?"true":"false")
             <<",\"coherent\":"<<(coherent?"true":"false")<<",\"depth_sharing\":"<<(depthSharing?"true":"false")<<",\"ratio_accuracy\":"<<(ratios?"true":"false")
             <<",\"phi_recheck\":"<<(phiRecheck?"true":"false")<<",\"polarization_controls\":"<<(polarControls?"true":"false")
             <<",\"final_checks\":"<<(finalChecks?"true":"false")<<",\"final_physics_audit\":"<<(PhysicalAuditEnabled()?"true":"false")<<",\"independent_final_audit\":"<<(finalAudit?"true":"false")<<",\"physics_audit\":"<<(physicsAudit?"true":"false")
@@ -1187,7 +1191,8 @@ struct Engine {
         localPolicy=args.IsCatched("fullauto_local")?args.GetStringValue("fullauto_local"):"auto";local=localPolicy!="off";ratios=On("fullauto_ratios");phiRecheck=On("fullauto_phi_recheck");
         polarControls=On("fullauto_polar_controls");finalChecks=ConfiguredFinalChecks();finalAudit=finalChecks&&On("fullauto_final_audit");physicsAudit=On("fullauto_physics_audit",false);
         if(go&&args.IsCatched("cutoff_profile")&&args.GetStringValue("cutoff_profile")=="balanced")physicsAudit=true;
-        coherent=!go&&!args.IsCatched("incoh");depthSharing=!go&&On("fullauto_depth_share");
+        coherent=!go&&!args.IsCatched("incoh");
+        nonconvexGeometry=nonconvex;depthSharing=DepthSharingRequested();
         fixedPhi=args.IsCatched("nphi")?args.GetIntValue("nphi"):(args.IsCatched("grid")?args.GetIntValue("grid",args.GetArgNumber("grid")-2):0);
         fixedPipeline=args.IsCatched("orientation_pipeline");kernel.pipeline=fixedPipeline;
         if(const char* v=getenv("MBS_GPU_BLOCK")){int n=std::atoi(v);Require(std::string(v)==std::to_string(n)&&(n==64||n==128||n==256),"MBS_GPU_BLOCK must be 64, 128 or 256");kernel.block=n;fixedBlock=true;}
@@ -1976,7 +1981,7 @@ struct Engine {
         }
         if(PersistentEnabled()){ExecutePersistent(result,commands,todo,onComplete);return;}
         for(auto& service:services)service.reset();
-        WorkerCleanup cleanup;DispatchProgressScope progress(*this,todo.size());
+        DispatchProgressScope progress(*this,todo.size());WorkerCleanup cleanup;
         const auto& workerGpus=WorkerGpus();
         const size_t slots=std::min(workerGpus.size(),size_t(8));
         std::vector<int> slotSeed(slots,-1);std::vector<double> begun(result.size());
@@ -2000,8 +2005,10 @@ struct Engine {
                 int status=0;pid_t waited;do{waited=waitpid(-1,&status,0);}while(waited<0&&errno==EINTR);
                 Require(waited>0,"cannot reap worker");
                 size_t slot=0;while(slot<slots&&activeWorkers[slot]!=waited)++slot;Require(slot<slots,"unknown worker PID");
-                size_t s=size_t(slotSeed[slot]);Job& j=result[s];NativeReturned(j);j.pid=-1;activeWorkers[slot]=0;slotSeed[slot]=-1;j.seconds=Seconds()-begun[s];RemovePath(j.folder+"/worker.pid");
+                size_t s=size_t(slotSeed[slot]);Job& j=result[s];activeWorkers[slot]=0;slotSeed[slot]=-1;
+                RemovePath(j.folder+"/worker.pid");
                 Require(WIFEXITED(status)&&WEXITSTATUS(status)==0,"worker failed; see "+j.folder+"/stdout.log");
+                NativeReturned(j);j.pid=-1;j.seconds=Seconds()-begun[s];
                 if(next<todo.size())launch(slot,todo[next++]);
                 const double commitBegin=Seconds();CompleteNative(j);NativeCommitted(j,Seconds()-commitBegin);++completed;if(onComplete)onComplete(s);
         }

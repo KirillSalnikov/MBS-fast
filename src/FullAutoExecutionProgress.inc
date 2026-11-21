@@ -1,7 +1,7 @@
 // Included inside Engine. Observation only: never used by allocation or by
 // an accuracy/acceptance gate. A native batch is not a whole adaptive round.
 struct LiveNativeRequest {
-    std::string folder,gpu;int count,offset,depth,phi;unsigned seed;size_t rows;
+    std::string folder,gpu;int count,offset,depth,phi;unsigned seed;size_t rows,dispatchLevel;
     double thetaMin,thetaMax,started;
 };
 std::map<pid_t,LiveNativeRequest> liveNative;
@@ -36,7 +36,7 @@ void FinishTimedCohort(double now) {
     time.rows=last.rows;time.round=executionRound;time.updated=now;
 }
 double executionPhaseStarted=Seconds(),executionProgressWritten=-1,lastNativeCommit=-1;
-uint64_t nativeSubmitted=0,nativeReturned=0,nativeCommitted=0,nativeRetries=0,nativeOrientations=0;
+uint64_t nativeAbandoned=0,nativeSubmitted=0,nativeReturned=0,nativeCommitted=0,nativeRetries=0,nativeOrientations=0;
 double nativeWorkerSeconds=0,nativeCheckpointSeconds=0;
 double nativeTraceSeconds=0,nativeConsumerSeconds=0,nativeProcessingSeconds=0;
 double nativeGpuDiffractionSeconds=0,nativeAnalyticControlSeconds=0,nativeAnalyticSetupSeconds=0;
@@ -60,6 +60,7 @@ void WriteExecutionProgress(bool force=false){
         <<",\"phase_angle_orientation_samples_committed\":"<<phaseAngleOrientationSamples
         <<",\"native_requests_submitted\":"<<nativeSubmitted<<",\"native_requests_returned\":"<<nativeReturned
         <<",\"native_requests_committed\":"<<nativeCommitted<<",\"native_requests_retried\":"<<nativeRetries
+        <<",\"native_requests_abandoned\":"<<nativeAbandoned
         <<",\"committed_orientation_samples_all_seeds\":"<<nativeOrientations
         <<",\"summed_worker_seconds\":"<<nativeWorkerSeconds<<",\"checkpoint_seconds\":"<<nativeCheckpointSeconds
         <<",\"native_phase_totals\":{\"profiled_blocks\":"<<nativeProfiledBlocks
@@ -110,6 +111,7 @@ void NativeStarted(const Job& job,const std::string& gpu){
     LiveNativeRequest info;info.folder=job.folder;info.gpu=gpu;info.count=job.count;info.offset=job.offset;
     info.depth=job.depth;info.phi=job.phi;info.seed=job.seed;info.rows=job.inputAngles.size();
     info.thetaMin=job.inputAngles.front();info.thetaMax=job.inputAngles.back();info.started=Seconds();
+    info.dispatchLevel=dispatchProgress.size();
     liveNative[job.pid]=info;++nativeSubmitted;WriteExecutionProgress();
 }
 void NativeReturned(const Job& job,bool retry=false){
@@ -138,5 +140,20 @@ void NativeCommitted(const Job& job,double checkpointSeconds){
 struct DispatchProgressScope {
     Engine& engine;
     DispatchProgressScope(Engine& e,size_t count):engine(e){DispatchProgress p;p.requested=count;engine.dispatchProgress.push_back(p);}
-    ~DispatchProgressScope(){engine.dispatchProgress.pop_back();}
+    ~DispatchProgressScope(){
+        const auto level=engine.dispatchProgress.size();
+        engine.dispatchProgress.pop_back();
+        bool abandoned=false;
+        for(auto it=engine.liveNative.begin();it!=engine.liveNative.end();){
+            if(it->second.dispatchLevel==level){
+                it=engine.liveNative.erase(it);
+                ++engine.nativeAbandoned;
+                abandoned=true;
+            }else ++it;
+        }
+        // Best-effort telemetry during unwinding must preserve the worker error.
+        if(abandoned||std::uncaught_exception()){
+            try{engine.WriteExecutionProgress(true);}catch(...){}
+        }
+    }
 };

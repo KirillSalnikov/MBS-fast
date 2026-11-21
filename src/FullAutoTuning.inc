@@ -73,6 +73,7 @@ bool RestoreTuning(){
     Require(bool(header>>version>>digest)&&version==2&&Hash(text.substr(newline+1))==digest,"execution tuning changed");
     std::istringstream s(text.substr(newline+1));std::string id;std::getline(s,id);Require(id==signature,"execution tuning inputs changed");
     Require(bool(s>>workerThreads>>workerChunk>>orientationBlock>>rotationBeta>>rotationGamma>>rotationError>>selectedCutoff>>cutoffError>>tuneCutoffs>>depthSharing>>hostBudgetMb>>analyticMeanThreads),"invalid execution tuning");
+    if(nonconvexGeometry)depthSharing=false;
     size_t n;std::string line;s>>n;std::getline(s,line);gpus.clear();for(size_t i=0;i<n;++i){std::getline(s,line);
         Require(std::find(gpuCandidates.begin(),gpuCandidates.end(),line)!=gpuCandidates.end(),"tuned GPU outside allowed set");gpus.push_back(line);}
     s>>n;std::getline(s,line);base.clear();for(size_t i=0;i<n;++i){Require(bool(std::getline(s,line)),"truncated execution recipe");base.push_back(line);}
@@ -306,6 +307,6 @@ bool AuditAutomaticCutoffs(const std::vector<double>& angles,int n,int round){
         error=PairedBias(Data(requested),Data(reference));if(error<=eps/8||n>=maxCount||attempt==2)break;n=std::min(maxCount,n>maxCount/2?maxCount:2*n);}
     controls=oldControls;SetMirror(mirror);cutoffError=error;const bool pass=error<=eps/8;
     Record(root+"/automatic_cutoff_validation.json","{\"passed\":"+std::string(pass?"true":"false")+",\"profile\":"+Quoted(profile)+",\"bias95\":"+Number(error)+",\"budget\":"+Number(eps/8)+",\"count_per_seed\":"+Number(n)+",\"theta_count\":"+Number(x.size())+",\"fresh_seeds\":true,\"fallback_to_off\":"+(pass?"false":"true")+"}");
-    if(!pass){SetCutoff("off");balancedCorrection=!go;cutoffError=0;depthSharing=!go&&On("fullauto_depth_share");depthVerified=false;weights.clear();polarWeights.clear();weightTheta.clear();SetMirror(mirror);SaveTuning();}
+    if(!pass){SetCutoff("off");balancedCorrection=!go;cutoffError=0;depthSharing=DepthSharingRequested();depthVerified=false;weights.clear();polarWeights.clear();weightTheta.clear();SetMirror(mirror);SaveTuning();}
     SaveTuning();return pass;
 }
