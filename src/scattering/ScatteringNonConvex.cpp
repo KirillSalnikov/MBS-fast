@@ -438,6 +438,13 @@ const ProjectedPolygon &IntersectProjectedFacets(const ProjectedPolygon &subject
         if (insideCount == 0)
             return *result;
 
+        // A crossing to an on-line origin has interpolation parameter 0 or 1.
+        // Both intersections and the retained vertex then coincide at (0,0).
+        // The sole caller accepts only positive-area overlap.
+        if (insideCount == 1 && input->size == 3 && sides[2] == 0.0
+            && input->vertices[2].x == 0.0 && input->vertices[2].y == 0.0)
+            return *result;
+
         size_t previous = input->size - 1;
         for (size_t i = 0; i < input->size; ++i)
         {
