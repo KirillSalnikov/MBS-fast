@@ -11,6 +11,7 @@ for task_probe in long_round residual_schedule round_latency round_step coverage
         "$task_root/tests/fullauto_${task_probe}_probe.cpp" "${task_objects[@]}" -lm -lgomp -o "$task_output/bin/${task_probe}_probe"
     task_args=("$task_output/$task_probe")
     if [[ "$task_probe" == long_round ]]; then task_args+=("$task_root/tests/data/fullauto_long_round_timings.tsv"); fi
+    if [[ "$task_probe" == round_step ]]; then task_args+=("$task_root/tests/data/fullauto_rosette_partition_timings.tsv"); fi
     "$task_output/bin/${task_probe}_probe" "${task_args[@]}" > "$task_output/${task_probe}.log" 2>&1
     cat "$task_output/${task_probe}.log"
 done

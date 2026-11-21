@@ -6,6 +6,7 @@ size_t RoundPhysicalGpus(const Engine& e){
     const auto slots=e.WorkerGpus();return std::max(size_t(1),std::set<std::string>(slots.begin(),slots.end()).size());
 }
 struct RoundOutputPriority {double error;std::vector<size_t> nodes;};
+long long PrefixMinimumCount(const Engine&,size_t);
 void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budgets& proposed,
         const std::vector<int>& depths,const std::vector<size_t>& ids,const Statistics& stats,
         const std::vector<size_t>& knots={},const std::vector<std::vector<size_t>>& cohorts={},const Budgets* residualCounts=nullptr,
@@ -16,7 +17,7 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
         residualForecast=residualWork.Forecast(AuditRequests(e,depths,*residualCounts,ids,knots));}
     auto estimate=[&](const Budgets& counts){
         if(separatePhi){auto result=work.Forecast(BudgetRequests(e,depths,counts,ids));
-            result.seconds+=residualForecast.seconds;result.jobs+=residualForecast.jobs;
+            result.seconds+=residualForecast.seconds;result.jobs+=residualForecast.jobs;result.measuredWidthJobs+=residualForecast.measuredWidthJobs;
             result.profiled=result.profiled&&residualForecast.profiled;return result;}
         if(residualCounts&&!knots.empty()){
             auto requests=BudgetRequests(e,depths,counts,ids);
@@ -27,7 +28,33 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
     if(observe)e.FinishTimedCohort(Seconds());
     else{e.unknownRound={};e.recentCohortTimes.clear();}
     const auto original=estimate(proposed);const double budget=1800.*RoundPhysicalGpus(e);
-    if(original.profiled&&original.seconds<=budget){e.unknownRound={};return;}
+    // Only one evaluation remains after this decision. If the proposal is
+    // exactly the mandatory prefix floor at every deficient row, deferring
+    // any of its work makes the last level-stability check fail by design.
+    bool finalMinimumOnly=!e.go&&e.executionRound>=0&&e.executionRound==e.roundLimit-2;
+    if(finalMinimumOnly){
+        bool needsGrowth=false;
+        for(size_t l=0;l<current.size()&&finalMinimumOnly;++l){
+            const long long floor=PrefixMinimumCount(e,l);
+            for(size_t id:ids){
+                if(proposed[l][id]!=std::max<long long>(current[l][id],floor)){finalMinimumOnly=false;break;}
+                needsGrowth=needsGrowth||proposed[l][id]>current[l][id];
+            }
+        }
+        finalMinimumOnly=finalMinimumOnly&&needsGrowth;
+    }
+    if(finalMinimumOnly||(original.profiled&&original.seconds<=budget)){
+        size_t growing=0;
+        for(size_t id:ids){
+            for(size_t l=0;l<current.size();++l)if(proposed[l][id]>current[l][id]){++growing;break;}
+        }
+        e.Record(e.root+"/round_work_limit.json","{\"policy\":\"complete eight-seed prefix and output/residual cohort scheduling v12\",\"applied\":false,\"decision_after_round\":"+Number(e.executionRound)
+            +",\"reason\":"+Quoted(finalMinimumOnly?"last_evaluation_requires_all_planned_prefixes":"within_forecast_budget")
+            +",\"physical_gpus\":"+Number(RoundPhysicalGpus(e))+",\"selected_growing_rows\":"+Number(growing)
+            +",\"selected_worker_seconds\":"+(original.profiled?Number(original.seconds):"null")+",\"advisory_worker_seconds\":"+Number(budget)
+            +",\"within_forecast_budget\":"+(original.profiled&&original.seconds<=budget?"true":"false")+",\"accuracy_gates_unchanged\":true}");
+        e.unknownRound={};return;
+    }
     const Budgets wanted=proposed;Budgets step=current;
     std::set<size_t> coupled;for(const auto& group:cohorts)coupled.insert(group.begin(),group.end());
     for(const auto& group:outputPriorities)coupled.insert(group.nodes.begin(),group.nodes.end());
@@ -299,7 +326,8 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
     // latency allowance to the original indivisible request, never compound it.
     size_t indivisibleExtraRows=0,indivisibleTrials=0;
     const double indivisibleBase=forecast.seconds;
-    double indivisibleSeparate=0;
+    double indivisibleSeparate=0,partitionBeforePacking=0,partitionAfterPacking=0;
+    size_t partitionPackingRows=0,mandatoryPackingRows=0;
     if(e.local&&e.config.useGpu&&e.coherent&&!e.go&&e.nonconvexGeometry&&RoundPhysicalGpus(e)==1
         &&original.profiled&&forecast.profiled&&forecast.seconds>budget&&active<=2
         &&!rank.empty()&&rank.front().second.size()==1){
@@ -330,10 +358,13 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
                 if(item.second.size()!=1)continue;
                 const auto id=item.second.front();
                 if(!stencil.count(id)&&sameRecipe(id)&&seen.insert(id).second)extra.push_back(id);
-                if(seen.size()>=16)break;
+                if(seen.size()>=64)break;
             }
             const double limit=indivisibleBase+std::min(45.,.02*indivisibleBase);
-            for(size_t width=extra.size();width; width/=2){
+            // Try wider batches first. If their measured-cost forecast fails,
+            // still try every width from the original 16-direction search.
+            const size_t narrowWidth=compatible?std::min(extra.size(),size_t(16)-occupied.size()):0;
+            for(size_t width=extra.size();width; width=width>narrowWidth?std::max(narrowWidth,width/2):width/2){
                 auto joint=selected,independent=current;
                 for(size_t i=0;i<width;++i)for(size_t l=0;l<current.size();++l)
                     joint[l][extra[i]]=independent[l][extra[i]]=packingStep[l][extra[i]];
@@ -345,11 +376,71 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
                 selected=std::move(joint);forecast=joined;active+=width;indivisibleExtraRows=width;
                 indivisibleSeparate=apart.seconds;break;
             }
+            // Large multilevel cutoff rounds can spend almost all their time
+            // retracing the same prefix for the next few unresolved angles.
+            // Compare both halves of the pending allocation before allowing a
+            // modest increase in time to the next published matrix.
+            if(compatible&&e.balancedCorrection&&depths.size()>1&&original.seconds>4*budget){
+                auto remainder=[&](const Budgets& part){
+                    auto rest=packingStep;
+                    for(size_t l=0;l<rest.size();++l)for(size_t id:ids)
+                        if(part[l][id]==packingStep[l][id])rest[l][id]=current[l][id];
+                    return estimate(rest);
+                };
+                const size_t initialWidth=occupied.size()+indivisibleExtraRows;
+                const double latencyCeiling=indivisibleBase+std::min(.05*indivisibleBase,budget/8);
+                if(initialWidth&&(occupied.size()+extra.size())/2>=initialWidth){
+                    const auto baselineRest=remainder(selected);
+                    if(baselineRest.profiled&&baselineRest.jobs){
+                        partitionBeforePacking=forecast.seconds+baselineRest.seconds;
+                        partitionAfterPacking=partitionBeforePacking;
+                        for(size_t width=2*initialWidth;width<=occupied.size()+extra.size();width*=2){
+                            auto trial=selected;
+                            for(size_t i=0;i<width-occupied.size();++i)for(size_t l=0;l<current.size();++l)
+                                trial[l][extra[i]]=packingStep[l][extra[i]];
+                            const auto joint=estimate(trial);
+                            if(!joint.profiled||joint.jobs!=forecast.jobs||joint.seconds>latencyCeiling)break;
+                            const auto rest=remainder(trial);
+                            const double total=joint.seconds+rest.seconds;
+                            if(!rest.profiled||rest.jobs>baselineRest.jobs||total>=partitionAfterPacking)break;
+                            const size_t previousWidth=occupied.size()+indivisibleExtraRows+partitionPackingRows;
+                            const size_t added=width-previousWidth;
+                            const double marginal=std::max(0.,joint.seconds-forecast.seconds);
+                            if(partitionAfterPacking-total<2*marginal){
+                                // These prefixes must eventually be sampled even if the
+                                // statistical error already passes. Compare against the
+                                // next independent packet of exactly those same rows.
+                                auto independent=current;
+                                bool mandatory=true;
+                                for(size_t i=previousWidth-occupied.size();i<width-occupied.size();++i){
+                                    const size_t id=extra[i];
+                                    for(size_t l=0;l<current.size();++l){
+                                        const auto next=trial[l][id];
+                                        if(next==current[l][id])continue;
+                                        const auto floor=PrefixMinimumCount(e,l);
+                                        mandatory=mandatory&&next<=floor&&floor<=e.maxCount;
+                                        independent[l][id]=next;
+                                    }
+                                }
+                                if(!mandatory)break;
+                                const auto apart=estimate(independent);
+                                if(!apart.profiled||apart.jobs!=forecast.jobs||apart.seconds<=0||
+                                    marginal>.25*apart.seconds)break;
+                                mandatoryPackingRows+=added;
+                            }
+                            active+=added;partitionPackingRows+=added;partitionAfterPacking=total;
+                            forecast=joint;selected=std::move(trial);
+                        }
+                    }
+                }
+            }
         }
     }
     sharingDecisions<<']';
     const bool accepted=selected!=current&&(original.profiled
         ?forecast.profiled&&forecast.seconds<original.seconds:selected!=wanted);
+    if(accepted&&partitionPackingRows&&!boundedPrefixStep&&fullSeconds>0)
+        partitionOverhead=std::max(0.,partitionAfterPacking/fullSeconds-1);
     if(accepted)proposed=selected;
     size_t growing=0;for(size_t id:ids){bool grows=false;for(size_t l=0;l<current.size();++l)grows=grows||proposed[l][id]>current[l][id];growing+=grows;}
     if(!timedRows.empty()&&growing==timedRows.size()){
@@ -361,10 +452,15 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
             e.unknownRound.workerSeconds=e.nativeWorkerSeconds;e.unknownRound.nativeBlocks=e.nativeCommitted;
         }
     }
-    e.Record(e.root+"/round_work_limit.json","{\"policy\":\"complete eight-seed prefix and output/residual cohort scheduling v10\",\"applied\":"+std::string(accepted?"true":"false")
-        +",\"observed_previous_seconds_per_row\":"+Number(measuredSecondsPerRow)+",\"priced_subround_probes\":"+Number(pricedProbes)+",\"priced_cohort_admissions\":"+Number(pricedAdmissions)+",\"empirical_cohort_limit\":"+Number(empiricalLimit)+",\"timed_cohorts_backfilled\":"+Number(backfilled)
+    e.Record(e.root+"/round_work_limit.json","{\"policy\":\"complete eight-seed prefix and output/residual cohort scheduling v12\",\"applied\":"+std::string(accepted?"true":"false")
+        +",\"decision_after_round\":"+Number(e.executionRound)+",\"observed_previous_seconds_per_row\":"+Number(measuredSecondsPerRow)+",\"priced_subround_probes\":"+Number(pricedProbes)+",\"priced_cohort_admissions\":"+Number(pricedAdmissions)+",\"empirical_cohort_limit\":"+Number(empiricalLimit)+",\"timed_cohorts_backfilled\":"+Number(backfilled)
         +",\"unknown_cost_fallback\":"+(original.profiled?"false":"true")
         +",\"original_forecast_profiled\":"+(original.profiled?"true":"false")
+        +",\"native_jobs_priced_from_measured_widths\":"+Number(accepted?forecast.measuredWidthJobs:original.measuredWidthJobs)
+        +",\"partition_packing_extra_rows\":"+Number(partitionPackingRows)
+        +",\"partition_mandatory_extra_rows\":"+Number(mandatoryPackingRows)
+        +",\"partition_worker_seconds_before_packing\":"+Number(partitionBeforePacking)
+        +",\"partition_worker_seconds_after_packing\":"+Number(partitionAfterPacking)
         +",\"selected_forecast_profiled\":"+((accepted?forecast.profiled:original.profiled)?"true":"false")
         +",\"no_growing_cohorts\":"+(rank.empty()?"true":"false")
         +",\"cost_model\":\"native physical or balanced children; conservative three-leg correction (five legacy paired legs); no assembly views\""

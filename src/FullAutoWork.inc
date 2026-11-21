@@ -1,9 +1,38 @@
 // Included inside FullAutoAdaptive.inc. Scheduling forecasts only: never an
 // accuracy criterion. Times are summed native worker seconds, not elapsed time.
-struct WorkForecast {double seconds=0;size_t jobs=0;bool profiled=true;};
+struct WorkForecast {double seconds=0;size_t jobs=0,measuredWidthJobs=0;bool profiled=true;};
 class AdditionalWork {
     Engine& e;std::array<unsigned,8> seeds;bool ignoreCoverage,productionOnly,uniformPhi;
-    struct Profile {double trace=0,diffraction=0,setup=0,overlap=0;size_t observations=0;};
+    // Repeated physical commands at two packet widths can bound the GPU
+    // cost of intermediate widths without multiplying packing by every theta.
+    struct CountTimings {
+        int threads=0;
+        size_t narrow=0,wide=0;
+        unsigned narrowSeeds=0,wideSeeds=0;
+        double maxDiffraction=0;
+        void Observe(const Job& j,unsigned seedBit){
+            if(!threads)threads=j.preparationThreads;
+            if(threads!=j.preparationThreads)threads=-1;
+            const size_t width=j.inputAngles.size();
+            if(!narrow||width<narrow){narrow=width;narrowSeeds=0;}
+            if(width>wide){wide=width;wideSeeds=0;}
+            if(width==narrow)narrowSeeds|=seedBit;
+            if(width==wide)wideSeeds|=seedBit;
+            maxDiffraction=std::max(maxDiffraction,j.diffractionSeconds);
+        }
+        double Diffraction(size_t rows,double linearPerRow)const{
+            const unsigned common=narrowSeeds&wideSeeds;
+            if(threads<=0||rows<=narrow||rows>wide||!(common&(common-1)))return rows*linearPerRow;
+            // Cover the costliest observed packet, with headroom. Keep the
+            // forecast monotone at both edges and never extrapolate a saving.
+            return std::min(rows*linearPerRow,std::max(narrow*linearPerRow,1.15*maxDiffraction));
+        }
+    };
+    struct Profile {
+        double trace=0,diffraction=0,setup=0,overlap=0;
+        size_t observations=0;
+        std::map<int,CountTimings> measuredPackets;
+    };
     // Keep native timing recipes separate from physical cache identities.
     // Corrected parents are assembled; their actual workers have child hashes.
     // role: 0 physical/off command, 1 balanced child, 2 off correction child.
@@ -30,7 +59,7 @@ class AdditionalWork {
     struct LeadingCoverage {int count=0;bool stopped=false;};
     std::map<std::tuple<int,int,int,double>,LeadingCoverage> leadingCoverage;
     std::map<int,std::unique_ptr<AdditionalWork>> phiWork;
-    void NativeCost(WorkForecast& result,int count,int depth,int paired,size_t rows,int role)const{
+    void NativeCost(WorkForecast& result,int count,int depth,int paired,size_t rows,int role,int offset)const{
         auto profile=profiles.find(Depth{depth,paired,role});
         // The off child runs the same physical command. Reuse its timings,
         // never its samples, for a small uncorrected production block.
@@ -41,22 +70,28 @@ class AdditionalWork {
             profile=profiles.find(Depth{depth,paired,0});
         ++result.jobs;
         if(profile==profiles.end()){result.profiled=false;return;}
-        const auto& p=profile->second;const double trace=count*p.trace,diffraction=count*p.diffraction*rows;
+        const auto& p=profile->second;const double trace=count*p.trace;
+        const double linear=count*p.diffraction*rows;
+        double diffraction=linear;
+        const auto packet=p.measuredPackets.find(count);
+        if(!offset&&packet!=p.measuredPackets.end())
+            diffraction=packet->second.Diffraction(rows,count*p.diffraction);
+        if(diffraction<linear)++result.measuredWidthJobs;
         result.seconds+=p.setup+trace+diffraction-p.overlap*std::min(trace,diffraction);
     }
-    void CorrectedCost(WorkForecast& result,int count,int depth,int paired,size_t rows)const{
+    void CorrectedCost(WorkForecast& result,int count,int depth,int paired,size_t rows,int offset)const{
         const Engine::CutoffSampleCounts samples(count);
         const int m=samples.correction;
         if(e.StagedCutoff()){
             // Charge both fast runs conservatively when the prefix is embedded.
             // The balanced difference disappears identically at equal counts;
             // there is then no balanced worker to supply a timing profile.
-            NativeCost(result,count,depth,paired,rows,1);
-            NativeCost(result,m,depth,paired,rows,1);
-            NativeCost(result,samples.off,depth,paired,rows,2);
+            NativeCost(result,count,depth,paired,rows,1,offset);
+            NativeCost(result,m,depth,paired,rows,1,offset);
+            NativeCost(result,samples.off,depth,paired,rows,2,offset);
             if(!samples.BalancedTermsCancel()){
-                NativeCost(result,m,depth,paired,rows,3);
-                NativeCost(result,samples.off,depth,paired,rows,3);
+                NativeCost(result,m,depth,paired,rows,3,offset);
+                NativeCost(result,samples.off,depth,paired,rows,3,offset);
             }
             return;
         }
@@ -67,10 +102,10 @@ class AdditionalWork {
         // absent instead of silently treating their base work as free.
         for(int n:{count,m}){
             if(paired&&!profiles.count(Depth{depth,paired,1})){
-                NativeCost(result,n,depth,0,rows,1);NativeCost(result,n,paired,0,rows,1);
-            }else NativeCost(result,n,depth,paired,rows,1);
+                NativeCost(result,n,depth,0,rows,1,offset);NativeCost(result,n,paired,0,rows,1,offset);
+            }else NativeCost(result,n,depth,paired,rows,1,offset);
         }
-        NativeCost(result,m,depth,paired,rows,2);
+        NativeCost(result,m,depth,paired,rows,2,offset);
     }
     Slot Key(int n,int offset,int depth,int paired,unsigned seed)const{return {{uint64_t(n),uint64_t(offset),uint64_t(depth),uint64_t(paired),seed}};}
     bool Covered(int n,int offset,int depth,int paired,unsigned seed,double angle){
@@ -136,9 +171,11 @@ public:
     AdditionalWork(Engine& engine,const unsigned* seedSet,bool ignoreSaved=false,bool productionProfilesOnly=false,bool uniform=false,size_t coverageLimit=8*1024*1024):e(engine),ignoreCoverage(ignoreSaved),productionOnly(productionProfilesOnly),uniformPhi(uniform),coverageBudget(new CoverageBudget(coverageLimit)){
         std::copy(seedSet,seedSet+8,seeds.begin());const auto recipe=e.ExecutionHash();
         const auto balancedRecipe=Hash(recipe+(e.StagedCutoff()?" staged-fast-child-v1":" balanced-child-v1")),offRecipe=Hash(recipe+" off-child-v1");
+        const auto stagedBalancedRecipe=Hash(recipe+" staged-balanced-child-v1");
+        const bool measureWidths=e.nonconvexGeometry&&e.config.useGpu&&e.coherent&&!e.go&&!e.controls&&e.gpus.size()==1;
         for(const auto& item:e.cache){const Job& j=item.second;
             if(productionProfilesOnly&&std::find(e.seeds.begin(),e.seeds.end(),j.seed)==e.seeds.end())continue;
-            const int role=j.executionHash==recipe?0:j.executionHash==balancedRecipe?1:j.executionHash==offRecipe?2:j.executionHash==Hash(recipe+" staged-balanced-child-v1")?3:-1;
+            const int role=j.executionHash==recipe?0:j.executionHash==balancedRecipe?1:j.executionHash==offRecipe?2:j.executionHash==stagedBalancedRecipe?3:-1;
             if(j.assembled||j.paired||j.count<=0||j.inputAngles.empty()||role<0||j.phi!=e.phi
                 ||j.block!=e.kernel.block||j.pipeline!=e.kernel.pipeline||j.warp!=e.kernel.warp||j.mirrored!=e.mirror||j.hasControls!=e.controls)continue;
             if(j.seconds<=0||!std::isfinite(j.seconds))continue;
@@ -149,6 +186,11 @@ public:
                 const double overlap=j.OverlapFraction();p.overlap+=overlap;
                 p.setup+=std::max(0.,j.seconds-(j.traceSeconds+j.diffractionSeconds-overlap*std::min(j.traceSeconds,j.diffractionSeconds)));}
             else p.trace+=j.seconds/j.count;
+            if(measureWidths&&!j.offset&&j.inputAngles.size()<=128&&j.preparationThreads>0&&j.processingSeconds>0
+                &&j.diffractionSeconds>0&&std::isfinite(j.diffractionSeconds)){
+                const auto seed=std::find(seeds.begin(),seeds.end(),j.seed);
+                if(seed!=seeds.end())p.measuredPackets[j.count].Observe(j,1u<<(seed-seeds.begin()));
+            }
             ++p.observations;
         }
         for(auto& item:profiles){auto& p=item.second;p.trace/=p.observations;p.diffraction/=p.observations;p.setup/=p.observations;p.overlap/=p.observations;}
@@ -180,7 +222,7 @@ public:
         if(!uniformPhi&&!e.thetaPhi.empty()){
             WorkForecast total;const auto groups=PhiRequests(e,requests);
             for(const auto& group:groups){PhiScope scope(e,group.first);auto& work=phiWork[group.first];if(!work){work.reset(new AdditionalWork(e,seeds.data(),ignoreCoverage,productionOnly,true));work->coverageBudget=coverageBudget;}const auto part=work->Forecast(group.second);
-                total.seconds+=part.seconds;total.jobs+=part.jobs;total.profiled=total.profiled&&part.profiled;}return total;
+                total.seconds+=part.seconds;total.jobs+=part.jobs;total.measuredWidthJobs+=part.measuredWidthJobs;total.profiled=total.profiled&&part.profiled;}return total;
         }
         auto saved=forecasts.find(requests);if(saved!=forecasts.end())return saved->second;
         WorkForecast result;std::map<Slot,std::vector<double>> planned;
@@ -209,8 +251,8 @@ public:
                 if(!exact){
                     const bool corrected=e.balancedCorrection&&r.count>=512&&r.depth>=6
                         &&(e.phiCutoffPilot||std::find(e.seeds.begin(),e.seeds.end(),seed)!=e.seeds.end());
-                    if(corrected)CorrectedCost(result,r.count,r.depth,r.pairedDepth,missing.size());
-                    else NativeCost(result,r.count,r.depth,r.pairedDepth,missing.size(),0);
+                    if(corrected)CorrectedCost(result,r.count,r.depth,r.pairedDepth,missing.size(),r.offset);
+                    else NativeCost(result,r.count,r.depth,r.pairedDepth,missing.size(),0,r.offset);
                 }
                 // Prefetch prepares paired and standalone jobs separately;
                 // LowerView becomes available only during the later Stage.
