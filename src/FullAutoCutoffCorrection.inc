@@ -45,14 +45,28 @@ void WriteCutoffMatrix(Job& job,const std::vector<Job>& parts,const std::vector<
     // model and wavelength. All profiles use the same refinement bound.
     // Preserve the five-term allowance even when the balanced sample cancels.
     if(equalBalancedTerms)refinement+=2*parts[1].controlRefinement;
+    // Keep the bound for each direction when all correction legs recorded it.
+    // Older source summaries still supply the conservative packet maximum.
+    std::vector<double> rowBounds;
+    if(job.hasControls&&productivePadding&&sharedMeans&&
+            std::all_of(parts.begin(),parts.end(),[&](const Job& p){return p.rowRefinement.size()==x.size();})){
+        rowBounds.assign(x.size(),0.);
+        for(const auto& part:parts)for(size_t r=0;r<x.size();++r)rowBounds[r]+=part.rowRefinement[r];
+        if(equalBalancedTerms)for(size_t r=0;r<x.size();++r)rowBounds[r]+=2*parts[1].rowRefinement[r];
+        if(!rowBounds.empty())refinement=*std::max_element(rowBounds.begin(),rowBounds.end());
+    }
     WriteMatrix(stem+".dat",x,matrix);
     if(job.hasControls){std::vector<std::array<double,2>> coefficients(x.size(),{{1,1}});
         for(size_t i=0;i+1<command.size();++i)if(command[i]=="--analytic-control-weights"){
             std::istringstream input(Read(command[i+1]));std::string line;std::getline(input,line);
             for(size_t r=0;r<x.size();++r){double angle;Require(bool(input>>angle>>coefficients[r][0]>>coefficients[r][1])&&std::fabs(angle-x[r])<1e-10,"cutoff control weights differ");}}
-        std::ostringstream out;out<<std::setprecision(17)<<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n";
+        std::ostringstream out;out<<std::setprecision(17)<<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight";
+        if(!rowBounds.empty())out<<"\trow_refinement";
+        out<<'\n';
         for(size_t r=0;r<x.size();++r){const auto& c=cv[r];const auto& b=coefficients[r];out<<x[r];for(double v:c)out<<'\t'<<v;
-            out<<'\t'<<c[0]-b[0]*c[3]-b[1]*c[4]<<'\t'<<matrix[r][0]<<'\t'<<refinement<<'\t'<<setup<<'\t'<<b[0]<<'\t'<<b[1]<<'\n';}
+            out<<'\t'<<c[0]-b[0]*c[3]-b[1]*c[4]<<'\t'<<matrix[r][0]<<'\t'<<refinement<<'\t'<<setup<<'\t'<<b[0]<<'\t'<<b[1];
+            if(!rowBounds.empty())out<<'\t'<<rowBounds[r];
+            out<<'\n';}
         Atomic(stem+"_analytic_facets.tsv",out.str());}
 }
 // Prefix products are part of the native transaction, including scalar

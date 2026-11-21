@@ -13,7 +13,7 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
         const std::vector<size_t>& knots={},const std::vector<std::vector<size_t>>& cohorts={},const Budgets* residualCounts=nullptr,
         const std::vector<RoundOutputPriority>& outputPriorities={},const Budgets* requiredPrefixes=nullptr){
     e.paddingDemand.clear();
-    if(e.productivePadding&&!e.controls&&requiredPrefixes){
+    if(e.productivePadding&&(!e.controls||e.sharedMeans)&&requiredPrefixes){
         for(size_t l=0;l<depths.size();++l){
             const auto floor=PrefixMinimumCount(e,l);
             if(floor>e.maxCount)continue;

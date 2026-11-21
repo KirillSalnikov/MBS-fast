@@ -8,6 +8,7 @@ static void Configure(Engine& e,const std::string& root,const std::string& binar
     e.cutoffPolicy="staged";
     e.ConfigurePlanning(true);
     e.sharedMeans=true;
+    e.productivePadding=true;
     e.theta={0,12.5,90,170,175,180};
     e.weightTheta={0,180};
     e.weights={{{.2,-.15}},{{-.1,.6}}};
@@ -15,19 +16,21 @@ static void Configure(Engine& e,const std::string& root,const std::string& binar
 }
 int main(int argc,char** argv){
     try{
-        Require(argc==3||argc==4,"expected output, native solver, and optionally legacy");
-        const std::string schema=argc==4?argv[3]:"modern";
+        Require(argc>=3&&argc<=5,"expected output, native solver, optional schema and count");
+        const std::string schema=argc>=4?argv[3]:"modern";
         Require(schema=="modern"||schema=="legacy","unknown table schema");
         const bool modern=schema=="modern";
+        const int count=argc==5?std::stoi(argv[4]):512;
+        Require(count==512||count==1024,"unsupported probe count");
         ArgPP args;RunConfig config;
         Engine wide(args,config),direct(args,config);
         Configure(wide,std::string(argv[1])+"/wide",argv[2]);
         Configure(direct,std::string(argv[1])+"/reference",argv[2]);
-        wide.DirectStage(512,wide.seeds.data(),1,8,wide.theta,true,false,0,6).at(0);
+        wide.DirectStage(count,wide.seeds.data(),1,8,wide.theta,true,false,0,6).at(0);
         const std::vector<double> subset={0,180};
         wide.forbidNativeWork=modern;
-        const auto part=wide.DirectStage(512,wide.seeds.data(),1,8,subset,true,false,0,6).at(0);
-        const auto fresh=direct.DirectStage(512,direct.seeds.data(),1,8,subset,true,false,0,6).at(0);
+        const auto part=wide.DirectStage(count,wide.seeds.data(),1,8,subset,true,false,0,6).at(0);
+        const auto fresh=direct.DirectStage(count,direct.seeds.data(),1,8,subset,true,false,0,6).at(0);
         int projections=0;
         std::istringstream sources(Read(part.folder+"/cutoff_sources.tsv"));
         int depth,sign;std::string folder;
@@ -41,7 +44,7 @@ int main(int argc,char** argv){
             Require(used.rowRefinement.size()==2&&used.controlRefinement<parent.controlRefinement,"projection did not narrow analytic bound");
             ++projections;
         }
-        Require(modern?projections==3:projections==0,"wrong policy for native table schema");
+        Require(modern?projections==(count==512?3:5):projections==0,"wrong policy for native table schema");
         IntegralReader ir;
         for(int n:{8,6}){
             const Job a=n==8?part:wide.LowerView(part,n),b=n==8?fresh:direct.LowerView(fresh,n);
@@ -51,13 +54,15 @@ int main(int argc,char** argv){
                 for(size_t k=0;k<5;++k)Close(a.controls.at(r)[k],b.controls.at(r)[k],"analytic primitive differs");
             }
             Close(a.controlRefinement,b.controlRefinement,"wrong analytic error");
+            Require(a.rowRefinement.size()==(modern?subset.size():0),"wrong corrected bound schema");
+            Require(a.rowRefinement==b.rowRefinement,"projected and direct angle-specific bounds differ");
             const auto av=ir.Resolve(a.folder,n),bv=ir.Resolve(b.folder,n);
             Close(av.ext,bv.ext,"extinction differs");Close(av.area,bv.area,"area differs");
         }
         Engine restored(args,config);Configure(restored,wide.root,argv[2]);restored.WarmCache();
         restored.forbidNativeWork=true;
-        const auto warm=restored.DirectStage(512,restored.seeds.data(),1,8,subset,true,false,0,6).at(0);
-        Require(warm.matrix==part.matrix&&warm.controls==part.controls,"resume changed projection");
+        const auto warm=restored.DirectStage(count,restored.seeds.data(),1,8,subset,true,false,0,6).at(0);
+        Require(warm.matrix==part.matrix&&warm.controls==part.controls&&warm.rowRefinement==part.rowRefinement,"resume changed projection");
         std::cout<<"PASS "<<schema<<" verified native projections="<<projections<<"\n";
     }catch(const std::exception& ex){std::cerr<<ex.what()<<'\n';return 1;}
 }

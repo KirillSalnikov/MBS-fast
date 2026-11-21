@@ -2072,7 +2072,7 @@ struct Engine {
     std::map<std::pair<int,int>,PaddingDemand> paddingDemand;
     double PrefixPadding(const WorkRequest& request,const std::vector<std::set<double>>& covered,
                          double target,double fallback,const unsigned* seedSet)const{
-        if(!productivePadding||controls||covered.size()!=8||request.pairedDepth||request.angles.size()!=2||seeds.size()!=8
+        if(!productivePadding||(controls&&!sharedMeans)||covered.size()!=8||request.pairedDepth||request.angles.size()!=2||seeds.size()!=8
                 ||!std::equal(seeds.begin(),seeds.end(),seedSet))return fallback;
         const auto group=paddingDemand.find({request.depth,phi});
         if(group==paddingDemand.end())return fallback;
@@ -2540,6 +2540,7 @@ struct Engine {
             const double assemblyStarted=Seconds();
             std::set<std::string> sources;size_t reused=0;
             j.angles=x;j.matrix.resize(x.size());if(controls)j.controls.resize(x.size());
+            if(productivePadding&&sharedMeans&&controls)j.rowRefinement.resize(x.size());
             for(size_t r=0;r<x.size();++r){const Job* source;size_t index;auto existing=rows[s].find(x[r]);
                 if(existing!=rows[s].end()){source=existing->second.first;index=existing->second.second;++reused;}
                 else{source=&fresh[s];index=std::lower_bound(missing.begin(),missing.end(),x[r])-missing.begin();}
@@ -2547,9 +2548,17 @@ struct Engine {
                 sources.insert(source->folder);j.matrix[r]=sourceData->matrix.at(index);
                 if(controls){j.controls[r]=sourceData->controls.at(index);
                     if(!sharedMeans){j.controls[r][1]=means.controls[r][1];j.controls[r][2]=means.controls[r][2];}
-                    else{j.controlRefinement=std::max(j.controlRefinement,sourceData->controlRefinement);j.controlSetup=sourceData->controlSetup;}
+                    else{
+                        j.controlRefinement=std::max(j.controlRefinement,sourceData->controlRefinement);
+                        j.controlSetup=sourceData->controlSetup;
+                        if(!j.rowRefinement.empty()){
+                            if(sourceData->rowRefinement.empty())j.rowRefinement.clear();
+                            else j.rowRefinement[r]=sourceData->rowRefinement.at(index);
+                        }
+                    }
                     const auto& c=j.controls[r];const auto& b=coefficients[r];j.matrix[r][0]=c[0]+b[0]*(c[1]-c[3])+b[1]*(c[2]-c[4]);}
             }
+            if(!j.rowRefinement.empty())j.controlRefinement=*std::max_element(j.rowRefinement.begin(),j.rowRefinement.end());
             if(controls&&!sharedMeans){sources.insert(means.folder);j.controlRefinement=means.controlRefinement;j.controlSetup=means.controlSetup;}
             std::set<std::string> visited;std::ostringstream dependencies;
             for(const std::string& source:sources){ValidateStoredJob(source,visited);dependencies<<source<<'\t'<<FileHash(source+"/complete.txt")<<'\n';
@@ -2557,9 +2566,13 @@ struct Engine {
             Require(j.seconds>0,"missing angular source cost");const double representedSeconds=j.seconds;
             DerivedFileBatch outputFiles(j.folder,PrepareDerivedPublication());
             j.seconds=ForecastFullGridCost(n,seedSet[s],depth,x.size(),j.controlSetup,j.seconds);Directory(j.folder+"/result");WriteMatrix(j.data,x,j.matrix);
-            if(controls){std::ostringstream table;table<<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight\n"<<std::setprecision(17);
+            if(controls){std::ostringstream table;table<<"theta_deg\traw_M11\treflection_mean\tshadow_mean\tsampled_reflection\tsampled_shadow\tresidual_mean\thybrid_M11\trefinement\tsetup_seconds\treflection_weight\tshadow_weight";
+                if(!j.rowRefinement.empty())table<<"\trow_refinement";
+                table<<'\n'<<std::setprecision(17);
                 for(size_t r=0;r<x.size();++r){const auto& c=j.controls[r];const auto& b=coefficients[r];table<<x[r];for(double v:c)table<<'\t'<<v;
-                    table<<'\t'<<c[0]-b[0]*c[3]-b[1]*c[4]<<'\t'<<j.matrix[r][0]<<'\t'<<j.controlRefinement<<'\t'<<j.controlSetup<<'\t'<<b[0]<<'\t'<<b[1]<<'\n';}Atomic(j.summary,table.str());}
+                    table<<'\t'<<c[0]-b[0]*c[3]-b[1]*c[4]<<'\t'<<j.matrix[r][0]<<'\t'<<j.controlRefinement<<'\t'<<j.controlSetup<<'\t'<<b[0]<<'\t'<<b[1];
+                    if(!j.rowRefinement.empty())table<<'\t'<<j.rowRefinement[r];
+                    table<<'\n';}Atomic(j.summary,table.str());}
             std::vector<std::string> command=base;
             for(const std::string& v:std::vector<std::string>{"--max-reflections",std::to_string(depth),"--sobol-seed",std::to_string(n),std::to_string(seedSet[s]),"--haar-alpha","--theta-grid-file",grid,"--phi-points",std::to_string(phi),"--threads",std::to_string(workerThreads),"--close"})command.push_back(v);
             if(mirror)command.push_back("--mirror-gamma");
