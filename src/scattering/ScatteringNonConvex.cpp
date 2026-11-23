@@ -10,11 +10,9 @@
 #include <array>
 #include <cmath>
 #include <chrono>
-#include <condition_variable>
 #include <cstring>
 #include <cstdint>
 #include <limits>
-#include <mutex>
 #include <utility>
 #include <vector>
 #include <iomanip>
@@ -26,6 +24,7 @@
 #include "BigIntegerLibrary.hh"
 #ifdef USE_CUDA
 #include "GpuTraceSupport.h"
+#include "GpuTraceBeamBudget.h"
 #endif
 
 //#ifdef _DEBUG // DEB
@@ -63,76 +62,17 @@ size_t GpuTraceConfiguredInflightBeamLimit()
     return 512;
 }
 
-struct GpuTraceInflightBeamState
-{
-    std::mutex mutex;
-    std::condition_variable available;
-    size_t active = 0;
-    size_t limit = GpuTraceConfiguredInflightBeamLimit();
-};
-
 constexpr int GPU_TRACE_MAX_DEVICES = 64;
 
-GpuTraceInflightBeamState &GpuTraceInflightBeams(int device)
+GpuTraceBeamBudget &GpuTraceInflightBeams(int device)
 {
-    static std::array<GpuTraceInflightBeamState,
-                      GPU_TRACE_MAX_DEVICES> states;
-    const int index = std::max(0, std::min(device,
-                                           GPU_TRACE_MAX_DEVICES - 1));
-    return states[(size_t)index];
-}
-
-class GpuTraceInflightBeamGuard
-{
-public:
-    GpuTraceInflightBeamGuard(size_t requested, int device)
-        : m_state(nullptr), m_count(0)
+    struct DeviceBudget : GpuTraceBeamBudget
     {
-        if (requested == 0)
-            return;
-        GpuTraceInflightBeamState &state = GpuTraceInflightBeams(device);
-        m_state = &state;
-        std::unique_lock<std::mutex> lock(state.mutex);
-        m_count = std::min(requested, state.limit);
-        state.available.wait(lock, [&state, this]() {
-            return m_count <= state.limit -
-                std::min(state.active, state.limit);
-        });
-        state.active += m_count;
-    }
-
-    ~GpuTraceInflightBeamGuard()
-    {
-        if (m_count == 0)
-            return;
-        GpuTraceInflightBeamState &state = *m_state;
-        {
-            std::lock_guard<std::mutex> lock(state.mutex);
-            state.active -= m_count;
-        }
-        state.available.notify_all();
-    }
-
-    GpuTraceInflightBeamGuard(const GpuTraceInflightBeamGuard &) = delete;
-    GpuTraceInflightBeamGuard &operator=(
-        const GpuTraceInflightBeamGuard &) = delete;
-
-private:
-    GpuTraceInflightBeamState *m_state;
-    size_t m_count;
-};
-
-size_t GpuTraceReduceInflightBeamLimit(int device)
-{
-    GpuTraceInflightBeamState &state = GpuTraceInflightBeams(device);
-    size_t reduced = 0;
-    {
-        std::lock_guard<std::mutex> lock(state.mutex);
-        state.limit = std::max<size_t>(32, state.limit / 2);
-        reduced = state.limit;
-    }
-    state.available.notify_all();
-    return reduced;
+        DeviceBudget() : GpuTraceBeamBudget(GpuTraceConfiguredInflightBeamLimit()) {}
+    };
+    static std::array<DeviceBudget, GPU_TRACE_MAX_DEVICES> budgets;
+    const int index = std::max(0, std::min(device, GPU_TRACE_MAX_DEVICES - 1));
+    return budgets[static_cast<size_t>(index)];
 }
 
 int GpuTraceDefaultBatchBeamLimit()
@@ -202,34 +142,39 @@ bool GpuTracePrepareBeamFacetBatchAdaptive(
     const int device = GpuTraceBindWorkerDevice();
     if (device < 0)
         return false;
-    bool prepared = false;
-    {
-        GpuTraceInflightBeamGuard inflightGuard(items.size(), device);
-        prepared = GpuTracePrepareBeamFacetBatch(
-            facets, geometryScale, items);
-    }
-    if (prepared)
-        return true;
-    if (!GpuTraceLastFailureWasOutOfMemory())
+    if (items.empty())
         return false;
-
-    const int reducedLimit = GpuTraceReduceBatchBeamLimit(items.size(), device);
-    const size_t reducedInflightLimit =
-        GpuTraceReduceInflightBeamLimit(device);
-    static std::atomic<int> lastWarnedLimit(0);
-    const int previousWarning = lastWarnedLimit.exchange(
-        reducedLimit, std::memory_order_relaxed);
-    if (previousWarning != reducedLimit)
+    bool outOfMemory = false;
     {
-        std::cerr
-            << "WARNING: CUDA trace batch exhausted device memory; "
-            << "on device " << device
-            << "; retrying in smaller pieces and reducing subsequent batches to "
-            << reducedLimit << " beams and the process-wide in-flight budget to "
-            << reducedInflightLimit << " beams."
-            << std::endl;
+        GpuTraceBeamBudget::Reservation reservation(GpuTraceInflightBeams(device), items.size());
+        if (reservation.Reserved())
+        {
+            if (GpuTracePrepareBeamFacetBatch(facets, geometryScale, items))
+                return true;
+            outOfMemory = GpuTraceLastFailureWasOutOfMemory();
+            if (!outOfMemory)
+                return false;
+        }
     }
-
+    if (outOfMemory)
+    {
+        const int reducedLimit = GpuTraceReduceBatchBeamLimit(items.size(), device);
+        const size_t reducedInflightLimit =
+            GpuTraceInflightBeams(device).ReduceAfterOom();
+        static std::atomic<int> lastWarnedLimit(0);
+        const int previousWarning = lastWarnedLimit.exchange(
+            reducedLimit, std::memory_order_relaxed);
+        if (previousWarning != reducedLimit)
+        {
+            std::cerr
+                << "WARNING: CUDA trace batch exhausted device memory; "
+                << "on device " << device
+                << "; retrying in smaller pieces and reducing subsequent batches to "
+                << reducedLimit << " beams and the process-wide in-flight budget to "
+                << reducedInflightLimit << " beams."
+                << std::endl;
+        }
+    }
     if (items.size() <= 32)
         return false;
 
