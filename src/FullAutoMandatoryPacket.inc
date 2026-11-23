@@ -6,7 +6,7 @@ bool SelectMandatoryPacket(Engine& e,AdditionalWork& work,const Budgets& current
         const Budgets* residual,Budgets& selected,double budget){
     std::vector<int> floors;
     for(size_t l=0;l<depths.size();++l){
-        const auto minimum=PrefixMinimumCount(e,l);
+        const auto minimum=PrefixMinimumCount(e,l,depths.size());
         if(minimum>e.maxCount)return false;
         floors.push_back(int(minimum));
     }

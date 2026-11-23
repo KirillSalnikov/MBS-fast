@@ -148,10 +148,15 @@ void CachedPaddingSelection(){
 void PrefixPolicyMigration(const std::string& root){
     ArgPP args;RunConfig config;Engine e(args,config);e.root=root;e.signature="level-prefix-policy-test";
     Directory(root);e.theta={170,171,172};e.initial=4096;e.minimum=256;e.maxCount=1<<20;
-    Require(PrefixMinimumCount(e,0)==8192&&PrefixMinimumCount(e,1)==4096,
+    Require(PrefixMinimumCount(e,0,3)==8192&&PrefixMinimumCount(e,1,3)==4096,
             "correction can accept its first quiet pilot or inherited an excessive base count");
-    e.initial=512;Require(PrefixMinimumCount(e,1)==1024,"small-particle correction pilot floor wrong");
-    e.initial=1<<24;Require(PrefixMinimumCount(e,2)==4096,"large-particle base count forced onto correction");
+    e.initial=512;Require(PrefixMinimumCount(e,1,3)==1024,"small-particle correction pilot floor wrong");
+    e.initial=1<<24;Require(PrefixMinimumCount(e,2,3)==4096,"large-particle base count forced onto correction");
+    e.initial=512;e.automaticJoinedRosette=true;
+    Require(PrefixMinimumCount(e,0,3)==1024 && PrefixMinimumCount(e,1,3)==1024 &&
+            PrefixMinimumCount(e,2,3)==512 && PrefixMinimumCount(e,0,1)==1024,
+            "only the last rosette correction may be checked at twice its minimum");
+    e.automaticJoinedRosette=false;
     e.initial=4096;
     AdaptiveState state;state.round=4;state.streak=2;state.auditSerial=7;state.knots={0,2};
     state.counts=Budgets(3,std::vector<int>(3,512));state.previous=Matrix(3);

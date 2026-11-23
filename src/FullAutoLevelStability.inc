@@ -1,7 +1,9 @@
 // Every depth component must be stable in the complete physical estimator.
 // These are pointwise empirical prefix checks, not rigorous error bounds.
 const char* OutputCachePolicy(){return "complete-compatible-prefixes-v1";}
-const char* PrefixStabilityPolicy(){return "all-level-paired-prefix-v1";}
+const char* PrefixStabilityPolicy(const Engine& e){
+    return e.automaticJoinedRosette?"joined-rosette-top-paired-prefix-v2":"all-level-paired-prefix-v1";
+}
 double LevelPrefixChange(const Mueller& total,const Mueller& current,const Mueller& alternate,bool ratios){
     Mueller other{};for(int j=0;j<16;++j){
         if(!std::isfinite(total[j])||!std::isfinite(current[j])||!std::isfinite(alternate[j]))return 1e100;
@@ -13,8 +15,9 @@ double LevelPrefixChange(const Mueller& total,const Mueller& current,const Muell
         if(ratios&&j)change=std::max(change,std::fabs(other[j]/other[0]-total[j]/total[0]));
     }return change;
 }
-long long PrefixMinimumCount(const Engine& e,size_t level){
+long long PrefixMinimumCount(const Engine& e,size_t level,size_t levels){
     if(!level)return 2LL*e.initial;
+    if(level+1==levels && e.automaticJoinedRosette)return 2LL*e.minimum;
     // Do not accept a cheap correction at its first apparently quiet pilot.
     // Four doublings of the correction pilot are capped by the base startup
     // check; this avoids imposing a huge base count on every correction.
@@ -47,7 +50,7 @@ LevelPrefixDecision CheckLevelPrefixes(Engine& e,const std::vector<int>& depths,
     table<<"theta_deg,level,depth,count_per_seed,reference_count_per_seed,minimum_stable_count,paired_change95,budget,passed,required_count,phi_points\n";
     for(size_t level=0;level<depths.size();++level){
         std::vector<size_t> checked;Budgets half(level?2:1,std::vector<int>(e.theta.size(),1));
-        for(size_t id:ids)if(state.counts[level][id]>=PrefixMinimumCount(e,level)){
+        for(size_t id:ids)if(state.counts[level][id]>=PrefixMinimumCount(e,level,depths.size())){
             checked.push_back(id);for(auto& n:half)n[id]=state.counts[level][id]/2;}
         if(!checked.empty()){
             const std::vector<int> checkDepths=level?std::vector<int>{depths[level-1],depths[level]}:std::vector<int>{depths[0]};
@@ -66,11 +69,11 @@ LevelPrefixDecision CheckLevelPrefixes(Engine& e,const std::vector<int>& depths,
             }
         }
         for(size_t row=0;row<ids.size();++row){const size_t id=ids[row];const int n=state.counts[level][id];
-            jointAvailable[row]=jointAvailable[row]&&n>=PrefixMinimumCount(e,level);
+            jointAvailable[row]=jointAvailable[row]&&n>=PrefixMinimumCount(e,level,depths.size());
             const bool ok=result.errors[level][row]<=tolerance;passed[row]=passed[row]&&ok;
             if(!ok){++result.failed;result.required[level][id]=Doubled(e,n);}
-            table<<Number(e.theta[id])<<','<<level<<','<<depths[level]<<','<<n<<','<<(n>=PrefixMinimumCount(e,level)?n/2:0)
-                <<','<<PrefixMinimumCount(e,level)<<','<<Number(result.errors[level][row])<<','<<Number(tolerance)<<','<<ok
+            table<<Number(e.theta[id])<<','<<level<<','<<depths[level]<<','<<n<<','<<(n>=PrefixMinimumCount(e,level,depths.size())?n/2:0)
+                <<','<<PrefixMinimumCount(e,level,depths.size())<<','<<Number(result.errors[level][row])<<','<<Number(tolerance)<<','<<ok
                 <<','<<result.required[level][id]<<','<<e.PhiForTheta(id)<<'\n';
         }
     }
@@ -92,7 +95,7 @@ LevelPrefixDecision CheckLevelPrefixes(Engine& e,const std::vector<int>& depths,
     result.table=table.str();Atomic(e.root+"/level_prefix_stability.csv",result.table);
     result.jointTable=jointRows.str();Atomic(e.root+"/joint_prefix_stability.csv",result.jointTable);
     Atomic(e.root+"/level_prefix_sources.tsv",result.sources);
-    e.Log("level_prefix_stability","{\"policy\":"+Quoted(PrefixStabilityPolicy())+",\"round\":"+Number(state.round)
+    e.Log("level_prefix_stability","{\"policy\":"+Quoted(PrefixStabilityPolicy(e))+",\"round\":"+Number(state.round)
         +",\"passed\":"+(result.passed?"true":"false")+",\"failed_level_rows\":"+Number(result.failed)
         +",\"failed_joint_rows\":"+Number(result.failedJoint)
         +",\"all16_and_full_matrix_ratios\":true,\"paired_eight_seed_noise\":true,\"recomputed_for_current_estimator\":true,\"tolerance\":"+Number(tolerance)+"}");
@@ -100,10 +103,10 @@ LevelPrefixDecision CheckLevelPrefixes(Engine& e,const std::vector<int>& depths,
 }
 void PreparePrefixStabilityPolicy(Engine& e,AdaptiveState& state,bool resumed){
     const auto path=e.root+"/prefix_stability_policy.json";
-    const bool changed=!Exists(path)||Read(path).find(PrefixStabilityPolicy())==std::string::npos;
+    const bool changed=!Exists(path)||Read(path).find(PrefixStabilityPolicy(e))==std::string::npos;
     if(changed&&resumed){state.streak=0;std::fill(state.coarse.begin(),state.coarse.end(),false);e.independentPassed=false;
         SaveAdaptive(e,state);e.Log("prefix_stability_policy_migration","{\"production_blocks_retained\":true,\"old_stability_acceptance_invalidated\":true}");}
-    e.Record(path,"{\"policy\":"+Quoted(PrefixStabilityPolicy())+",\"all_depth_levels\":true,\"joint_level_sum\":true,\"recompute_each_round\":true,\"comparison\":\"full estimator with each level and then all levels replaced by half prefixes; paired eight-seed mean shift plus noise95\",\"correction_minimum\":\"max(2*minimum,min(2*initial,16*minimum))\",\"statistical_not_rigorous_bound\":true}");
+    e.Record(path,"{\"policy\":"+Quoted(PrefixStabilityPolicy(e))+",\"all_depth_levels\":true,\"joint_level_sum\":true,\"recompute_each_round\":true,\"comparison\":\"full estimator with each level and then all levels replaced by half prefixes; paired eight-seed mean shift plus noise95\",\"correction_minimum\":\"max(2*minimum,min(2*initial,16*minimum))\",\"last_correction_minimum\":"+Quoted(e.automaticJoinedRosette?"2*minimum":"same as other corrections")+",\"statistical_not_rigorous_bound\":true}");
 }
 void RequirePrefixGrowth(const LevelPrefixDecision& check,const std::vector<size_t>& ids,Budgets& proposed){
     for(size_t level=0;level<proposed.size();++level)for(size_t id:ids)proposed[level][id]=std::max(proposed[level][id],check.required[level][id]);
@@ -137,7 +140,7 @@ bool CheckCachedLevelPrefixes(Engine& e,const std::vector<int>& depths,AdaptiveS
         for(size_t level=0;level<depths.size();++level){if(counts[level][id]<=state.counts[level][id])continue;
             errors[level]=PairedLevelPrefixChange(e,total,stage.levels[level],cached.levels[level],row);
             if(adoptComplete)reasons[level]="complete_cached_output";
-            else if(state.counts[level][id]<PrefixMinimumCount(e,level))reasons[level]="minimum_prefix";
+            else if(state.counts[level][id]<PrefixMinimumCount(e,level,depths.size()))reasons[level]="minimum_prefix";
             if(errors[level]>NumericalBudget(e))reasons[level]="individual_discrepancy";
             any=any||!reasons[level].empty();
             if(largest<0||errors[level]>errors[size_t(largest)])largest=int(level);

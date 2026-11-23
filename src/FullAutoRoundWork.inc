@@ -6,7 +6,7 @@ size_t RoundPhysicalGpus(const Engine& e){
     const auto slots=e.WorkerGpus();return std::max(size_t(1),std::set<std::string>(slots.begin(),slots.end()).size());
 }
 struct RoundOutputPriority {double error;std::vector<size_t> nodes;};
-long long PrefixMinimumCount(const Engine&,size_t);
+long long PrefixMinimumCount(const Engine&,size_t,size_t);
 #include "FullAutoMandatoryPacket.inc"
 void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budgets& proposed,
         const std::vector<int>& depths,const std::vector<size_t>& ids,const Statistics& stats,
@@ -15,7 +15,7 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
     e.paddingDemand.clear();
     if(e.productivePadding&&(!e.controls||e.sharedMeans)&&requiredPrefixes){
         for(size_t l=0;l<depths.size();++l){
-            const auto floor=PrefixMinimumCount(e,l);
+            const auto floor=PrefixMinimumCount(e,l,depths.size());
             if(floor>e.maxCount)continue;
             for(size_t id:ids){
                 const int count=current[l][id];
@@ -51,7 +51,7 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
     if(finalMinimumOnly){
         bool needsGrowth=false;
         for(size_t l=0;l<current.size()&&finalMinimumOnly;++l){
-            const long long floor=PrefixMinimumCount(e,l);
+            const long long floor=PrefixMinimumCount(e,l,depths.size());
             for(size_t id:ids){
                 if(proposed[l][id]!=std::max<long long>(current[l][id],floor)){finalMinimumOnly=false;break;}
                 needsGrowth=needsGrowth||proposed[l][id]>current[l][id];
@@ -433,7 +433,7 @@ void BoundRoundWork(Engine& e,AdditionalWork& work,const Budgets& current,Budget
                                     for(size_t l=0;l<current.size();++l){
                                         const auto next=trial[l][id];
                                         if(next==current[l][id])continue;
-                                        const auto floor=PrefixMinimumCount(e,l);
+                                        const auto floor=PrefixMinimumCount(e,l,depths.size());
                                         mandatory=mandatory&&next<=floor&&floor<=e.maxCount;
                                         independent[l][id]=next;
                                     }

@@ -1054,6 +1054,7 @@ struct Engine {
         return !go&&!nonconvexGeometry&&On("fullauto_depth_share");
     }
     bool completedCheckpoint=false;
+    bool automaticJoinedRosette=false;
     bool capNonconvexDepth=false;
     int AnchorDepth()const{return capNonconvexDepth?std::min(12,FullAutoDepthSelection::Anchor(depthMaximum)):FullAutoDepthSelection::Anchor(depthMaximum);}
     int ReferenceDepth()const{return capNonconvexDepth?std::min(10,FullAutoDepthSelection::Reference(depthMaximum)):FullAutoDepthSelection::Reference(depthMaximum);}
@@ -1252,8 +1253,10 @@ struct Engine {
         initial=Power2(initial);minimum=Power2(minimum);Require(initial<=maxCount&&minimum<=maxCount,"rounded counts exceed max-orientations");
         for(int v:{pilot,kernelCount,initial,minimum,maxCount})Require(v>0&&v<2147483647,"invalid configured counts");
         Require(roundLimit>0&&startTheta>=2&&maxTheta>=2&&minPhi>0&&maxPhi>=minPhi,"invalid configured limits");
-        depthStart=Int("fullauto_depth_start",6);depthMaximum=Int("fullauto_depth_max",nonconvex?12:18);
         autoDepth=!args.IsCatched("n")&&On("fullauto_depth_search");
+        automaticJoinedRosette=autoDepth && coherent && args.IsCatched("rosette_joined");
+        depthStart=Int("fullauto_depth_start",6);
+        depthMaximum=Int("fullauto_depth_max",nonconvex&&!automaticJoinedRosette?12:18);
         capNonconvexDepth=nonconvex&&autoDepth&&depthMaximum<=12;
         target=args.IsCatched("n")?config.maxReflections:depthStart;depthBudget=autoDepth?eps/4:0;
         Require(target>0&&depthStart>0&&depthMaximum>=depthStart&&depthMaximum<=28,"invalid depth search range");
