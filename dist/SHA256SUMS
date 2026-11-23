@@ -1,0 +1,5 @@
+f6e3f630e50a5275847475a905852d28fa00639674ba91c94b6b101ea0e45481  mbs-fast-epyc1-sm70-double.gz
+00b849fb48fc08bf38c4f9eba430fa0481781527ad76a87dd7fbae95cf12d1b8  mbs-fast-gpu1-sm86-float.gz
+2610c0603212180fa453354e60ea54e4e4f9cfcfef9cf558e92cbb101c369c17  mbs-fast-gpu2-sm86-float.gz
+c29c5c01f5d39d3cec82a99b11b545aecf9d2b2c4c23e06db0fcc1f56e7ec582  mbs-fast-dima-sm86-float.gz
+174d6c07f828b53e160d9e9ecb0aa98f6efee9b0dbeee964026234d07db45da1  mbs-fast-v100-sm70-double.gz

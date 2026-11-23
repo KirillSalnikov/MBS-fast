@@ -1,0 +1,57 @@
+{
+  "commit": "c0c2d5ecac57adc6ef58637cbf178203a1a646ef",
+  "builds": [
+    {
+      "hosts": [
+        "epyc1",
+        "epyc2"
+      ],
+      "filename": "mbs-fast-epyc1-sm70-double.gz",
+      "uncompressed_sha256": "ab5b97f389190085328e53bff5b5702454fd496e189c18da6da06e97000ffa49",
+      "version": "MBS-fast c0c2d5ecac57\nbackend-build: CUDA sm_70 fp64-diffraction-storage trace-geometry-fp64 phase-build-fp64 phase-trig-fp64 precise-math\ncompiler: GCC 7.5.0\nopenmp: enabled (_OPENMP=201511)\nmpi: disabled\n",
+      "compiler": "/usr/bin/g++-7",
+      "arch_flags": "-march=native -mtune=native"
+    },
+    {
+      "hosts": [
+        "gpu1"
+      ],
+      "filename": "mbs-fast-gpu1-sm86-float.gz",
+      "uncompressed_sha256": "98853991630227c47940ba7aa60faa4504f8f3997a3e376b20e8ddc87b84dbdf",
+      "version": "MBS-fast c0c2d5ecac57\nbackend-build: CUDA sm_86 fp32-diffraction-storage trace-geometry-fp64 phase-build-double-single phase-trig-double-single phase-trig-fallback-fp64 moments-double-single reduction-double-single precise-math\ncompiler: GCC 7.5.0\nopenmp: enabled (_OPENMP=201511)\nmpi: disabled\n",
+      "compiler": "/usr/bin/g++-7",
+      "arch_flags": "-march=native -mtune=native"
+    },
+    {
+      "hosts": [
+        "gpu2"
+      ],
+      "filename": "mbs-fast-gpu2-sm86-float.gz",
+      "uncompressed_sha256": "de6a3fe4b9b868bba4922b881d2fae3dc6b91ecd540711b7d4a0335d390af802",
+      "version": "MBS-fast c0c2d5ecac57\nbackend-build: CUDA sm_86 fp32-diffraction-storage trace-geometry-fp64 phase-build-double-single phase-trig-double-single phase-trig-fallback-fp64 moments-double-single reduction-double-single precise-math\ncompiler: GCC 7.5.0\nopenmp: enabled (_OPENMP=201511)\nmpi: disabled\n",
+      "compiler": "/usr/bin/g++-7",
+      "arch_flags": "-march=native -mtune=native"
+    },
+    {
+      "hosts": [
+        "dima",
+        "ilya"
+      ],
+      "filename": "mbs-fast-dima-sm86-float.gz",
+      "uncompressed_sha256": "bd4bd435002a35414cf66d920e964d66367e34044223a054db4f64690617db19",
+      "version": "MBS-fast c0c2d5ecac57\nbackend-build: CUDA sm_86 fp32-diffraction-storage trace-geometry-fp64 phase-build-double-single phase-trig-double-single phase-trig-fallback-fp64 moments-double-single reduction-double-single precise-math\ncompiler: GCC 12.4.0\nopenmp: enabled (_OPENMP=201511)\nmpi: disabled\n",
+      "compiler": "/usr/bin/g++-12",
+      "arch_flags": "-march=x86-64-v3"
+    },
+    {
+      "hosts": [
+        "v100"
+      ],
+      "filename": "mbs-fast-v100-sm70-double.gz",
+      "uncompressed_sha256": "e40ef50351aeb806a5543e6c622c7b8fec1b7b8daaa1ada6226b8c25102b9c60",
+      "version": "MBS-fast c0c2d5ecac57\nbackend-build: CUDA sm_70 fp64-diffraction-storage trace-geometry-fp64 phase-build-fp64 phase-trig-fp64 precise-math\ncompiler: GCC 12.4.0\nopenmp: enabled (_OPENMP=201511)\nmpi: disabled\n",
+      "compiler": "/usr/bin/g++-12",
+      "arch_flags": "-march=native -mtune=native"
+    }
+  ]
+}
