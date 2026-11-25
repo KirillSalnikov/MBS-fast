@@ -20,6 +20,9 @@
 
 namespace WorkerMemoryStage {
 inline void Require(bool okay,const std::string& message){if(!okay)throw std::runtime_error("memory worker: "+message);}
+struct CapacityExceeded : std::runtime_error {
+    explicit CapacityExceeded(const char* reason):std::runtime_error(std::string("memory worker: ")+reason){}
+};
 inline void RemoveTree(const std::string& path) noexcept {
     struct stat st{};if(lstat(path.c_str(),&st)!=0)return;
     if(S_ISDIR(st.st_mode)){
@@ -174,10 +177,12 @@ class Request {
             struct stat before{};Require(lstat(path.c_str(),&before)==0,"staging output disappeared");
             if(S_ISDIR(before.st_mode)){CollectStreamDirectory(member,result,total,staged,visited,depth+1);continue;}
             Require(S_ISREG(before.st_mode)&&before.st_nlink==1&&before.st_size>=0,"unsafe staging output "+member);
-            const uint64_t bytes=uint64_t(before.st_size);Require(bytes<=stagingBudget-staged,"native outputs exceeded declared staging budget");staged+=bytes;
+            const uint64_t bytes=uint64_t(before.st_size);if(bytes>stagingBudget-staged)throw CapacityExceeded("native outputs exceeded declared staging budget");
+            staged+=bytes;
             uint64_t digest=14695981039346656037ULL;StreamFile(member,[&](const char* data,size_t n){digest=WorkerProtocol::HashBlock(digest,data,n);});
             const auto old=originals.find(member);if(old!=originals.end()&&old->second.first==bytes&&old->second.second==digest)continue;
-            Require(uint64_t(member.size())+bytes<=outputBudget-total,"output exceeds declared stream budget");total+=uint64_t(member.size())+bytes;
+            if(uint64_t(member.size())+bytes>outputBudget-total)throw CapacityExceeded("output exceeds declared stream budget");
+            total+=uint64_t(member.size())+bytes;
             result.emplace_back(member,bytes,digest);Require(result.size()<=WorkerProtocol::MaximumBundleFiles,"too many output members");
         }
     }
@@ -258,7 +263,11 @@ public:
         }catch(...){close(fd);throw;}
     }
     std::vector<WorkerProtocol::StreamFile> CollectStream()const{
-        Require(streaming&&!FileLimitHit(),"native output reached staging file-size limit");
+        Require(streaming,"stream collection requires streaming mode");
+        if(FileLimitHit()){
+            Require(savedLimit.rlim_cur>stagingBudget,"native output reached inherited file-size limit");
+            throw CapacityExceeded("native output reached staging file-size limit");
+        }
         std::vector<WorkerProtocol::StreamFile> result;uint64_t total=0,staged=0;size_t visited=0;CollectStreamDirectory("",result,total,staged,visited,0);return result;
     }
     std::string InputIdentityPath(const std::string& physical)const{

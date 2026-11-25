@@ -3987,9 +3987,11 @@ static int RunWorkerService(int fd,const char* executable) {
                 std::vector<WorkerProtocol::StreamFile> files;
                 try{files=memoryStage->CollectStream();}
                 catch(const std::exception& error){
+                    const int collectStatus=dynamic_cast<const WorkerMemoryStage::CapacityExceeded*>(&error)
+                        ?WorkerProtocol::StagingCapacity:125;
                     std::vector<WorkerProtocol::File> diagnostic;
                     if(WorkerProtocol::RelativeFilePath(memoryLog))diagnostic.push_back({memoryLog,std::string("ERROR: ")+error.what()+"\n"});
-                    memoryStage.reset();WorkerProtocol::ReplyMemoryStreamSmall(fd,125,diagnostic);break;
+                    memoryStage.reset();WorkerProtocol::ReplyMemoryStreamSmall(fd,collectStatus,diagnostic);break;
                 }
                 bool sent=false;
                 try{sent=WorkerProtocol::ReplyMemoryStream(fd,rc,files,[&](const WorkerProtocol::StreamFile& file,const WorkerProtocol::StreamWriter& writer){memoryStage->StreamFile(file.path,writer);});}

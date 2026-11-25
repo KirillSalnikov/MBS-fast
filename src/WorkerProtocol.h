@@ -17,6 +17,7 @@
 namespace WorkerProtocol {
 // Retry the identical request once in a fresh process. Never accept its partial output.
 const int MemoryPressure = 75;
+const int StagingCapacity = 77;
 // A wide GPU packet refused its device path before unsafe host fallback.
 // A controller may replay identical sampling once with a smaller packet cap.
 const int GpuChunkRetry = ::GpuChunkRetry::StatusCode;
@@ -126,6 +127,13 @@ inline bool ResultMemory(int fd,int& code,std::vector<File>& files){return Resul
 // Consumers must publish a file only after its expected size/hash is verified.
 // A complete job is published by the controller only after the whole frame.
 const uint64_t MaximumStreamBytes=8ULL*1024*1024*1024;
+// Return zero when the remaining frame space cannot accommodate a larger retry.
+inline uint64_t LargerOutputBudget(uint64_t previous,uint64_t inputBytes){
+    if(inputBytes>=MaximumStreamBytes||!previous)return 0;
+    const uint64_t ceiling=MaximumStreamBytes-inputBytes;
+    if(previous>=ceiling)return 0;
+    return previous>ceiling/4?ceiling:4*previous;
+}
 const size_t StreamChunkBytes=64*1024;
 struct StreamFile {std::string path;uint64_t size=0,digest=14695981039346656037ULL;
     StreamFile()=default;StreamFile(const std::string& p,uint64_t n,uint64_t h):path(p),size(n),digest(h){}};

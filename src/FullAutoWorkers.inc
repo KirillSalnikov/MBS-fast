@@ -92,6 +92,8 @@ void ExecutePersistent(std::vector<Job>& result,std::vector<std::vector<std::str
     for(size_t slot=0;slot<services.size();++slot)if(services[slot]&&
         (slot>=slots||services[slot]->identity!=WorkerIdentity(workerGpus[slot])))services[slot].reset();
     std::vector<int> slotJob(slots,-1),memoryRetries(result.size(),0);std::vector<bool> gpuRetried(result.size(),false),memoryBackoff(result.size(),false);
+    std::vector<uint64_t> stagingBytes(result.size(),0);
+    std::vector<unsigned> stagingRetries(result.size(),0);
     std::vector<double> begun(result.size()),firstBegun(result.size(),-1);
     size_t next=0;double checkpointSeconds=0,callbackSeconds=0;
     auto launch=[&](size_t slot,size_t index){
@@ -142,7 +144,8 @@ void ExecutePersistent(std::vector<Job>& result,std::vector<std::vector<std::str
         // same logical names to the private worker stage; keep the original
         // CLI spelling in the fingerprint and replay command.
         if(memoryMode)for(auto& value:request)if(memoryStore->Owns(value))value=FullAutoMemoryStore::Canonical(value);
-        const bool sent=memoryMode?WorkerProtocol::SendMemoryStreamRequest(service.fd,root,MemoryWorkerOutputBudget(j),request,MemoryWorkerStreamInputs(commands[index]),
+        if(memoryMode&&!stagingBytes[index])stagingBytes[index]=MemoryWorkerOutputBudget(j);
+        const bool sent=memoryMode?WorkerProtocol::SendMemoryStreamRequest(service.fd,root,stagingBytes[index],request,MemoryWorkerStreamInputs(commands[index]),
             [&](const WorkerProtocol::StreamFile& file,const WorkerProtocol::StreamWriter& writer){memoryStore->ReadStream(root+"/"+file.path,writer);}):WorkerProtocol::Send(service.fd,request);
         Require(sent,"persistent worker channel closed; see "+j.folder+"/stdout.log");
         if(!packJobs)launchFiles.Commit();
@@ -164,6 +167,20 @@ void ExecutePersistent(std::vector<Job>& result,std::vector<std::vector<std::str
                 index=size_t(slotJob[slot]);Job& j=result[index];int status=-1;
                 const bool received=memoryMode?WorkerProtocol::ResultMemoryStream(services[slot]->fd,status,
                     [&](const WorkerProtocol::StreamFile& file,const WorkerProtocol::StreamReader& reader){AcceptMemoryWorkerStream(file,reader,j);}):WorkerProtocol::Result(services[slot]->fd,status);
+                // Collection failed before the result frame: only a diagnostic log was
+                // returned. Replay the identical seed, offset and angular rows.
+                if(memoryMode&&received&&status==WorkerProtocol::StagingCapacity&&stagingRetries[index]<3){
+                    uint64_t inputBytes=0;
+                    Require(WorkerProtocol::CheckStreamFiles(MemoryWorkerStreamInputs(commands[index]),inputBytes),"invalid staging retry inputs");
+                    const auto larger=WorkerProtocol::LargerOutputBudget(stagingBytes[index],inputBytes);
+                    if(larger){
+                        Log("worker_staging_retry","{\"folder\":"+Quoted(j.folder)+",\"previous_bytes\":"+Number(stagingBytes[index])
+                            +",\"output_bytes\":"+Number(larger)+",\"attempt\":"+Number(++stagingRetries[index])+"}");
+                        NativeReturned(j,true);services[slot].reset();slotJob[slot]=-1;j.pid=-1;
+                        RemovePath(j.folder+"/worker.pid");
+                        stagingBytes[index]=larger;launch(slot,index);return false;
+                    }
+                }
                 const bool hostReserve=received&&LegacyHostReserveFailure(j,status);
                 if(received&&status==WorkerProtocol::GpuChunkRetry&&memoryRetries[index]++==0){
                     const double failedSeconds=Seconds()-begun[index];

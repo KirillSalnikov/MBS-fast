@@ -72,7 +72,16 @@ int main(){
     // Small jobs retain tmpfs when space is available; output-size failure is
     // reported as an exception rather than killing the service with SIGXFSZ.
     {WorkerMemoryStage::Request stage(root,0,1024,true);const auto path=stage.Root()+"/oversize";int fd=open(path.c_str(),O_CREAT|O_WRONLY,0600);assert(fd>=0);
-        char bytes[2048]{};const auto first=write(fd,bytes,sizeof(bytes));assert(first==1024);assert(write(fd,bytes,1)==-1&&errno==EFBIG);close(fd);assert(Throws([&]{stage.CollectStream();}));}
+        char bytes[2048]{};const auto first=write(fd,bytes,sizeof(bytes));assert(first==1024);assert(write(fd,bytes,1)==-1&&errno==EFBIG);close(fd);
+        bool capacity=false;try{stage.CollectStream();}catch(const WorkerMemoryStage::CapacityExceeded&){capacity=true;}
+        assert(capacity);}
+    {const uint64_t budget=WorkerProtocol::LargerOutputBudget(1024,0);
+        WorkerMemoryStage::Request stage(root,0,budget,true);std::string payload(2048,'x');
+        std::ofstream(stage.Root()+"/oversize")<<payload;
+        const auto files=stage.CollectStream();assert(files.size()==1&&files[0].digest==WorkerProtocol::FileDigest(payload));
+        const auto limit=WorkerProtocol::MaximumStreamBytes;
+        assert(WorkerProtocol::LargerOutputBudget(1024,limit-1200)==1200);
+        assert(!WorkerProtocol::LargerOutputBudget(1024,limit-1024));}
     // A rejected input is removed before its path can become an input identity.
     {WorkerMemoryStage::Request stage(root,32,1024,true);const StreamFile wrong("input",3,0);size_t offset=0;
         assert(Throws([&]{stage.WriteStream(wrong,[&](char* dst,size_t n){const auto count=std::min(n,size_t(3)-offset);std::memset(dst,'x',count);offset+=count;return count;});}));assert(!Exists(stage.Root()+"/input"));}
