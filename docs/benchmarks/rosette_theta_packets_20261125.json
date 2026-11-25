@@ -1,0 +1,52 @@
+{
+  "job": "bullet_rosette_joined_size15.85_w0.400_theta0_180_coherent",
+  "angles": [
+    "0",
+    "27.289156626506024",
+    "46.626506024096386",
+    "76.536144578313255",
+    "98.313253012048193",
+    "130.21084337349399",
+    "153.79518072289156",
+    "178.73493975903614"
+  ],
+  "angles_in_matching_group": 404,
+  "sampling_group": [
+    "0",
+    "512",
+    "1024"
+  ],
+  "count": 64,
+  "depth": 12,
+  "phi": 8,
+  "seed": "107",
+  "release": "2adfd472a5fac01f3321288a5c40bcbad228c014",
+  "runs": [
+    {
+      "layout": "pairs",
+      "seconds": 56.71652466664091
+    },
+    {
+      "layout": "eight",
+      "seconds": 12.933181324973702
+    },
+    {
+      "layout": "eight",
+      "seconds": 14.05766038177535
+    },
+    {
+      "layout": "pairs",
+      "seconds": 56.544984047766775
+    }
+  ],
+  "max_diff_scaled_m11": 3.077535573596524e-16,
+  "timed_scope": "Elapsed native command time including startup, four two-angle calls or one eight-angle call per trial",
+  "speedup_ratio_of_means": 4.19629405948043,
+  "hardware": "Tesla V100-SXM2-16GB, FP64; 5 CPU preparation threads",
+  "sampling_group_fields": [
+    "passed",
+    "count_per_seed",
+    "required_count"
+  ],
+  "max_diff_scaled_m11_definition": "Maximum over all rows, trials and 16 matrix elements of abs(Mij - reference_ij) / reference_M11; reference is the first two-angle trial"
+}
